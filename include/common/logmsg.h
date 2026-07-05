@@ -22,6 +22,7 @@
  * should align to LOG_ENTRY_SIZE.
  */
 #define LOG_MESSAGE_MAX_SIZE	(4U * LOG_ENTRY_SIZE)
+#define LOG_TIMESTAMP_MAX_SIZE	32U
 
 #define DBG_LEVEL_LAPICPT	5U
 
@@ -46,6 +47,8 @@ void asm_assert(int32_t line, const char *file, const char *txt);
  * @pre the severity > 0
  */
 void do_logmsg(uint32_t severity, const char *fmt, ...);
+/* Format uptime as HH:MM:SS.mmm,uuu to match SEAU/Zephyr log timestamps. */
+void format_log_timestamp(char *buffer, size_t size, uint64_t timestamp_us);
 
 /** The well known printf() function.
  *

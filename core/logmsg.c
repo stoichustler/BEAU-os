@@ -22,6 +22,31 @@ static int32_t log_seq = 0;
 
 uint16_t mem_loglevel = CONFIG_MEM_LOGLEVEL_DEFAULT;
 
+void format_log_timestamp(char *buffer, size_t size, uint64_t timestamp_us)
+{
+	uint64_t hour;
+	uint64_t min;
+	uint64_t sec;
+	uint64_t msec;
+	uint64_t usec;
+
+	if ((buffer == NULL) || (size == 0U)) {
+		return;
+	}
+
+	hour = timestamp_us / 3600000000UL;
+	timestamp_us %= 3600000000UL;
+	min = timestamp_us / 60000000UL;
+	timestamp_us %= 60000000UL;
+	sec = timestamp_us / 1000000UL;
+	timestamp_us %= 1000000UL;
+	msec = timestamp_us / 1000UL;
+	usec = timestamp_us % 1000UL;
+
+	(void)snprintf(buffer, size, "%02lu:%02lu:%02lu.%03lu,%03lu",
+		hour, min, sec, msec, usec);
+}
+
 static inline bool mem_need_log(uint32_t severity)
 {
 	return (severity <= mem_loglevel);
@@ -44,10 +69,9 @@ void do_logmsg(uint32_t severity, const char *fmt, ...)
 {
 	va_list args;
 	uint64_t timestamp;
-	uint64_t sec;
-	uint64_t frac;
 	uint16_t pcpu_id;
 	char *buffer;
+	char timestamp_str[LOG_TIMESTAMP_MAX_SIZE];
 
 	if (!mem_need_log(severity) && !console_need_log(severity) && !npk_need_log(severity)) {
 		return;
@@ -58,8 +82,7 @@ void do_logmsg(uint32_t severity, const char *fmt, ...)
 
 	/* Scale time-stamp appropriately */
 	timestamp = ticks_to_us(timestamp);
-	sec = timestamp / 1000000UL;
-	frac = (timestamp % 1000000UL) / 1000UL;
+	format_log_timestamp(timestamp_str, sizeof(timestamp_str), timestamp);
 
 	/* Get CPU ID */
 	pcpu_id = get_pcpu_id();
@@ -67,8 +90,9 @@ void do_logmsg(uint32_t severity, const char *fmt, ...)
 
 	(void)memset(buffer, 0U, LOG_MESSAGE_MAX_SIZE);
 	/* Put time-stamp, CPU ID and severity into buffer */
-	snprintf(buffer, LOG_MESSAGE_MAX_SIZE, "[κ][%05lu.%03lu][cpu%hu][sev%u][seq%4u] ",
-			sec, frac, pcpu_id, severity, atomic_inc_return(&log_seq));
+	snprintf(buffer, LOG_MESSAGE_MAX_SIZE,
+		"[κ][%s][cpu%hu][sev%u][seq%4u] ",
+		timestamp_str, pcpu_id, severity, atomic_inc_return(&log_seq));
 
 	/* Put message into remaining portion of local buffer */
 	va_start(args, fmt);

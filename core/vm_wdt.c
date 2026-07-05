@@ -6,6 +6,7 @@
 
 #include <types.h>
 #include <errno.h>
+#include <logmsg.h>
 #include <per_cpu.h>
 #include <rtl.h>
 #include <schedule.h>
@@ -179,9 +180,8 @@ static void vm_wdt_print_one(uint16_t vm_id, const struct vm_wdt_snapshot *snaps
 	const char *event)
 {
 	uint64_t timestamp;
-	uint64_t sec;
-	uint64_t frac;
 	const char *color;
+	char timestamp_str[LOG_TIMESTAMP_MAX_SIZE];
 	char line[144];
 
 	if ((snapshot == NULL) || !vm_wdt_is_monitored(vm_id) || !shell_is_open() ||
@@ -196,12 +196,11 @@ static void vm_wdt_print_one(uint16_t vm_id, const struct vm_wdt_snapshot *snaps
 	 * boot logs or a selected guest console.
 	 */
 	timestamp = ticks_to_us(cpu_ticks());
-	sec = timestamp / 1000000UL;
-	frac = (timestamp % 1000000UL) / 1000UL;
+	format_log_timestamp(timestamp_str, sizeof(timestamp_str), timestamp);
 	color = vm_wdt_status_color(snapshot->status);
 	(void)snprintf(line, sizeof(line),
-		"%s[κ][%05lu.%03lu] event:%7s vm%hu:%7s status:%7s kick:%8lu" SHELL_COLOR_RESET "\r\n",
-		color, sec, frac, event, vm_id, vm_wdt_name(vm_id),
+		"%s[κ][%s] event:%7s vm%hu:%7s status:%7s kick:%8lu" SHELL_COLOR_RESET "\r\n",
+		color, timestamp_str, event, vm_id, vm_wdt_name(vm_id),
 		vm_wdt_status_str(snapshot->status), snapshot->kick_count);
 	if (shell_async_puts(line)) {
 		vm_wdt_mark_reported(vm_id, snapshot->status);

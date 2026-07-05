@@ -13,8 +13,8 @@
  *
  * Each non-idle thread owns one periodic server:
  *
- *     period = 10ms
- *     budget = 3ms
+ *     period = 4ms
+ *     budget = 2ms
  *
  *     |<--------------- period --------------->|
  *     +===========+-----------------------------+
