@@ -19,6 +19,7 @@
 #include <asm/guest/vcpu_priv.h>
 #include <asm/guest/vgicv3.h>
 #include <asm/guest/vpl011.h>
+#include <virtio_console.h>
 
 /*
  * 2026-06-30, VM/stage-2 principle:
@@ -117,6 +118,12 @@ static void init_stage2_page_pool(void)
 	}
 }
 
+static bool arm64_vm_uses_virtio_console(const struct acrn_vm_config *vm_config)
+{
+	return (vm_config->os_config.os_family == VM_OS_LINUX) &&
+		(vm_config->arch.guest_virtio_console_size != 0UL);
+}
+
 static void validate_stage2_ram_identity(const struct acrn_vm *vm, uint64_t mem_start,
 	uint64_t mem_hpa, uint64_t mem_size)
 {
@@ -198,8 +205,13 @@ static void init_stage2_identity_map(struct acrn_vm *vm)
 		log_stage2_vio(vm, "vits", arch_config->guest_its_base,
 			arch_config->guest_its_size);
 	}
-	log_stage2_vio(vm, "vpl011", arch_config->guest_uart_base,
-		arch_config->guest_uart_size);
+	if (arm64_vm_uses_virtio_console(get_vm_config(vm->vm_id))) {
+		log_stage2_vio(vm, "vcon", arch_config->guest_virtio_console_base,
+			arch_config->guest_virtio_console_size);
+	} else {
+		log_stage2_vio(vm, "vpl011", arch_config->guest_uart_base,
+			arch_config->guest_uart_size);
+	}
 }
 
 static void register_arm64_vio_mmio(struct acrn_vm *vm)
@@ -210,6 +222,7 @@ static void register_arm64_vio_mmio(struct acrn_vm *vm)
 	uint64_t its_base = arch_config->guest_its_base;
 	uint64_t its_size = arch_config->guest_its_size;
 	uint64_t uart_base = arch_config->guest_uart_base;
+	uint64_t virtio_console_base = arch_config->guest_virtio_console_base;
 
 	/*
 	 * The common IO request layer owns dispatch by GPA range. ARM64 registers
@@ -226,9 +239,16 @@ static void register_arm64_vio_mmio(struct acrn_vm *vm)
 		register_mmio_emulation_handler(vm, arm64_vgicv3_mmio_handler,
 			its_base, its_base + its_size, &vm->arch_vm.vgic, false);
 	}
-	register_mmio_emulation_handler(vm, arm64_vpl011_mmio_handler,
-		uart_base, uart_base + arch_config->guest_uart_size,
-		vm, false);
+	if (arm64_vm_uses_virtio_console(get_vm_config(vm->vm_id))) {
+		register_mmio_emulation_handler(vm, virtio_console_mmio_handler,
+			virtio_console_base,
+			virtio_console_base + arch_config->guest_virtio_console_size,
+			vm, false);
+	} else {
+		register_mmio_emulation_handler(vm, arm64_vpl011_mmio_handler,
+			uart_base, uart_base + arch_config->guest_uart_size,
+			vm, false);
+	}
 }
 
 uint64_t vcpu_get_vmpidr(struct acrn_vcpu *vcpu)
@@ -258,7 +278,11 @@ int32_t arch_init_vm(struct acrn_vm *vm, struct acrn_vm_config *vm_config)
 	 */
 	init_stage2_identity_map(vm);
 	arm64_vgicv3_init_vm(vm, vm_config->cpu_affinity);
-	arm64_vpl011_init_vm(vm);
+	if (arm64_vm_uses_virtio_console(vm_config)) {
+		virtio_console_init_vm(vm);
+	} else {
+		arm64_vpl011_init_vm(vm);
+	}
 	register_arm64_vio_mmio(vm);
 
 	if (is_static_configured_vm(vm) && (vm_config->fdt_config.fdt_mod_tag[0] == '\0')) {

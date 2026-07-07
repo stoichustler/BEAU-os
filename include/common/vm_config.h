@@ -142,9 +142,7 @@ struct acrn_vm_config {
 	char name[MAX_VM_NAME_LEN];				/* VM name identifier */
 	uint8_t reserved[2];
 	uint8_t severity;				/* severity of the VM */
-	uint64_t cpu_affinity;				/* The set bits represent the pCPUs the vCPUs of
-							 * the VM may run on.
-							 */
+	uint64_t cpu_affinity;				/* Bitmap form of ordered pCPU policy for set tests. */
 	uint64_t guest_flags;				/* VM flags that we want to configure for guest
 							 * Now we have two flags:
 							 *	GUEST_FLAG_SECURE_WORLD_ENABLED
@@ -168,6 +166,8 @@ struct acrn_vm_config {
 	struct pt_intx_config *pt_intx; /* stores the base address of struct pt_intx_config array */
 
 	struct arch_vm_config arch;
+	uint16_t cpu_affinity_num;			/* Number of ordered pCPU entries below. */
+	uint16_t cpu_affinity_order[MAX_PCPU_NUM];	/* vCPU index -> pCPU ID, in policy-authored order. */
 } __aligned(8);
 
 struct acrn_vm_config *get_vm_config(uint16_t vm_id);

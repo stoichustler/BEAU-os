@@ -4,12 +4,9 @@
 
 FILE_PATH := $(dir $(MKFL_NAME))
 SRCS += $(filter-out $(FILE_PATH)/ns16550.c $(FILE_PATH)/pl011.c,$(wildcard $(FILE_PATH)/*.c))
-ifeq ($(ARCH),arm64)
 SRCS += $(FILE_PATH)/pl011.c
-else
-SRCS += $(FILE_PATH)/ns16550.c
-endif
-SRCS += $(wildcard $(FILE_PATH)/$(ARCH)/*.c)
+SRCS += $(wildcard $(FILE_PATH)/arm64/*.c)
+SRCS += $(wildcard $(FILE_PATH)/virtio/*.c)
 OBJS += $(patsubst %.c,$(HV_OBJDIR)/%.o,$(SRCS))
 
 .PHONY: default

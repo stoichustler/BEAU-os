@@ -458,6 +458,8 @@ struct acrn_vcpu_arch {
 	struct arm64_vgicv3_vcpu_ctx vgic;
 	struct arm64_vcpu_trap_info trap;
 	struct arm64_vcpu_debug_info debug;
+	uint64_t irq_forward_progress_start_ticks;
+	uint32_t irq_forward_progress_blocks;
 	uint64_t irqs_pending;
 	uint64_t irqs_pending_mask;
 	struct hv_timer cntv_timer;

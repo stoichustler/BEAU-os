@@ -71,6 +71,7 @@ struct arm64_vpl011 {
 	uint32_t pending;
 	uint8_t last_tx;
 	bool irq_asserted;
+	bool initialized;
 };
 
 static struct arm64_vpl011 vpl011_devs[CONFIG_MAX_VM_NUM];
@@ -182,10 +183,12 @@ void console_vm_tx_space_changed(uint16_t vmid)
 		vm = get_vm_from_vmid(vmid);
 		if ((vm != NULL) && !is_poweroff_vm(vm)) {
 			vu = &vpl011_devs[vmid];
-			old_ris = vu->ris;
-			vpl011_refresh_tx_state(vm, vu);
-			if (((old_ris ^ vu->ris) & PL011_INT_TX) != 0U) {
-				vpl011_update_irq(vm, vu, true);
+			if (vu->initialized) {
+				old_ris = vu->ris;
+				vpl011_refresh_tx_state(vm, vu);
+				if (((old_ris ^ vu->ris) & PL011_INT_TX) != 0U) {
+					vpl011_update_irq(vm, vu, true);
+				}
 			}
 		}
 	}
@@ -204,6 +207,7 @@ void arm64_vpl011_init_vm(struct acrn_vm *vm)
 	(void)memset(vu, 0U, sizeof(*vu));
 	vu->ifls = 0x12U;
 	vu->cr = (1U << 0U) | (1U << 8U) | (1U << 9U);
+	vu->initialized = true;
 	init_console_vuart(vm, irq);
 	console = vm_console_vuart(vm);
 	vuart_set_backend(console, &vpl011_backend_ops);

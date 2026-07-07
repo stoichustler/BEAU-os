@@ -15,6 +15,7 @@
 #include <shell.h>
 #include <serial.h>
 #include <fdt_api.h>
+#include <asm/platform.h>
 #ifdef STACK_PROTECTOR
 #include <asm/security.h>
 #endif
@@ -115,12 +116,11 @@ void init_primary_pcpu(uint64_t mpidr, uint64_t fdt_paddr)
 
 	pcpu_set_current_state(pcpu_id, PCPU_STATE_INITIALIZING);
 
-#ifdef CONFIG_FDT_PARSE_ENABLED
-	init_devtree(fdt_paddr);
-#endif
-	init_acrn_boot_info(boot_regs);
+	arm64_platform_init(fdt_paddr);
 
 	init_debug_pre();
+	arm64_platform_init_post_console();
+	init_acrn_boot_info(boot_regs);
 	init_paging();
 	if (!arm64_mmu_is_enabled()) {
 		panic("arm64 mmu is not enabled on bsp");

@@ -1,0 +1,410 @@
+/dts-v1/;
+
+/ {
+	interrupt-parent = <&gic>;
+	#address-cells = <2>;
+	#size-cells = <2>;
+	compatible = "qemu,arm64", "beau,qemu-static-config";
+	model = "beau-qemu-virt";
+
+	aliases {
+		serial0 = &uart0;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	beau,platform {
+		gic-iidr = <0x43b>;
+		guest-cpu-compatible = "arm,cortex-a57";
+		vfdt-model = "linux,dummy-virt";
+		vfdt-compatible = "linux,dummy-virt";
+		service-vm-initrd = <0>;
+
+		uart {
+			clock-frequency = <24000000>;
+			current-speed = <115200>;
+		};
+
+		mmio-ranges {
+			#address-cells = <2>;
+			#size-cells = <2>;
+
+			low-mmio@0 {
+				reg = <0x0 0x00000000 0x0 0x10000000>;
+			};
+
+			pcie-mmio@10000000 {
+				reg = <0x0 0x10000000 0x0 0x30000000>;
+			};
+		};
+	};
+
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0x0 0x40000000 0x0 0x40000000>;
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a72";
+			reg = <0>;
+			enable-method = "psci";
+		};
+
+		cpu@1 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a72";
+			reg = <1>;
+			enable-method = "psci";
+		};
+
+		cpu@2 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a72";
+			reg = <2>;
+			enable-method = "psci";
+		};
+
+		cpu@3 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a72";
+			reg = <3>;
+			enable-method = "psci";
+		};
+
+		cpu@4 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a72";
+			reg = <4>;
+			enable-method = "psci";
+		};
+
+		cpu@5 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a72";
+			reg = <5>;
+			enable-method = "psci";
+		};
+
+		cpu@6 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a72";
+			reg = <6>;
+			enable-method = "psci";
+		};
+
+		cpu@7 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a72";
+			reg = <7>;
+			enable-method = "psci";
+		};
+	};
+
+	pmu {
+		compatible = "arm,armv8-pmuv3";
+		interrupts = <0x1 0x7 0x4>;
+	};
+
+	psci {
+		compatible = "arm,psci-0.2";
+		method = "smc";
+	};
+
+	timer {
+		compatible = "arm,armv8-timer";
+		interrupts = <0x1 0xd 0x4>,
+			     <0x1 0xe 0x4>,
+			     <0x1 0xb 0x4>,
+			     <0x1 0xa 0x4>;
+	};
+
+	soc {
+		compatible = "simple-bus";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		gic: interrupt-controller@8000000 {
+			compatible = "arm,gic-v3", "arm,gic";
+			reg = <0x0 0x08000000 0x0 0x00010000>,
+			      <0x0 0x080a0000 0x0 0x00100000>;
+			interrupts = <0x1 0x9 0x4>;
+			interrupt-controller;
+			#interrupt-cells = <3>;
+			#address-cells = <2>;
+			#size-cells = <2>;
+			ranges;
+
+			its: msi-controller@8080000 {
+				compatible = "arm,gic-v3-its";
+				reg = <0x0 0x08080000 0x0 0x00020000>;
+				msi-controller;
+			};
+		};
+
+		uart0: serial@9000000 {
+			compatible = "arm,pl011", "arm,primecell";
+			reg = <0x0 0x09000000 0x0 0x00001000>;
+			interrupts = <0x0 0x1 0x4>;
+			clock-frequency = <24000000>;
+		};
+
+		virtio_mmio@a000000 {
+			compatible = "virtio,mmio";
+			reg = <0x0 0x0a000000 0x0 0x00000200>;
+			interrupts = <0x0 0x10 0x1>;
+			dma-coherent;
+		};
+
+		virtio_mmio@a000200 {
+			compatible = "virtio,mmio";
+			reg = <0x0 0x0a000200 0x0 0x00000200>;
+			interrupts = <0x0 0x11 0x1>;
+			dma-coherent;
+		};
+	};
+
+	vm {
+		compatible = "beau,vm-config";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		// Generic VM configuration
+		generic {
+			#address-cells = <2>;
+			#size-cells = <2>;
+			service-vm-id = <0>;
+
+			timer {
+				compatible = "arm,armv8-timer";
+				// Hypervisor Timer
+				htimer-ppi = <26>;
+				// Virtual Timer
+				vtimer-ppi = <27>;
+				// Physical Timer
+				ptimer-ppi = <30>;
+			};
+
+			gic-mmio@8000000 {
+				compatible = "arm,vgic-v3";
+				reg = <0x0 0x08000000 0x0 0x00010000>,
+					  <0x0 0x080a0000 0x0 0x00100000>;
+				interrupts = <0x1 0x9 0x4>;
+				interrupt-controller;
+				#interrupt-cells = <3>;
+				#address-cells = <2>;
+				#size-cells = <2>;
+				ranges;
+
+				vm_its: msi-controller@8080000 {
+					compatible = "arm,gic-v3-its";
+					reg = <0x0 0x08080000 0x0 0x00020000>;
+					msi-controller;
+				};
+			};
+
+			uart-mmio@9000000 {
+				compatible = "arm,vpl011";
+				reg = <0x0 0x09000000 0x0 0x00001000>;
+				interrupts = <0x0 0x1 0x4>;
+				clock-frequency = <24000000>;
+			};
+
+			virtio-console-mmio@a000000 {
+				compatible = "beau,virtio-console", "virtio,mmio";
+				reg = <0x0 0x0a000000 0x0 0x00000200>;
+				interrupts = <0x0 0x10 0x4>;
+			};
+		};
+
+			/*
+			 * QEMU cpu-affinity is ordered: entry N is vcpuN's pCPU.
+			 * Keep vcpu0 pCPUs unique across VMs. Secondary vCPUs may share;
+			 * pCPU0 is used only by a secondary vCPU to avoid three-way RTDS
+			 * contention on the secondary pool.
+			 */
+		vm@0 {
+			compatible = "beau,vm";
+			reg = <0>;
+			#address-cells = <2>;
+			#size-cells = <2>;
+			beau,name = "Zephyr";
+			load-order = "service";
+			beau,static-mem = <0x0 0x42000000 0x0 0x06000000>;
+			direct-map;
+			cpu-affinity = <1 2 3 5>;
+			guest-flags = "static", "no-fw";
+
+			sched {
+				bvt-weight = <128>;
+			};
+
+			os {
+				os-name = "Zephyr";
+				family = "rtos";
+			};
+
+			vboot@42000000 {
+				compatible = "beau,kernel", "beau,vboot";
+				tag = "Zephyr";
+				source = "symbol";
+				addr-symbol = "arm64_zephyr_image_start";
+				size-source = "symbol";
+				size-symbol = "arm64_zephyr_image_size";
+				reg = <0x0 0x42000000 0x0 0x0>;
+				load-addr = <0x0 0x42000000>;
+				entry-addr = <0x0 0x42000000>;
+			};
+		};
+
+		vm@1 {
+			compatible = "beau,vm";
+			reg = <1>;
+			#address-cells = <2>;
+			#size-cells = <2>;
+#if CONFIG_ENABLE_VM1_LK
+			beau,name = "LK";
+#else
+			beau,name = "Linux-1";
+#endif
+			load-order = "pre-std";
+#if CONFIG_ENABLE_VM1_LK
+			beau,static-mem = <0x0 0x40000000 0x0 0x02000000>;
+#else
+			beau,static-mem = <0x0 0x58000000 0x0 0x08000000>;
+#endif
+			direct-map;
+#if CONFIG_ENABLE_VM1_LK
+			cpu-affinity = <3 5 6 7>;
+			guest-flags = "static", "no-fw";
+#else
+			cpu-affinity = <4 2 5 6>;
+			guest-flags = "static";
+#endif
+
+			sched {
+#if CONFIG_ENABLE_VM1_LK
+				bvt-weight = <16>;
+#else
+				bvt-weight = <64>;
+#endif
+			};
+
+			os {
+#if CONFIG_ENABLE_VM1_LK
+				os-name = "LK";
+				family = "rtos";
+#else
+				os-name = "Linux-1";
+				family = "linux";
+#endif
+			};
+
+#if CONFIG_ENABLE_VM1_LK
+			vboot@40100000 {
+				compatible = "beau,kernel", "beau,vboot";
+				tag = "LK";
+				source = "symbol";
+				addr-symbol = "arm64_lk_image_start";
+				size-source = "symbol";
+				size-symbol = "arm64_lk_image_size";
+				reg = <0x0 0x40100000 0x0 0x0>;
+				load-addr = <0x0 0x40100000>;
+				entry-addr = <0x0 0x40100000>;
+			};
+#else
+			vboot@70000000 {
+				compatible = "beau,kernel", "beau,vboot";
+				tag = "Linux";
+				reg = <0x0 0x70000000 0x0 0x0>;
+				size-source = "symbol";
+				size-symbol = "BEAU_LINUX_IMAGE_SIZE";
+				load-addr = <0x0 0x58080000>;
+				entry-addr = <0x0 0x58080000>;
+				bootargs = "console=hvc0 rdinit=/init loglevel=7";
+			};
+
+			vboot@74000000 {
+				compatible = "beau,ramdisk", "beau,vboot";
+				tag = "Initramfs";
+				reg = <0x0 0x74000000 0x0 0x0>;
+				size-source = "symbol";
+				size-symbol = "BEAU_LINUX_INITRAMFS_SIZE";
+				load-addr = <0x0 0x5c000000>;
+			};
+
+			vboot@5ff00000 {
+				compatible = "beau,device-tree", "beau,vboot";
+				tag = "dtb-vm1";
+				source = "symbol";
+				addr-symbol = "arm64_beau_linux_vm1_dtb_start";
+				size-source = "symbol";
+				size-symbol = "arm64_beau_linux_vm1_dtb_size";
+				reg = <0x0 0x5ff00000 0x0 0x0>;
+			};
+#endif
+		};
+
+		vm@2 {
+			compatible = "beau,vm";
+			reg = <2>;
+			#address-cells = <2>;
+			#size-cells = <2>;
+			beau,name = "Linux-2";
+			load-order = "pre-std";
+			beau,static-mem = <0x0 0x48000000 0x0 0x08000000>;
+			direct-map;
+			cpu-affinity = <7 0 3 6>;
+			guest-flags = "static";
+
+			sched {
+				bvt-weight = <128>;
+				bvt-warp-value = <8>;
+				bvt-warp-limit = <2>;
+				bvt-unwarp-period = <4>;
+			};
+
+			os {
+				os-name = "Linux-2";
+				family = "linux";
+			};
+
+			vboot@70000000 {
+				compatible = "beau,kernel", "beau,vboot";
+				tag = "Linux";
+				reg = <0x0 0x70000000 0x0 0x0>;
+				size-source = "symbol";
+				size-symbol = "BEAU_LINUX_IMAGE_SIZE";
+				load-addr = <0x0 0x48080000>;
+				entry-addr = <0x0 0x48080000>;
+				bootargs = "console=hvc0 rdinit=/init loglevel=4";
+			};
+
+			vboot@74000000 {
+				compatible = "beau,ramdisk", "beau,vboot";
+				tag = "Initramfs";
+				reg = <0x0 0x74000000 0x0 0x0>;
+				size-source = "symbol";
+				size-symbol = "BEAU_LINUX_INITRAMFS_SIZE";
+				load-addr = <0x0 0x4c000000>;
+			};
+
+			vboot@4f000000 {
+				compatible = "beau,device-tree", "beau,vboot";
+				tag = "dtb-vm2";
+				source = "symbol";
+				addr-symbol = "arm64_beau_linux_vm2_dtb_start";
+				size-source = "symbol";
+				size-symbol = "arm64_beau_linux_vm2_dtb_size";
+				reg = <0x0 0x4f000000 0x0 0x0>;
+			};
+		};
+	};
+};

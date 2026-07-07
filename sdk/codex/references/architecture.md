@@ -11,8 +11,9 @@
   config, embedded RTOS images, and platform helpers.
 - `arch/arm64/guest`: stage-2 VM setup, vCPU entry/exit, vGICv3, vPL011, hypercall handling.
 - `core`: common VM, vCPU, scheduler, timer, hypercall, and MMIO request logic.
-- `sdk/boot`: boot module discovery and kernel loaders.
-- `sdk/debug`: BEAU shell, console, debug commands, vsh, dumpstat, irqstat.
+- `sdk/bsp/boot`: boot module discovery and kernel loaders.
+- `sdk/bsp`: BEAU shell, console, debug commands, vsh, dumpstat, irqstat,
+  and BSP-owned device emulation.
 - `sdk/sdk.md`: current implementation status and verified behavior.
 
 ## Build And Run
@@ -40,7 +41,7 @@ rk356x hardware validation is manual for now: flash the generated image using
 the board workflow and inspect serial logs for EL2 boot, MMU setup, GIC init,
 the BEAU shell prompt, and VM launch logs.
 
-When editing `sdk/debug/*`, stale archive dependencies may hide source changes.
+When editing `sdk/bsp/*`, stale archive dependencies may hide source changes.
 Force a debug rebuild before validation:
 
 ```bash

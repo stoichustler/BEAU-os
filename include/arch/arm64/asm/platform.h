@@ -31,9 +31,11 @@ struct beau_config {
 	uint32_t gic_iidr;
 };
 
-extern const struct beau_config beau_config;
+extern struct beau_config beau_config;
 
 const struct arm64_mem_region *arm64_get_platform_mmio_regions(uint32_t *count);
+void arm64_platform_init(uint64_t fdt_paddr);
+void arm64_platform_init_post_console(void);
 #endif
 
 #endif /* ARM64_PLATFORM_H */

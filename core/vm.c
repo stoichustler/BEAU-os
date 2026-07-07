@@ -202,11 +202,8 @@ bool is_paused_vm(const struct acrn_vm *vm)
  */
 static inline uint16_t get_configured_bsp_pcpu_id(const struct acrn_vm_config *vm_config)
 {
-	/*
-	 * The set least significant bit represents the pCPU ID for BSP
-	 * vm_config->cpu_affinity has been sanitized to contain valid pCPU IDs
-	 */
-	return ffs64(vm_config->cpu_affinity);
+	return (vm_config->cpu_affinity_num != 0U) ?
+		vm_config->cpu_affinity_order[0U] : ffs64(vm_config->cpu_affinity);
 }
 
 static inline uint16_t get_vm_launch_pcpu_id(const struct acrn_vm_config *vm_config)
@@ -219,17 +216,35 @@ static inline uint16_t get_vm_launch_pcpu_id(const struct acrn_vm_config *vm_con
 #endif
 }
 
-static int32_t create_vm_vcpus(struct acrn_vm *vm, uint64_t pcpu_bitmap)
+static int32_t create_vm_vcpus(struct acrn_vm *vm, uint64_t pcpu_bitmap,
+	const struct acrn_vm_config *vm_config)
 {
 	uint64_t tmp64 = pcpu_bitmap;
 	uint16_t pcpu_id;
+	uint16_t idx;
 	int32_t status = 0;
 
 	/*
-	 * vCPU IDs follow ascending pCPU bits in cpu_affinity. Platform-specific
-	 * topology policy belongs in vm_configs[].cpu_affinity; common VM creation
-	 * must not reorder vCPUs for a QEMU board layout or a particular shared core.
+	 * DTS-authored cpu-affinity is an ordered vCPU map:
+	 *
+	 *   cpu-affinity = <1 6>;
+	 *          |
+	 *          +--> vcpu0 -> pcpu1
+	 *               vcpu1 -> pcpu6
+	 *
+	 * The bitmap remains for set membership, scheduler sharing tests, and
+	 * hypercall validation, but VM creation must preserve the authored order.
 	 */
+	if (vm_config->cpu_affinity_num != 0U) {
+		for (idx = 0U; (status == 0) && (idx < vm_config->cpu_affinity_num); idx++) {
+			pcpu_id = vm_config->cpu_affinity_order[idx];
+			if ((pcpu_bitmap & AFFINITY_CPU(pcpu_id)) != 0UL) {
+				status = create_vcpu(vm, pcpu_id);
+			}
+		}
+		return status;
+	}
+
 	while ((status == 0) && (tmp64 != 0UL)) {
 		pcpu_id = ffs64(tmp64);
 		bitmap_clear_non_atomic(pcpu_id, &tmp64);
@@ -237,6 +252,28 @@ static int32_t create_vm_vcpus(struct acrn_vm *vm, uint64_t pcpu_bitmap)
 	}
 
 	return status;
+}
+
+static void start_prepared_vm(struct acrn_vm *vm, const struct acrn_vm_config *vm_config)
+{
+	start_vm(vm);
+	pr_acrnlog("kick vmid: %x os: %s", vm->vm_id, vm_config->name);
+}
+
+static void start_prepared_vms(struct acrn_vm *const start_vms[],
+	const struct acrn_vm_config *const start_vm_configs[], uint16_t start_count,
+	uint16_t pcpu_id, bool start_launcher_pcpu)
+{
+	uint16_t idx;
+
+	for (idx = 0U; idx < start_count; idx++) {
+		const struct acrn_vm_config *vm_config = start_vm_configs[idx];
+		bool launcher_pcpu_vm = get_configured_bsp_pcpu_id(vm_config) == pcpu_id;
+
+		if (launcher_pcpu_vm == start_launcher_pcpu) {
+			start_prepared_vm(start_vms[idx], vm_config);
+		}
+	}
 }
 
 /**
@@ -327,8 +364,11 @@ void launch_vms(uint16_t pcpu_id)
 {
 #if CONFIG_AUTOSTART_VM
 	uint16_t vm_id;
+	uint16_t start_count = 0U;
 	struct acrn_vm *vm;
 	struct acrn_vm_config *vm_config;
+	struct acrn_vm *start_vms[CONFIG_MAX_VM_NUM];
+	const struct acrn_vm_config *start_vm_configs[CONFIG_MAX_VM_NUM];
 
 	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
 		vm_config = get_vm_config(vm_id);
@@ -368,8 +408,9 @@ void launch_vms(uint16_t pcpu_id)
 					} else {
 						if ((init_vm_boot_info(vm) == 0) &&
 							(prepare_os_image(vm) == 0)) {
-							start_vm(vm);
-							pr_acrnlog("kick vmid: %x os: %s", vm_id, vm_config->name);
+							start_vms[start_count] = vm;
+							start_vm_configs[start_count] = vm_config;
+							start_count++;
 						} else {
 							pr_err("stopping vm%d: no bootable kernel", vm_id);
 							(void)destroy_vm(vm);
@@ -379,6 +420,15 @@ void launch_vms(uint16_t pcpu_id)
 			}
 		}
 	}
+
+	/*
+	 * Keep the launcher pCPU available until all configured VM images have
+	 * been prepared and remote guest BSPs have been kicked. Otherwise a VM
+	 * whose BSP vCPU is pinned to the launcher pCPU can start running before
+	 * later VMs in the same static table are even created.
+	 */
+	start_prepared_vms(start_vms, start_vm_configs, start_count, pcpu_id, false);
+	start_prepared_vms(start_vms, start_vm_configs, start_count, pcpu_id, true);
 #else
 	(void)pcpu_id;
 #endif
@@ -496,7 +546,7 @@ int32_t create_vm(uint16_t vm_id, uint64_t pcpu_bitmap, struct acrn_vm_config *v
 		 *   2) pcpu_bitmap passed sanitization is OK for vcpu creating.
 		 */
 		vm->hw.cpu_affinity = pcpu_bitmap;
-		status = create_vm_vcpus(vm, pcpu_bitmap);
+		status = create_vm_vcpus(vm, pcpu_bitmap, vm_config);
 	}
 
 	if (status == 0) {

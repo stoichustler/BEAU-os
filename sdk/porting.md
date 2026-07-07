@@ -50,19 +50,17 @@ arch/arm64/platform/<platform>/
 The current pattern is:
 
 ```text
-platform_<platform>.c
-platform_<platform>.h
-platform_image.S
-vm_config.c
-vm_config.h
+platform.dts
+platform.S
 ```
 
-`arch/arm64/Makefile` selects platform sources by `PLATFORM`.
+`arch/arm64/Makefile` selects `arch/arm64/platform/<platform>/platform.S` by
+`PLATFORM`. Common ARM64 BSP code parses the embedded `platform.dtb`.
 
 ## Platform Data
 
-The platform layer supplies hardware and VM layout data through the ARM64
-platform API. Add or update:
+The platform DTS supplies hardware and VM layout data through common ARM64 BSP
+parsing. Add or update:
 
 - Host RAM and MMIO ranges.
 - GIC distributor base.
@@ -72,8 +70,8 @@ platform API. Add or update:
 - Guest PL011 IPA window and IRQ.
 - Static vFDT device descriptions.
 
-Keep board constants in the platform directory. Do not hard-code a board's
-MMIO or guest layout in common ARM64 files.
+Keep board policy in `platform.dts`. Use static C header values only for
+compile-time limits that cannot come from DTS, such as `MAX_PCPU_NUM`.
 
 ## Guest Images
 
@@ -98,7 +96,7 @@ The Linux-on-BEAU DTB remains a small embedded module:
 sdk/image/linux/beau-linux.dtb
 ```
 
-`platform_image.S` should use `.incbin` only for LK, Zephyr, and small DTB
+`platform.S` should use `.incbin` only for LK, Zephyr, `platform.dtb`, and small DTB
 modules. Do not add Linux `Image` or `Initramfs.cpio.gz` as `.incbin` inputs; use
 loader/module delivery for those files.
 
@@ -107,14 +105,13 @@ loader/module delivery for those files.
 Define static VM layout in:
 
 ```text
-arch/arm64/platform/<platform>/vm_config.c
-arch/arm64/platform/<platform>/vm_config.h
+arch/arm64/platform/<platform>/platform.dts
 ```
 
 For each VM, verify:
 
 - `cpu_affinity` matches the intended pCPU placement.
-- `kernel_mod_tag` matches the image tag in `platform_image.S`.
+- `kernel_mod_tag` matches the image tag in `platform.S`.
 - `kernel_load_addr` and `kernel_entry_addr` fit the VM RAM window.
 - `guest_ram_start`, `guest_ram_size`, and `guest_ram_hpa` match stage-2
   identity mapping expectations.

@@ -94,6 +94,16 @@ The default build output directories are platform-scoped:
 `out/qemu_out` for `PLATFORM=qemu` and `out/rk356x_out` for
 `PLATFORM=rk356x`.
 
+ARM64 static platform policy is authored in each platform's `platform.dts`.
+The build embeds `out/<platform>_out/platform.dtb` through
+`arch/arm64/platform/<platform>/platform.S`; common BSP code under
+`sdk/bsp/arm64` parses that DTB at boot into `beau_config`, `vm_configs[]`,
+`bare_boot_options[]`, and the service-VM vFDT inputs. Keep host hardware,
+VM memory windows, image module tags, bootargs, CPU affinity, scheduler
+weights, and guest virtual device defaults in `platform.dts` whenever possible.
+Only use generated/static C header values for compile-time limits that cannot
+come from DTS.
+
 Hardware validation for rk356x is manual for now: flash the generated BEAU
 image with the board workflow and inspect serial logs for EL2 boot, MMU setup,
 GIC init, the BEAU shell prompt, and VM launch logs.
@@ -164,8 +174,11 @@ boot logs settle to show the `console:\>` prompt.
 - Bare-boot image embedding for LK and Zephyr raw images from `sdk/image`.
 - Linux VM2 loader tags for externally staged `Image` and `Initramfs.cpio.gz`, plus the
   embedded `beau-linux.dtb` module.
-- Static QEMU VM configuration for Zephyr as the service VM and LK/Linux as
-  pre-launched VMs.
+- Static ARM64 VM configuration is DTS-authored for QEMU and rk356x in each
+  `arch/arm64/platform/<platform>/platform.dts`. The DTS uses standard hardware
+  nodes for host CPUs, PSCI, timer, GIC, UART, and `soc`, plus a `/beau,platform`
+  node for BEAU-specific host/vFDT policy and a `/vm` node for generic guest
+  devices and per-VM image/memory policy.
 - QEMU guest RAM, GIC, and PL011 layout is centralized in each VM's
   `vm_configs[].arch` entry, following the ACRN-style `vm_configurations.c`
   source-of-truth pattern. ARM64 code reads per-VM guest layout directly from
@@ -296,6 +309,46 @@ Current BVT status:
   QEMU static layout keeps VM2's pCPU1 and pCPU4 private while preserving four
   VM0 vCPUs; shared-core latency should now be checked on pCPU6 and pCPU7.
 
+### ARM64 Static DTS Configuration Progress, 2026-07-07
+
+Current status:
+
+- QEMU and rk356x no longer hand-maintain `struct acrn_vm_config` tables in
+  platform-specific `vm_config.c`. The source of truth is now each platform's
+  `platform.dts`, parsed by common code in `sdk/bsp/arm64`.
+- The DTS shape follows a standard ARM64 hardware tree at the root:
+  `compatible`, `model`, `chosen`, `memory`, `cpus`, `psci`, `timer`, `soc`,
+  `gic`, and `uart`. BEAU host/vFDT policy is grouped under `/beau,platform`.
+  Guest policy is intentionally grouped under `/vm` with `generic` and `vm@N`
+  children.
+- The old `sos` node is not used. Hypervisor-running hardware is described by
+  root hardware nodes and `soc`; guest defaults and images stay under `/vm`.
+- Per-VM DTS entries describe the current static memory window
+  (`beau,static-mem`), CPU affinity, guest flags, scheduler parameters, OS
+  family, bootargs, kernel/ramdisk/device-tree modules, and per-VM device
+  overrides such as QEMU VM2 vITS.
+- The Makefile validates/compiles each `platform.dts` with `dtc`, then embeds
+  `platform.dtb` through `platform.S`. Runtime BSP parsing emits the existing
+  BEAU C ABI: `beau_config`, `vm_configs[]`, `service_vm_config`,
+  `bare_boot_options[]`, and `n_bare_boot_options`.
+- The Makefile wires `platform.dtb` and the generated static config header into
+  the normal dependencies, so BSP boot code and symbol-table objects rebuild
+  when the DTS changes.
+- `sdk/image/linux/beau-linux.dts` was not changed. It remains the guest Linux
+  DTB source and still requires explicit approval before edits.
+
+Validation run on 2026-07-07:
+
+- `dtc -I dts -O dtb` passed for both platform DTS files.
+- `dtc` generated QEMU and rk356x `platform.dtb` files successfully.
+- `git diff --check` passed.
+- `make ARCH=arm64 PLATFORM=qemu CROSS_COMPILE=aarch64-none-elf- -j$(nproc)`
+  passed with `BEAU_TOOLCHAINS=/home/beau/beau-cc/bin`.
+- `make ARCH=arm64 PLATFORM=rk356x CROSS_COMPILE=aarch64-none-elf- -j$(nproc)`
+  passed with `BEAU_TOOLCHAINS=/home/beau/beau-cc/bin`.
+- No QEMU runtime boot, regression run, or rk356x hardware validation was run
+  for this DTS migration step.
+
 Bounded BVT warp design:
 
 - BVT keeps long-term fairness in `avt` and sorts runnable threads by `evt`.
@@ -322,17 +375,16 @@ How to change BVT weight:
 - BVT weight is per scheduler thread and is clamped to `1-128` by
   `sched_bvt_init_data()`. A zeroed `struct sched_params` therefore becomes
   weight `1`.
-- To change all vCPU threads of one VM, update that VM's
-  `.sched_params.bvt_weight` in the platform VM config:
-  `arch/arm64/platform/qemu/vm_config.c` or
-  `arch/arm64/platform/rk356x/vm_config.c`. `core/vcpu.c:init_vcpu_thread()`
-  passes `get_vm_config(vm->vm_id)->sched_params` to every vCPU thread of that
-  VM.
+- To change all vCPU threads of one VM, update that VM's scheduler
+  `bvt-weight` in `arch/arm64/platform/<platform>/platform.dts`.
+  `sdk/bsp/arm64/platform_dts.c` parses it into
+  `vm_configs[].sched_params.bvt_weight`, and `core/vcpu.c:init_vcpu_thread()`
+  passes that value to every vCPU thread of that VM.
 
-```c
-.sched_params = {
-	.bvt_weight = 64U,
-},
+```dts
+sched {
+	bvt-weight = <64>;
+};
 ```
 
 - To change one non-VM scheduler thread, set the field in that thread's local
@@ -1018,7 +1070,7 @@ Status as of 2026-06-18:
   embedded DTB explicitly with:
   `dtc -I dts -O dtb -o sdk/image/linux/beau-linux.dtb sdk/image/linux/beau-linux.dts`.
   The BEAU image must then be rebuilt because `beau-linux.dtb` is included by
-  `arch/arm64/platform/qemu/platform_image.S`.
+  `arch/arm64/platform/qemu/platform.S`.
 - Timer DT interrupt IDs remain unchanged. The virtual timer still uses
   PPI/INTID 27 from `<1 13 4>`; current evidence does not require changing
   PPI27.
@@ -1548,8 +1600,9 @@ virtualization port.
 - `GITS_TRANSLATER` direct MMIO injection currently uses device ID 0 as a local
   test path. Real passthrough/MSI code should call `arm64_vgicv3_inject_msi()`
   after requester identity and event mapping are plumbed.
-- QEMU VM layout is still statically configured in `vm_config.c`;
-  QEMU FDT parsing is not yet used to derive VM layout.
+- QEMU and rk356x VM layout are now DTS-authored, but the DTS is still a
+  build-time static configuration source. Runtime host FDT parsing is not yet
+  used to derive VM layout.
 - Zephyr and LK are RTOS raw images and boot with `GUEST_FLAG_NO_FW`. VM2 Linux
   uses a loader/module path for `Image` and `Initramfs.cpio.gz`, while its Linux-on-BEAU
   DTB remains embedded.
@@ -1658,7 +1711,8 @@ ACRN-DM Android launch model.
    needed by `sdk/udev`.
 7. Add the ARM64 raw-image Android loader interface to `sdk/udev`, including an
    explicit DTB argument and vCPU0 register setup for the ARM64 boot ABI.
-8. Move QEMU platform memory and device discovery toward host-FDT-derived data
-   where it helps reduce static board assumptions.
+8. Extend the static DTS model toward host-FDT-derived memory and device data
+   where it helps reduce board assumptions without weakening the current static
+   VM placement invariants.
 9. Bring up rk356x hardware manually, then capture the validated RAM, UART,
    GIC, and boot-image placement assumptions back into the platform files.

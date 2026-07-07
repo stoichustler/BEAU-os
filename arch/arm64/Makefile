@@ -65,12 +65,6 @@ HOST_C_SRCS += arch/arm64/notify.c
 HOST_C_SRCS += arch/arm64/trap.c
 HOST_C_SRCS += arch/arm64/security.c
 HOST_C_SRCS += arch/arm64/pm.c
-ifeq ($(PLATFORM),qemu)
-HOST_C_SRCS += arch/arm64/platform/qemu/platform_qemu.c
-endif
-ifeq ($(PLATFORM),rk356x)
-HOST_C_SRCS += arch/arm64/platform/rk356x/platform_rk356x.c
-endif
 
 VP_S_SRCS +=
 VP_S_SRCS += arch/arm64/guest/guest_entry.S
@@ -84,12 +78,8 @@ VP_C_SRCS += arch/arm64/guest/vgicv3.c
 VP_C_SRCS += arch/arm64/guest/vgicv3_its.c
 VP_C_SRCS += arch/arm64/guest/vtimer.c
 VP_C_SRCS += arch/arm64/guest/vpl011.c
-ifeq ($(PLATFORM),qemu)
-VM_CFG_C_SRCS += arch/arm64/platform/qemu/vm_config.c
-VM_CFG_S_SRCS += arch/arm64/platform/qemu/platform_image.S
-else ifeq ($(PLATFORM),rk356x)
-VM_CFG_C_SRCS += arch/arm64/platform/rk356x/vm_config.c
-VM_CFG_S_SRCS += arch/arm64/platform/rk356x/platform_image.S
+ifeq ($(STATIC_ARM64_PLATFORM),y)
+VM_CFG_S_SRCS += arch/arm64/platform/$(PLATFORM)/platform.S
 else
 VM_CFG_C_SRCS += $(SCENARIO_CFG_DIR)/vm_configurations.c
 VM_CFG_C_SRCS += $(BOARD_CFG_DIR)/pci_dev.c

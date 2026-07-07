@@ -123,6 +123,8 @@
 #define LINUX_NMI_MASK			0x00f00000U
 #define LINUX_IRQ_CONTEXT_MASK \
 	(LINUX_SOFTIRQ_MASK | LINUX_HARDIRQ_MASK | LINUX_NMI_MASK)
+#define ARM64_IRQ_PROGRESS_MAX_BLOCKS	8U
+#define ARM64_IRQ_PROGRESS_MAX_US	2000U
 
 struct arm64_guest_stack_frame {
 	uint64_t fp;
@@ -340,6 +342,47 @@ static bool vcpu_forward_progress_blocks_reschedule(struct acrn_vcpu *vcpu)
 		vcpu_guest_irq_context_blocks_reschedule(vcpu);
 }
 
+static void vcpu_reset_irq_forward_progress(struct acrn_vcpu *vcpu)
+{
+	vcpu->arch.irq_forward_progress_start_ticks = 0UL;
+	vcpu->arch.irq_forward_progress_blocks = 0U;
+}
+
+static bool vcpu_irq_forward_progress_budget_available(struct acrn_vcpu *vcpu)
+{
+	uint64_t now = cpu_ticks();
+	uint64_t start = vcpu->arch.irq_forward_progress_start_ticks;
+
+	if (start == 0UL) {
+		vcpu->arch.irq_forward_progress_start_ticks = now;
+		vcpu->arch.irq_forward_progress_blocks = 1U;
+		return true;
+	}
+
+	if ((now - start) >= us_to_ticks(ARM64_IRQ_PROGRESS_MAX_US)) {
+		return false;
+	}
+
+	if (vcpu->arch.irq_forward_progress_blocks >= ARM64_IRQ_PROGRESS_MAX_BLOCKS) {
+		return false;
+	}
+
+	vcpu->arch.irq_forward_progress_blocks++;
+	return true;
+}
+
+static bool vcpu_should_defer_reschedule_for_irq_progress(struct acrn_vcpu *vcpu)
+{
+	bool blocks = vcpu_forward_progress_blocks_reschedule(vcpu);
+
+	if (!blocks) {
+		vcpu_reset_irq_forward_progress(vcpu);
+		return false;
+	}
+
+	return vcpu_irq_forward_progress_budget_available(vcpu);
+}
+
 static void prepare_current_guest_resume(struct acrn_vcpu *vcpu)
 {
 	bool expired;
@@ -367,10 +410,18 @@ static struct acrn_vcpu *schedule_without_guest_resume(uint16_t pcpu_id,
 		/*
 		 * On a shared pCPU, a deliverable virtual IRQ gets a bounded
 		 * guest-forward-progress window before scheduler fairness resumes.
+		 * A guest timer can stay pending for a long time; do not let that
+		 * indefinitely starve another runnable vCPU on the same pCPU.
 		 */
-		if (!vcpu_forward_progress_blocks_reschedule(vcpu)) {
+		if (!vcpu_should_defer_reschedule_for_irq_progress(vcpu)) {
+			struct acrn_vcpu *prev = vcpu;
+
 			schedule();
+			vcpu_reset_irq_forward_progress(prev);
 			vcpu = get_exit_vcpu(pcpu_id);
+			if (vcpu != prev) {
+				vcpu_reset_irq_forward_progress(vcpu);
+			}
 			refresh_current_vtimer(vcpu);
 		}
 	}

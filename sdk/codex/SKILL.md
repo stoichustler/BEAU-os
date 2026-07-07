@@ -29,7 +29,7 @@ description: Develop, debug, validate, and document the BEAU hypervisor in this 
      delivery. The Linux-on-BEAU DTB may remain an embedded module.
 
 3. Make focused changes:
-   - Follow existing module boundaries: `arch/arm64` for architecture logic, `core` for common scheduler/vCPU/VM logic, `sdk/debug` for shell and console tools, `sdk/boot` for boot loaders.
+   - Follow existing module boundaries: `arch/arm64` for architecture logic, `core` for common scheduler/vCPU/VM logic, and `sdk/bsp` for shell, console, boot loaders, and BSP-owned device emulation.
    - Newly added code must include succinct English comments that explain the
      underlying principle and the purpose of the code, especially around boot,
      interrupt, timer, scheduler, vCPU, and console behavior.
@@ -82,7 +82,7 @@ description: Develop, debug, validate, and document the BEAU hypervisor in this 
 
 ### VM Boot Or Bring-Up Bugs
 
-- Inspect `arch/arm64/platform/<platform>/vm_config.c`, `arch/arm64/guest/vm.c`, `sdk/boot/guest/vboot_info.c`, and `sdk/boot/guest/rawimage_loader.c`.
+- Inspect `arch/arm64/platform/<platform>/platform.dts`, `arch/arm64/guest/vm.c`, `sdk/bsp/boot/guest/vboot_info.c`, and `sdk/bsp/boot/guest/rawimage_loader.c`.
 - Verify VM RAM windows, load/entry addresses, `GUEST_FLAG_NO_FW`, static vFDT placement, and stage-2 identity logs.
 - In QEMU, check `vcpus`, `schedstat`, `vsh 0`, `vsh 1`, and VM2 Linux
   reaching the initramfs `uos` root shell through `vsh 2`.
@@ -108,7 +108,7 @@ description: Develop, debug, validate, and document the BEAU hypervisor in this 
 
 ### Console Or Shell Work
 
-- Inspect `sdk/debug/shell.c`, `sdk/debug/shell_priv.h`, `sdk/debug/console.c`, and `arch/arm64/guest/vpl011.c`.
+- Inspect `sdk/bsp/shell.c`, `sdk/bsp/shell_priv.h`, `sdk/bsp/console.c`, and `arch/arm64/guest/vpl011.c`.
 - For `vsh`, make ownership markers appear before replaying buffered VM output.
 - Remember selected and non-selected VM console output use per-VM async rings.
 - Keep shell observability fields actionable for live diagnosis. Do not add
@@ -121,7 +121,7 @@ description: Develop, debug, validate, and document the BEAU hypervisor in this 
 
 - Inspect `arch/arm64/guest/hypercall.c`, `arch/arm64/guest/vcpu_exit.c`, and common hypercall headers.
 - Keep ARM64 hypercall dispatch explicit and small.
-- Return `-ENOTTY` for x86-only or unimplemented calls until their ARM64 dependencies exist.
+- Return `-ENOTTY` for unimplemented calls until their ARM64 dependencies exist.
 
 ## References
 

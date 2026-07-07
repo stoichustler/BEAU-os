@@ -29,8 +29,8 @@
  *      |
  *      +--> ACRN HC_ID       -> this table -> small ARM64-safe handlers
  *
- * Keep the ACRN dispatcher small and explicit. x86-only device assignment,
- * VMX, VTD, LAPIC, and profiling calls return -ENOTTY on ARM64 until their
+ * Keep the ACRN dispatcher small and explicit. Device assignment, profiling,
+ * and unsupported legacy hypercalls return -ENOTTY until their ARM64
  * dependencies exist here.
  */
 #define ACRN_HCALL_ID_MASK	0xffffffffUL

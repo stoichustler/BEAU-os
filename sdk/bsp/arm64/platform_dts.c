@@ -1,0 +1,885 @@
+/*
+ * Copyright (C) 2026 Hustler Lo.
+ *
+ * SPDX-License-Identifier: BSD-3-Clause
+ */
+
+#include <types.h>
+#include <errno.h>
+#include <bare.h>
+#include <vm_config.h>
+#include <libfdt.h>
+#include <logmsg.h>
+#include <rtl.h>
+#include <asm/irq.h>
+#include <asm/platform.h>
+#include <arm64_platform_dts.h>
+
+#define ARM64_DTS_MMIO_REGION_MAX	8U
+
+static const struct arm64_platform_dts_vm_storage *dts_storage;
+static uint16_t dts_bare_boot_option_count;
+static struct arm64_mem_region dts_mmio_regions[ARM64_DTS_MMIO_REGION_MAX];
+static uint32_t dts_mmio_region_count;
+
+static void arm64_dts_panic(const char *op, int32_t ret)
+{
+	panic("failed to parse arm64 platform dts: %s ret=%d", op, ret);
+}
+
+static void dts_set_storage(const struct arm64_platform_dts_vm_storage *storage)
+{
+	if ((storage == NULL) || (storage->vm_configs == NULL) ||
+		(storage->memory_regions == NULL) || (storage->boot_options == NULL) ||
+		(storage->boot_option_count == NULL) || (storage->vm_config_count == 0U) ||
+		(storage->boot_option_capacity == 0U)) {
+		panic("invalid arm64 platform dts storage");
+	}
+
+	dts_storage = storage;
+}
+
+static uint64_t dts_read_cells(const fdt32_t *cells, int32_t count)
+{
+	uint64_t value = 0UL;
+	int32_t i;
+
+	if ((count <= 0) || (count > 2)) {
+		arm64_dts_panic("bad address cells", -EINVAL);
+	}
+
+	for (i = 0; i < count; i++) {
+		value = (value << 32U) | (uint64_t)fdt32_to_cpu(cells[i]);
+	}
+
+	return value;
+}
+
+static int32_t dts_child_by_name(const void *fdt, int32_t parent, const char *name)
+{
+	int32_t node;
+
+	fdt_for_each_subnode(node, fdt, parent) {
+		const char *node_name = fdt_get_name(fdt, node, NULL);
+
+		if ((node_name != NULL) && (strcmp(node_name, name) == 0)) {
+			return node;
+		}
+	}
+
+	return -FDT_ERR_NOTFOUND;
+}
+
+static int32_t dts_child_by_unit_name(const void *fdt, int32_t parent, const char *name)
+{
+	int32_t node;
+
+	fdt_for_each_subnode(node, fdt, parent) {
+		const char *node_name = fdt_get_name(fdt, node, NULL);
+		const char *unit;
+		size_t len;
+
+		if (node_name == NULL) {
+			continue;
+		}
+		unit = strchr(node_name, '@');
+		len = unit == NULL ? strlen(node_name) : (size_t)(unit - node_name);
+		if ((strlen(name) == len) && (strncmp(node_name, name, len) == 0)) {
+			return node;
+		}
+	}
+
+	return -FDT_ERR_NOTFOUND;
+}
+
+static int32_t dts_child_by_any_name(const void *fdt, int32_t parent,
+	const char *first, const char *second)
+{
+	int32_t node = dts_child_by_unit_name(fdt, parent, first);
+
+	if ((node < 0) && (second != NULL)) {
+		node = dts_child_by_unit_name(fdt, parent, second);
+	}
+
+	return node;
+}
+
+static bool dts_has_compatible(const void *fdt, int32_t node, const char *compat)
+{
+	return fdt_node_check_compatible(fdt, node, compat) == 0;
+}
+
+static bool dts_has_any_compatible(const void *fdt, int32_t node,
+	const char *first, const char *second)
+{
+	return dts_has_compatible(fdt, node, first) ||
+		((second != NULL) && dts_has_compatible(fdt, node, second));
+}
+
+static int32_t dts_child_compatible(const void *fdt, int32_t parent, const char *compat)
+{
+	int32_t node;
+
+	fdt_for_each_subnode(node, fdt, parent) {
+		if (dts_has_compatible(fdt, node, compat)) {
+			return node;
+		}
+	}
+
+	return -FDT_ERR_NOTFOUND;
+}
+
+static uint32_t dts_u32_prop(const void *fdt, int32_t node, const char *name,
+	uint32_t default_value)
+{
+	const fdt32_t *prop;
+	int32_t len;
+
+	prop = fdt_getprop(fdt, node, name, &len);
+	if (prop == NULL) {
+		return default_value;
+	}
+	if (len < (int32_t)sizeof(fdt32_t)) {
+		arm64_dts_panic(name, -EINVAL);
+	}
+
+	return fdt32_to_cpu(prop[0]);
+}
+
+static uint64_t dts_addr_prop(const void *fdt, int32_t node, const char *name,
+	uint64_t default_value)
+{
+	const fdt32_t *prop;
+	int32_t len;
+	int32_t parent;
+	int32_t addr_cells;
+
+	prop = fdt_getprop(fdt, node, name, &len);
+	if (prop == NULL) {
+		return default_value;
+	}
+
+	parent = fdt_parent_offset(fdt, node);
+	if (parent < 0) {
+		arm64_dts_panic(name, parent);
+	}
+	addr_cells = fdt_address_cells(fdt, parent);
+	if (addr_cells < 0) {
+		arm64_dts_panic(name, addr_cells);
+	}
+	if (len < (int32_t)((uint32_t)addr_cells * sizeof(fdt32_t))) {
+		arm64_dts_panic(name, -EINVAL);
+	}
+
+	return dts_read_cells(prop, addr_cells);
+}
+
+static void dts_reg_by_index(const void *fdt, int32_t node, uint32_t index,
+	uint64_t *base, uint64_t *size)
+{
+	const fdt32_t *reg;
+	int32_t len;
+	int32_t parent;
+	int32_t addr_cells;
+	int32_t size_cells;
+	uint32_t entry_cells;
+	uint32_t cell;
+
+	parent = fdt_parent_offset(fdt, node);
+	if (parent < 0) {
+		arm64_dts_panic("reg parent", parent);
+	}
+
+	addr_cells = fdt_address_cells(fdt, parent);
+	size_cells = fdt_size_cells(fdt, parent);
+	if ((addr_cells < 0) || (size_cells < 0)) {
+		arm64_dts_panic("reg cells", addr_cells < 0 ? addr_cells : size_cells);
+	}
+
+	entry_cells = (uint32_t)addr_cells + (uint32_t)size_cells;
+	cell = index * entry_cells;
+
+	reg = fdt_getprop(fdt, node, "reg", &len);
+	if ((reg == NULL) || (len < (int32_t)((cell + entry_cells) * sizeof(fdt32_t)))) {
+		arm64_dts_panic("reg", reg == NULL ? len : -EINVAL);
+	}
+
+	*base = dts_read_cells(&reg[cell], addr_cells);
+	*size = size_cells == 0 ? 0UL : dts_read_cells(&reg[cell + (uint32_t)addr_cells],
+		size_cells);
+}
+
+static void dts_copy_string(char *dst, size_t dst_size, const char *src)
+{
+	if (src != NULL) {
+		(void)strncpy_s(dst, dst_size, src, dst_size - 1U);
+	}
+}
+
+static const char *dts_string_prop(const void *fdt, int32_t node, const char *name,
+	const char *default_value)
+{
+	const char *value = fdt_getprop(fdt, node, name, NULL);
+
+	return value != NULL ? value : default_value;
+}
+
+static bool dts_stringlist_contains(const void *fdt, int32_t node, const char *name,
+	const char *value)
+{
+	const char *prop;
+	int32_t len;
+
+	prop = fdt_getprop(fdt, node, name, &len);
+	return (prop != NULL) && (fdt_stringlist_contains(prop, len, value) != 0);
+}
+
+static int32_t dts_vm_generic_node(const void *fdt, int32_t vm_root)
+{
+	int32_t generic = dts_child_by_any_name(fdt, vm_root, "generic", "guest-defaults");
+
+	if (generic < 0) {
+		arm64_dts_panic("/vm/generic", generic);
+	}
+
+	return generic;
+}
+
+static uint32_t dts_optional_u32_from_node(const void *fdt, int32_t parent,
+	const char *node_name, const char *prop_name, uint32_t default_value)
+{
+	int32_t node = dts_child_by_unit_name(fdt, parent, node_name);
+
+	return node < 0 ? default_value : dts_u32_prop(fdt, node, prop_name, default_value);
+}
+
+static void dts_parse_mmio_ranges(const void *fdt, int32_t platform)
+{
+	int32_t ranges;
+	int32_t node;
+
+	dts_mmio_region_count = 0U;
+	ranges = dts_child_by_unit_name(fdt, platform, "mmio-ranges");
+	if (ranges < 0) {
+		return;
+	}
+
+	fdt_for_each_subnode(node, fdt, ranges) {
+		if (dts_mmio_region_count >= ARRAY_SIZE(dts_mmio_regions)) {
+			panic("too many arm64 platform mmio ranges");
+		}
+		dts_reg_by_index(fdt, node, 0U,
+			&dts_mmio_regions[dts_mmio_region_count].base,
+			&dts_mmio_regions[dts_mmio_region_count].size);
+		dts_mmio_region_count++;
+	}
+}
+
+void arm64_platform_dts_parse_info(const void *fdt, struct arm64_platform_dts_info *info)
+{
+	int32_t platform;
+
+	if (info == NULL) {
+		panic("invalid arm64 platform dts info");
+	}
+
+	info->gic_iidr = 0x43bU;
+	info->guest_cpu_compatible = "arm,cortex-a57";
+	info->vfdt_model = "linux,dummy-virt";
+	info->vfdt_compatible = "linux,dummy-virt";
+	info->uart_clock_hz = 24000000U;
+	info->uart_baud = 115200U;
+	info->service_vm_initrd = false;
+	dts_mmio_region_count = 0U;
+
+	platform = fdt_path_offset(fdt, "/beau,platform");
+	if (platform < 0) {
+		return;
+	}
+
+	info->gic_iidr = dts_u32_prop(fdt, platform, "gic-iidr", info->gic_iidr);
+	info->guest_cpu_compatible = dts_string_prop(fdt, platform,
+		"guest-cpu-compatible", info->guest_cpu_compatible);
+	info->vfdt_model = dts_string_prop(fdt, platform, "vfdt-model", info->vfdt_model);
+	info->vfdt_compatible = dts_string_prop(fdt, platform, "vfdt-compatible",
+		info->vfdt_compatible);
+	info->service_vm_initrd = dts_u32_prop(fdt, platform, "service-vm-initrd", 0U) != 0U;
+	info->uart_clock_hz = dts_optional_u32_from_node(fdt, platform, "uart",
+		"clock-frequency", info->uart_clock_hz);
+	info->uart_baud = dts_optional_u32_from_node(fdt, platform, "uart",
+		"current-speed", info->uart_baud);
+	dts_parse_mmio_ranges(fdt, platform);
+}
+
+const struct arm64_mem_region *arm64_platform_dts_mmio_regions(uint32_t *count)
+{
+	*count = dts_mmio_region_count;
+	return dts_mmio_regions;
+}
+
+static uint32_t dts_count_cpus(const void *fdt)
+{
+	int32_t cpus;
+	int32_t cpu;
+	uint32_t count = 0U;
+
+	cpus = fdt_path_offset(fdt, "/cpus");
+	if (cpus < 0) {
+		arm64_dts_panic("/cpus", cpus);
+	}
+
+	fdt_for_each_subnode(cpu, fdt, cpus) {
+		const char *device_type = fdt_getprop(fdt, cpu, "device_type", NULL);
+
+		if ((device_type != NULL) && (strcmp(device_type, "cpu") == 0)) {
+			count++;
+		}
+	}
+
+	return count;
+}
+
+static void dts_parse_memory(const void *fdt, uint64_t *base, uint64_t *size)
+{
+	int32_t node;
+
+	fdt_for_each_subnode(node, fdt, 0) {
+		const char *device_type = fdt_getprop(fdt, node, "device_type", NULL);
+
+		if ((device_type != NULL) && (strcmp(device_type, "memory") == 0)) {
+			dts_reg_by_index(fdt, node, 0U, base, size);
+			return;
+		}
+	}
+
+	arm64_dts_panic("/memory", -FDT_ERR_NOTFOUND);
+}
+
+static void dts_validate_timer(const void *fdt, int32_t generic)
+{
+	int32_t timer = dts_child_by_name(fdt, generic, "timer");
+	uint32_t htimer_ppi;
+	uint32_t vtimer_ppi;
+	uint32_t ptimer_ppi;
+
+	if (timer < 0) {
+		arm64_dts_panic("vm/generic/timer", timer);
+	}
+
+	htimer_ppi = dts_u32_prop(fdt, timer, "htimer-ppi",
+		dts_u32_prop(fdt, timer, "host-timer-ppi", UINT32_MAX));
+	vtimer_ppi = dts_u32_prop(fdt, timer, "vtimer-ppi",
+		dts_u32_prop(fdt, timer, "guest-virtual-timer-ppi", UINT32_MAX));
+	ptimer_ppi = dts_u32_prop(fdt, timer, "ptimer-ppi",
+		dts_u32_prop(fdt, timer, "guest-physical-timer-ppi", UINT32_MAX));
+
+	if ((htimer_ppi != ARM64_GIC_PPI_HYPERVISOR_TIMER) ||
+		(vtimer_ppi != ARM64_GIC_PPI_VIRTUAL_TIMER) ||
+		(ptimer_ppi != ARM64_GIC_PPI_PHYSICAL_TIMER)) {
+		panic("arm64 timer ppi mismatch: h=%u v=%u p=%u",
+			htimer_ppi, vtimer_ppi, ptimer_ppi);
+	}
+}
+
+void arm64_platform_dts_parse_board(const void *fdt,
+	const struct arm64_platform_dts_info *info)
+{
+	int32_t soc;
+	int32_t gic;
+	int32_t its;
+	int32_t uart;
+	int32_t vm;
+	int32_t generic;
+	uint64_t gicr_base;
+	uint64_t gicr_total_size;
+	uint32_t cpu_count;
+
+	if (info == NULL) {
+		panic("invalid arm64 platform dts info");
+	}
+
+	dts_parse_memory(fdt, &beau_config.ram_start, &beau_config.ram_size);
+
+	soc = fdt_path_offset(fdt, "/soc");
+	if (soc < 0) {
+		arm64_dts_panic("/soc", soc);
+	}
+
+	gic = dts_child_compatible(fdt, soc, "arm,gic-v3");
+	if (gic < 0) {
+		arm64_dts_panic("arm,gic-v3", gic);
+	}
+	dts_reg_by_index(fdt, gic, 0U, &beau_config.gicd_base,
+		&beau_config.gicd_size);
+	dts_reg_by_index(fdt, gic, 1U, &gicr_base, &gicr_total_size);
+
+	cpu_count = dts_count_cpus(fdt);
+	if ((cpu_count == 0U) || (cpu_count > MAX_PCPU_NUM)) {
+		panic("invalid arm64 dts cpu count %u", cpu_count);
+	}
+	beau_config.gicr_base = gicr_base;
+	beau_config.gicr_size = gicr_total_size;
+	beau_config.gicr_stride = gicr_total_size / cpu_count;
+	if (beau_config.gicr_stride == 0UL) {
+		panic("invalid arm64 dts gicr size=0x%lx cpu_count=%u",
+			gicr_total_size, cpu_count);
+	}
+
+	its = dts_child_compatible(fdt, gic, "arm,gic-v3-its");
+	if (its >= 0) {
+		dts_reg_by_index(fdt, its, 0U, &beau_config.gits_base,
+			&beau_config.gits_size);
+	}
+
+	uart = dts_child_compatible(fdt, soc, "arm,pl011");
+	if (uart < 0) {
+		arm64_dts_panic("arm,pl011", uart);
+	}
+	{
+		uint64_t uart_size;
+
+		dts_reg_by_index(fdt, uart, 0U, &beau_config.console_mmio_base,
+			&uart_size);
+	}
+
+	vm = fdt_path_offset(fdt, "/vm");
+	if (vm < 0) {
+		arm64_dts_panic("/vm", vm);
+	}
+	generic = dts_vm_generic_node(fdt, vm);
+	dts_validate_timer(fdt, generic);
+	beau_config.gic_iidr = info->gic_iidr;
+}
+
+static uint64_t dts_parse_cpu_affinity(const void *fdt, int32_t node,
+	uint16_t *order, uint16_t *order_num)
+{
+	const fdt32_t *prop;
+	int32_t len;
+	int32_t cells;
+	int32_t i;
+	uint32_t count;
+	uint64_t affinity = 0UL;
+	uint32_t pcpu_id;
+
+	prop = fdt_getprop(fdt, node, "cpu-affinity", &len);
+	if ((prop == NULL) || (len <= 0) || ((len % (int32_t)sizeof(fdt32_t)) != 0)) {
+		arm64_dts_panic("cpu-affinity", prop == NULL ? len : -EINVAL);
+	}
+
+	cells = len / (int32_t)sizeof(fdt32_t);
+	count = (uint32_t)cells;
+	if (count > MAX_PCPU_NUM) {
+		panic("too many arm64 dts cpu-affinity entries: %d", cells);
+	}
+	if ((order == NULL) || (order_num == NULL)) {
+		arm64_dts_panic("cpu-affinity storage", -EINVAL);
+	}
+
+	*order_num = 0U;
+	for (i = 0; i < cells; i++) {
+		pcpu_id = fdt32_to_cpu(prop[i]);
+		if (pcpu_id >= MAX_PCPU_NUM) {
+			panic("invalid arm64 dts vm pcpu id %u", pcpu_id);
+		}
+		if ((affinity & AFFINITY_CPU(pcpu_id)) != 0UL) {
+			panic("duplicate arm64 dts vm pcpu id %u", pcpu_id);
+		}
+		order[*order_num] = (uint16_t)pcpu_id;
+		(*order_num)++;
+		affinity |= AFFINITY_CPU(pcpu_id);
+	}
+
+	return affinity;
+}
+
+static uint64_t dts_parse_guest_flags(const void *fdt, int32_t node)
+{
+	uint64_t flags = 0UL;
+
+	if (dts_stringlist_contains(fdt, node, "guest-flags", "static")) {
+		flags |= GUEST_FLAG_STATIC_VM;
+	}
+	if (dts_stringlist_contains(fdt, node, "guest-flags", "no-fw")) {
+		flags |= GUEST_FLAG_NO_FW;
+	}
+	if (dts_stringlist_contains(fdt, node, "guest-flags", "rt")) {
+		flags |= GUEST_FLAG_RT;
+	}
+
+	return flags;
+}
+
+static void dts_parse_load_order(const void *fdt, int32_t node,
+	struct acrn_vm_config *vm_config)
+{
+	const char *load_order = dts_string_prop(fdt, node, "load-order", "");
+
+	if (strcmp(load_order, "service") == 0) {
+		vm_config->load_order = SERVICE_VM;
+		vm_config->severity = SEVERITY_SERVICE_VM;
+	} else if ((strcmp(load_order, "pre-std") == 0) ||
+		(strcmp(load_order, "pre-launched") == 0)) {
+		vm_config->load_order = PRE_LAUNCHED_VM;
+		vm_config->severity = SEVERITY_STANDARD_VM;
+	} else if (strcmp(load_order, "pre-rt") == 0) {
+		vm_config->load_order = PRE_LAUNCHED_VM;
+		vm_config->severity = SEVERITY_RTVM;
+	} else {
+		panic("unknown arm64 dts vm load-order '%s'", load_order);
+	}
+}
+
+static enum vm_os_family dts_parse_os_family(const char *family)
+{
+	enum vm_os_family ret = VM_OS_BAREMETAL;
+
+	if (strcmp(family, "rtos") == 0) {
+		ret = VM_OS_RTOS;
+	} else if (strcmp(family, "linux") == 0) {
+		ret = VM_OS_LINUX;
+	} else if (strcmp(family, "baremetal") != 0) {
+		panic("unknown arm64 dts vm os family '%s'", family);
+	}
+
+	return ret;
+}
+
+static bool dts_is_vboot_node(const void *fdt, int32_t node)
+{
+	return dts_has_any_compatible(fdt, node, "beau,vboot", "beau,module");
+}
+
+static int32_t dts_find_module(const void *fdt, int32_t vm_node, const char *compat)
+{
+	int32_t node;
+
+	fdt_for_each_subnode(node, fdt, vm_node) {
+		if (dts_is_vboot_node(fdt, node) && dts_has_compatible(fdt, node, compat)) {
+			return node;
+		}
+	}
+
+	return -FDT_ERR_NOTFOUND;
+}
+
+static uint64_t dts_module_addr(const void *fdt, int32_t node,
+	const struct arm64_platform_dts_ops *ops)
+{
+	const char *source = dts_string_prop(fdt, node, "source",
+		dts_string_prop(fdt, node, "src-type", ""));
+	const char *symbol;
+	uint64_t addr;
+	uint64_t size;
+
+	if (strcmp(source, "symbol") == 0) {
+		symbol = dts_string_prop(fdt, node, "addr-symbol", "");
+		if ((ops == NULL) || (ops->module_addr == NULL)) {
+			panic("arm64 dts module addr symbol unsupported: %s", symbol);
+		}
+		return (uint64_t)ops->module_addr(symbol);
+	}
+
+	dts_reg_by_index(fdt, node, 0U, &addr, &size);
+	return addr;
+}
+
+static uint64_t dts_module_size(const void *fdt, int32_t node,
+	const struct arm64_platform_dts_ops *ops)
+{
+	const char *size_source = dts_string_prop(fdt, node, "size-source", "");
+	const char *symbol;
+	uint64_t addr;
+	uint64_t size;
+
+	if (strcmp(size_source, "symbol") == 0) {
+		symbol = dts_string_prop(fdt, node, "size-symbol", "");
+		if ((ops == NULL) || (ops->module_size == NULL)) {
+			panic("arm64 dts module size symbol unsupported: %s", symbol);
+		}
+		return ops->module_size(symbol);
+	}
+
+	dts_reg_by_index(fdt, node, 0U, &addr, &size);
+	return size;
+}
+
+static void dts_parse_sched(const void *fdt, int32_t vm_node,
+	struct acrn_vm_config *vm_config)
+{
+	int32_t sched = dts_child_by_name(fdt, vm_node, "sched");
+
+	if (sched >= 0) {
+		vm_config->sched_params.bvt_weight =
+			dts_u32_prop(fdt, sched, "bvt-weight", 0U);
+		vm_config->sched_params.bvt_warp_value =
+			(int32_t)dts_u32_prop(fdt, sched, "bvt-warp-value", 0U);
+		vm_config->sched_params.bvt_warp_limit =
+			dts_u32_prop(fdt, sched, "bvt-warp-limit", 0U);
+		vm_config->sched_params.bvt_unwarp_period =
+			dts_u32_prop(fdt, sched, "bvt-unwarp-period", 0U);
+	}
+}
+
+static void dts_parse_os(const void *fdt, int32_t vm_node,
+	struct acrn_vm_config *vm_config, const struct arm64_platform_dts_ops *ops)
+{
+	int32_t os = dts_child_by_name(fdt, vm_node, "os");
+	int32_t kernel = dts_find_module(fdt, vm_node, "beau,kernel");
+	int32_t ramdisk = dts_find_module(fdt, vm_node, "beau,ramdisk");
+	int32_t dtb = dts_find_module(fdt, vm_node, "beau,device-tree");
+	uint64_t addr;
+	uint64_t size;
+
+	if (os < 0) {
+		arm64_dts_panic("os", os);
+	}
+
+	dts_copy_string(vm_config->os_config.name, MAX_VM_OS_NAME_LEN,
+		dts_string_prop(fdt, os, "os-name", ""));
+	vm_config->os_config.os_family = dts_parse_os_family(
+		dts_string_prop(fdt, os, "family", "baremetal"));
+	vm_config->os_config.kernel_type = KERNEL_RAWIMAGE;
+
+	if (kernel >= 0) {
+		dts_copy_string(vm_config->os_config.kernel_mod_tag, MAX_MOD_TAG_LEN,
+			dts_string_prop(fdt, kernel, "tag", ""));
+		dts_copy_string(vm_config->os_config.bootargs, MAX_BOOTARGS_SIZE,
+			dts_string_prop(fdt, kernel, "bootargs",
+				dts_string_prop(fdt, os, "bootargs", "")));
+		dts_reg_by_index(fdt, kernel, 0U, &addr, &size);
+		vm_config->os_config.kernel_load_addr =
+			dts_addr_prop(fdt, kernel, "load-addr", addr);
+		vm_config->os_config.kernel_entry_addr =
+			dts_addr_prop(fdt, kernel, "entry-addr",
+				vm_config->os_config.kernel_load_addr);
+	}
+
+	if (ramdisk >= 0) {
+		dts_copy_string(vm_config->os_config.ramdisk_mod_tag, MAX_MOD_TAG_LEN,
+			dts_string_prop(fdt, ramdisk, "tag", ""));
+		vm_config->os_config.kernel_ramdisk_addr =
+			dts_addr_prop(fdt, ramdisk, "load-addr", 0UL);
+		vm_config->os_config.kernel_ramdisk_size =
+			dts_module_size(fdt, ramdisk, ops);
+	}
+
+	if (dtb >= 0) {
+		dts_copy_string(vm_config->fdt_config.fdt_mod_tag, MAX_MOD_TAG_LEN,
+			dts_string_prop(fdt, dtb, "tag", ""));
+	}
+}
+
+static void dts_parse_arch(const void *fdt, int32_t generic,
+	struct acrn_vm_config *vm_config)
+{
+	int32_t gic = dts_child_compatible(fdt, generic, "arm,vgic-v3");
+	int32_t uart = dts_child_compatible(fdt, generic, "arm,vpl011");
+	int32_t virtio_console = dts_child_compatible(fdt, generic, "beau,virtio-console");
+	int32_t its;
+	uint64_t base;
+	uint64_t size;
+	const fdt32_t *irq_prop;
+
+	if (gic < 0) {
+		arm64_dts_panic("gic-mmio", gic);
+	}
+	if (uart < 0) {
+		arm64_dts_panic("uart-mmio", uart);
+	}
+
+	vm_config->arch.guest_ram_start = vm_config->memory.host_regions[0].start_hpa;
+	vm_config->arch.guest_ram_size = vm_config->memory.host_regions[0].size_hpa;
+	vm_config->arch.guest_ram_hpa = vm_config->memory.host_regions[0].start_hpa;
+
+	dts_reg_by_index(fdt, gic, 0U, &vm_config->arch.guest_gicd_base,
+		&vm_config->arch.guest_gicd_size);
+	dts_reg_by_index(fdt, gic, 1U, &vm_config->arch.guest_gicr_base,
+		&vm_config->arch.guest_gicr_size);
+	vm_config->arch.guest_gicr_stride = vm_config->arch.guest_gicr_size / MAX_PCPU_NUM;
+
+	its = dts_child_compatible(fdt, gic, "arm,gic-v3-its");
+	if (its >= 0) {
+		dts_reg_by_index(fdt, its, 0U, &base, &size);
+		vm_config->arch.guest_its_base = base;
+		vm_config->arch.guest_its_size = size;
+	}
+
+	dts_reg_by_index(fdt, uart, 0U, &vm_config->arch.guest_uart_base,
+		&vm_config->arch.guest_uart_size);
+	irq_prop = fdt_getprop(fdt, uart, "interrupts", NULL);
+	if (irq_prop == NULL) {
+		arm64_dts_panic("uart interrupts", -EINVAL);
+	}
+	vm_config->arch.guest_uart_irq = fdt32_to_cpu(irq_prop[1]) + 32U;
+
+	if (virtio_console >= 0) {
+		dts_reg_by_index(fdt, virtio_console, 0U,
+			&vm_config->arch.guest_virtio_console_base,
+			&vm_config->arch.guest_virtio_console_size);
+		irq_prop = fdt_getprop(fdt, virtio_console, "interrupts", NULL);
+		if (irq_prop == NULL) {
+			arm64_dts_panic("virtio-console interrupts", -EINVAL);
+		}
+		vm_config->arch.guest_virtio_console_irq = fdt32_to_cpu(irq_prop[1]) + 32U;
+	}
+}
+
+static uint16_t dts_vm_id_from_node(const void *fdt, int32_t node)
+{
+	const fdt32_t *reg;
+	int32_t len;
+	uint32_t vm_id;
+
+	reg = fdt_getprop(fdt, node, "reg", &len);
+	if ((reg == NULL) || (len < (int32_t)sizeof(fdt32_t))) {
+		arm64_dts_panic("vm reg", reg == NULL ? len : -EINVAL);
+	}
+	vm_id = fdt32_to_cpu(reg[0]);
+	if (vm_id >= CONFIG_MAX_VM_NUM) {
+		panic("invalid arm64 dts vm id %u", vm_id);
+	}
+
+	return (uint16_t)vm_id;
+}
+
+static void dts_parse_static_mem(const void *fdt, int32_t node,
+	uint64_t *ram_start, uint64_t *ram_size)
+{
+	const fdt32_t *mem;
+	int32_t len;
+
+	mem = fdt_getprop(fdt, node, "beau,static-mem", &len);
+	if ((mem == NULL) || (len < (int32_t)(4U * sizeof(fdt32_t)))) {
+		arm64_dts_panic("beau,static-mem", mem == NULL ? len : -EINVAL);
+	}
+
+	*ram_start = ((uint64_t)fdt32_to_cpu(mem[0]) << 32U) |
+		(uint64_t)fdt32_to_cpu(mem[1]);
+	*ram_size = ((uint64_t)fdt32_to_cpu(mem[2]) << 32U) |
+		(uint64_t)fdt32_to_cpu(mem[3]);
+}
+
+static void dts_parse_vm_node(const void *fdt, int32_t generic, int32_t vm_node,
+	const struct arm64_platform_dts_ops *ops)
+{
+	uint16_t vm_id = dts_vm_id_from_node(fdt, vm_node);
+	struct acrn_vm_config *vm_config = &dts_storage->vm_configs[vm_id];
+	uint64_t ram_start;
+	uint64_t ram_size;
+
+	dts_parse_load_order(fdt, vm_node, vm_config);
+	dts_copy_string(vm_config->name, MAX_VM_NAME_LEN,
+		dts_string_prop(fdt, vm_node, "beau,name", ""));
+	vm_config->cpu_affinity = dts_parse_cpu_affinity(fdt, vm_node,
+		vm_config->cpu_affinity_order, &vm_config->cpu_affinity_num);
+	vm_config->guest_flags = dts_parse_guest_flags(fdt, vm_node);
+
+	dts_parse_static_mem(fdt, vm_node, &ram_start, &ram_size);
+
+	dts_storage->memory_regions[vm_id].start_hpa = ram_start;
+	dts_storage->memory_regions[vm_id].size_hpa = ram_size;
+	vm_config->memory.size = ram_size;
+	vm_config->memory.region_num = 1U;
+	vm_config->memory.host_regions = &dts_storage->memory_regions[vm_id];
+
+	dts_parse_sched(fdt, vm_node, vm_config);
+	dts_parse_os(fdt, vm_node, vm_config, ops);
+	dts_parse_arch(fdt, generic, vm_config);
+}
+
+static void dts_add_boot_option(const void *fdt, int32_t module,
+	const struct arm64_platform_dts_ops *ops)
+{
+	struct bare_boot_option *option;
+
+	if (dts_bare_boot_option_count >= dts_storage->boot_option_capacity) {
+		panic("too many arm64 dts bare boot options");
+	}
+
+	option = &dts_storage->boot_options[dts_bare_boot_option_count];
+	option->addr = dts_module_addr(fdt, module, ops);
+	option->size = dts_module_size(fdt, module, ops);
+	option->tag = dts_string_prop(fdt, module, "tag", "");
+	dts_bare_boot_option_count++;
+}
+
+static void dts_parse_boot_options(const void *fdt, int32_t vm_root,
+	const struct arm64_platform_dts_ops *ops)
+{
+	int32_t vm_node;
+	int32_t module;
+
+	dts_bare_boot_option_count = 0U;
+
+	fdt_for_each_subnode(vm_node, fdt, vm_root) {
+		if (!dts_has_compatible(fdt, vm_node, "beau,vm")) {
+			continue;
+		}
+		fdt_for_each_subnode(module, fdt, vm_node) {
+			if (dts_is_vboot_node(fdt, module)) {
+				dts_add_boot_option(fdt, module, ops);
+			}
+		}
+	}
+
+	*dts_storage->boot_option_count = dts_bare_boot_option_count;
+}
+
+void arm64_platform_dts_parse_vms(const void *fdt,
+	const struct arm64_platform_dts_ops *ops,
+	const struct arm64_platform_dts_vm_storage *storage)
+{
+	int32_t vm_root;
+	int32_t generic;
+	int32_t vm_node;
+	uint32_t service_vm_id;
+
+	/*
+	 * 2026-07-07, ARM64 platform-DTS principle:
+	 *
+	 * Platform policy is parsed once into the long-standing BEAU tables. VM
+	 * creation and boot loaders stay table-driven, so DTS ownership ends before
+	 * common VM code starts consuming the ABI.
+	 *
+	 *   platform.dtb
+	 *       |
+	 *       v
+	 *   sdk/bsp DTS parser
+	 *       |
+	 *       +--> vm_configs[] ------> create_vm()
+	 *       |
+	 *       +--> bare_boot_options[] -> init_acrn_boot_info()
+	 */
+	dts_set_storage(storage);
+
+	(void)memset(dts_storage->vm_configs, 0U,
+		dts_storage->vm_config_count * sizeof(dts_storage->vm_configs[0]));
+	(void)memset(dts_storage->memory_regions, 0U,
+		dts_storage->vm_config_count * sizeof(dts_storage->memory_regions[0]));
+	(void)memset(dts_storage->boot_options, 0U,
+		dts_storage->boot_option_capacity * sizeof(dts_storage->boot_options[0]));
+	*dts_storage->boot_option_count = 0U;
+
+	vm_root = fdt_path_offset(fdt, "/vm");
+	if (vm_root < 0) {
+		arm64_dts_panic("/vm", vm_root);
+	}
+	generic = dts_vm_generic_node(fdt, vm_root);
+
+	service_vm_id = dts_u32_prop(fdt, generic, "service-vm-id", 0U);
+	if (service_vm_id != dts_storage->service_vm_id) {
+		panic("arm64 dts service-vm-id %u != storage service-vm-id %u",
+			service_vm_id, dts_storage->service_vm_id);
+	}
+
+	fdt_for_each_subnode(vm_node, fdt, vm_root) {
+		if (dts_has_compatible(fdt, vm_node, "beau,vm")) {
+			dts_parse_vm_node(fdt, generic, vm_node, ops);
+		}
+	}
+
+	dts_parse_boot_options(fdt, vm_root, ops);
+	pr_info("arm64 platform dts parsed: %u boot modules",
+		*dts_storage->boot_option_count);
+}

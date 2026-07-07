@@ -66,15 +66,10 @@ struct page_pool {
 /**
  * @brief Page tables level in paging mode
  *
- * 4-level paging may map addresses to 4-KByte pages, 2-MByte pages, or 1-GByte pages. The 4 levels
- * are PGT_LVL3, PGT_LVL2, PGT_LVL1, and PGT_LVL0. The value to present each level is fixed.
- * the mapping to specific architecture's 4 level paging stage is as below:
- *
- *	    x86                                    riscv
- * PGT_LVL3   Page-Map-Level-4(PML4)                 vpn3
- * PGT_LVL2   Page-Directory-Pointer-Table(PDPT)     vpn2
- * PGT_LVL1   Page-Directory(PD)                     vpn1
- * PGT_LVL0   Page-Table(PT)                         vpn0
+ * 4-level paging may map addresses to 4-KByte pages, 2-MByte pages, or
+ * 1-GByte pages. The generic levels are PGT_LVL3, PGT_LVL2, PGT_LVL1, and
+ * PGT_LVL0; architecture code decides how those levels map to hardware
+ * descriptors.
  */
 enum _page_table_level {
 	PGT_LVL3 = 0,

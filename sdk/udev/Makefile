@@ -190,10 +190,6 @@ SRCS += core/cmd_monitor/cmd_monitor.c
 SRCS += core/sbuf.c
 SRCS += core/vm_event.c
 
-# arch
-SRCS += arch/x86/pm.c
-SRCS += arch/x86/power_button.c
-
 # log
 SRCS += log/log.c
 SRCS += log/kmsg_logger.c

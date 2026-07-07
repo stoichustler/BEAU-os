@@ -16,6 +16,8 @@ MAKEFLAGS += -rR --no-print-directory
 BASEDIR := $(shell pwd)
 GIT_TOPDIR := $(shell git rev-parse --show-toplevel 2>/dev/null)
 LICENSE_FILE := $(or $(firstword $(wildcard ../LICENSE $(if $(GIT_TOPDIR),$(GIT_TOPDIR)/LICENSE))),/dev/null)
+ARCH ?= arm64
+PLATFORM ?= qemu
 ifeq ($(strip $(PLATFORM)),)
 HV_DEFAULT_OBJDIR := $(CURDIR)/out/default_out
 else
@@ -36,7 +38,6 @@ ARCH_ASFLAGS :=
 ARCH_ARFLAGS :=
 ARCH_LDFLAGS :=
 
-PLATFORM ?=
 STATIC_ARM64_PLATFORM := $(if $(filter arm64,$(ARCH)),$(if $(filter qemu rk356x,$(PLATFORM)),y,))
 
 ifeq ($(STATIC_ARM64_PLATFORM),y)
@@ -57,17 +58,23 @@ CONFIG_GUEST_KERNEL_BZIMAGE := n
 CONFIG_GUEST_KERNEL_ELF := n
 CONFIG_SCHED_BVT := y
 CONFIG_SCHED_RTDS := y
+CONFIG_ENABLE_VM1_LK ?= 0
 HV_CONFIG_DIR := $(HV_OBJDIR)/configs
-HV_CONFIG_H := arch/arm64/platform/$(PLATFORM)/platform_$(PLATFORM).h
+HV_CONFIG_H := $(HV_OBJDIR)/include/arm64_platform_config.h
 ifeq ($(PLATFORM),qemu)
 CONFIG_HV_RAM_START := 0x50000000
+CONFIG_MAX_PCPU_NUM := 8U
 else ifeq ($(PLATFORM),rk356x)
 CONFIG_HV_RAM_START := 0x00A00000
+CONFIG_MAX_PCPU_NUM := 4U
 endif
 CFLAGS += -include $(HV_CONFIG_H)
 HV_CONFIG_MK := $(HV_CONFIG_DIR)/config.mk
 HV_CONFIG_TIMESTAMP := $(HV_CONFIG_DIR)/.configfiles.timestamp
 HV_DIFFCONFIG_LIST := $(HV_CONFIG_DIR)/.diffconfig
+ARM64_PLATFORM_CFG_STAMP := $(HV_CONFIG_DIR)/config-vm1-lk-$(CONFIG_ENABLE_VM1_LK).stamp
+ARM64_PLATFORM_DTB := $(HV_OBJDIR)/platform.dtb
+ASFLAGS += -DARM64_PLATFORM_DTB_PATH=\"$(ARM64_PLATFORM_DTB)\"
 else
 include scripts/makefile/config.mk
 endif
@@ -152,10 +159,10 @@ REL_INCLUDE_PATH += include/debug
 REL_INCLUDE_PATH += include/public
 REL_INCLUDE_PATH += include/dm
 REL_INCLUDE_PATH += include/hw
+REL_INCLUDE_PATH += sdk/bsp/include
 REL_INCLUDE_PATH += sdk/bsp/boot/include
 REL_INCLUDE_PATH += sdk/bsp/boot/include/guest
 
-ARCH ?= x86
 REL_INCLUDE_PATH += include/arch/$(ARCH)
 
 INCLUDE_PATH := $(realpath $(REL_INCLUDE_PATH))
@@ -190,15 +197,6 @@ COMMON_C_SRCS += core/vcpu.c
 COMMON_C_SRCS += core/vm.c
 COMMON_C_SRCS += core/vm_wdt.c
 
-# FIXME: During initial development stage of riscv enabling,
-# we would like to first confine the core files to x86-only.
-# As we progress through the riscv enabling process, multi-arch
-# and modularization of below modules will be done per-feature.
-#
-# TODO: When a module is done refactoring, move the line out from below
-# if block. The block should be entirely eliminated when we've done
-# all the work.
-#
 COMMON_C_SRCS += core/notify.c
 COMMON_C_SRCS += core/percpu.c
 COMMON_C_SRCS += core/cpu.c
@@ -284,43 +282,13 @@ COMMON_C_SRCS += sdk/bsp/boot/multiboot/multiboot2.c
 endif
 COMMON_C_SRCS += sdk/bsp/boot/bare.c
 
-# dm componment
-COMMON_C_SRCS += sdk/dm/vuart.c
-ifneq ($(filter $(ARCH),x86 arm64),)
-COMMON_C_SRCS += sdk/dm/io_req.c
-endif
-
-ifeq ($(ARCH),x86)
-COMMON_C_SRCS += core/efi_mmap.c
-COMMON_C_SRCS += core/vm_event.c
-COMMON_C_SRCS += core/hv_main.c
-COMMON_C_SRCS += core/hypercall.c
-COMMON_C_SRCS += core/ptdev.c
-COMMON_C_SRCS += sdk/dm/vrtc.c
-COMMON_C_SRCS += sdk/dm/vpci/vdev.c
-COMMON_C_SRCS += sdk/dm/vpci/vpci.c
-COMMON_C_SRCS += sdk/dm/vpci/vroot_port.c
-COMMON_C_SRCS += sdk/dm/vpci/vpci_bridge.c
-COMMON_C_SRCS += sdk/dm/vpci/vpci_mf_dev.c
-COMMON_C_SRCS += sdk/dm/vpci/ivshmem.c
-COMMON_C_SRCS += sdk/dm/vpci/pci_pt.c
-COMMON_C_SRCS += sdk/dm/vpci/vmsi.c
-COMMON_C_SRCS += sdk/dm/vpci/vmsix.c
-COMMON_C_SRCS += sdk/dm/vpci/vmsix_on_msi.c
-COMMON_C_SRCS += sdk/dm/vpci/vsriov.c
-ifeq ($(CONFIG_VMCS9900),y)
-COMMON_C_SRCS += sdk/dm/vpci/vmcs9900.c
-endif
-COMMON_C_SRCS += sdk/dm/mmio_dev.c
-COMMON_C_SRCS += sdk/dm/vgpio.c
-ifeq ($(CONFIG_GUEST_KERNEL_BZIMAGE),y)
-COMMON_C_SRCS += sdk/bsp/boot/guest/bzimage_loader.c
-endif
-ifeq ($(CONFIG_GUEST_KERNEL_ELF),y)
-COMMON_C_SRCS += sdk/bsp/boot/guest/elf_loader.c
-endif
-COMMON_C_SRCS += sdk/bsp/pci/pci.c
-endif # ifeq ($(ARCH),x86)
+# bsp device-emulation component
+COMMON_C_SRCS += sdk/bsp/vuart.c
+COMMON_C_SRCS += sdk/bsp/io_req.c
+BSP_LIB_SRCS := $(filter-out sdk/bsp/ns16550.c sdk/bsp/pl011.c,$(wildcard sdk/bsp/*.c))
+BSP_LIB_SRCS += sdk/bsp/pl011.c
+BSP_LIB_SRCS += $(wildcard sdk/bsp/arm64/*.c)
+BSP_LIB_SRCS += $(wildcard sdk/bsp/virtio/*.c)
 
 ifeq ($(ARCH),arm64)
 COMMON_C_SRCS += arch/arm64/guest/hypercall.c
@@ -351,11 +319,71 @@ $(HV_CONFIG_MK): | $(HV_CONFIG_DIR)
 		echo "CONFIG_ARM64_GICV5=$(CONFIG_ARM64_GICV5)"; \
 	} > $@
 
+$(HV_CONFIG_H): Makefile $(ARM64_PLATFORM_CFG_STAMP) | $(HV_OBJDIR)/include
+	@echo "config    $(notdir $@)"
+	@{ \
+		echo "/* Auto-generated ARM64 static platform configuration. */"; \
+		echo "#ifndef ARM64_PLATFORM_CONFIG_H"; \
+		echo "#define ARM64_PLATFORM_CONFIG_H"; \
+		echo "#define CONFIG_STATIC_ARM64_PLATFORM 1"; \
+		if [ "$(PLATFORM)" = "qemu" ]; then \
+			echo "#define CONFIG_STATIC_QEMU_PLATFORM 1"; \
+		fi; \
+		if [ "$(PLATFORM)" = "rk356x" ]; then \
+			echo "#define CONFIG_STATIC_RK356X_PLATFORM 1"; \
+		fi; \
+		echo "#ifndef CONFIG_ARM64_GICV5"; \
+		echo "#define CONFIG_ARM64_GICV5 0"; \
+		echo "#endif"; \
+		echo "#define CONFIG_BOARD $(PLATFORM)"; \
+		echo "#define CONFIG_SCENARIO $(PLATFORM)"; \
+		echo "#define CONFIG_GUEST_KERNEL_RAWIMAGE 1"; \
+		echo "#define CONFIG_HAS_HSM 0"; \
+		echo "#define CONFIG_AUTOSTART_VM 1"; \
+		echo "#define CONFIG_LAUNCH_VMS_FROM_BSP 1"; \
+		echo "#define CONFIG_STATIC_VFDT 1"; \
+		echo "#define CONFIG_HV_RAM_START $(CONFIG_HV_RAM_START)UL"; \
+		echo "#define CONFIG_STACK_SIZE 8192U"; \
+		echo "#define CONFIG_SCHED_BVT y"; \
+		echo "#define CONFIG_SCHED_RTDS y"; \
+		echo "#define CONFIG_ENABLE_VM1_LK $(CONFIG_ENABLE_VM1_LK)"; \
+		echo "#define CONFIG_SERIAL_8250_PCI 0"; \
+		echo "#define CONFIG_CONSOLE_DEFAULT_VM ACRN_INVALID_VMID"; \
+		echo "#define CONFIG_CONSOLE_LOGLEVEL_DEFAULT 6U"; \
+		echo "#define CONFIG_MEM_LOGLEVEL_DEFAULT 0U"; \
+		echo "#define CONFIG_NPK_LOGLEVEL_DEFAULT 0U"; \
+		echo "#define CONFIG_VUART_TIMER_PCPU BSP_CPU_ID"; \
+		echo "#define CONFIG_VUART_RX_BUF_SIZE 256U"; \
+		echo "#define CONFIG_VUART_TX_BUF_SIZE 256U"; \
+		echo "#define CONFIG_VM_CONSOLE_RINGBUF_VM_NUM (PRE_VM_NUM + SERVICE_VM_NUM)"; \
+		echo "#define CONFIG_VM_CONSOLE_RINGBUF_SIZE 4096U"; \
+		echo "#define CONFIG_MAX_EMULATED_MMIO_REGIONS 8U"; \
+		echo "#define CONFIG_MAX_MSIX_TABLE_NUM 16U"; \
+		echo "#define CONFIG_MAX_PCI_DEV_NUM 16U"; \
+		echo "#define CONFIG_MAX_PT_IRQ_ENTRIES 0U"; \
+		echo "#define CONFIG_MAX_IOAPIC_NUM 0U"; \
+		echo "#define CONFIG_SPACE_SIZE 0x10000000UL"; \
+		echo "#define CONFIG_ADDR 0xcf8U"; \
+		echo "#define CONFIG_DATA 0xcfcU"; \
+		echo "#define CONFIG_IGD_SBDF 0U"; \
+		echo "#define MAX_PCPU_NUM $(CONFIG_MAX_PCPU_NUM)"; \
+		echo "#define PRE_VM_NUM 2U"; \
+		echo "#define SERVICE_VM_NUM 1U"; \
+		echo "#define MAX_POST_VM_NUM 0U"; \
+		echo "#define MAX_TRUSTY_VM_NUM 0U"; \
+		echo "#define MAX_VUART_NUM_PER_VM 2U"; \
+		echo "#define RTVM_SEVERITY_LEVEL 0x30U"; \
+		echo "#endif /* ARM64_PLATFORM_CONFIG_H */"; \
+	} > $@
+
 $(HV_CONFIG_TIMESTAMP): $(HV_CONFIG_MK)
 	@touch $@
 
 $(HV_CONFIG_DIR):
 	@mkdir -p $@
+
+$(ARM64_PLATFORM_CFG_STAMP): | $(HV_CONFIG_DIR)
+	@touch $@
 
 ifneq ($(LINUX_IMAGE_SIZE_H),)
 $(LINUX_IMAGE_SIZE_H): Makefile sdk/image/linux/Image sdk/image/linux/Initramfs.cpio.gz | $(HV_OBJDIR)/include
@@ -376,12 +404,23 @@ $(HV_OBJDIR)/include:
 endif
 endif
 
+ifneq ($(ARM64_PLATFORM_DTB),)
+$(ARM64_PLATFORM_DTB): arch/arm64/platform/$(PLATFORM)/platform.dts $(ARM64_PLATFORM_CFG_STAMP) | $(HV_OBJDIR)
+	@echo "dtc       $(notdir $@)"
+	$(Q)$(CC) -E -x assembler-with-cpp -P \
+		-DCONFIG_ENABLE_VM1_LK=$(CONFIG_ENABLE_VM1_LK) $< -o $(HV_OBJDIR)/platform.pp.dts
+	$(Q)$(DTC) -I dts -O dtb -o $@ $(HV_OBJDIR)/platform.pp.dts
+
+$(HV_OBJDIR):
+	@mkdir -p $@
+endif
+
 .PHONY: all
 all: $(ARCH_ALL_TARGETS) $(HV_OBJDIR)/$(HV_DEBUG_FILE).bin
 
 .PHONY: lib
 
-$(LIB_BUILD): $(HEADERS)
+$(LIB_BUILD): $(HEADERS) $(LIB_MK) $(BSP_LIB_SRCS)
 	$(Q)$(MAKE) -f $(LIB_MK) MKFL_NAME=$(LIB_MK)
 
 lib: $(LIB_BUILD)
@@ -487,13 +526,20 @@ $(VM_CFG_C_OBJS): $(HV_OBJDIR)/%.o: %.c $(HEADERS) $(ARCH_PRE_BUILD_TARGETS)
 	$(CC) $(patsubst %, -I%, $(INCLUDE_PATH)) -I. -c $(CFLAGS) $(ARCH_CFLAGS) $< -o $@ -MMD -MT $@
 
 ifeq ($(ARCH),arm64)
-ifeq ($(PLATFORM),qemu)
 sdk/image/linux/beau-linux.dtb: sdk/image/linux/beau-linux.dts
 	$(Q)echo "dtc       $@"
 	$(Q)$(DTC) -I dts -O dtb -o $@ $<
 
-$(HV_OBJDIR)/arch/arm64/platform/qemu/platform_image.o: sdk/image/lk.bin sdk/image/zephyr.bin sdk/image/linux/beau-linux.dtb
-endif
+sdk/image/linux/beau-linux-vm1.dtb: sdk/image/linux/beau-linux-vm1.dts
+	$(Q)echo "dtc       $@"
+	$(Q)$(DTC) -I dts -O dtb -o $@ $<
+
+sdk/image/linux/beau-linux-vm2.dtb: sdk/image/linux/beau-linux-vm2.dts
+	$(Q)echo "dtc       $@"
+	$(Q)$(DTC) -I dts -O dtb -o $@ $<
+
+$(HV_OBJDIR)/arch/arm64/platform/$(PLATFORM)/platform.o: sdk/image/lk.bin sdk/image/zephyr.bin $(ARM64_PLATFORM_DTB)
+$(HV_OBJDIR)/arch/arm64/platform/qemu/platform.o: sdk/image/linux/beau-linux-vm1.dtb sdk/image/linux/beau-linux-vm2.dtb
 endif
 
 $(HV_OBJDIR)/%.o: %.S $(HEADERS) $(ARCH_PRE_BUILD_TARGETS)

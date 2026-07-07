@@ -30,7 +30,7 @@
 
 /*
  * AArch64 stage-2 output addresses are architecturally capped below bit 52.
- * Use bit 52 as the common invalid HPA sentinel, matching x86/riscv helpers.
+ * Use bit 52 as the common invalid HPA sentinel.
  */
 #define INVALID_HPA			(0x1UL << 52U)
 
