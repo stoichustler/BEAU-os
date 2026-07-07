@@ -371,6 +371,18 @@ static bool vcpu_irq_forward_progress_budget_available(struct acrn_vcpu *vcpu)
 	return true;
 }
 
+/*
+ * 2026-07-08, bounded guest IRQ progress window:
+ *
+ *   physical IRQ exit
+ *        -> refresh current CNTV/vGIC state
+ *        -> guest IRQ or Linux IRQ context still needs progress?
+ *             yes -> return to the same vCPU for a short budget
+ *             no/expired -> let schedule() pick the next runnable vCPU
+ *
+ * A guest timer LR can remain deliverable across many exits. The bypass is
+ * therefore bounded so a shared-pCPU peer cannot be starved indefinitely.
+ */
 static bool vcpu_should_defer_reschedule_for_irq_progress(struct acrn_vcpu *vcpu)
 {
 	bool blocks = vcpu_forward_progress_blocks_reschedule(vcpu);
@@ -407,12 +419,6 @@ static struct acrn_vcpu *schedule_without_guest_resume(uint16_t pcpu_id,
 	}
 
 	if (need_reschedule(pcpu_id) && !vcpu_has_pending_request(vcpu)) {
-		/*
-		 * On a shared pCPU, a deliverable virtual IRQ gets a bounded
-		 * guest-forward-progress window before scheduler fairness resumes.
-		 * A guest timer can stay pending for a long time; do not let that
-		 * indefinitely starve another runnable vCPU on the same pCPU.
-		 */
 		if (!vcpu_should_defer_reschedule_for_irq_progress(vcpu)) {
 			struct acrn_vcpu *prev = vcpu;
 

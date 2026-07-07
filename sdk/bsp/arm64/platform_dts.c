@@ -462,6 +462,15 @@ static uint64_t dts_parse_cpu_affinity(const void *fdt, int32_t node,
 	uint64_t affinity = 0UL;
 	uint32_t pcpu_id;
 
+	/*
+	 * 2026-07-08, preserve the authored pCPU order from DTS:
+	 *
+	 *   cpu-affinity = <1 6>
+	 *        -> order[0] = 1 -> vcpu0
+	 *        -> order[1] = 6 -> vcpu1
+	 *
+	 * The returned bitmap is only a set view for legacy common code.
+	 */
 	prop = fdt_getprop(fdt, node, "cpu-affinity", &len);
 	if ((prop == NULL) || (len <= 0) || ((len % (int32_t)sizeof(fdt32_t)) != 0)) {
 		arm64_dts_panic("cpu-affinity", prop == NULL ? len : -EINVAL);

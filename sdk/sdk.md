@@ -108,28 +108,39 @@ Hardware validation for rk356x is manual for now: flash the generated BEAU
 image with the board workflow and inspect serial logs for EL2 boot, MMU setup,
 GIC init, the BEAU shell prompt, and VM launch logs.
 
-LK and Zephyr stay as `.incbin` RTOS images under `sdk/image`:
-`sdk/image/lk.bin` and `sdk/image/zephyr.bin`. VM2 Linux uses
-`sdk/image/linux/Image` and `sdk/image/linux/Initramfs.cpio.gz`; QEMU stages them with
-`-device loader` at `0x70000000` and `0x74000000`, then BEAU copies them into
-VM2 guest RAM. The Linux DTB is `sdk/image/linux/beau-linux.dtb` and remains embedded
-as a small `.incbin` module because it describes Linux running on BEAU.
+Zephyr stays as an `.incbin` RTOS image under `sdk/image/zephyr.bin`. LK remains
+available as the optional VM1 RTOS image under `sdk/image/lk.bin` when
+`CONFIG_ENABLE_VM1_LK=1`, but the default QEMU 3OS scenario sets
+`CONFIG_ENABLE_VM1_LK=0` and boots RTOS + Linux-1 + Linux-2. Both Linux guests
+use `sdk/image/linux/Image` and `sdk/image/linux/Initramfs.cpio.gz`; QEMU stages
+them with `-device loader` at `0x70000000` and `0x74000000`, then BEAU copies
+the image pair into each Linux guest RAM window. The Linux DTBs remain embedded
+as small `.incbin` modules because they describe Linux running on BEAU.
 
-Current QEMU VM layout:
+Current QEMU VM layout for the default `CONFIG_ENABLE_VM1_LK=0` build:
 
 - VM0 is the Zephyr service VM.
   - Image: `sdk/image/zephyr.bin`
   - Raw image tag: `zephyr`
   - Load address and entry: `0x42000000`
   - Identity RAM window: `0x42000000-0x48000000`
-  - vCPUs: 4, running on ordinary-core pCPU0, pCPU2, pCPU3, and pCPU5
-- VM1 is the LK pre-launched VM.
-  - Image: `sdk/image/lk.bin`
-  - Raw image tag: `lk`
-  - Load address and entry: `0x40100000`
-  - Identity RAM window: `0x40000000-0x42000000`
-  - vCPUs: 4, using mixed pCPUs 3, 5, 6, and 7
-- VM2 is the Linux pre-launched VM.
+  - vCPUs: 4, ordered affinity `<1 2 3 5>`
+- VM1 is the Linux-1 pre-launched VM by default.
+  - Kernel image: `sdk/image/linux/Image`
+  - Kernel module tag: `Linux`
+  - QEMU kernel stage address: `0x70000000`
+  - Kernel load address and entry: `0x58080000`
+  - Initramfs image: `sdk/image/linux/Initramfs.cpio.gz`
+  - Initramfs module tag: `Initramfs`
+  - QEMU initramfs stage address: `0x74000000`
+  - Initramfs load address: `0x5c000000`
+  - DTB module tag: `dtb-vm1`
+  - Boot console: `console=hvc0 rdinit=/init loglevel=7`
+  - Identity RAM window: `0x58000000-0x60000000`
+  - vCPUs: 4, ordered affinity `<4 2 5 6>`
+  - Optional LK path when `CONFIG_ENABLE_VM1_LK=1`: image `sdk/image/lk.bin`,
+    RAM `0x40000000-0x42000000`, entry `0x40100000`, affinity `<3 5 6 7>`
+- VM2 is the Linux-2 pre-launched VM.
   - Kernel image: `sdk/image/linux/Image`
   - Kernel module tag: `linux`
   - QEMU kernel stage address: `0x70000000`
@@ -138,26 +149,25 @@ Current QEMU VM layout:
   - Initramfs module tag: `Initramfs.cpio.gz`
   - QEMU initramfs stage address: `0x74000000`
   - Initramfs load address: `0x4c000000`
-  - DTB image: `sdk/image/linux/beau-linux.dtb`
-  - DTB module tag: `beau-linux-dtb`
-  - Boot console: `console=ttyAMA0 rdinit=/init loglevel=4`
+  - DTB module tag: `dtb-vm2`
+  - Boot console: `console=hvc0 rdinit=/init loglevel=4`
   - Identity RAM window: `0x48000000-0x50000000`
-  - vCPUs: 4, running on pCPU1, pCPU4, pCPU6, and pCPU7
+  - vCPUs: 4, ordered affinity `<7 0 3 6>`
   - QEMU vITS window: `0x08080000-0x0809ffff`
   - Initramfs shell: `uos` prompt as root
-- pCPU0-pCPU5 model ordinary cores.
-- pCPU6-pCPU7 model performance cores.
-- VM0 uses ordinary cores only. VM1 may mix ordinary and performance cores.
-  The static QEMU scenario keeps VM2 on pCPU1, pCPU4, pCPU6, and pCPU7 while
-  VM0 still has four vCPUs. Shared-core behavior is expressed only by platform
-  `cpu_affinity`; common VM creation must not add QEMU-specific pCPU ordering
-  rules.
+- QEMU `cpu-affinity` is ordered: entry N maps vCPU N to that pCPU. Example:
+  `<1 6>` means vCPU0 runs on pCPU1 and vCPU1 runs on pCPU6.
+- The default QEMU placement keeps vCPU0 pCPUs unique: VM0 vCPU0 on pCPU1,
+  VM1 vCPU0 on pCPU4, and VM2 vCPU0 on pCPU7. Secondary vCPUs may share pCPUs;
+  pCPU0 is currently used only by VM2 vCPU1 to avoid three-way RTDS contention
+  on the secondary pool.
 
 The generated `out/qemu_out/beau.debug.out` has been boot-tested on QEMU. The
 build also emits `out/qemu_out/beau.out` as the base link image and
-`out/qemu_out/beau.debug.bin` as the raw debug image. Zephyr and LK autostart
-from embedded RTOS images. VM2 Linux autostarts when QEMU stages `Image` and
-`Initramfs.cpio.gz`; BEAU supplies the embedded `beau-linux.dtb`.
+`out/qemu_out/beau.debug.bin` as the raw debug image. Zephyr autostarts from
+its embedded RTOS image. Linux-1 and Linux-2 autostart when QEMU stages `Image`
+and `Initramfs.cpio.gz`; BEAU supplies the embedded per-VM Linux DTB modules.
+LK autostarts only in the optional `CONFIG_ENABLE_VM1_LK=1` VM1 build.
 The BEAU shell stays quiet during late guest AP bring-up; press Enter after the
 boot logs settle to show the `console:\>` prompt.
 
@@ -172,8 +182,9 @@ boot logs settle to show the `console:\>` prompt.
 - QEMU platform code and static board/scenario configuration under
   `arch/arm64/platform/qemu`.
 - Bare-boot image embedding for LK and Zephyr raw images from `sdk/image`.
-- Linux VM2 loader tags for externally staged `Image` and `Initramfs.cpio.gz`, plus the
-  embedded `beau-linux.dtb` module.
+- Linux loader tags for externally staged `Image` and `Initramfs.cpio.gz`.
+  The default QEMU scenario uses two per-VM embedded Linux DTB modules for
+  Linux-1 and Linux-2.
 - Static ARM64 VM configuration is DTS-authored for QEMU and rk356x in each
   `arch/arm64/platform/<platform>/platform.dts`. The DTS uses standard hardware
   nodes for host CPUs, PSCI, timer, GIC, UART, and `soc`, plus a `/beau,platform`
@@ -190,10 +201,12 @@ boot logs settle to show the `console:\>` prompt.
   range before writing into the 1:1 RAM window.
 - Stage-2 initialization validates the 1:1 RAM invariant. The shared guest vGIC
   and vPL011 IPA windows are registered as vio MMIO instead of RAM mappings.
-- Zephyr and LK are marked with `GUEST_FLAG_NO_FW`, so the boot-info path does
-  not require external ACPI/FDT modules for the current RTOS images. VM2 Linux
-  clears that flag, receives `beau-linux.dtb`, and uses the loader/module path
-  instead of platform `.incbin` image embedding for `Image` and `Initramfs.cpio.gz`.
+- Zephyr is marked with `GUEST_FLAG_NO_FW`, so the boot-info path does not
+  require external ACPI/FDT modules for the service RTOS image. The optional LK
+  VM1 path uses the same RTOS rule when `CONFIG_ENABLE_VM1_LK=1`. The default
+  Linux-1/Linux-2 guests clear `GUEST_FLAG_NO_FW`, receive per-VM Linux DTBs,
+  and use the loader/module path instead of platform `.incbin` image embedding
+  for `Image` and `Initramfs.cpio.gz`.
 - EL2 entry, exception vector setup, MMU enablement, and 1:1 host mappings.
   The primary and secondary EL2 entry paths explicitly select `SP_EL2` with
   `SPSel=1`, so host scheduling, guest entry, and guest exit use the same EL2
@@ -228,13 +241,15 @@ boot logs settle to show the `console:\>` prompt.
   scheduler parameters and BVT runtime stats, guest RAM, console, GIC, ITS, and
   timer basics.
 - PSCI-based host secondary CPU bring-up with `MAX_PCPU_NUM=8`.
-- VM0 and VM1 vCPUs share pCPU3 through the existing `sched_bvt` scheduler.
-  Current QEMU BVT weights are VM0 Zephyr `128`, VM1 LK `16`, and VM2 Linux
-  `128`. VM2 additionally enables bounded BVT warp on vCPU event requests to
-  reduce shared-core wakeup latency. The rk356x static configuration keeps VM2
-  Linux at `64`. VM0 uses ordinary-core pCPU0, pCPU2, pCPU3, and pCPU5; VM1
-  uses mixed pCPU3, pCPU5, pCPU6, and pCPU7. VM2 uses pCPU1, pCPU4, pCPU6, and
-  pCPU7.
+- DTS `cpu-affinity` is preserved as an ordered vCPU-to-pCPU map while the
+  existing bitmap remains available for set membership and scheduler sharing
+  tests. In the default QEMU layout, VM0 uses `<1 2 3 5>`, VM1 Linux-1 uses
+  `<4 2 5 6>`, and VM2 Linux-2 uses `<7 0 3 6>`. vCPU0 pCPUs are unique
+  across the three VMs.
+- Current QEMU BVT weights are VM0 Zephyr `128`, VM1 Linux-1 `64`, and VM2
+  Linux-2 `128`. VM2 additionally enables bounded BVT warp on vCPU event
+  requests to reduce shared-core wakeup latency. The optional VM1 LK path keeps
+  LK at weight `16`.
 - ARM64 vCPU switch-in/out now saves and restores guest EL1 translation,
   exception, timer, TPIDR, and vGIC state, so two VMs can time-share one pCPU
   without inheriting each other's EL1 address-space context.
@@ -247,6 +262,13 @@ boot logs settle to show the `console:\>` prompt.
   plumbing.
 - Shell running as a scheduler thread and VM launch gated to host BSP after all
   APs are running.
+- Static autostart prepares all configured VM images before starting any VM
+  whose BSP vCPU is pinned to the launcher pCPU. This keeps a launcher-pCPU
+  guest from running before later static VMs are created and prepared.
+- ARM64 physical IRQ return gives a pending guest IRQ or Linux hardirq/softirq
+  context only a bounded forward-progress window before `schedule()` must run.
+  This avoids starving another runnable vCPU on an RTDS-shared pCPU when a
+  guest timer line stays deliverable across repeated exits.
 - ARM64 HVC dispatch recognizes ACRN hypercall IDs separately from PSCI HVC
   calls. The current ARM64 implementation supports basic API/HW info and
   GPA-to-HPA translation; x86-specific VM/device management hypercalls return
@@ -619,40 +641,42 @@ captures during boot, reboot, or VM2 latency work:
 
 ## QEMU Validation Notes
 
-The following are the current QEMU `-smp 8` validation expectations. Items that
-changed with the VM2 shared-core optimization need a fresh manual QEMU run before
-being treated as verified results:
+The following are the current QEMU `-smp 8` validation expectations for the
+default `CONFIG_ENABLE_VM1_LK=0` RTOS + 2 Linux scenario:
 
 - The hypervisor accepts Enter after boot and prints the `console:\>` shell
   prompt.
 - VM0 Zephyr autostarts as the service VM.
-- VM1 LK autostarts as a pre-launched VM.
-- VM2 Linux autostarts as a pre-launched VM.
-- VM0 Zephyr vCPU0-vCPU3 bind to ordinary-core pCPU0, pCPU2, pCPU3, and pCPU5
-  in ascending `cpu_affinity` order.
-- VM1 LK vCPU0-vCPU3 bind to mixed pCPU3, pCPU5, pCPU6, and pCPU7, sharing
-  pCPU3 and pCPU5 with VM0.
-- VM2 Linux vCPU0-vCPU3 bind to pCPU1, pCPU4, pCPU6, and pCPU7.
+- VM1 Linux-1 autostarts as a pre-launched VM.
+- VM2 Linux-2 autostarts as a pre-launched VM.
+- VM0 Zephyr vCPU0-vCPU3 bind to pCPU1, pCPU2, pCPU3, and pCPU5 in authored
+  `cpu-affinity` order.
+- VM1 Linux-1 vCPU0-vCPU3 bind to pCPU4, pCPU2, pCPU5, and pCPU6 in authored
+  `cpu-affinity` order.
+- VM2 Linux-2 vCPU0-vCPU3 bind to pCPU7, pCPU0, pCPU3, and pCPU6 in authored
+  `cpu-affinity` order.
 - VM0 Zephyr enters EL1 at `0x42000000`.
-- VM1 LK enters EL1 at `0x40100000`.
+- VM1 Linux-1 enters EL1 at `0x58080000`.
+- VM2 Linux-2 enters EL1 at `0x48080000`.
 - Boot logs show each VM stage-2 RAM map as identity mapped:
-  VM0 `ipa[0x42000000-0x48000000]:pa[0x42000000-0x48000000]` and VM1
-  `ipa[0x40000000-0x42000000]:pa[0x40000000-0x42000000]`.
+  VM0 `ipa[0x42000000-0x48000000]:pa[0x42000000-0x48000000]`, VM1
+  `ipa[0x58000000-0x60000000]:pa[0x58000000-0x60000000]`, and VM2
+  `ipa[0x48000000-0x50000000]:pa[0x48000000-0x50000000]`.
 - Before the default BVT switch, `schedstat` reported the configured scheduler,
   per-pCPU scheduler timer callbacks, reschedule requests, runnable-thread
   counts, and context switch counters. After the BVT switch, QEMU validation
   must confirm that it reports `sched_bvt`.
-- `vcpus` reports all three VMs and twelve guest vCPUs. VM0 uses pCPU0, pCPU2,
-  pCPU3, and pCPU5; VM1 uses pCPU3, pCPU5, pCPU6, and pCPU7; VM2 Linux uses
-  pCPU1, pCPU4, pCPU6, and pCPU7.
+- `vcpus` reports all three VMs and twelve guest vCPUs. VM0 uses
+  pCPU1/pCPU2/pCPU3/pCPU5, VM1 Linux-1 uses pCPU4/pCPU2/pCPU5/pCPU6, and VM2
+  Linux-2 uses pCPU7/pCPU0/pCPU3/pCPU6.
 - `vsh 0` enters the Zephyr console and reaches `zero ~>`.
-- `vsh 1` enters the LK console and reaches `beau ~>`.
-- `vsh 2` enters the Linux console and should reach the initramfs `uos` root
-  shell. The VM2 regression now verifies root identity with `id` instead of
-  using the old login flow.
-- VM0 Zephyr `help` and VM1 LK `help` complete through the async VM console
-  path. VM2 Linux shell commands remain part of the active timer/vGIC stability
-  investigation.
+- `vsh 1` enters the Linux-1 console and should reach the initramfs `uos` root
+  shell.
+- `vsh 2` enters the Linux-2 console and should reach the initramfs `uos` root
+  shell. Linux shell regressions should verify root identity with `id` instead
+  of using the old login flow.
+- VM0 Zephyr `help` completes through the async VM console path. Linux-1 and
+  Linux-2 shell commands remain part of the active timer/vGIC stability gate.
 - VM0 Zephyr `symtab list` completes through `vsh 0` and returns to the
   `zero ~>` prompt with async batched VM console output.
 - VM console output bypasses vUART TX FIFO forwarding for the selected `vsh`
@@ -671,7 +695,8 @@ being treated as verified results:
   entries on Zephyr AP pCPUs.
 - Zephyr no longer traps on `GICD_IPRIORITYR` byte writes.
 - Zephyr AP virtual timer interrupts no longer hit the host unexpected IRQ path.
-- LK still boots with 4 CPUs after Zephyr became the service VM.
+- The optional `CONFIG_ENABLE_VM1_LK=1` path still exists, but it is not the
+  default QEMU 3OS validation scenario.
 - The `reboot` shell command resets QEMU and restarts BEAU.
 - `PLATFORM=rk356x` builds a hardware image. Boot correctness is pending manual
   flashing and serial-log validation.
@@ -1160,7 +1185,7 @@ Status as of 2026-06-18:
   IRQs in a queue, and queued injection notifies the vCPU. BEAU therefore should
   not let a host scheduler tick repeatedly consume the guest return window when
   there is no other runnable thread on that pCPU.
-- Validation status for the current local tree:
+- Validation status recorded during the 2026-06-23 investigation:
   `python3 -m py_compile scripts/regress.py`, `sh -n scripts/repack_initramfs.sh`,
   and `git diff --check` pass. The QEMU BEAU image rebuilds successfully with:
 
@@ -1270,8 +1295,9 @@ Selected repair direction after comparing Xen:
 ### RCU Stall Repair Strategy
 
 1. Preserve the fast root-console baseline first. Before any VM2 RCU experiment,
-   run the standard QEMU regression and require VM0 Zephyr, VM1 LK, and VM2
-   Linux root identity checks to pass.
+   run the standard QEMU regression and require VM0 Zephyr plus the configured
+   Linux guests to pass root identity checks. In the optional
+   `CONFIG_ENABLE_VM1_LK=1` path, require VM1 LK console progress instead.
 2. Keep `sdk/image/linux/beau-linux.dts` unchanged. Core scheduler changes
    require explicit confirmation; the approved scope for this follow-up is the
    `core/schedule.c` no-op reschedule clear, not a scheduler algorithm switch.
@@ -1339,7 +1365,7 @@ Selected repair direction after comparing Xen:
 
 ### Current WDT/vtimer Progress, 2026-06-26
 
-Current user-visible status:
+User-visible status in that 2026-06-26 run:
 
 - VM1 LK keeps kicking the BEAU watchdog.
 - VM0 Zephyr can kick several times, then its watchdog path can stop.
@@ -1473,7 +1499,7 @@ Reference-model findings to preserve:
   exits and still did not fix Linux, so keep WFI trapping as narrow diagnostic
   plumbing rather than the main repair.
 
-Current local-tree status:
+2026-06-26 local-tree status, superseded by the 2026-07-08 section below:
 
 - The vGICv3 ITS code has been split out of the main vGICv3 file in the local
   tree. Treat that as organization, not as a WDT fix.
@@ -1535,7 +1561,7 @@ Xen comparison and selected fix:
    treats the mask as hypervisor-private. BEAU now follows the same principle by
    trapping guest CNTV timer registers and leaving only `CNTVCT_EL0` direct.
 
-Validation direction:
+Historical validation direction from this 2026-06-26 analysis:
 
 1. Build QEMU BEAU and run `git diff --check` before runtime testing.
 2. Boot VM0/VM1/VM2 and confirm Linux WDT continues beyond the previous single
@@ -1545,6 +1571,51 @@ Validation direction:
    `dumpstat 2`. Expected post-fix dumps should show no hardware-backed PPI27
    LR and no timer rescue state; guest PPI27 state should be readable from the
    software descriptor and LR state.
+
+### QEMU 3OS WDT/RTDS Progress, 2026-07-08
+
+Current validated status:
+
+- The default QEMU baseline now keeps Zephyr, Linux-1, and Linux-2 at four
+  vCPUs each. The current result is not achieved by reducing guest vCPU counts.
+- QEMU `cpu-affinity` is ordered: entry N maps vCPU N to that pCPU. Example:
+  `<1 6>` means vCPU0 runs on pCPU1 and vCPU1 runs on pCPU6.
+- The current QEMU mapping is VM0 `<1 2 3 5>`, VM1 Linux-1 `<4 2 5 6>`, and
+  VM2 Linux-2 `<7 0 3 6>`. VM vCPU0 pCPUs are unique: pCPU1, pCPU4, and pCPU7.
+  Secondary vCPUs may share pCPUs; pCPU0 is used only by a secondary vCPU to
+  avoid three-way RTDS contention on the secondary pool.
+- The July timeout was not simply a vCPU-count problem. Diagnostics showed VM0
+  vCPU0 running on its exclusive pCPU while VM0 secondary vCPUs on shared RTDS
+  pCPUs stayed runnable with `cpu-wait,rtds-overrun` and zero runtime; Linux
+  VMs kept kicking in that sample.
+- ARM64 physical IRQ return now bounds the guest IRQ forward-progress bypass.
+  A pending guest IRQ or Linux IRQ context can defer host scheduling only for a
+  short budget, then `schedule()` must run and let a shared-pCPU peer run.
+
+The scheduling handoff is:
+
+```text
+physical IRQ exit
+    -> do_softirq_no_irqenable()
+    -> refresh current CNTV/vGIC
+    -> pending guest IRQ or Linux IRQ context?
+        yes -> short bounded return-to-guest window
+        no  -> schedule peer vCPU when reschedule is pending
+    -> budget exhausted: schedule peer vCPU
+    -> pre-ERET vtimer/vGIC flush
+```
+
+Validation run on 2026-07-08:
+
+- `git diff --check` passed for the ARM64 vCPU-exit, VM creation, DTS parser,
+  VM config, and QEMU DTS changes.
+- QEMU and rk356x builds passed with the ARM64 bare-metal toolchain.
+- A QEMU watchdog observation with the default 4+4+4 vCPU layout ran for about
+  60 seconds without a BEAU WDT timeout; VM0, VM1, and VM2 all continued to kick
+  through kick 13.
+- A later `vmstat` observation showed all three VMs alive, zero BEAU WDT
+  timeouts, and VM0 secondary vCPUs no longer reporting
+  `cpu-wait,rtds-overrun`.
 
 ## Code Commenting Guidelines
 
@@ -1587,31 +1658,31 @@ ownership handoffs.
 
 ## Current Limitations
 
-The ARM64 port is now capable of booting Zephyr, LK, and VM2 Linux on QEMU, but
-it is still a bring-up target rather than a complete architectural
-virtualization port.
+The ARM64 port is now capable of booting Zephyr, Linux-1, and Linux-2 on QEMU,
+but it is still a bring-up target rather than a complete architectural
+virtualization port. The optional `CONFIG_ENABLE_VM1_LK=1` path remains useful
+for RTOS comparison, but it is not the default QEMU 3OS baseline.
 
-- vGICv3 is sufficient for the current Zephyr, LK, and 4-vCPU VM2 Linux boot
-  path, and now has initial VM2-only vITS/LPI support for Linux ITS
-  enumeration. It is not a complete GICv3/ITS model yet: active-state stress
-  cases, deeper redistributor behavior, PCI/MSI requester identity plumbing,
-  physical ITS passthrough, dynamic LPI allocation, and richer distributor
-  coverage still need work.
+- vGICv3 is sufficient for the current Zephyr and 4-vCPU Linux boot path, and
+  now has initial Linux vITS/LPI support for ITS enumeration. It is not a
+  complete GICv3/ITS model yet: active-state stress cases, deeper redistributor
+  behavior, PCI/MSI requester identity plumbing, physical ITS passthrough,
+  dynamic LPI allocation, and richer distributor coverage still need work.
 - `GITS_TRANSLATER` direct MMIO injection currently uses device ID 0 as a local
   test path. Real passthrough/MSI code should call `arm64_vgicv3_inject_msi()`
   after requester identity and event mapping are plumbed.
 - QEMU and rk356x VM layout are now DTS-authored, but the DTS is still a
   build-time static configuration source. Runtime host FDT parsing is not yet
   used to derive VM layout.
-- Zephyr and LK are RTOS raw images and boot with `GUEST_FLAG_NO_FW`. VM2 Linux
-  uses a loader/module path for `Image` and `Initramfs.cpio.gz`, while its Linux-on-BEAU
-  DTB remains embedded.
-- VM2 Linux runs as a 4-vCPU guest. The path should reach the initramfs `uos`
-  shell during QEMU validation. The held-Enter and `vsh` switch pressure test
-  is now part of the acceptance gate because it previously reproduced the VM2
-  RCU/vtimer failure.
-- VM2 Linux currently omits `earlycon=pl011,0x09000000` and uses `loglevel=4`
-  to reduce shared-core console pressure during the VM2 latency investigation.
+- Zephyr is an RTOS raw image and boots with `GUEST_FLAG_NO_FW`. Linux-1 and
+  Linux-2 use the loader/module path for `Image`, `Initramfs.cpio.gz`, and
+  per-VM Linux-on-BEAU DTBs.
+- Linux-1 and Linux-2 run as 4-vCPU guests. Both paths should reach the
+  initramfs `uos` shell during QEMU validation. The held-Enter and `vsh` switch
+  pressure tests remain part of the acceptance gate because they previously
+  reproduced RCU/vtimer and console-forward-progress failures.
+- Linux-2 currently omits `earlycon=pl011,0x09000000` and uses `loglevel=4` to
+  reduce shared-core console pressure during latency investigation.
 - VM console output from SMP guests can interleave because multiple guest CPUs
   write concurrently to the same PL011 console.
 - Stage-2 mapping is still static for the QEMU `virt` platform.
@@ -1688,31 +1759,40 @@ ACRN-DM Android launch model.
 
 ## Next Steps
 
-1. Finish the VM watchdog/vtimer issue before treating the QEMU 3OS baseline as
-   stable for the Android phase. The current local tree still shows VM2 Linux
-   usually kicking WDT only once, and VM0 Zephyr can also stop after a few
-   kicks.
-2. On the next failure, keep using `vmstat`, `dumpstat 2`, `vcpus`,
-   `schedstat`, and `irqstat`. If `vmstat` shows no host-to-guest input
-   backlog, continue focusing on VM2/VM0 timer-vGIC state rather than console
-   input.
-3. Reconcile BEAU's CNTV/PPI27 handling with the selected software level model.
-   Avoid more isolated TWI/rescue knobs; live LR, AP, EOI/DIR, host PPI27, and
-   software descriptor ownership must stay consistent.
-4. Extend `scripts/regress.py` with more VM2 Linux initramfs-shell commands, reboot
-   coverage, repeated cold boots, and saved log artifacts suitable for CI.
-5. Audit ARM64 abort handling to confirm whether guest instruction aborts are
+1. Promote the default QEMU 3OS WDT result into a regression gate. Run repeated
+   cold boots, longer watchdog observations, Linux-1/Linux-2 shell commands,
+   held-Enter, and `vsh` switching, and save `vmstat`, `schedstat`, `irqstat`,
+   and `dumpstat` snapshots for failures.
+2. Make RTDS and bounded guest-IRQ scheduling behavior more observable. Useful
+   follow-ups include per-vCPU counters for forward-progress budget expiry,
+   DTS-authored RTDS period/budget policy, and shell output that correlates
+   `cpu-wait`, `rtds-depleted`, and `rtds-overrun` with recent scheduling
+   decisions.
+3. Continue reconciling BEAU's CNTV/PPI27 handling with the selected software
+   level model under stress. Avoid more isolated TWI/rescue knobs; live LR, AP,
+   EOI/DIR, host PPI27, and software descriptor ownership must stay consistent.
+4. Extend `scripts/regress.py` with more Linux initramfs-shell commands, reboot
+   coverage, repeated cold boots, WDT-kick thresholds, and saved log artifacts
+   suitable for CI.
+5. Complete the Linux `virtio_console` path under `sdk/bsp/virtio` while
+   keeping RTOS console traffic on vPL011. This keeps the intended split:
+   RTOS -> `vpl011.c`, Linux -> `virtio_console.c`.
+6. Keep reducing platform-specific static C configuration. Platform
+   directories should converge on `platform.dts` plus `platform.S`; use static
+   C headers only for compile-time limits or information that cannot come from
+   DTS.
+7. Audit ARM64 abort handling to confirm whether guest instruction aborts are
    trapped and diagnosed correctly. Cover instruction fetch aborts separately
    from data abort MMIO paths, document the expected ESR/FAR/HPFAR trigger
    scenarios, and update comments so instruction abort, data abort, and broader
    memory abort terminology are not conflated.
-6. Start the ACRN-DM Android bring-up by creating a Linux-Service-VM QEMU
+8. Start the ACRN-DM Android bring-up by creating a Linux-Service-VM QEMU
    scenario variant and defining the minimal ARM64 HSM/ioctl/hypercall contract
    needed by `sdk/udev`.
-7. Add the ARM64 raw-image Android loader interface to `sdk/udev`, including an
+9. Add the ARM64 raw-image Android loader interface to `sdk/udev`, including an
    explicit DTB argument and vCPU0 register setup for the ARM64 boot ABI.
-8. Extend the static DTS model toward host-FDT-derived memory and device data
+10. Extend the static DTS model toward host-FDT-derived memory and device data
    where it helps reduce board assumptions without weakening the current static
    VM placement invariants.
-9. Bring up rk356x hardware manually, then capture the validated RAM, UART,
+11. Bring up rk356x hardware manually, then capture the validated RAM, UART,
    GIC, and boot-image placement assumptions back into the platform files.

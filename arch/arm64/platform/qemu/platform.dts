@@ -224,12 +224,12 @@
 			};
 		};
 
-			/*
-			 * QEMU cpu-affinity is ordered: entry N is vcpuN's pCPU.
-			 * Keep vcpu0 pCPUs unique across VMs. Secondary vCPUs may share;
-			 * pCPU0 is used only by a secondary vCPU to avoid three-way RTDS
-			 * contention on the secondary pool.
-			 */
+		/*
+		 * 2026-07-08, QEMU cpu-affinity is ordered: entry N is vcpuN's pCPU.
+		 * Keep vcpu0 pCPUs unique across VMs. Secondary vCPUs may share;
+		 * pCPU0 is used only by a secondary vCPU to avoid three-way RTDS
+		 * contention on the secondary pool.
+		 */
 		vm@0 {
 			compatible = "beau,vm";
 			reg = <0>;

@@ -458,6 +458,14 @@ struct acrn_vcpu_arch {
 	struct arm64_vgicv3_vcpu_ctx vgic;
 	struct arm64_vcpu_trap_info trap;
 	struct arm64_vcpu_debug_info debug;
+	/*
+	 * 2026-07-08, bounded IRQ forward progress:
+	 *
+	 *   pending guest IRQ -> short same-vCPU return window
+	 *                     -> budget expires -> scheduler fairness resumes
+	 *
+	 * These fields account that temporary bypass across physical IRQ exits.
+	 */
 	uint64_t irq_forward_progress_start_ticks;
 	uint32_t irq_forward_progress_blocks;
 	uint64_t irqs_pending;

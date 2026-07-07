@@ -225,7 +225,7 @@ static int32_t create_vm_vcpus(struct acrn_vm *vm, uint64_t pcpu_bitmap,
 	int32_t status = 0;
 
 	/*
-	 * DTS-authored cpu-affinity is an ordered vCPU map:
+	 * 2026-07-08, DTS-authored cpu-affinity is an ordered vCPU map:
 	 *
 	 *   cpu-affinity = <1 6>;
 	 *          |
@@ -422,10 +422,15 @@ void launch_vms(uint16_t pcpu_id)
 	}
 
 	/*
-	 * Keep the launcher pCPU available until all configured VM images have
-	 * been prepared and remote guest BSPs have been kicked. Otherwise a VM
-	 * whose BSP vCPU is pinned to the launcher pCPU can start running before
-	 * later VMs in the same static table are even created.
+	 * 2026-07-08, two-phase static VM start:
+	 *
+	 *   create/prepare all VM images
+	 *        -> start VM BSPs on remote pCPUs
+	 *        -> start VM BSPs pinned to this launcher pCPU
+	 *
+	 * Keep the launcher pCPU available until the static table is prepared.
+	 * Otherwise a VM whose BSP vCPU is pinned here can run guest code before
+	 * later VMs in the same table are even created.
 	 */
 	start_prepared_vms(start_vms, start_vm_configs, start_count, pcpu_id, false);
 	start_prepared_vms(start_vms, start_vm_configs, start_count, pcpu_id, true);
