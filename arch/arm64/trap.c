@@ -92,6 +92,8 @@ static void dispatch_interrupt_common(const struct intr_excp_ctx *ctx, bool hand
 {
 	uint32_t intid = arm64_gicv3_ack_irq();
 	uint32_t acrn_irq;
+	const char *domain = ARM64_IRQD_GIC;
+	uint32_t src_id = intid;
 
 	/*
 	 * GIC INTIDs are hardware-local. Convert them to ACRN IRQ numbers before
@@ -102,7 +104,17 @@ static void dispatch_interrupt_common(const struct intr_excp_ctx *ctx, bool hand
 		return;
 	}
 
-	acrn_irq = arm64_domain_get_acrn_irq(ARM64_IRQD_GIC, intid);
+	/*
+	 * GICv3 LPIs are architecturally separate from SGI/PPI/SPI INTIDs. Keep
+	 * common IRQ ids dense by subtracting the LPI base before entering the
+	 * LPI domain.
+	 */
+	if (intid >= ARM64_GIC_FIRST_LPI) {
+		domain = ARM64_IRQD_GIC_LPI;
+		src_id = intid - ARM64_GIC_FIRST_LPI;
+	}
+
+	acrn_irq = arm64_domain_get_acrn_irq(domain, src_id);
 	if (arm64_is_valid_acrn_irq(acrn_irq)) {
 		if (handle_softirq) {
 			do_irq(acrn_irq);

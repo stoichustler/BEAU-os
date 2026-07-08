@@ -112,7 +112,7 @@ static void *get_initrd_load_addr(struct acrn_vm *vm, uint64_t kernel_start)
 	}
 
 	if (ramdisk_load_gpa == INVALID_GPA) {
-		pr_err("no space in guest memory to load vm %d ramdisk", vm->vm_id);
+		LOG_ERR("no space in guest memory to load vm %d ramdisk", vm->vm_id);
 		vm->sw.ramdisk_info.size = 0U;
 	}
 	dev_dbg(DBG_LEVEL_VM_BZIMAGE, "vm%d ramdisk load_addr: 0x%lx", vm->vm_id, ramdisk_load_gpa);
@@ -169,13 +169,13 @@ static void *get_bzimage_kernel_load_addr(struct acrn_vm *vm)
 		load_addr = (void *)zeropage->hdr.pref_addr;
 		if (is_service_vm(vm)) {
 			/* The non-relocatable Servic VM kernel might overlap with boot modules. */
-			pr_err("non-relocatable kernel found, risk to boot!");
+			LOG_ERR("non-relocatable kernel found, risk to boot!");
 		}
 	}
 	post_user_access();
 
 	if (load_addr == NULL) {
-		pr_err("could not get kernel load addr of vm %d .", vm->vm_id);
+		LOG_ERR("could not get kernel load addr of vm %d .", vm->vm_id);
 	}
 
 	dev_dbg(DBG_LEVEL_VM_BZIMAGE, "vm%d kernel load_addr: 0x%lx", vm->vm_id, load_addr);
@@ -229,7 +229,7 @@ static uint16_t create_service_vm_efi_mmap_desc(struct acrn_vm *vm, struct efi_m
 	}
 
 	for (i = 0U; i < desc_idx; i++) {
-		pr_dbg("service vm efi mmap desc[%d]: addr: 0x%lx, len: 0x%lx, type: %d", i,
+		LOG_DBG("service vm efi mmap desc[%d]: addr: 0x%lx, len: 0x%lx, type: %d", i,
 			efi_mmap_desc[i].phys_addr, efi_mmap_desc[i].num_pages * PAGE_SIZE, efi_mmap_desc[i].type);
 	}
 
@@ -247,7 +247,7 @@ static uint32_t create_zeropage_e820(struct zero_page *zp, const struct acrn_vm 
 	const struct e820_entry *vm_e820 = vm->arch_vm.e820_entries;
 
 	if ((zp_e820 == NULL) || (vm_e820 == NULL) || (entry_num == 0U) || (entry_num > E820_MAX_ENTRIES)) {
-		pr_err("e820 create error");
+		LOG_ERR("e820 create error");
 		entry_num = 0U;
 	} else {
 		(void)memcpy_s((void *)zp_e820, entry_num * sizeof(struct e820_entry),
@@ -366,7 +366,7 @@ static void load_bzimage(struct acrn_vm *vm, struct acrn_vcpu *vcpu,
 		} else {
 			vm->sw.ramdisk_info.load_addr = (void *)get_initrd_load_addr(vm, kernel_load_gpa);
 			if (vm->sw.ramdisk_info.load_addr == NULL) {
-				pr_err("failed to load initrd for vm%d !", vm->vm_id);
+				LOG_ERR("failed to load initrd for vm%d !", vm->vm_id);
 			}
 		}
 
@@ -400,7 +400,7 @@ static void load_bzimage(struct acrn_vm *vm, struct acrn_vcpu *vcpu,
 	 * in RSI
 	 */
 	vcpu_set_gpreg(vcpu, CPU_REG_RSI, create_zero_page(vm, load_params_gpa));
-	pr_info("%s, rsi pointing to zero page for vm %d at gpa %x",
+	LOG_INF("%s, rsi pointing to zero page for vm %d at gpa %x",
 			__func__, vm->vm_id, vcpu_get_gpreg(vcpu, CPU_REG_RSI));
 }
 

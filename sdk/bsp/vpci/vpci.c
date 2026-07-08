@@ -689,7 +689,7 @@ static int32_t vpci_write_cfg(struct acrn_vpci *vpci, union pci_bdf bdf,
 			/* expose and pass through platform hidden devices */
 			pci_pdev_write_cfg(bdf, offset, bytes, val);
 		} else {
-			pr_acrnlog("%s %x:%x.%x not found! off: 0x%x, val: 0x%x\n", __func__,
+			LOG_INF("%s %x:%x.%x not found! off: 0x%x, val: 0x%x\n", __func__,
 				bdf.bits.b, bdf.bits.d, bdf.bits.f, offset, val);
 		}
 	}
@@ -779,7 +779,7 @@ static int32_t vpci_init_vdevs(struct acrn_vm *vm)
 		if ((!is_postlaunched_vm(vm)) || (vm_config->pci_devs[idx].vbdf.value != UNASSIGNED_VBDF)) {
 			vdev = vpci_init_vdev(vpci, &vm_config->pci_devs[idx], NULL);
 			if (vdev == NULL) {
-				pr_err("%s: failed to initialize vpci, increase max_pci_dev_num in scenario!\n", __func__);
+				LOG_ERR("%s: failed to initialize vpci, increase max_pci_dev_num in scenario!\n", __func__);
 				break;
 			}
 			ret = check_pt_dev_pio_bars(&vpci->pci_vdevs[idx]);
@@ -818,7 +818,7 @@ int32_t vpci_assign_pcidev(struct acrn_vm *tgt_vm, struct acrn_pcidev *pcidev)
 		/* ToDo: Each PT device must support one type reset */
 		if (!vdev_in_service_vm->pdev->has_pm_reset && !vdev_in_service_vm->pdev->has_flr &&
 				!vdev_in_service_vm->pdev->has_af_flr) {
-			pr_fatal("%s %x:%x.%x not support flr or not support pm reset\n",
+			LOG_FTL("%s %x:%x.%x not support flr or not support pm reset\n",
 				__func__, bdf.bits.b,  bdf.bits.d,  bdf.bits.f);
 		} else {
 			/* DM will reset this device before assigning it */
@@ -861,14 +861,14 @@ int32_t vpci_assign_pcidev(struct acrn_vm *tgt_vm, struct acrn_pcidev *pcidev)
 				vdev_in_service_vm->vdev_ops->init_vdev(vdev_in_service_vm);
 			}
 		} else {
-			pr_fatal("%s, failed to initialize pci device %x:%x.%x for vm [%d]\n", __func__,
+			LOG_FTL("%s, failed to initialize pci device %x:%x.%x for vm [%d]\n", __func__,
 				pcidev->phys_bdf >> 8U, (pcidev->phys_bdf >> 3U) & 0x1fU, pcidev->phys_bdf & 0x7U,
 				tgt_vm->vm_id);
 			ret = -EFAULT;
 		}
 		spinlock_release(&tgt_vm->vpci.lock);
 	} else {
-		pr_fatal("%s, can't find pci device %x:%x.%x for vm[%d] %x:%x.%x\n", __func__,
+		LOG_FTL("%s, can't find pci device %x:%x.%x for vm[%d] %x:%x.%x\n", __func__,
 			pcidev->phys_bdf >> 8U, (pcidev->phys_bdf >> 3U) & 0x1fU, pcidev->phys_bdf & 0x7U,
 			tgt_vm->vm_id,
 			pcidev->virt_bdf >> 8U, (pcidev->virt_bdf >> 3U) & 0x1fU, pcidev->virt_bdf & 0x7U);
@@ -909,7 +909,7 @@ int32_t vpci_deassign_pcidev(struct acrn_vm *tgt_vm, struct acrn_pcidev *pcidev)
 			spinlock_release(&parent_vdev->vpci->lock);
 		}
 	} else {
-		pr_fatal("%s, can't find pci device %x:%x.%x for vm[%d] %x:%x.%x\n", __func__,
+		LOG_FTL("%s, can't find pci device %x:%x.%x for vm[%d] %x:%x.%x\n", __func__,
 			pcidev->phys_bdf >> 8U, (pcidev->phys_bdf >> 3U) & 0x1fU, pcidev->phys_bdf & 0x7U,
 			tgt_vm->vm_id,
 			pcidev->virt_bdf >> 8U, (pcidev->virt_bdf >> 3U) & 0x1fU, pcidev->virt_bdf & 0x7U);

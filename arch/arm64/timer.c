@@ -50,7 +50,7 @@ void arch_init_timer(void)
 	acrn_irq = arm64_domain_get_acrn_irq(ARM64_IRQD_GIC, ARM64_GIC_PPI_HYPERVISOR_TIMER);
 	if (get_pcpu_id() == BSP_CPU_ID) {
 		if ((acrn_irq == IRQ_INVALID) || (request_irq(acrn_irq, timer_irq_handler, NULL, IRQF_NONE) < 0)) {
-			pr_err("timer irq setup failed");
+			LOG_ERR("timer irq setup failed");
 		}
 	}
 	if (acrn_irq != IRQ_INVALID) {

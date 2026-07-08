@@ -150,7 +150,7 @@ static int32_t handle_one_drhd(struct acpi_dmar_hardware_unit *acpi_drhd, struct
 			(ads->entry_type < ACPI_DMAR_SCOPE_TYPE_RESERVED)) {
 			dev_scope++;
 		} else {
-			pr_dbg("drhd: skip dev_scope type %d", ads->entry_type);
+			LOG_DBG("drhd: skip dev_scope type %d", ads->entry_type);
 		}
 	}
 
@@ -203,7 +203,7 @@ int32_t parse_dmar_table(struct dmar_info *plat_dmar_info)
 	}
 
 	if ((include_all_idx != ~0U) && (dmar_unit_cnt != (include_all_idx + 1U))) {
-		pr_err("drhd%d with include_pci_all flag is not the last one. please fix the bios.", include_all_idx);
+		LOG_ERR("drhd%d with include_pci_all flag is not the last one. please fix the bios.", include_all_idx);
 	}
 
 	ASSERT(dmar_unit_cnt <= MAX_DRHDS, "parsed dmar_unit_cnt > max_drhds");

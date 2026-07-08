@@ -13,6 +13,7 @@ struct acrn_vm;
 struct io_request;
 
 void virtio_console_init_vm(struct acrn_vm *vm);
+void virtio_console_reset_vm(struct acrn_vm *vm);
 int32_t virtio_console_mmio_handler(struct io_request *io_req,
 	void *handler_private_data);
 

@@ -43,7 +43,7 @@ void vcpu_queue_exception(struct acrn_vcpu *vcpu, struct arm64_vcpu_trap_info *t
 
 	if (trap != NULL) {
 		if (arch->trap.esr != EXCEPTION_INVALID) {
-			pr_err("nested exception happened, prev esr=0x%lx", arch->trap.esr);
+			LOG_ERR("nested exception happened, prev esr=0x%lx", arch->trap.esr);
 		}
 
 		arch->trap = *trap;

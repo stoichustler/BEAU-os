@@ -29,6 +29,7 @@
 #include <vcpu.h>
 
 #define	NEED_SHUTDOWN_VM	(2U)
+#define NEED_RESET_VM		(3U)
 
 struct vm_hw_info {
 	/* vcpu array of this VM */
@@ -174,6 +175,9 @@ static inline bool is_severity_pass(uint16_t target_vmid)
 void shutdown_vm_from_idle(uint16_t pcpu_id);
 void make_shutdown_vm_request(uint16_t pcpu_id);
 bool need_shutdown_vm(uint16_t pcpu_id);
+void reset_vm_from_idle(uint16_t pcpu_id);
+int32_t make_reset_vm_request(uint16_t pcpu_id, uint16_t vm_id);
+bool need_reset_vm(uint16_t pcpu_id);
 void poweroff_if_rt_vm(struct acrn_vm *vm);
 bool is_poweroff_vm(const struct acrn_vm *vm);
 bool is_created_vm(const struct acrn_vm *vm);
@@ -212,6 +216,7 @@ int32_t create_vm(uint16_t vm_id, uint64_t pcpu_bitmap, struct acrn_vm_config *v
 void launch_vms(uint16_t pcpu_id);
 void start_vm(struct acrn_vm *vm);
 void pause_vm(struct acrn_vm *vm);
+int32_t restart_vm(struct acrn_vm *vm);
 int32_t destroy_vm(struct acrn_vm *vm);
 int32_t reset_vm(struct acrn_vm *vm);
 

@@ -110,7 +110,7 @@ void beau_gicv5_iwb_init(uint64_t base, uint64_t size)
 
 	cr0 = beau_gicv5_iwb_read_4(IWB_CR0);
 	if ((cr0 & CR0_IWBEN) == 0U) {
-		pr_warn("gicv5 iwb disabled by firmware: cr0=0x%x", cr0);
+		LOG_WRN("gicv5 iwb disabled by firmware: cr0=0x%x", cr0);
 		return;
 	}
 
@@ -126,10 +126,10 @@ void beau_gicv5_iwb_init(uint64_t base, uint64_t size)
 	spinlock_irqrestore_release(&beau_gicv5_iwb_lock, flags);
 
 	if (beau_gicv5_iwb_ready) {
-		pr_info("gicv5 iwb at 0x%016lx (0x%08lx), wires=%u",
+		LOG_INF("gicv5 iwb at 0x%016lx (0x%08lx), wires=%u",
 			beau_gicv5_iwb_base, beau_gicv5_iwb_size, beau_gicv5_iwb_nirq);
 	} else {
-		pr_warn("gicv5 iwb enable status timeout");
+		LOG_WRN("gicv5 iwb enable status timeout");
 	}
 }
 

@@ -39,7 +39,7 @@ void arch_init_smp_call(void)
 		acrn_irq = arm64_domain_get_acrn_irq(ARM64_IRQD_GIC, ARM64_GIC_SGI_SMP_CALL);
 		if ((acrn_irq == IRQ_INVALID) ||
 			(request_irq(acrn_irq, arm64_smp_call_irq_handler, NULL, IRQF_NONE) < 0)) {
-			pr_err("software interrupt irq setup failed");
+			LOG_ERR("software interrupt irq setup failed");
 		}
 	}
 }

@@ -218,7 +218,7 @@ int32_t create_vcpu(struct acrn_vm *vm, uint16_t pcpu_id)
 		 * needs revise.
 		 */
 
-		pr_info("create vm%d:vcpu%d runs as %s vcpu",
+		LOG_INF("create vm%d:vcpu%d runs as %s vcpu",
 				vcpu->vm->vm_id, vcpu->vcpu_id,
 				is_vcpu_bsp(vcpu) ? "  primary" : "secondary");
 
@@ -247,7 +247,7 @@ int32_t create_vcpu(struct acrn_vm *vm, uint16_t pcpu_id)
 			vcpu->state = VCPU_INIT;
 		}
 	} else {
-		pr_err("%s, vcpu id is invalid!\n", __func__);
+		LOG_ERR("%s, vcpu id is invalid!\n", __func__);
 		ret = -EINVAL;
 	}
 
@@ -275,7 +275,7 @@ void launch_vcpu(struct acrn_vcpu *vcpu)
 {
 	uint16_t pcpu_id = pcpuid_from_vcpu(vcpu);
 
-	pr_dbg("vm%hu:vcpu%hu scheduled on pcpu%hu", vcpu->vm->vm_id,
+	LOG_DBG("vm%hu:vcpu%hu scheduled on pcpu%hu", vcpu->vm->vm_id,
 		vcpu->vcpu_id, pcpu_id);
 
 	vcpu_set_state(vcpu, VCPU_RUNNING);
@@ -310,7 +310,7 @@ void zombie_vcpu(struct acrn_vcpu *vcpu)
 	enum vcpu_state prev_state;
 	uint16_t pcpu_id = pcpuid_from_vcpu(vcpu);
 
-	pr_dbg("vcpu%hu paused", vcpu->vcpu_id);
+	LOG_DBG("vcpu%hu paused", vcpu->vcpu_id);
 
 	if ((vcpu->state == VCPU_RUNNING) || (vcpu->state == VCPU_INIT)) {
 		prev_state = vcpu->state;

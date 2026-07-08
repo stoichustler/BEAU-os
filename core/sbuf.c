@@ -95,7 +95,7 @@ int32_t sbuf_share_setup(uint16_t pcpu_id, uint32_t sbuf_id, uint64_t *hva)
 
 	if ((pcpu_id < get_pcpu_nums()) && (sbuf_id < ACRN_SBUF_PER_PCPU_ID_MAX)) {
 		per_cpu(sbuf, pcpu_id)[sbuf_id] = (struct shared_buf *) hva;
-		pr_info("%s share sbuf for pcpu[%u] with sbuf_id[%u] setup successfully",
+		LOG_INF("%s share sbuf for pcpu[%u] with sbuf_id[%u] setup successfully",
 				__func__, pcpu_id, sbuf_id);
 		ret = 0;
 	}
@@ -132,7 +132,7 @@ int32_t sbuf_setup_common(struct acrn_vm *vm, uint16_t cpu_id, uint32_t sbuf_id,
 			ret = init_vm_event(vm, hva);
 			break;
 		default:
-			pr_err("%s not support sbuf_id %d", __func__, sbuf_id);
+			LOG_ERR("%s not support sbuf_id %d", __func__, sbuf_id);
 			ret = -1;
 	}
 

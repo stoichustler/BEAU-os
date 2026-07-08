@@ -111,7 +111,7 @@ static void create_vf(struct pci_vdev *pf_vdev, union pci_bdf vf_bdf, uint16_t v
 		control = read_sriov_reg(pf_vdev, PCIR_SRIOV_CONTROL);
 		control &= (~PCIM_SRIOV_VF_ENABLE);
 		pci_pdev_write_cfg(pf_vdev->bdf, pf_vdev->sriov.capoff + PCIR_SRIOV_CONTROL, 2U, control);
-		pr_err("pf %x:%x.%x can't creat vf, unset vf_enable",
+		LOG_ERR("pf %x:%x.%x can't creat vf, unset vf_enable",
 			pf_vdev->bdf.bits.b, pf_vdev->bdf.bits.d, pf_vdev->bdf.bits.f);
 	} else {
 		uint32_t bar_idx;
@@ -224,7 +224,7 @@ static void enable_vfs(struct pci_vdev *pf_vdev)
 		 * If the VF physical device was not created successfully, the pdev/vdev
 		 * will also not be created so that Service VM can aware of VF creation failure,
 		 */
-		pr_err("pf %x:%x.%x can't create vfs after 100 ms",
+		LOG_ERR("pf %x:%x.%x can't create vfs after 100 ms",
 			pf_vdev->bdf.bits.b, pf_vdev->bdf.bits.d, pf_vdev->bdf.bits.f);
 	}
 }

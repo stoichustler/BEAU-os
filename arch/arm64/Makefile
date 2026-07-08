@@ -65,6 +65,7 @@ HOST_C_SRCS += arch/arm64/notify.c
 HOST_C_SRCS += arch/arm64/trap.c
 HOST_C_SRCS += arch/arm64/security.c
 HOST_C_SRCS += arch/arm64/pm.c
+HOST_C_SRCS += arch/arm64/smmu/smmuv3.c
 
 VP_S_SRCS +=
 VP_S_SRCS += arch/arm64/guest/guest_entry.S
@@ -73,6 +74,7 @@ VP_C_SRCS += arch/arm64/guest/guest_memory.c
 VP_C_SRCS += arch/arm64/guest/vcpu.c
 VP_C_SRCS += arch/arm64/guest/vm.c
 VP_C_SRCS += arch/arm64/guest/vcpu_exit.c
+VP_C_SRCS += arch/arm64/guest/vpsci.c
 VP_C_SRCS += arch/arm64/guest/virq.c
 VP_C_SRCS += arch/arm64/guest/vgicv3.c
 VP_C_SRCS += arch/arm64/guest/vgicv3_its.c

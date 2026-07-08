@@ -25,6 +25,7 @@
 #include <asm/sysreg.h>
 #include <asm/trap.h>
 #include <asm/guest/vcpu_priv.h>
+#include <asm/guest/vm_reset.h>
 #include <asm/guest/vgicv3.h>
 
 /*
@@ -164,17 +165,17 @@ static void dump_vm_stack_trace(struct acrn_vcpu *vcpu, const struct cpu_regs *r
 	 * the current static 1:1 RTOS layout. Guests using high virtual kernel
 	 * stacks need guest VA translation before deeper frames can be decoded.
 	 */
-	pr_err("arm64 %s vm%u:vcpu%u stack pc=0x%lx sp=0x%lx fp=0x%lx lr=0x%lx",
+	LOG_ERR("arm64 %s vm%u:vcpu%u stack pc=0x%lx sp=0x%lx fp=0x%lx lr=0x%lx",
 		reason, vcpu->vm->vm_id, vcpu->vcpu_id, regs->elr, regs->sp, fp, lr);
 
 	if ((fp == 0UL) && (lr == 0UL)) {
-		pr_err("arm64 %s vm%u:vcpu%u stack trace unavailable: empty frame registers",
+		LOG_ERR("arm64 %s vm%u:vcpu%u stack trace unavailable: empty frame registers",
 			reason, vcpu->vm->vm_id, vcpu->vcpu_id);
 		return;
 	}
 
 	for (idx = 0U; idx < VM_STACK_TRACE_DEPTH; idx++) {
-		pr_err("arm64 %s vm%u:vcpu%u frame[%02u] fp=0x%lx lr=0x%lx",
+		LOG_ERR("arm64 %s vm%u:vcpu%u frame[%02u] fp=0x%lx lr=0x%lx",
 			reason, vcpu->vm->vm_id, vcpu->vcpu_id, idx, fp, lr);
 
 		if (fp == 0UL) {
@@ -182,7 +183,7 @@ static void dump_vm_stack_trace(struct acrn_vcpu *vcpu, const struct cpu_regs *r
 		}
 
 		if (copy_from_gpa(vcpu->vm, &frame, fp, sizeof(frame)) != 0) {
-			pr_err("arm64 %s vm%u:vcpu%u stack trace stopped: guest fp is not directly readable as GPA",
+			LOG_ERR("arm64 %s vm%u:vcpu%u stack trace stopped: guest fp is not directly readable as GPA",
 				reason, vcpu->vm->vm_id, vcpu->vcpu_id);
 			break;
 		}
@@ -201,7 +202,7 @@ static struct acrn_vcpu *get_exit_vcpu(uint16_t pcpu_id)
 	struct acrn_vcpu *vcpu = get_running_vcpu(pcpu_id);
 
 	if (vcpu == NULL) {
-		pr_fatal("arm64 vcpu exit without current vcpu on pcpu%hu", pcpu_id);
+		LOG_FTL("arm64 vcpu exit without current vcpu on pcpu%hu", pcpu_id);
 		cpu_dead();
 	}
 
@@ -413,6 +414,11 @@ static void prepare_current_guest_resume(struct acrn_vcpu *vcpu)
 static struct acrn_vcpu *schedule_without_guest_resume(uint16_t pcpu_id,
 	struct acrn_vcpu *vcpu)
 {
+	if ((vcpu->state != VCPU_RUNNING) || vcpu->thread_obj.be_blocking) {
+		schedule();
+		return get_exit_vcpu(pcpu_id);
+	}
+
 	refresh_current_vtimer(vcpu);
 	if (need_reschedule(pcpu_id) && !vcpu_has_pending_request(vcpu)) {
 		(void)sched_clear_reschedule_if_current_only(pcpu_id);
@@ -611,7 +617,7 @@ static int32_t handle_mmio_abort(struct acrn_vcpu *vcpu)
 		}
 		advance_vcpu_elr(vcpu);
 	} else {
-		pr_err("arm64 mmio abort failed: ipa=0x%lx size=%lu dir=%s srt=%u esr=0x%lx ret=%d",
+		LOG_ERR("arm64 mmio abort failed: ipa=0x%lx size=%lu dir=%s srt=%u esr=0x%lx ret=%d",
 			ipa, size, ((esr & ESR_DABT_WNR) != 0UL) ? "write" : "read",
 			reg_idx, esr, ret);
 	}
@@ -631,7 +637,7 @@ static int32_t handle_instruction_abort(struct acrn_vcpu *vcpu)
 	 * permission fault. They are captured for diagnostics but are not emulated
 	 * as MMIO because no load/store value or target register exists.
 	 */
-	pr_err("arm64 instruction abort vm%u:vcpu%u ipa=0x%lx far=0x%lx hpfar=0x%lx fsc=0x%x esr=0x%lx elr=0x%lx",
+	LOG_ERR("arm64 instruction abort vm%u:vcpu%u ipa=0x%lx far=0x%lx hpfar=0x%lx fsc=0x%x esr=0x%lx elr=0x%lx",
 		vcpu->vm->vm_id, vcpu->vcpu_id, ipa, regs->far, regs->hpfar,
 		fsc, regs->esr, regs->elr);
 	dump_vm_stack_trace(vcpu, regs, "instruction abort");
@@ -648,7 +654,7 @@ static int32_t handle_serror(struct acrn_vcpu *vcpu)
 	 * that caused it. The ELR/SP/FP snapshot still identifies where the VM was
 	 * interrupted, which is usually the best handoff point for manual triage.
 	 */
-	pr_err("arm64 serror vm%u:vcpu%u esr=0x%lx elr=0x%lx far=0x%lx hpfar=0x%lx",
+	LOG_ERR("arm64 serror vm%u:vcpu%u esr=0x%lx elr=0x%lx far=0x%lx hpfar=0x%lx",
 		vcpu->vm->vm_id, vcpu->vcpu_id, regs->esr, regs->elr, regs->far,
 		regs->hpfar);
 	dump_vm_stack_trace(vcpu, regs, "serror");
@@ -762,14 +768,15 @@ static int32_t handle_psci64(struct acrn_vcpu *vcpu, bool advance_elr)
 		record_psci_call(vcpu, fn, target, ret);
 		break;
 	case PSCI_0_2_FN_SYSTEM_OFF:
+		ret = arm64_vpsci_system_off(vcpu);
+		record_psci_call(vcpu, fn, vcpu, ret);
+		break;
 	case PSCI_0_2_FN_SYSTEM_RESET:
-		pr_info("vm%u psci system request 0x%x", vcpu->vm->vm_id, fn);
-		zombie_vcpu(vcpu);
-		ret = PSCI_RET_SUCCESS;
+		ret = arm64_vpsci_system_reset(vcpu);
 		record_psci_call(vcpu, fn, vcpu, ret);
 		break;
 	default:
-		pr_warn("vm%u:vcpu%u unsupported psci call 0x%x",
+		LOG_WRN("vm%u:vcpu%u unsupported psci call 0x%x",
 			vcpu->vm->vm_id, vcpu->vcpu_id, fn);
 		ret = PSCI_RET_NOT_SUPPORTED;
 		record_psci_call(vcpu, fn, NULL, ret);
@@ -877,7 +884,7 @@ static int32_t handle_sysreg(struct acrn_vcpu *vcpu)
 		uint32_t crm = (uint32_t)((iss >> ESR_SYSREG_CRM_SHIFT) & ESR_SYSREG_CRM_MASK);
 		uint32_t op2 = (uint32_t)((iss >> ESR_SYSREG_OP2_SHIFT) & ESR_SYSREG_OP2_MASK);
 
-		pr_err("unsupported arm64 sysreg trap vm%u:vcpu%u %s rt=%u op=%u:%u:c%u:c%u:%u esr=0x%lx elr=0x%lx",
+		LOG_ERR("unsupported arm64 sysreg trap vm%u:vcpu%u %s rt=%u op=%u:%u:c%u:c%u:%u esr=0x%lx elr=0x%lx",
 			vcpu->vm->vm_id, vcpu->vcpu_id, read ? "read" : "write",
 			rt, op0, op1, crn, crm, op2, esr, regs->elr);
 	}
@@ -1013,7 +1020,7 @@ int32_t vcpu_exit_handler(struct acrn_vcpu *vcpu)
 		return 0;
 	}
 
-	pr_err("unhandled arm64 vcpu exit vm%u:vcpu%u ec=0x%lx esr=0x%lx elr=0x%lx far=0x%lx hpfar=0x%lx",
+	LOG_ERR("unhandled arm64 vcpu exit vm%u:vcpu%u ec=0x%lx esr=0x%lx elr=0x%lx far=0x%lx hpfar=0x%lx",
 		vcpu->vm->vm_id, vcpu->vcpu_id, ec, vcpu->arch.regs.esr,
 		vcpu->arch.regs.elr, vcpu->arch.regs.far, vcpu->arch.regs.hpfar);
 	return -EINVAL;
@@ -1037,7 +1044,7 @@ void dispatch_vcpu_trap(struct cpu_regs *regs)
 
 	ret = vcpu_exit_handler(vcpu);
 	if (ret < 0) {
-		pr_err("failed to handle arm64 vcpu exit. ret=%d", ret);
+		LOG_ERR("failed to handle arm64 vcpu exit. ret=%d", ret);
 		get_vm_lock(vcpu->vm);
 		zombie_vcpu(vcpu);
 		put_vm_lock(vcpu->vm);
@@ -1053,7 +1060,7 @@ void dispatch_vcpu_trap(struct cpu_regs *regs)
 	vcpu = schedule_without_guest_resume(pcpu_id, vcpu);
 	ret = arm64_process_vcpu_requests(vcpu);
 	if (ret < 0) {
-		pr_fatal("failed to process arm64 vcpu requests");
+		LOG_FTL("failed to process arm64 vcpu requests");
 		get_vm_lock(vcpu->vm);
 		zombie_vcpu(vcpu);
 		put_vm_lock(vcpu->vm);
@@ -1098,7 +1105,7 @@ void dispatch_vcpu_irq(struct cpu_regs *regs)
 	vcpu = schedule_without_guest_resume(pcpu_id, vcpu);
 	ret = arm64_process_vcpu_requests(vcpu);
 	if (ret < 0) {
-		pr_fatal("failed to process arm64 vcpu requests");
+		LOG_FTL("failed to process arm64 vcpu requests");
 		get_vm_lock(vcpu->vm);
 		zombie_vcpu(vcpu);
 		put_vm_lock(vcpu->vm);

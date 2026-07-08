@@ -83,7 +83,7 @@ int32_t prepare_os_image(struct acrn_vm *vm)
 		 */
 		load_sw_module(vm, acpi_info);
 		load_sw_module(vm, &(vm->sw.fdt_info));
-		pr_dbg("vm-%hu kernel entry at 0x%016lx", vm->vm_id,
+		LOG_DBG("vm-%hu kernel entry at 0x%016lx", vm->vm_id,
 			vm->sw.kernel_info.kernel_entry_addr);
 	}
 

@@ -21,6 +21,12 @@
 
 struct vm_arch {
 	int64_t time_delta;
+	/*
+	 * Common ptdev uses this as an interrupt-storm throttle. ARM64 keeps the
+	 * same field so the shared passthrough IRQ path can compile unchanged;
+	 * zero means inject immediately.
+	 */
+	uint64_t intr_inject_delay_delta;
 	struct arm64_vgicv3 vgic;
 };
 

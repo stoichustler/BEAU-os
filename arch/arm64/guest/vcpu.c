@@ -493,7 +493,7 @@ void arch_vcpu_thread(struct thread_object *obj)
 	 * persistent register block is copied to/from a temporary trap frame rather
 	 * than being used directly as the live EL2 stack.
 	 */
-	pr_info("vm%u:vcpu%u enter guest EL1 at 0x%lx",
+	LOG_INF("vm%u:vcpu%u enter guest EL1 at 0x%lx",
 		vcpu->vm->vm_id, vcpu->vcpu_id, vcpu->arch.regs.elr);
 
 	while (vcpu->state == VCPU_RUNNING) {

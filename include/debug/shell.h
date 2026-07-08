@@ -25,5 +25,6 @@ void shell_start(void);
 void shell_kick(void);
 bool shell_is_open(void);
 bool shell_async_puts(const char *string_ptr);
+bool shell_async_puts_raw(const char *string_ptr);
 
 #endif /* SHELL_H */

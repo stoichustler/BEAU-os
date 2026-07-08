@@ -13,12 +13,12 @@ void arch_shutdown_host(void);
 void arch_reset_host(bool warm);
 
 static inline void shutdown_host(void) {
-	pr_info("shutting down BEAU");
+	LOG_INF("shutting down BEAU");
 	arch_shutdown_host();
 }
 
 static inline void reset_host(bool warm) {
-	pr_info("%s rebooting BEAU", warm ? "warm" : "cold");
+	LOG_INF("%s rebooting BEAU", warm ? "warm" : "cold");
 	arch_reset_host(warm);
 }
 

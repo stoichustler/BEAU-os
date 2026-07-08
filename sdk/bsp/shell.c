@@ -945,6 +945,38 @@ bool shell_async_puts(const char *string_ptr)
 	return true;
 }
 
+bool shell_async_puts_raw(const char *string_ptr)
+{
+	uint64_t rflags;
+
+	if (!shell_is_open()) {
+		return false;
+	}
+
+	spinlock_irqsave_obtain(&shell_tx_lock, &rflags);
+	if (shell_input_active) {
+		/*
+		 * 2026-07-08, shell/log interleave principle:
+		 *
+		 * System logs may arrive while the shell prompt is already visible.
+		 * Treat the prompt and any partially typed command as an editable row:
+		 *
+		 *   prompt/input -> clear row -> async log line -> restore prompt/input
+		 *
+		 * This mirrors Zephyr shell console behavior: asynchronous output owns
+		 * a complete line, never the tail of the current input row.
+		 */
+		shell_clear_current_line_unlocked();
+		shell_puts_unlocked(string_ptr);
+		shell_restore_input_line_unlocked();
+	} else {
+		shell_puts_unlocked(string_ptr);
+	}
+	spinlock_irqrestore_release(&shell_tx_lock, rflags);
+
+	return true;
+}
+
 static void shell_thread_main(__unused struct thread_object *obj)
 {
 	while (true) {

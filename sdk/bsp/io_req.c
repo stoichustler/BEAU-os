@@ -124,14 +124,14 @@ int add_asyncio(struct acrn_vm *vm, const struct acrn_asyncio_info *async_info)
 			}
 			spinlock_release(&vm->asyncio_lock);
 			if (i == ACRN_ASYNCIO_MAX) {
-				pr_fatal("too much fastio, would not support!");
+				LOG_FTL("too much fastio, would not support!");
 			}
 		} else {
 			spinlock_release(&vm->asyncio_lock);
-			pr_err("%s, already registered!", __func__);
+			LOG_ERR("%s, already registered!", __func__);
 		}
 	} else {
-		pr_err("%s: base = 0 is not supported!", __func__);
+		LOG_ERR("%s: base = 0 is not supported!", __func__);
 	}
 	return ret;
 }
@@ -161,10 +161,10 @@ int remove_asyncio(struct acrn_vm *vm, const struct acrn_asyncio_info *async_inf
 		}
 		spinlock_release(&vm->asyncio_lock);
 		if (i == ACRN_ASYNCIO_MAX) {
-			pr_fatal("failed to find asyncio req on addr: %lx!", async_info->addr);
+			LOG_FTL("failed to find asyncio req on addr: %lx!", async_info->addr);
 		}
 	} else {
-		pr_err("%s: base = 0 is not supported!", __func__);
+		LOG_ERR("%s: base = 0 is not supported!", __func__);
 	}
 	return ret;
 }
@@ -687,7 +687,7 @@ hv_emulate_pio(struct acrn_vcpu *vcpu, struct io_request *io_req)
 		/* do nothing */
 	}
 
-	pr_dbg("io %s on port %04x, data %08x",
+	LOG_DBG("io %s on port %04x, data %08x",
 		(pio_req->direction == ACRN_IOREQ_DIR_READ) ? "read" : "write", port, pio_req->value);
 
 	return status;
@@ -748,7 +748,7 @@ hv_emulate_mmio(struct acrn_vcpu *vcpu, struct io_request *io_req)
 					read_write = mmio_handler->read_write;
 					handler_private_data = mmio_handler->handler_private_data;
 				} else {
-					pr_fatal("err mmio, address:0x%lx, size:%x", address, size);
+					LOG_FTL("err mmio, address:0x%lx, size:%x", address, size);
 					status = -EIO;
 				}
 				break;
@@ -848,7 +848,7 @@ emulate_io(struct acrn_vcpu *vcpu, struct io_request *io_req)
 			 */
 			struct acrn_pio_request *pio_req = &io_req->reqs.pio_request;
 
-			pr_fatal("%s err: access dir %d, io_type %d, addr = 0x%lx, size=%lu", __func__,
+			LOG_FTL("%s err: access dir %d, io_type %d, addr = 0x%lx, size=%lu", __func__,
 				pio_req->direction, io_req->io_type,
 				pio_req->address, pio_req->size);
 		}
@@ -908,7 +908,7 @@ static inline struct mem_io_node *find_match_mmio_node(struct acrn_vm *vm,
 	}
 
 	if (!found) {
-		pr_info("%s, vm[%d] no match mmio region [0x%lx, 0x%lx] is found",
+		LOG_INF("%s, vm[%d] no match mmio region [0x%lx, 0x%lx] is found",
 				__func__, vm->vm_id, start, end);
 		mmio_node = NULL;
 	}

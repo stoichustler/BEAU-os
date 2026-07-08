@@ -28,11 +28,14 @@
 #define ARM64_GIC_PRIORITY_MASKED	0xffU
 
 /*
- * Reserved space for the future GIC distributor domain. The first-stage
- * skeleton only wires the CPU-local domain.
+ * ARM64 interrupt numbers are sparse in hardware but dense in the common IRQ
+ * core. SPI/PPI/SGI INTIDs live below 1024; ITS LPIs begin at 8192. Keep them
+ * as separate domains so the common IRQ bitmap does not need an 8K hole.
  */
 #define IRQ_NUM_GIC_DOMAIN		1024U
-#define NR_IRQS				(IRQ_NUM_CPU_DOMAIN + IRQ_NUM_GIC_DOMAIN)
+#define IRQ_NUM_GIC_LPI_DOMAIN		1024U
+#define ARM64_GIC_FIRST_LPI		8192U
+#define NR_IRQS				(IRQ_NUM_CPU_DOMAIN + IRQ_NUM_GIC_DOMAIN + IRQ_NUM_GIC_LPI_DOMAIN)
 
 struct arm64_irq_data {
 	uint32_t acrn_irq;
@@ -58,6 +61,7 @@ struct intr_excp_ctx {
 
 #define ARM64_IRQD_CPU		"cpu-intc"
 #define ARM64_IRQD_GIC		"gicv3"
+#define ARM64_IRQD_GIC_LPI	"gicv3-lpi"
 
 bool arm64_register_irq_domain(const char *name, uint32_t irq_num);
 uint32_t arm64_domain_get_acrn_irq(const char *name, uint32_t src_id);

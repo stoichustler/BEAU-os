@@ -185,11 +185,11 @@ static void ivshmem_server_notify_peer(struct ivshmem_device *src_ivs_dev, uint1
 				dest_vm = vpci2vm(dest_ivs_dev->pcidev->vpci);
 				vlapic_inject_msi(dest_vm, entry->addr, entry->data);
 			} else {
-				pr_err("%s,target msix entry [%d] is masked.\n",
+				LOG_ERR("%s,target msix entry [%d] is masked.\n",
 					__func__, vector_index);
 			}
 		} else {
-			pr_err("%s,invalid peer, id = %d, vector index [%d] or msi-x is disabled.\n",
+			LOG_ERR("%s,invalid peer, id = %d, vector index [%d] or msi-x is disabled.\n",
 				__func__, dest_peer_id, vector_index);
 		}
 	}
@@ -485,7 +485,7 @@ static void init_ivshmem_bar(struct pci_vdev *vdev, uint32_t bar_idx)
 			size = region->size;
 			vbar->base_hpa = region->hpa;
 		} else {
-			pr_err("%s ivshmem device %x:%x.%x has no memory region\n",
+			LOG_ERR("%s ivshmem device %x:%x.%x has no memory region\n",
 				__func__, vdev->bdf.bits.b, vdev->bdf.bits.d, vdev->bdf.bits.f);
 		}
 	} else if (bar_idx == IVSHMEM_MSIX_BAR) {
@@ -670,7 +670,7 @@ int32_t create_ivshmem_vdev(struct acrn_vm *vm, struct acrn_vdev *dev)
 	}
 
 	if (ret != 0) {
-		pr_warn("%s, failed to create ivshmem device %x:%x.%x\n", __func__,
+		LOG_WRN("%s, failed to create ivshmem device %x:%x.%x\n", __func__,
 			dev->slot >> 8U, (dev->slot >> 3U) & 0x1fU, dev->slot & 0x7U);
 	}
 	return ret;

@@ -69,7 +69,7 @@ int32_t hcall_initialize_trusty(struct acrn_vcpu *vcpu, __unused struct acrn_vm 
 		}
 	} else {
 		ret = -EPERM;
-		pr_err("%s, context mismatch when initialize trusty.\n", __func__);
+		LOG_ERR("%s, context mismatch when initialize trusty.\n", __func__);
 	}
 	return ret;
 }
@@ -102,7 +102,7 @@ int32_t hcall_save_restore_sworld_ctx(struct acrn_vcpu *vcpu, __unused struct ac
 		}
 	} else {
 		ret = -EPERM;
-		pr_err("%s, states mismatch when save restore sworld context.\n", __func__);
+		LOG_ERR("%s, states mismatch when save restore sworld context.\n", __func__);
 	}
 
 	return ret;

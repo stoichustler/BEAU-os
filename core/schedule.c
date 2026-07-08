@@ -644,6 +644,8 @@ void default_idle(__unused struct thread_object *obj)
 			schedule();
 		} else if (need_offline(pcpu_id)) {
 			cpu_dead();
+		} else if (need_reset_vm(pcpu_id)) {
+			reset_vm_from_idle(pcpu_id);
 		} else if (need_shutdown_vm(pcpu_id)) {
 			shutdown_vm_from_idle(pcpu_id);
 		} else {

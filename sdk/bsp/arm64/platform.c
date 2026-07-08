@@ -23,6 +23,7 @@
 #define ARM64_FDT_PHANDLE_UARTCLK	4U
 #define ARM64_FDT_PHANDLE_ITS		5U
 #define ARM64_FDT_PHANDLE_VIRTIO_CONSOLE 6U
+#define ARM64_FDT_PHANDLE_VIRTIO_FS	7U
 
 #define ARM64_FDT_GIC_SPI		0U
 #define ARM64_FDT_GIC_PPI		1U
@@ -121,6 +122,12 @@ static bool fdt_vm_uses_virtio_console(const struct acrn_vm_config *vm_config)
 {
 	return (vm_config->os_config.os_family == VM_OS_LINUX) &&
 		(vm_config->arch.guest_virtio_console_size != 0UL);
+}
+
+static bool fdt_vm_uses_virtio_fs(const struct acrn_vm_config *vm_config)
+{
+	return (vm_config->os_config.os_family == VM_OS_LINUX) &&
+		(vm_config->arch.guest_virtio_fs_size != 0UL);
 }
 
 static void fdt_begin_cpu_node(void *fdt, uint32_t vcpu_id)
@@ -354,6 +361,35 @@ static void fdt_add_virtio_console(void *fdt, struct acrn_vm *vm)
 	fdt_check_ret(fdt_end_node(fdt), "virtio console end");
 }
 
+static void fdt_add_virtio_fs(void *fdt, struct acrn_vm *vm)
+{
+	const struct arch_vm_config *arch_config = &get_vm_config(vm->vm_id)->arch;
+	uint64_t base = arch_config->guest_virtio_fs_base;
+	uint32_t irq = arch_config->guest_virtio_fs_irq;
+	uint32_t interrupts[] = {
+		ARM64_FDT_GIC_SPI, 0U, ARM64_FDT_IRQ_TYPE_LEVEL,
+	};
+	char name[40];
+
+	if (arch_config->guest_virtio_fs_size == 0UL) {
+		return;
+	}
+	if (irq >= 32U) {
+		interrupts[1] = irq - 32U;
+	}
+
+	snprintf(name, sizeof(name), "virtio_mmio@%lx", base);
+	fdt_check_ret(fdt_begin_node(fdt, name), "virtio fs");
+	fdt_check_ret(fdt_property_string(fdt, "compatible", "virtio,mmio"),
+		"virtio compatible");
+	fdt_property_reg64(fdt, "reg", base, arch_config->guest_virtio_fs_size);
+	fdt_property_irq(fdt, "interrupts", interrupts, ARRAY_SIZE(interrupts));
+	fdt_check_ret(fdt_property_string(fdt, "status", "okay"), "virtio fs status");
+	fdt_check_ret(fdt_property_u32(fdt, "phandle", ARM64_FDT_PHANDLE_VIRTIO_FS),
+		"virtio fs phandle");
+	fdt_check_ret(fdt_end_node(fdt), "virtio fs end");
+}
+
 void arch_init_service_vm_vfdt(struct acrn_vm *vm)
 {
 	void *fdt = vm_get_vfdt(vm);
@@ -381,6 +417,9 @@ void arch_init_service_vm_vfdt(struct acrn_vm *vm)
 	} else {
 		fdt_add_uart_clock(fdt);
 		fdt_add_uart(fdt, vm);
+	}
+	if (fdt_vm_uses_virtio_fs(get_vm_config(vm->vm_id))) {
+		fdt_add_virtio_fs(fdt, vm);
 	}
 
 	fdt_check_ret(fdt_end_node(fdt), "root end");

@@ -8,6 +8,7 @@
 #include <cpu.h>
 #include <vcpu.h>
 #include <vm.h>
+#include <errno.h>
 #include <types.h>
 #include <vboot.h>
 #include <logmsg.h>
@@ -257,7 +258,7 @@ static int32_t create_vm_vcpus(struct acrn_vm *vm, uint64_t pcpu_bitmap,
 static void start_prepared_vm(struct acrn_vm *vm, const struct acrn_vm_config *vm_config)
 {
 	start_vm(vm);
-	pr_acrnlog("kick vmid: %x os: %s", vm->vm_id, vm_config->name);
+	LOG_INF("kick vmid: %x os: %s", vm->vm_id, vm_config->name);
 }
 
 static void start_prepared_vms(struct acrn_vm *const start_vms[],
@@ -412,7 +413,7 @@ void launch_vms(uint16_t pcpu_id)
 							start_vm_configs[start_count] = vm_config;
 							start_count++;
 						} else {
-							pr_err("stopping vm%d: no bootable kernel", vm_id);
+							LOG_ERR("stopping vm%d: no bootable kernel", vm_id);
 							(void)destroy_vm(vm);
 						}
 					}
@@ -580,6 +581,113 @@ int32_t reset_vm(struct acrn_vm *vm)
 	}
 
 	return ret;
+}
+
+static int32_t restart_vm_locked(struct acrn_vm *vm)
+{
+	int32_t ret = -EINVAL;
+
+	if ((vm == NULL) || is_poweroff_vm(vm) || is_service_vm(vm)) {
+		return ret;
+	}
+
+	pause_vm(vm);
+	if (is_paused_vm(vm)) {
+		ret = reset_vm(vm);
+		if (ret == 0) {
+			/*
+			 * Warm-resetting vCPU/device state is not enough for Linux. The
+			 * previous kernel instance may have dirtied its loaded image, FDT,
+			 * ramdisk, and data sections. Re-run the boot image copy before
+			 * waking the BSP so reset behaves like a VM reboot, not just a
+			 * register restart.
+			 */
+			ret = prepare_os_image(vm);
+		}
+		if (ret == 0) {
+			start_vm(vm);
+			LOG_INF("vm%u reset complete", vm->vm_id);
+		}
+	}
+
+	if (ret != 0) {
+		LOG_ERR("vm%u reset failed: state=%d", vm->vm_id, vm->state);
+	}
+
+	return ret;
+}
+
+int32_t restart_vm(struct acrn_vm *vm)
+{
+	int32_t ret;
+
+	/*
+	 * Synchronous restart is for EL2 management contexts such as the shell or
+	 * idle thread. A target VM's own vCPU exit path must use
+	 * make_reset_vm_request(), because resetting the currently executing vCPU
+	 * would overwrite the state frame that the exit handler is still using.
+	 */
+	if (vm == NULL) {
+		return -EINVAL;
+	}
+
+	get_vm_lock(vm);
+	ret = restart_vm_locked(vm);
+	put_vm_lock(vm);
+
+	return ret;
+}
+
+int32_t make_reset_vm_request(uint16_t pcpu_id, uint16_t vm_id)
+{
+	struct acrn_vm *vm;
+	int32_t ret = -EINVAL;
+
+	if ((pcpu_id >= MAX_PCPU_NUM) || (vm_id >= CONFIG_MAX_VM_NUM)) {
+		return ret;
+	}
+
+	vm = get_vm_from_vmid(vm_id);
+	if ((vm != NULL) && !is_poweroff_vm(vm) && !is_service_vm(vm)) {
+		/*
+		 * VM reset is intentionally asynchronous:
+		 *
+		 *   PSCI/shell producer -> per-pCPU reset bitmap -> idle thread
+		 *                         pause -> arch reset -> start BSP
+		 *
+		 * The producer might run in a vCPU exit path where sleeping or tearing
+		 * down device state would be fragile. The idle thread is a stable EL2
+		 * owner for the VM state machine.
+		 */
+		bitmap_set_non_atomic(vm_id, &per_cpu(reset_vm_bitmap, pcpu_id));
+		bitmap_set(NEED_RESET_VM, &per_cpu(pcpu_flag, pcpu_id));
+		if (get_pcpu_id() != pcpu_id) {
+			arch_smp_call_kick_pcpu(pcpu_id);
+		}
+		ret = 0;
+	}
+
+	return ret;
+}
+
+bool need_reset_vm(uint16_t pcpu_id)
+{
+	return bitmap_test_and_clear(NEED_RESET_VM, &per_cpu(pcpu_flag, pcpu_id));
+}
+
+void reset_vm_from_idle(uint16_t pcpu_id)
+{
+	uint16_t vm_id;
+	uint64_t *vms = &per_cpu(reset_vm_bitmap, pcpu_id);
+	struct acrn_vm *vm;
+
+	for (vm_id = fls64(*vms); vm_id < CONFIG_MAX_VM_NUM; vm_id = fls64(*vms)) {
+		vm = get_vm_from_vmid(vm_id);
+		get_vm_lock(vm);
+		(void)restart_vm_locked(vm);
+		put_vm_lock(vm);
+		bitmap_clear_non_atomic(vm_id, vms);
+	}
 }
 
 void make_shutdown_vm_request(uint16_t pcpu_id)

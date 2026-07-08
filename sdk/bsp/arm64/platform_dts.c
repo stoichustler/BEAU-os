@@ -14,6 +14,7 @@
 #include <asm/irq.h>
 #include <asm/platform.h>
 #include <arm64_platform_dts.h>
+#include <virtio_fs.h>
 
 #define ARM64_DTS_MMIO_REGION_MAX	8U
 
@@ -685,6 +686,7 @@ static void dts_parse_arch(const void *fdt, int32_t generic,
 	int32_t gic = dts_child_compatible(fdt, generic, "arm,vgic-v3");
 	int32_t uart = dts_child_compatible(fdt, generic, "arm,vpl011");
 	int32_t virtio_console = dts_child_compatible(fdt, generic, "beau,virtio-console");
+	int32_t virtio_fs = dts_child_compatible(fdt, generic, "beau,virtio-fs");
 	int32_t its;
 	uint64_t base;
 	uint64_t size;
@@ -731,6 +733,23 @@ static void dts_parse_arch(const void *fdt, int32_t generic,
 			arm64_dts_panic("virtio-console interrupts", -EINVAL);
 		}
 		vm_config->arch.guest_virtio_console_irq = fdt32_to_cpu(irq_prop[1]) + 32U;
+	}
+
+	if (virtio_fs >= 0) {
+		dts_reg_by_index(fdt, virtio_fs, 0U,
+			&vm_config->arch.guest_virtio_fs_base,
+			&vm_config->arch.guest_virtio_fs_size);
+		irq_prop = fdt_getprop(fdt, virtio_fs, "interrupts", NULL);
+		if (irq_prop == NULL) {
+			arm64_dts_panic("virtio-fs interrupts", -EINVAL);
+		}
+		vm_config->arch.guest_virtio_fs_irq = fdt32_to_cpu(irq_prop[1]) + 32U;
+		dts_copy_string(vm_config->arch.guest_virtio_fs_tag,
+			sizeof(vm_config->arch.guest_virtio_fs_tag),
+			dts_string_prop(fdt, virtio_fs, "beau,tag", "beau"));
+		vm_config->arch.guest_virtio_fs_access =
+			(vm_config->name[0] != '\0') && (strcmp(vm_config->name, "Linux-1") == 0) ?
+			VIRTIO_FS_ACCESS_READONLY : VIRTIO_FS_ACCESS_READWRITE;
 	}
 }
 
@@ -889,6 +908,6 @@ void arm64_platform_dts_parse_vms(const void *fdt,
 	}
 
 	dts_parse_boot_options(fdt, vm_root, ops);
-	pr_info("arm64 platform dts parsed: %u boot modules",
+	LOG_INF("arm64 platform dts parsed: %u boot modules",
 		*dts_storage->boot_option_count);
 }

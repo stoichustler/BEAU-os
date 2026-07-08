@@ -26,6 +26,7 @@ struct arm64_vpl011_debug {
 };
 
 void arm64_vpl011_init_vm(struct acrn_vm *vm);
+void arm64_vpl011_reset_vm(struct acrn_vm *vm);
 void arm64_vpl011_get_debug(uint16_t vm_id, struct arm64_vpl011_debug *debug);
 int32_t arm64_vpl011_mmio_handler(struct io_request *io_req, void *handler_private_data);
 

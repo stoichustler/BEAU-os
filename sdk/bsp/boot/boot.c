@@ -87,23 +87,23 @@ int32_t sanitize_acrn_boot_info(struct acrn_boot_info *abi)
 	 * loaders and still documents host boot ownership for diagnostics.
 	 */
 	if (abi->mods_count == 0U) {
-		pr_err("no boot module info found");
+		LOG_ERR("no boot module info found");
 		abi_status = -EINVAL;
 	}
 
 	if (abi->mmap_entries == 0U) {
-		pr_err("no boot mmap info found");
+		LOG_ERR("no boot mmap info found");
 		abi_status = -EINVAL;
 	}
 
 	printf("%s environment detected.\n", boot_from_uefi(abi) ? "uefi" : "non-uefi");
 	if (boot_from_uefi(abi) && ((abi->uefi_info.memmap == 0U) || (abi->uefi_info.memmap_hi != 0U))) {
-		pr_err("no efi memmap found below 4gb space!");
+		LOG_ERR("no efi memmap found below 4gb space!");
 		abi_status = -EINVAL;
 	}
 
 	if (abi->loader_name[0] == '\0') {
-		pr_err("no bootloader name found!");
+		LOG_ERR("no bootloader name found!");
 		abi_status = -EINVAL;
 	} else {
 	printf("%s bootloader: %s\n", abi->protocol_name, abi->loader_name);

@@ -1166,7 +1166,7 @@ void console_setup_timer(void)
 
 	/* Start an periodic timer */
 	if (add_timer(&console_timer) != 0) {
-		pr_err("failed to add console kick timer");
+		LOG_ERR("failed to add console kick timer");
 	}
 }
 
@@ -1210,21 +1210,47 @@ bool console_need_log(uint32_t severity)
 	return (severity <= console_loglevel);
 }
 
-void console_log(char *buffer)
+void console_log(uint32_t severity, char *buffer)
 {
 	uint64_t rflags;
 	size_t len;
+	const char *color = logmsg_severity_color(severity);
+	size_t color_len;
+	size_t reset_len;
+	size_t pos = 0U;
+	char line[LOG_MESSAGE_MAX_SIZE + 32U];
 
-	spinlock_irqsave_obtain(&console_log_lock ,&rflags);
+	spinlock_irqsave_obtain(&console_log_lock, &rflags);
 
 	len = strnlen_s(buffer, LOG_MESSAGE_MAX_SIZE);
 	while ((len > 0U) && ((buffer[len - 1U] == '\n') || (buffer[len - 1U] == '\r'))) {
 		len--;
 	}
 
-	/* Send buffer to stdout with one normalized line ending. */
-	(void)console_write(buffer, len);
-	printf("\r\n");
+	/*
+	 * Color only the live console stream. Memory/NPK logs keep the plain prefix
+	 * produced by do_logmsg(). When the BEAU shell owns the terminal, route the
+	 * line through shell_async_puts_raw() so the prompt/input row is cleared,
+	 * the log owns one full line, and the prompt is restored afterwards:
+	 *
+	 *   console:\> _     -> clear row
+	 *   [κ][..] log      -> async log line
+	 *   console:\> _     -> restored shell row
+	 */
+	(void)memset(line, 0U, sizeof(line));
+	color_len = strnlen_s(color, 16U);
+	reset_len = strnlen_s(LOG_VT100_RESET, 8U);
+	(void)memcpy(&line[pos], color, color_len);
+	pos += color_len;
+	(void)memcpy(&line[pos], buffer, len);
+	pos += len;
+	(void)memcpy(&line[pos], LOG_VT100_RESET, reset_len);
+	pos += reset_len;
+	line[pos++] = '\r';
+	line[pos++] = '\n';
+	if (!shell_async_puts_raw(line)) {
+		(void)console_write(line, pos);
+	}
 
 	spinlock_irqrestore_release(&console_log_lock, rflags);
 }

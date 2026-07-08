@@ -27,7 +27,7 @@ void trigger_vmcs9900_msix(struct pci_vdev *vdev)
 	ret = vlapic_inject_msi(vm, entry->addr, entry->data);
 
 	if (ret != 0) {
-		pr_warn("%2x:%2x.%dfaild injecting msi msi_addr:0x%lx msi_data:0x%x",
+		LOG_WRN("%2x:%2x.%dfaild injecting msi msi_addr:0x%lx msi_data:0x%x",
 				vdev->bdf.bits.b, vdev->bdf.bits.d, vdev->bdf.bits.f, entry->addr, entry->data);
 	}
 }
@@ -143,7 +143,7 @@ static void init_vmcs9900(struct pci_vdev *vdev)
 	pci_vdev_write_vbar(vdev, MCS9900_MSIX_BAR, msix_vbar->base_gpa);
 
 	/* init acrn_vuart */
-	pr_info("init acrn_vuart[%d]", pci_cfg->vuart_idx);
+	LOG_INF("init acrn_vuart[%d]", pci_cfg->vuart_idx);
 	vdev->priv_data = vu;
 	init_pci_vuart(vdev);
 
@@ -189,7 +189,7 @@ int32_t create_vmcs9900_vdev(struct acrn_vm *vm, struct acrn_vdev *dev)
 	}
 
 	if (ret != 0) {
-		pr_err("failed: create vm%d vuart_idx=%d", vm->vm_id, vuart_idx);
+		LOG_ERR("failed: create vm%d vuart_idx=%d", vm->vm_id, vuart_idx);
 	}
 
 	return ret;

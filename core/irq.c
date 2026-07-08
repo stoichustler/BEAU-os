@@ -27,7 +27,7 @@ static uint32_t alloc_irq_num(uint32_t req_irq, bool reserve)
 	uint32_t ret;
 
 	if ((irq >= NR_IRQS) && (irq != IRQ_INVALID)) {
-		pr_err("[%s] invalid req_irq %u", __func__, req_irq);
+		LOG_ERR("[%s] invalid req_irq %u", __func__, req_irq);
 	        ret = IRQ_INVALID;
 	} else {
 		spinlock_irqsave_obtain(&irq_alloc_spinlock, &rflags);
@@ -128,11 +128,11 @@ int32_t request_irq(uint32_t req_irq, irq_action_t action_fn, void *priv_data,
 
 	irq = alloc_irq_num(req_irq, false);
 	if (irq == IRQ_INVALID) {
-		pr_err("[%s] invalid irq num", __func__);
+		LOG_ERR("[%s] invalid irq num", __func__);
 		ret = -EINVAL;
 	} else {
 		if (!arch_request_irq(irq)) {
-			pr_err("[%s] failed to alloc vector for irq %u",
+			LOG_ERR("[%s] failed to alloc vector for irq %u",
 				__func__, irq);
 			free_irq_num(irq);
 			ret = -EINVAL;
@@ -147,7 +147,7 @@ int32_t request_irq(uint32_t req_irq, irq_action_t action_fn, void *priv_data,
 				ret = (int32_t)irq;
 			} else {
 				ret = -EBUSY;
-				pr_err("%s: request irq(%u) failed, already requested",
+				LOG_ERR("%s: request irq(%u) failed, already requested",
 				       __func__, irq);
 			}
 		}

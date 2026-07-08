@@ -433,7 +433,7 @@ static void init_bars(struct pci_vdev *vdev, bool is_sriov_bar)
 				 * Such I/O BAR is not addressable on x86 platforms. Skip it when initializing the
 				 * virtual PCI function as I/O BAR reprogramming in VM is currently unsupported.
 				 */
-				pr_warn("%s: %02x:%02x.%x: io bar%d value 0x%08x has invalid bits, io_space_bitmask "
+				LOG_WRN("%s: %02x:%02x.%x: io bar%d value 0x%08x has invalid bits, io_space_bitmask "
 				        "is 0x%08x, ignore this bar in vdev",
 					__func__, vdev->bdf.bits.b, vdev->bdf.bits.d, vdev->bdf.bits.f, idx, lo,
 					IO_SPACE_BITMASK);
@@ -564,7 +564,7 @@ void vdev_pt_hide_sriov_cap(struct pci_vdev *vdev)
 	pci_vdev_write_vcfg(vdev, pre_pos, 4U, vhdr);
 	vdev->pdev->sriov.hide_sriov = true;
 
-	pr_acrnlog("hide sriov cap for %02x:%02x.%x", vdev->pdev->bdf.bits.b, vdev->pdev->bdf.bits.d, vdev->pdev->bdf.bits.f);
+	LOG_INF("hide sriov cap for %02x:%02x.%x", vdev->pdev->bdf.bits.b, vdev->pdev->bdf.bits.d, vdev->pdev->bdf.bits.f);
 }
 
 /* TODO:

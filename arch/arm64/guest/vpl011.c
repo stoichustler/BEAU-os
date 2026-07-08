@@ -213,6 +213,13 @@ void arm64_vpl011_init_vm(struct acrn_vm *vm)
 	vuart_set_backend(console, &vpl011_backend_ops);
 }
 
+void arm64_vpl011_reset_vm(struct acrn_vm *vm)
+{
+	if ((vm != NULL) && (vm->vm_id < CONFIG_MAX_VM_NUM)) {
+		arm64_vpl011_init_vm(vm);
+	}
+}
+
 void arm64_vpl011_get_debug(uint16_t vm_id, struct arm64_vpl011_debug *debug)
 {
 	if ((debug != NULL) && (vm_id < CONFIG_MAX_VM_NUM)) {

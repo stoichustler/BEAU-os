@@ -134,7 +134,7 @@ static void *do_load_elf64(struct acrn_vm *vm)
 
 		elf_entry = (void *)p_elf_header64->e_entry;
 	} else {
-		pr_err("%s, elf type(%x) not supported!", __func__, p_elf_header64->e_type);
+		LOG_ERR("%s, elf type(%x) not supported!", __func__, p_elf_header64->e_type);
 	}
 	/* For 64bit elf, entry address above 4G is not currently supported. Assume that it's below 4G. */
 	return elf_entry;
@@ -200,7 +200,7 @@ static void *do_load_elf32(struct acrn_vm *vm)
 
 		elf_entry = (void *)(uint64_t)p_elf_header32->e_entry;
 	} else {
-		pr_err("%s, elf type(%x) not supported!", __func__, p_elf_header32->e_type);
+		LOG_ERR("%s, elf type(%x) not supported!", __func__, p_elf_header32->e_type);
 	}
 
 	return elf_entry;
@@ -224,10 +224,10 @@ static int32_t load_elf(struct acrn_vm *vm)
 		} else if (*(uint8_t *)(p_elf_img + EI_CLASS) == ELFCLASS32) {
 			elf_entry = do_load_elf32(vm);
 		} else {
-			pr_err("%s, unsupported elf class(%d)", __func__, *(uint8_t *)(p_elf_img + EI_CLASS));
+			LOG_ERR("%s, unsupported elf class(%d)", __func__, *(uint8_t *)(p_elf_img + EI_CLASS));
 		}
 	} else {
-		pr_err("%s, booting elf but no elf header found!", __func__);
+		LOG_ERR("%s, booting elf but no elf header found!", __func__);
 	}
 
 	post_user_access();

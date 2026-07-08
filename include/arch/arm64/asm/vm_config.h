@@ -22,9 +22,11 @@
  * hard-coded in generic virtualization code. guest_ram_* defines the stage-2
  * RAM IPA window. guest_ram_hpa is kept for platforms that need a non-identity
  * backing window, but the QEMU static RTOS layout intentionally keeps
- * IPA == PA. guest_gic*, guest_its*, guest_uart*, and guest_virtio_console*
- * define IPA ranges that trap to vGIC/vITS/console MMIO handlers.
+ * IPA == PA. guest_gic*, guest_its*, guest_uart*, and guest_virtio* define IPA
+ * ranges that trap to vGIC/vITS/virtio MMIO handlers.
  */
+#define ARM64_VIRTIO_FS_TAG_MAX	36U
+
 struct arch_vm_config {
 	uint64_t guest_ram_start;
 	uint64_t guest_ram_size;
@@ -45,6 +47,12 @@ struct arch_vm_config {
 	uint64_t guest_virtio_console_base;
 	uint64_t guest_virtio_console_size;
 	uint32_t guest_virtio_console_irq;
+
+	uint64_t guest_virtio_fs_base;
+	uint64_t guest_virtio_fs_size;
+	uint32_t guest_virtio_fs_irq;
+	uint32_t guest_virtio_fs_access;
+	char guest_virtio_fs_tag[ARM64_VIRTIO_FS_TAG_MAX];
 };
 
 #endif /* ARM64_VM_CONFIG_H */

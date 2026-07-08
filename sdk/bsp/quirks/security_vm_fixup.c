@@ -120,7 +120,7 @@ static void tpm2_fixup(uint16_t vm_id)
 				checksum = calculate_checksum8(vtpm2, sizeof(struct acpi_table_tpm2));
 				vtpm2->header.checksum = checksum;
 			} else {
-				pr_err("%s, no tpm2 in acrn_vm_config", __func__);
+				LOG_ERR("%s, no tpm2 in acrn_vm_config", __func__);
 			}
 		}
 	}
@@ -352,7 +352,7 @@ static int probe_smbios_table(struct acrn_boot_info *abi, struct smbios_info *si
 #ifdef VM0_TPM_EVENTLOG_BASE_ADDR
     if (found && (si->smbios_table_size > (VM0_TPM_EVENTLOG_BASE_ADDR - VIRT_SMBIOS_TABLE_ADDR))) {
         /* Unlikely but we check this anyway */
-        pr_err("error: smbios table too large. stop copying smbios info to guest.");
+        LOG_ERR("error: smbios table too large. stop copying smbios info to guest.");
         found = 0;
     }
 #endif
@@ -375,7 +375,7 @@ void passthrough_smbios(struct acrn_vm *vm, struct acrn_boot_info *abi)
 
         if (probe_smbios_table(abi, &si)) {
             if (copy_smbios_to_guest(vm, &si)) {
-                pr_err("failed to copy smbios info to vm%d", vm->vm_id);
+                LOG_ERR("failed to copy smbios info to vm%d", vm->vm_id);
             }
         }
     }

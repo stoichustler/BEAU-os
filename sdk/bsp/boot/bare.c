@@ -82,8 +82,8 @@ int32_t init_bare_boot_info()
 	 * searches can iterate abi->mods_count without knowing the source table.
 	 */
 	if (nmods > MAX_MODULE_NUM) {
-		pr_err("bareboot: too many boot modules (%d found)", nmods);
-		pr_err("bareboot: accepting only %d, ignoring rest", MAX_MODULE_NUM);
+		LOG_ERR("bareboot: too many boot modules (%d found)", nmods);
+		LOG_ERR("bareboot: accepting only %d, ignoring rest", MAX_MODULE_NUM);
 		nmods = MAX_MODULE_NUM;
 	}
 

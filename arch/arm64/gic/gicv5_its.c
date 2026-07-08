@@ -75,7 +75,7 @@ void beau_gicv5_its_init(uint64_t base, uint64_t size)
 	}
 
 	beau_gicv5_its_ready = true;
-	pr_info("gicv5 its at 0x%016lx (0x%08lx)", base, size);
+	LOG_INF("gicv5 its at 0x%016lx (0x%08lx)", base, size);
 }
 
 bool beau_gicv5_its_present(void)

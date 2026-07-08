@@ -193,7 +193,7 @@ static void split_large_page(uint64_t *pte, enum _page_table_level level,
 	uint64_t i, ref_prot;
 
 	if (level == PGT_LVL0)
-		pr_warn("invalid page level to split huge page \r\n");
+		LOG_WRN("invalid page level to split huge page \r\n");
 
 	paddrinc = get_level_size(level + 1);
 	ref_paddr = (*pte) & PFN_MASK;
@@ -252,7 +252,7 @@ static void modify_or_del_pgtl0(uint64_t *pgtl1e, uint64_t vaddr_start, uint64_t
 			 * then no need to suppress the warning here.
 			 */
 			if (type == MR_MODIFY) {
-				pr_warn("%s, vaddr: 0x%lx pgtl0e is not present.\n", __func__, vaddr);
+				LOG_WRN("%s, vaddr: 0x%lx pgtl0e is not present.\n", __func__, vaddr);
 			}
 		} else {
 			local_modify_or_del_pte(pgtl0e, prot_set, prot_clr, type, table);
@@ -288,7 +288,7 @@ static void modify_or_del_pgtl1(uint64_t *pgtl2e, uint64_t vaddr_start, uint64_t
 
 		if (!table->pgentry_present(*pgtl1e)) {
 			if (type == MR_MODIFY) {
-				pr_warn("%s, addr: 0x%lx pgtl1e is not present.\n", __func__, vaddr);
+				LOG_WRN("%s, addr: 0x%lx pgtl1e is not present.\n", __func__, vaddr);
 			}
 		} else {
 			if (is_pgtl_large(*pgtl1e) != 0UL) {
@@ -335,7 +335,7 @@ static void modify_or_del_pgtl2(const uint64_t *pgtl3e, uint64_t vaddr_start, ui
 
 		if (!table->pgentry_present(*pgtl2e)) {
 			if (type == MR_MODIFY) {
-				pr_warn("%s, vaddr: 0x%lx pgtl2e is not present.\n", __func__, vaddr);
+				LOG_WRN("%s, vaddr: 0x%lx pgtl2e is not present.\n", __func__, vaddr);
 			}
 		} else {
 			if (is_pgtl_large(*pgtl2e) != 0UL) {
@@ -480,7 +480,7 @@ static void add_pgtl0(const uint64_t *pgtl1e, uint64_t paddr_start, uint64_t vad
 		uint64_t *pgtl0e = pgtl0_page + index;
 
 		if (table->pgentry_present(*pgtl0e)) {
-			pr_fatal("%s, pgtl0e 0x%lx is already present!\n", __func__, vaddr);
+			LOG_FTL("%s, pgtl0e 0x%lx is already present!\n", __func__, vaddr);
 		} else {
 			table->set_pgentry(pgtl0e, paddr, prot, PGT_LVL0, 1, table);
 		}
@@ -513,7 +513,7 @@ static void add_pgtl1(const uint64_t *pgtl2e, uint64_t paddr_start, uint64_t vad
 		uint64_t vaddr_next = (vaddr & PGTL1_MASK) + PGTL1_SIZE;
 
 		if (is_pgtl_large(*pgtl1e) != 0UL) {
-			pr_fatal("%s, pgtl1e 0x%lx is already present!\n", __func__, vaddr);
+			LOG_FTL("%s, pgtl1e 0x%lx is already present!\n", __func__, vaddr);
 		} else {
 			if (!table->pgentry_present(*pgtl1e)) {
 				if (table->large_page_support(PGT_LVL1, prot) &&
@@ -561,7 +561,7 @@ static void add_pgtl2(const uint64_t *pgtl3e, uint64_t paddr_start, uint64_t vad
 		uint64_t vaddr_next = (vaddr & PGTL2_MASK) + PGTL2_SIZE;
 
 		if (is_pgtl_large(*pgtl2e) != 0UL) {
-			pr_fatal("%s, pgtl2e 0x%lx is already present!\n", __func__, vaddr);
+			LOG_FTL("%s, pgtl2e 0x%lx is already present!\n", __func__, vaddr);
 		} else {
 			if (!table->pgentry_present(*pgtl2e)) {
 				if (table->large_page_support(PGT_LVL2, prot) &&

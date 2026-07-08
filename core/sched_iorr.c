@@ -113,7 +113,7 @@ int sched_iorr_add_timer(struct sched_control *ctl)
 			cpu_ticks() + tick_period, tick_period);
 
 	if (add_timer(&iorr_ctl->tick_timer) < 0) {
-		pr_err("failed to add schedule tick timer!");
+		LOG_ERR("failed to add schedule tick timer!");
 		ret = -1;
 	}
 	return ret;

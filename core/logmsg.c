@@ -22,28 +22,75 @@ static int32_t log_seq = 0;
 
 uint16_t mem_loglevel = CONFIG_MEM_LOGLEVEL_DEFAULT;
 
+#define LOG_USEC_PER_MSEC	1000UL
+#define LOG_USEC_PER_SEC	1000000UL
+#define LOG_SEC_PER_MIN		60UL
+#define LOG_SEC_PER_HOUR	(60UL * LOG_SEC_PER_MIN)
+
+const char *logmsg_severity_color(uint32_t severity)
+{
+	const char *color;
+
+	/*
+	 * VT100 SGR color is a console presentation concern. The log buffer itself
+	 * keeps the plain BEAU prefix so memory/NPK logs remain machine-parseable:
+	 *
+	 *   do_logmsg() -> plain "[κ][time][cpu][sev][seq] msg"
+	 *        console_log() wraps that line with severity color + reset
+	 */
+	switch (severity) {
+	case LOG_FATAL:
+		color = LOG_VT100_BOLD_INDIGO;
+		break;
+	case LOG_ERROR:
+		color = LOG_VT100_BOLD_RED;
+		break;
+	case LOG_WARNING:
+		color = LOG_VT100_BOLD_YELLOW;
+		break;
+	case LOG_INFO:
+		color = LOG_VT100_BOLD_WHITE;
+		break;
+	case LOG_DEBUG:
+	default:
+		color = LOG_VT100_BRIGHT_BLACK;
+		break;
+	}
+
+	return color;
+}
+
 void format_log_timestamp(char *buffer, size_t size, uint64_t timestamp_us)
 {
 	uint64_t hour;
-	uint64_t min;
-	uint64_t sec;
-	uint64_t msec;
-	uint64_t usec;
+	uint64_t total_seconds;
+	uint32_t sec_of_hour;
+	uint32_t min;
+	uint32_t sec;
+	uint32_t remainder_us;
+	uint32_t msec;
+	uint32_t usec;
 
 	if ((buffer == NULL) || (size == 0U)) {
 		return;
 	}
 
-	hour = timestamp_us / 3600000000UL;
-	timestamp_us %= 3600000000UL;
-	min = timestamp_us / 60000000UL;
-	timestamp_us %= 60000000UL;
-	sec = timestamp_us / 1000000UL;
-	timestamp_us %= 1000000UL;
-	msec = timestamp_us / 1000UL;
-	usec = timestamp_us % 1000UL;
+	/* 2026-07-08 Zephyr RTOS like timestamp format
+	 *
+	 * Timestamp decomposition: split the unbounded seconds counter from the sub-second
+	 * remainder first. The bounded remainders keep every later operation small and
+	 * avoid overflow-prone time-unit products.
+	 */
+	total_seconds = timestamp_us / LOG_USEC_PER_SEC;
+	remainder_us = (uint32_t)(timestamp_us % LOG_USEC_PER_SEC);
+	msec = remainder_us / LOG_USEC_PER_MSEC;
+	usec = remainder_us % LOG_USEC_PER_MSEC;
+	hour = total_seconds / LOG_SEC_PER_HOUR;
+	sec_of_hour = (uint32_t)(total_seconds % LOG_SEC_PER_HOUR);
+	min = sec_of_hour / LOG_SEC_PER_MIN;
+	sec = sec_of_hour % LOG_SEC_PER_MIN;
 
-	(void)snprintf(buffer, size, "%02lu:%02lu:%02lu.%03lu,%03lu",
+	(void)snprintf(buffer, size, "%02lu:%02u:%02u.%03u,%03u",
 		hour, min, sec, msec, usec);
 }
 
@@ -108,7 +155,7 @@ void do_logmsg(uint32_t severity, const char *fmt, ...)
 
 	/* Check whether output to stdout */
 	if (console_need_log(severity)) {
-		console_log(buffer);
+		console_log(severity, buffer);
 	}
 
 	/* Check whether output to NPK */

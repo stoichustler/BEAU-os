@@ -112,7 +112,7 @@ static bool smp_call_function_common(uint64_t mask, smp_call_func_t func, void *
 			arch_smp_call_kick_pcpu(pcpu_id);
 		} else {
 			/* pcpu is not in active, print error */
-			//pr_err("pcpu_id %d not in active!", pcpu_id);
+			//LOG_ERR("pcpu_id %d not in active!", pcpu_id);
 			bitmap_clear_non_atomic(pcpu_id, &smp_call_mask);
 		}
 		pcpu_id = ffs64(mask);

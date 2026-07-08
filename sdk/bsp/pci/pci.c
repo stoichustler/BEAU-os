@@ -349,7 +349,7 @@ bool is_hv_owned_pdev(union pci_bdf pbdf)
 
 	for (i = 0U; i < num_hv_owned_pci_pdev; i++) {
 		if (bdf_is_equal(pbdf, hv_owned_pci_pdevs[i]->bdf)) {
-			pr_info("hv owned dev: (%x:%x:%x)", pbdf.bits.b, pbdf.bits.d, pbdf.bits.f);
+			LOG_INF("hv owned dev: (%x:%x:%x)", pbdf.bits.b, pbdf.bits.d, pbdf.bits.f);
 			ret = true;
 			break;
 		}
@@ -603,7 +603,7 @@ static void init_all_dev_config(void)
 			 * if no room for its all of virtual functions.
 			 */
 			if ((total + cnt) > CONFIG_MAX_PCI_DEV_NUM) {
-				pr_err("%s, %x:%x.%x is dropped since no room for %u vfs",
+				LOG_ERR("%s, %x:%x.%x is dropped since no room for %u vfs",
 						__func__, pdev->bdf.bits.b, pdev->bdf.bits.d, pdev->bdf.bits.f, cnt);
 				continue;
 			} else {
@@ -679,14 +679,14 @@ static void pci_enable_ptm_root(struct pci_pdev *pdev, uint32_t pos)
 
 		ctrl = pci_pdev_read_cfg(pdev->bdf, pos + PCIR_PTM_CTRL, 4);
 
-		pr_acrnlog("ptm info [%x:%x.%x]: pos=%x, enabled=%d, root_select=%d, granularity=%d.\n",
+		LOG_INF("ptm info [%x:%x.%x]: pos=%x, enabled=%d, root_select=%d, granularity=%d.\n",
 				pdev->bdf.bits.b, pdev->bdf.bits.d,
 				pdev->bdf.bits.f, pos, (ctrl & PCIM_PTM_CTRL_ENABLED) != 0,
 				(ctrl & PCIM_PTM_CTRL_ROOT_SELECTED) != 0,
 				(ctrl & PCIM_PTM_GRANULARITY_MASK) >> 8);
 	} else {
 		/* acrn doesn't support this hw config currently */
-		pr_err("%s: root port %x:%x.%x is not ptm root.\n", __func__,
+		LOG_ERR("%s: root port %x:%x.%x is not ptm root.\n", __func__,
 			 	pdev->bdf.bits.b, pdev->bdf.bits.d, pdev->bdf.bits.f);
 
 	}
@@ -726,7 +726,7 @@ static void pci_enumerate_ext_cap(struct pci_pdev *pdev)
 				/* No need to enable ptm on ep device.  If a PTM-capable ep pass
 				 * through to guest, guest OS will enable it
 				 */
-				pr_acrnlog("%s: [%x:%x.%x] is ptm capable.\n", __func__,
+				LOG_INF("%s: [%x:%x.%x] is ptm capable.\n", __func__,
 					pdev->bdf.bits.b,
 					pdev->bdf.bits.d, pdev->bdf.bits.f);
 			} else if (pcie_dev_type == PCIEM_TYPE_ROOTPORT) {
@@ -739,7 +739,7 @@ static void pci_enumerate_ext_cap(struct pci_pdev *pdev)
 				 * directly connected to a ptm-root capable root port or ep itself
 				 * is rcie.  Report error for all other cases.
 				 * */
-				pr_err("%s: do not enable ptm on [%x:%x.%x].\n", __func__,
+				LOG_ERR("%s: do not enable ptm on [%x:%x.%x].\n", __func__,
 					pdev->bdf.bits.b, pdev->bdf.bits.d, pdev->bdf.bits.f);
 			}
 		} else {
@@ -752,7 +752,7 @@ static void pci_enumerate_ext_cap(struct pci_pdev *pdev)
 			break;
 		}
 		if (pos < PCI_CONFIG_SPACE_SIZE) {
-			pr_err("pdev %x:%x.%x: illegal pcie extended capability offset %x",
+			LOG_ERR("pdev %x:%x.%x: illegal pcie extended capability offset %x",
 				pdev->bdf.bits.b, pdev->bdf.bits.d, pdev->bdf.bits.f, pos);
 			break;
 		}
@@ -761,7 +761,7 @@ static void pci_enumerate_ext_cap(struct pci_pdev *pdev)
 	};
 
 	if (node_limit <= 0) {
-		pr_err("%s: pdev[%x:%x.%x] malformed linked list in pcie extended \
+		LOG_ERR("%s: pdev[%x:%x.%x] malformed linked list in pcie extended \
 			capability region detected\n", __func__, pdev->bdf.bits.b,
 			pdev->bdf.bits.d, pdev->bdf.bits.f);
 	}
@@ -880,11 +880,11 @@ struct pci_pdev *pci_init_pdev(union pci_bdf bdf, uint32_t drhd_index)
 			num_pci_pdev++;
 			reserve_vmsix_on_msi_irtes(pdev);
 		} else {
-			pr_err("%s, %x:%x.%x unsupported headed type: 0x%x\n",
+			LOG_ERR("%s, %x:%x.%x unsupported headed type: 0x%x\n",
 				__func__, bdf.bits.b, bdf.bits.d, bdf.bits.f, hdr_type);
 		}
 	} else {
-		pr_err("%s, failed to alloc pci_pdev!\n", __func__);
+		LOG_ERR("%s, failed to alloc pci_pdev!\n", __func__);
 	}
 
 	return pdev;

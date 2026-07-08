@@ -225,6 +225,9 @@ endif
 COMMON_C_SRCS += core/sbuf.c
 COMMON_C_SRCS += core/logmsg.c
 COMMON_C_SRCS += core/irq.c
+ifeq ($(ARCH),arm64)
+COMMON_C_SRCS += core/ptdev.c
+endif
 
 # library componment
 COMMON_C_SRCS += lib/memory.c
@@ -360,7 +363,7 @@ $(HV_CONFIG_H): Makefile $(ARM64_PLATFORM_CFG_STAMP) | $(HV_OBJDIR)/include
 		echo "#define CONFIG_MAX_EMULATED_MMIO_REGIONS 8U"; \
 		echo "#define CONFIG_MAX_MSIX_TABLE_NUM 16U"; \
 		echo "#define CONFIG_MAX_PCI_DEV_NUM 16U"; \
-		echo "#define CONFIG_MAX_PT_IRQ_ENTRIES 0U"; \
+		echo "#define CONFIG_MAX_PT_IRQ_ENTRIES 32U"; \
 		echo "#define CONFIG_MAX_IOAPIC_NUM 0U"; \
 		echo "#define CONFIG_SPACE_SIZE 0x10000000UL"; \
 		echo "#define CONFIG_ADDR 0xcf8U"; \

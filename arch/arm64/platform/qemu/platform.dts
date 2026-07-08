@@ -222,6 +222,13 @@
 				reg = <0x0 0x0a000000 0x0 0x00000200>;
 				interrupts = <0x0 0x10 0x4>;
 			};
+
+			virtio-fs-mmio@a000200 {
+				compatible = "beau,virtio-fs", "virtio,mmio";
+				reg = <0x0 0x0a000200 0x0 0x00000200>;
+				interrupts = <0x0 0x11 0x4>;
+				beau,tag = "beau";
+			};
 		};
 
 		/*

@@ -94,7 +94,7 @@ static int32_t init_vm_kernel_info(struct acrn_vm *vm, const struct abi_module *
 		if ((vm->sw.kernel_type > 0) && (vm->sw.kernel_type < KERNEL_UNKNOWN)) {
 			ret = 0;
 		} else {
-			pr_err("unsupported kernel type.");
+			LOG_ERR("unsupported kernel type.");
 		}
 	}
 
@@ -141,7 +141,7 @@ static void init_vm_bootargs_info(struct acrn_vm *vm, const struct acrn_boot_inf
 			 */
 			if (strncat_s((char *)vm->sw.bootargs_info.src_addr, MAX_BOOTARGS_SIZE,
 					seed_args, (MAX_BOOTARGS_SIZE - 1U)) != 0) {
-				pr_err("failed to fill seed arg to service vm bootargs!");
+				LOG_ERR("failed to fill seed arg to service vm bootargs!");
 			}
 #endif
 
@@ -152,11 +152,11 @@ static void init_vm_bootargs_info(struct acrn_vm *vm, const struct acrn_boot_inf
 			if (abi->cmdline[0] != '\0') {
 				if (strncat_s((char *)vm->sw.bootargs_info.src_addr, MAX_BOOTARGS_SIZE,
 						abi->cmdline, (MAX_BOOTARGS_SIZE - 1U)) != 0) {
-					pr_err("failed to merge mbi cmdline to service vm bootargs!");
+					LOG_ERR("failed to merge mbi cmdline to service vm bootargs!");
 				}
 			}
 		} else {
-			pr_err("no space to append service vm bootargs!");
+			LOG_ERR("no space to append service vm bootargs!");
 		}
 
 	}
@@ -192,7 +192,7 @@ struct abi_module *get_mod_by_tag(const struct acrn_boot_info *abi, const char *
 	 * ACRN will not support these cases
 	 */
 	if ((mod != NULL) && (mod->start == NULL)) {
-		pr_err("unsupported module: start at hpa 0, size 0x%x .", mod->size);
+		LOG_ERR("unsupported module: start at hpa 0, size 0x%x .", mod->size);
 		mod = NULL;
 	}
 
@@ -265,14 +265,14 @@ static int32_t init_vm_sw_load(struct acrn_vm *vm, const struct acrn_boot_info *
 			}
 
 			if (!fw_loaded) {
-				pr_err("failed to load acpi module or fdt for vm%d", vm->vm_id);
+				LOG_ERR("failed to load acpi module or fdt for vm%d", vm->vm_id);
 			}
 		} else if ((vm_config->guest_flags & GUEST_FLAG_NO_FW) != 0UL) {
 			dev_dbg(DBG_LEVEL_BOOT, "vm-%d boots without ACPI/FDT", vm->vm_id);
 		}
 
 	} else {
-		pr_err("failed to load vm %d kernel module", vm->vm_id);
+		LOG_ERR("failed to load vm %d kernel module", vm->vm_id);
 	}
 	return ret;
 }

@@ -143,7 +143,7 @@ static void pci_vdev_update_vbar_base(struct pci_vdev *vdev, uint32_t idx)
 				if (vcpu != NULL) {
 					vcpu_inject_gp(vcpu, 0U);
 				}
-				pr_err("%s, pci:%02x:%02x.%x pio bar%d couldn't be reprogramed, "
+				LOG_ERR("%s, pci:%02x:%02x.%x pio bar%d couldn't be reprogramed, "
 					"the valid value is 0x%lx, but the actual value is 0x%lx",
 					__func__, vdev->bdf.bits.b, vdev->bdf.bits.d, vdev->bdf.bits.f, idx,
 					vdev->vbars[idx].base_hpa, lo & PCI_BASE_ADDRESS_IO_MASK);
@@ -159,7 +159,7 @@ static void pci_vdev_update_vbar_base(struct pci_vdev *vdev, uint32_t idx)
 				 * 2. Malicious operation from VM, it tries to reprogram vbar address out of
 				 *    pci mmio bar window
 				 */
-				pr_err("%s reprogram pci:%02x:%02x.%x bar%d to addr:0x%lx,"
+				LOG_ERR("%s reprogram pci:%02x:%02x.%x bar%d to addr:0x%lx,"
 					" which is out of mmio window[0x%lx - 0x%lx] or not aligned with size: 0x%lx",
 					__func__, vdev->bdf.bits.b, vdev->bdf.bits.d, vdev->bdf.bits.f, idx, base,
 					res->start, res->end, vdev->vbars[idx].size);
@@ -179,7 +179,7 @@ int32_t check_pt_dev_pio_bars(struct pci_vdev *vdev)
 		for (idx = 0U; idx < vdev->nr_bars; idx++) {
 			if ((is_pci_io_bar(&vdev->vbars[idx])) && (vdev->vbars[idx].base_gpa != vdev->vbars[idx].base_hpa)) {
 				ret = -EIO;
-				pr_err("%s, pci:%02x:%02x.%x pio bar%d isn't identical mapping, "
+				LOG_ERR("%s, pci:%02x:%02x.%x pio bar%d isn't identical mapping, "
 					"host start addr is 0x%lx, while guest start addr is 0x%lx",
 					__func__, vdev->bdf.bits.b, vdev->bdf.bits.d, vdev->bdf.bits.f, idx,
 					vdev->vbars[idx].base_hpa, vdev->vbars[idx].base_gpa);

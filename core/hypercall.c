@@ -93,7 +93,7 @@ int32_t hcall_service_vm_offline_cpu(struct acrn_vcpu *vcpu, __unused struct acr
 	int32_t ret = 0;
 	uint32_t lapicid = (uint32_t)param1;
 
-	pr_info("service vm offline cpu with lapicid %ld", lapicid);
+	LOG_INF("service vm offline cpu with lapicid %ld", lapicid);
 
 	foreach_vcpu(i, vcpu->vm, target_vcpu) {
 		if (vlapic_get_apicid(vcpu_vlapic(target_vcpu)) == lapicid) {
@@ -229,7 +229,7 @@ int32_t hcall_create_vm(struct acrn_vcpu *vcpu, struct acrn_vm *target_vm, uint6
 				 */
 				if (((vm_config->guest_flags & GUEST_FLAG_LAPIC_PASSTHROUGH) != 0UL)
 						&& ((vm_config->guest_flags & GUEST_FLAG_RT) == 0UL)) {
-					pr_err("wrong guest flags 0x%lx\n", vm_config->guest_flags);
+					LOG_ERR("wrong guest flags 0x%lx\n", vm_config->guest_flags);
 				} else {
 					if (create_vm(vmid, pcpu_bitmap, vm_config, &tgt_vm) == 0) {
 						/* return a relative vm_id from Service VM view */
@@ -243,7 +243,7 @@ int32_t hcall_create_vm(struct acrn_vcpu *vcpu, struct acrn_vm *target_vm, uint6
 					ret = copy_to_gpa(vm, &cv, param1, sizeof(cv));
 				}
 			} else {
-				pr_err("post-launched vm%u chooses invalid pcpus(0x%llx).",
+				LOG_ERR("post-launched vm%u chooses invalid pcpus(0x%llx).",
 						vmid, cv.cpu_affinity);
 			}
 		}
@@ -380,7 +380,7 @@ int32_t hcall_set_vcpu_regs(struct acrn_vcpu *vcpu, struct acrn_vm *target_vm,
 	if ((!is_poweroff_vm(target_vm)) && (param2 != 0U) && (target_vm->state != VM_RUNNING)) {
 		if (copy_from_gpa(vm, &vcpu_regs, param2, sizeof(vcpu_regs)) != 0) {
 		} else if (vcpu_regs.vcpu_id >= MAX_VCPUS_PER_VM) {
-			pr_err("%s: invalid vcpu_id for set_vcpu_regs\n", __func__);
+			LOG_ERR("%s: invalid vcpu_id for set_vcpu_regs\n", __func__);
 		} else {
 			target_vcpu = vcpu_from_vid(target_vm, vcpu_regs.vcpu_id);
 			if (target_vcpu->state != VCPU_OFFLINE) {
@@ -502,7 +502,7 @@ int32_t hcall_set_ioreq_buffer(struct acrn_vcpu *vcpu, struct acrn_vm *target_vm
 
 			hpa = gpa2hpa(vm, iobuf);
 			if (hpa == INVALID_HPA) {
-				pr_err("%s,vm[%hu] gpa 0x%lx,gpa is unmapping.",
+				LOG_ERR("%s,vm[%hu] gpa 0x%lx,gpa is unmapping.",
 					__func__, vm->vm_id, iobuf);
 				target_vm->sw.io_shared_page = NULL;
 			} else {
@@ -598,7 +598,7 @@ int32_t hcall_notify_ioreq_finish(__unused struct acrn_vcpu *vcpu, struct acrn_v
 			target_vm->vm_id, vcpu_id);
 
 		if (vcpu_id >= target_vm->hw.created_vcpus) {
-			pr_err("%s, failed to get vcpu %d context from vm %d\n",
+			LOG_ERR("%s, failed to get vcpu %d context from vm %d\n",
 				__func__, vcpu_id, target_vm->vm_id);
 		} else {
 			target_vcpu = vcpu_from_vid(target_vm, vcpu_id);
@@ -723,7 +723,7 @@ int32_t hcall_set_vm_memory_regions(struct acrn_vcpu *vcpu, struct acrn_vm *targ
 			idx = 0U;
 			while (idx < regions.mr_num) {
 				if (copy_from_gpa(vm, &mr, regions.regions_gpa + idx * sizeof(mr), sizeof(mr)) != 0) {
-					pr_err("%s: copy mr entry fail from vm\n", __func__);
+					LOG_ERR("%s: copy mr entry fail from vm\n", __func__);
 					break;
 				}
 
@@ -734,7 +734,7 @@ int32_t hcall_set_vm_memory_regions(struct acrn_vcpu *vcpu, struct acrn_vm *targ
 				idx++;
 			}
 		} else {
-			pr_err("%p %s:target_vm is invalid or targeting to service vm", target_vm, __func__);
+			LOG_ERR("%p %s:target_vm is invalid or targeting to service vm", target_vm, __func__);
 		}
 	}
 
@@ -754,12 +754,12 @@ static int32_t write_protect_page(struct acrn_vm *vm,const struct wp_data *wp)
 	if (is_severity_pass(vm->vm_id)) {
 		if ((!mem_aligned_check(wp->gpa, PAGE_SIZE)) ||
 				(!ept_is_valid_mr(vm, wp->gpa, PAGE_SIZE))) {
-			pr_err("%s,vm[%hu] gpa 0x%lx,gpa is invalid or not page size aligned.",
+			LOG_ERR("%s,vm[%hu] gpa 0x%lx,gpa is invalid or not page size aligned.",
 					__func__, vm->vm_id, wp->gpa);
 		} else {
 			hpa = gpa2hpa(vm, wp->gpa);
 			if (hpa == INVALID_HPA) {
-				pr_err("%s,vm[%hu] gpa 0x%lx,gpa is unmapping.",
+				LOG_ERR("%s,vm[%hu] gpa 0x%lx,gpa is unmapping.",
 						__func__, vm->vm_id, wp->gpa);
 			} else {
 				dev_dbg(DBG_LEVEL_HYCALL, "[vm%d] gpa=0x%x hpa=0x%x",
@@ -769,7 +769,7 @@ static int32_t write_protect_page(struct acrn_vm *vm,const struct wp_data *wp)
 				if (((hpa <= base_paddr) && ((hpa + PAGE_SIZE) > base_paddr)) ||
 						((hpa >= base_paddr) &&
 						 (hpa < (base_paddr + get_hv_image_size())))) {
-					pr_err("%s: overlap the hv memory region.", __func__);
+					LOG_ERR("%s: overlap the hv memory region.", __func__);
 				} else {
 					prot_set = (wp->set != 0U) ? 0UL : EPT_WR;
 					prot_clr = (wp->set != 0U) ? EPT_WR : 0UL;
@@ -810,7 +810,7 @@ int32_t hcall_write_protect_page(struct acrn_vcpu *vcpu, struct acrn_vm *target_
 			ret = write_protect_page(target_vm, &wp);
 		}
 	} else {
-		pr_err("%p %s: target_vm is invalid", target_vm, __func__);
+		LOG_ERR("%p %s: target_vm is invalid", target_vm, __func__);
 	}
 
 	return ret;
@@ -840,13 +840,13 @@ int32_t hcall_gpa_to_hpa(struct acrn_vcpu *vcpu, struct acrn_vm *target_vm, __un
 			(copy_from_gpa(vm, &v_gpa2hpa, param2, sizeof(v_gpa2hpa)) == 0)) {
 		v_gpa2hpa.hpa = gpa2hpa(target_vm, v_gpa2hpa.gpa);
 		if (v_gpa2hpa.hpa == INVALID_HPA) {
-			pr_err("%s,vm[%hu] gpa 0x%lx,gpa is unmapping.",
+			LOG_ERR("%s,vm[%hu] gpa 0x%lx,gpa is unmapping.",
 				__func__, target_vm->vm_id, v_gpa2hpa.gpa);
 		} else {
 			ret = copy_to_gpa(vm, &v_gpa2hpa, param2, sizeof(v_gpa2hpa));
 		}
 	} else {
-		pr_err("target_vm is invalid or hcall gpa2hpa: unable copy param from vm\n");
+		LOG_ERR("target_vm is invalid or hcall gpa2hpa: unable copy param from vm\n");
 	}
 
 	return ret;
@@ -876,7 +876,7 @@ int32_t hcall_assign_pcidev(struct acrn_vcpu *vcpu, struct acrn_vm *target_vm,
 			ret = vpci_assign_pcidev(target_vm, &pcidev);
 		}
 	} else {
-		pr_err("%s, vm[%d] is not a postlaunched vm, or not in created status to be assigned with a pcidev\n", __func__, vm->vm_id);
+		LOG_ERR("%s, vm[%d] is not a postlaunched vm, or not in created status to be assigned with a pcidev\n", __func__, vm->vm_id);
 	}
 
 	return ret;
@@ -906,7 +906,7 @@ int32_t hcall_deassign_pcidev(struct acrn_vcpu *vcpu, struct acrn_vm *target_vm,
 			ret = vpci_deassign_pcidev(target_vm, &pcidev);
 		}
 	} else {
-		pr_err("%s, vm[%d] is not a postlaunched vm, or not in paused/created status to be deassigned from a pcidev\n", __func__, vm->vm_id);
+		LOG_ERR("%s, vm[%d] is not a postlaunched vm, or not in paused/created status to be deassigned from a pcidev\n", __func__, vm->vm_id);
 	}
 
 	return ret;
@@ -939,7 +939,7 @@ int32_t hcall_assign_mmiodev(struct acrn_vcpu *vcpu, struct acrn_vm *target_vm,
 			}
 		}
 	} else {
-		pr_err("vm[%d] %s failed!\n",target_vm->vm_id,  __func__);
+		LOG_ERR("vm[%d] %s failed!\n",target_vm->vm_id,  __func__);
 	}
 
 	return ret;
@@ -972,7 +972,7 @@ int32_t hcall_deassign_mmiodev(struct acrn_vcpu *vcpu, struct acrn_vm *target_vm
 			}
 		}
 	} else {
-		pr_err("vm[%d] %s failed!\n",target_vm->vm_id,  __func__);
+		LOG_ERR("vm[%d] %s failed!\n",target_vm->vm_id,  __func__);
 	}
 
 	return ret;
@@ -1020,11 +1020,11 @@ int32_t hcall_set_ptdev_intr_info(struct acrn_vcpu *vcpu, struct acrn_vm *target
 						ret = ptirq_add_intx_remapping(target_vm, irq.intx.virt_pin,
 								irq.intx.phys_pin, irq.intx.pic_pin);
 					} else {
-						pr_err("%s: invalid phys pin or virt pin\n", __func__);
+						LOG_ERR("%s: invalid phys pin or virt pin\n", __func__);
 					}
 				}
 			} else {
-				pr_err("%s: invalid irq type: %u\n", __func__, irq.type);
+				LOG_ERR("%s: invalid irq type: %u\n", __func__, irq.type);
 			}
 		}
 	}
@@ -1071,11 +1071,11 @@ int32_t hcall_reset_ptdev_intr_info(struct acrn_vcpu *vcpu, struct acrn_vm *targ
 						ptirq_remove_intx_remapping(target_vm, irq.intx.virt_pin, irq.intx.pic_pin, false);
 						ret = 0;
 					} else {
-						pr_err("%s: invalid virt pin\n", __func__);
+						LOG_ERR("%s: invalid virt pin\n", __func__);
 					}
 				}
 			} else {
-				pr_err("%s: invalid irq type: %u\n", __func__, irq.type);
+				LOG_ERR("%s: invalid irq type: %u\n", __func__, irq.type);
 			}
 		}
 	}
@@ -1254,7 +1254,7 @@ int32_t hcall_set_callback_vector(__unused struct acrn_vcpu *vcpu, __unused stru
 	int32_t ret;
 
 	if ((param1 > NR_MAX_VECTOR) || (param1 < VECTOR_DYNAMIC_START)) {
-		pr_err("%s: invalid passed vector\n", __func__);
+		LOG_ERR("%s: invalid passed vector\n", __func__);
 		ret = -EINVAL;
 	} else {
 		set_hsm_notification_vector((uint32_t)param1);
@@ -1308,7 +1308,7 @@ int32_t hcall_add_vdev(struct acrn_vcpu *vcpu, struct acrn_vm *target_vm, __unus
 			}
 		}
 	} else {
-		pr_err("%s, vm[%d] is not a postlaunched vm, or not in created status to create a vdev\n", __func__, target_vm->vm_id);
+		LOG_ERR("%s, vm[%d] is not a postlaunched vm, or not in created status to create a vdev\n", __func__, target_vm->vm_id);
 	}
 	return ret;
 }
@@ -1348,13 +1348,13 @@ int32_t hcall_remove_vdev(struct acrn_vcpu *vcpu, struct acrn_vm *target_vm, __u
 						ret = 0;
 					}
 				} else {
-					pr_warn("%s, failed to destroy emulated device %x:%x.%x\n",
+					LOG_WRN("%s, failed to destroy emulated device %x:%x.%x\n",
 						__func__, bdf.bits.b, bdf.bits.d, bdf.bits.f);
 				}
 			}
 		}
 	} else {
-		pr_err("%s, vm[%d] is not a postlaunched vm, or not in created/paused status to destroy a vdev\n", __func__, target_vm->vm_id);
+		LOG_ERR("%s, vm[%d] is not a postlaunched vm, or not in created/paused status to destroy a vdev\n", __func__, target_vm->vm_id);
 	}
 	return ret;
 }

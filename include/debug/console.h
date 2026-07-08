@@ -108,6 +108,6 @@ void resume_console(void);
 struct acrn_vuart *vm_console_vuart(struct acrn_vm *vm);
 
 bool console_need_log(uint32_t severity);
-void console_log(char *buffer);
+void console_log(uint32_t severity, char *buffer);
 
 #endif /* CONSOLE_H */

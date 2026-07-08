@@ -40,6 +40,9 @@
 #define SHELL_CMD_VMSTAT		"vmstat"
 #define SHELL_CMD_VMSTAT_PARAM		NULL
 #define SHELL_CMD_VMSTAT_HELP		"list arm64 vm state"
+#define SHELL_CMD_RESET			"reset"
+#define SHELL_CMD_RESET_PARAM		"<vm id>"
+#define SHELL_CMD_RESET_HELP		"reset a non-service VM by id"
 #define SHELL_CMD_REBOOT		"reboot"
 #define SHELL_CMD_REBOOT_PARAM		NULL
 #define SHELL_CMD_REBOOT_HELP		"trigger a system reboot (immediately)"
@@ -52,6 +55,7 @@
 static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv);
 static int32_t shell_dumpstat(int32_t argc, char **argv);
 static int32_t shell_vmstat(int32_t argc, __unused char **argv);
+static int32_t shell_reset_vm(int32_t argc, char **argv);
 static int32_t shell_reboot(__unused int32_t argc, __unused char **argv);
 
 struct shell_cmd arch_shell_cmds[] = {
@@ -72,6 +76,12 @@ struct shell_cmd arch_shell_cmds[] = {
 		.cmd_param	= SHELL_CMD_VMSTAT_PARAM,
 		.help_str	= SHELL_CMD_VMSTAT_HELP,
 		.fcn		= shell_vmstat,
+	},
+	{
+		.str		= SHELL_CMD_RESET,
+		.cmd_param	= SHELL_CMD_RESET_PARAM,
+		.help_str	= SHELL_CMD_RESET_HELP,
+		.fcn		= shell_reset_vm,
 	},
 	{
 		.str		= SHELL_CMD_REBOOT,
@@ -1305,6 +1315,45 @@ static int32_t shell_vmstat(int32_t argc, __unused char **argv)
 	}
 
 	return 0;
+}
+
+static int32_t shell_reset_vm(int32_t argc, char **argv)
+{
+	struct acrn_vm *vm;
+	int64_t param;
+	uint16_t vm_id;
+	int32_t ret;
+
+	if (argc != 2) {
+		shell_puts("usage: reset <vm id>\r\n");
+		return -EINVAL;
+	}
+
+	param = strtol_deci(argv[1]);
+	if ((param < 0) || (param >= CONFIG_MAX_VM_NUM)) {
+		shell_puts("invalid vm id\r\n");
+		return -EINVAL;
+	}
+
+	vm_id = (uint16_t)param;
+	vm = get_vm_from_vmid(vm_id);
+	if (is_service_vm(vm)) {
+		shell_puts("refuse to reset service VM from shell\r\n");
+		return -EPERM;
+	}
+	if (is_poweroff_vm(vm)) {
+		shell_puts("vm is powered off\r\n");
+		return -EINVAL;
+	}
+
+	/*
+	 * Shell reset runs from an EL2 management thread, so it can synchronously
+	 * drive the VM state machine. Guest PSCI reset uses an async request because
+	 * it originates from the vCPU being torn down.
+	 */
+	ret = restart_vm(vm);
+
+	return ret;
 }
 
 static int32_t shell_reboot(__unused int32_t argc, __unused char **argv)

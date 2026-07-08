@@ -10,12 +10,17 @@
 
 /* Logging severity levels */
 #define LOG_FATAL		1U
-/* For msg should be write to console and sbuf meanwhile but not fatal error */
-#define LOG_ACRN		2U
 #define LOG_ERROR		3U
 #define LOG_WARNING		4U
 #define LOG_INFO		5U
 #define LOG_DEBUG		6U
+
+#define LOG_VT100_RESET		"\x1B[0m"
+#define LOG_VT100_BOLD_RED	"\x1B[1;31m"
+#define LOG_VT100_BOLD_YELLOW	"\x1B[1;33m"
+#define LOG_VT100_BOLD_WHITE	"\x1B[1;37m"
+#define LOG_VT100_BRIGHT_BLACK	"\x1B[90m"
+#define LOG_VT100_BOLD_INDIGO	"\x1B[1;38;5;54m"
 
 #define LOG_ENTRY_SIZE	80U
 /* Size of buffer used to store a message being logged,
@@ -47,6 +52,7 @@ void asm_assert(int32_t line, const char *file, const char *txt);
  * @pre the severity > 0
  */
 void do_logmsg(uint32_t severity, const char *fmt, ...);
+const char *logmsg_severity_color(uint32_t severity);
 /* Format uptime as HH:MM:SS.mmm,uuu to match SEAU/Zephyr log timestamps. */
 void format_log_timestamp(char *buffer, size_t size, uint64_t timestamp_us);
 
@@ -74,50 +80,46 @@ void printf(const char *fmt, ...);
 
 void vprintf(const char *fmt, va_list args);
 
-#ifndef pr_prefix
-#define pr_prefix
+#ifndef LOG_PREFIX
+#define LOG_PREFIX
 #endif
 
-#define pr_fatal(...)						\
+/* LOG_* is the single BEAU system log API. Console output adds color by severity. */
+#define LOG_FTL(...)						\
 	do {							\
-		do_logmsg(LOG_FATAL, pr_prefix __VA_ARGS__);	\
+		do_logmsg(LOG_FATAL, LOG_PREFIX __VA_ARGS__);	\
 	} while (0)
 
-#define pr_acrnlog(...)						\
+#define LOG_ERR(...)						\
 	do {							\
-		do_logmsg(LOG_ACRN, pr_prefix __VA_ARGS__);	\
+		do_logmsg(LOG_ERROR, LOG_PREFIX __VA_ARGS__);	\
 	} while (0)
 
-#define pr_err(...)						\
+#define LOG_WRN(...)						\
 	do {							\
-		do_logmsg(LOG_ERROR, pr_prefix __VA_ARGS__);	\
+		do_logmsg(LOG_WARNING, LOG_PREFIX __VA_ARGS__);	\
 	} while (0)
 
-#define pr_warn(...)						\
+#define LOG_INF(...)						\
 	do {							\
-		do_logmsg(LOG_WARNING, pr_prefix __VA_ARGS__);	\
+		do_logmsg(LOG_INFO, LOG_PREFIX __VA_ARGS__);	\
 	} while (0)
 
-#define pr_info(...)						\
+#define LOG_DBG(...)						\
 	do {							\
-		do_logmsg(LOG_INFO, pr_prefix __VA_ARGS__);	\
-	} while (0)
-
-#define pr_dbg(...)						\
-	do {							\
-		do_logmsg(LOG_DEBUG, pr_prefix __VA_ARGS__);	\
+		do_logmsg(LOG_DEBUG, LOG_PREFIX __VA_ARGS__);	\
 	} while (0)
 
 #define dev_dbg(lvl, ...)					\
 	do {							\
 		if ((lvl) > 0) {                                \
-			do_logmsg((lvl), pr_prefix __VA_ARGS__);\
+			do_logmsg((lvl), LOG_PREFIX __VA_ARGS__);\
 		}                                               \
 	} while (0)
 
 #define panic(...) 							\
-	do { pr_fatal("panic: %s line: %d\n", __func__, __LINE__);	\
-		pr_fatal(__VA_ARGS__); 					\
+	do { LOG_FTL("panic: %s line: %d\n", __func__, __LINE__);	\
+		LOG_FTL(__VA_ARGS__); 					\
 		while (1) { asm_pause(); }; } while (0)
 
 #endif /* LOGMSG_H */

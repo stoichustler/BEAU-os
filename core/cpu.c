@@ -118,10 +118,10 @@ bool start_pcpus(uint64_t mask)
 
 		/* Check to see if expected CPU is actually up */
 		if (!is_pcpu_active(i)) {
-			pr_fatal("secondary cpu%hu failed to come up", i);
+			LOG_FTL("secondary cpu%hu failed to come up", i);
 			pcpu_set_current_state(i, PCPU_STATE_DEAD);
 		} else {
-			pr_info("MP: secondary cpu%hu up", i);
+			LOG_INF("MP: secondary cpu%hu up", i);
 		}
 
 		i = ffs64(expected_start_mask);
@@ -145,7 +145,7 @@ bool wait_pcpus_running(uint64_t mask)
 		}
 
 		if (per_cpu(boot_state, i) != PCPU_STATE_RUNNING) {
-			pr_fatal("secondary cpu%hu failed to enter running state", i);
+			LOG_FTL("secondary cpu%hu failed to enter running state", i);
 			pcpu_set_current_state(i, PCPU_STATE_DEAD);
 		}
 

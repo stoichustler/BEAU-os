@@ -55,7 +55,7 @@ void read_vmsix_cap_reg(struct pci_vdev *vdev, uint32_t offset, uint32_t bytes, 
 		ctrl = pci_pdev_read_cfg(vdev->pdev->bdf, vdev->msix.capoff + PCIR_MSIX_CTRL, 2U);
 		if (((ctrl & PCIM_MSIXCTRL_TABLE_SIZE) + 1U) != vdev->msix.table_count) {
 			vdev->msix.table_count = (ctrl & PCIM_MSIXCTRL_TABLE_SIZE) + 1U;
-			pr_info("%s reprogram msi-x table size to %d\n", __func__, vdev->msix.table_count);
+			LOG_INF("%s reprogram msi-x table size to %d\n", __func__, vdev->msix.table_count);
 			/*In this case, we don't need to unmap msix EPT mapping again. */
 			ASSERT(vdev->msix.table_count <= (PAGE_SIZE/ MSIX_TABLE_ENTRY_SIZE), "");
 		}
@@ -122,7 +122,7 @@ uint32_t rw_vmsix_table(struct pci_vdev *vdev, struct io_request *io_req)
 						&mmio->value, (size_t)mmio->size);
 				}
 			} else {
-				pr_err("%s, only dword and qword are permitted", __func__);
+				LOG_ERR("%s, only dword and qword are permitted", __func__);
 			}
 		} else {
 			if (vdev->pdev != NULL) {

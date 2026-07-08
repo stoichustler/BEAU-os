@@ -189,7 +189,7 @@ struct ptirq_remapping_info *ptirq_alloc_entry(struct acrn_vm *vm, uint32_t intr
 
 		entry->active = false;
 	} else {
-		pr_err("alloc ptdev irq entry failed");
+		LOG_ERR("alloc ptdev irq entry failed");
 	}
 
 	return entry;
@@ -262,7 +262,7 @@ int32_t ptirq_activate_entry(struct ptirq_remapping_info *entry, uint32_t phys_i
 		if (ret >=0) {
 			irq = (uint32_t)ret;
 		} else {
-			pr_err("request irq failed, please check!, phys-irq=%d", phys_irq);
+			LOG_ERR("request irq failed, please check!, phys-irq=%d", phys_irq);
 		}
 	}
 
