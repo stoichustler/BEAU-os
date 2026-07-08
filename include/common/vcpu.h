@@ -20,7 +20,7 @@
 #include <asm/page.h>
 #include <schedule.h>
 #include <event.h>
-#include <io_req.h>
+#include <bsp/io_req.h>
 #include <bits.h>
 #include <asm/guest/vcpu.h>
 

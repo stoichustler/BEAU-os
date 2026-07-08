@@ -8,7 +8,7 @@
 #include <reloc.h>
 #include <vm_config.h>
 #include <libfdt.h>
-#include <vfdt.h>
+#include <bsp/vfdt.h>
 #include <fdt_api.h>
 
 void init_vm_vfdt_common(struct acrn_vm *vm)

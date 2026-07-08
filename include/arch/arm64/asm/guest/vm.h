@@ -11,7 +11,7 @@
 #ifndef CONFIG_STATIC_ARM64_PLATFORM
 #include <vm_configurations.h>
 #endif
-#include <vuart.h>
+#include <bsp/vuart.h>
 #include <fdt_api.h>
 #include <asm/guest/vgicv3.h>
 

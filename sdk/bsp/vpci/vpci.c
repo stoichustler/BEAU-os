@@ -32,7 +32,7 @@
 #include <asm/vtd.h>
 #include <io.h>
 #include <asm/mmu.h>
-#include <vacpi.h>
+#include <bsp/vacpi.h>
 #include <logmsg.h>
 #include <pgtable.h>
 #include "vpci_priv.h"

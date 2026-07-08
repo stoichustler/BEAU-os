@@ -30,7 +30,7 @@
 #define VPCI_PRIV_H_
 
 #include <list.h>
-#include <pci.h>
+#include <bsp/pci.h>
 
 /*
  * For hypervisor emulated PCI devices, vMSIX Table contains 128 entries

@@ -9,8 +9,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CWD = Path.cwd()
-LINUX_IMAGE_STAGE_ADDR = "0x70000000"
+LINUX_VM1_IMAGE_STAGE_ADDR = "0x70000000"
 LINUX_INITRAMFS_STAGE_ADDR = "0x74000000"
+LINUX_VM2_IMAGE_STAGE_ADDR = "0x76000000"
+DEFAULT_LINUX_INITRAMFS = ROOT / "sdk/image/linux/Initramfs.cpio.gz"
+REPACK_INITRAMFS = ROOT / "scripts/repack_initramfs.sh"
 
 
 def relpath(path):
@@ -40,11 +43,18 @@ def parse_args():
     parser.add_argument("--qemu", default=os.getenv("QEMU_SYSTEM_AARCH64", "qemu-system-aarch64"))
     parser.add_argument("--smp", default=getenv("BEAU_QEMU_SMP", "8"))
     parser.add_argument("-m", "--memory", default=getenv("BEAU_QEMU_MEM", "1024M"))
-    parser.add_argument("--linux-image", default=ROOT / "sdk/image/linux/Image", type=relpath)
+    parser.add_argument(
+        "--linux-image",
+        default=None,
+        type=relpath,
+        help="legacy: use one Linux Image for both VM1 backend and VM2 frontend",
+    )
+    parser.add_argument("--linux-vm1-image", default=ROOT / "sdk/image/linux/vm1/Image", type=relpath)
+    parser.add_argument("--linux-vm2-image", default=ROOT / "sdk/image/linux/vm2/Image", type=relpath)
     parser.add_argument(
         "--linux-initramfs",
         dest="linux_initramfs",
-        default=ROOT / "sdk/image/linux/Initramfs.cpio.gz",
+        default=DEFAULT_LINUX_INITRAMFS,
         type=relpath,
     )
     parser.add_argument("--toolchains", "--toolchain", default=toolchains, type=relpath)
@@ -55,7 +65,39 @@ def parse_args():
     if extra[:1] == ["--"]:
         extra = extra[1:]
     args.extra = extra
+    if args.linux_image is not None:
+        args.linux_vm1_image = args.linux_image
+        args.linux_vm2_image = args.linux_image
     return args
+
+
+def print_image_plan(args):
+    print(f"[kick] VM1 Linux backend Image: {args.linux_vm1_image}", flush=True)
+    print(f"[kick] VM2 Linux frontend Image: {args.linux_vm2_image}", flush=True)
+    print(f"[kick] shared Linux initramfs: {args.linux_initramfs}", flush=True)
+
+
+def verify_guest_images(args):
+    if not args.linux_vm1_image.is_file():
+        raise SystemExit(f"Linux VM1 backend Image not found: {args.linux_vm1_image}")
+    if not args.linux_vm2_image.is_file():
+        raise SystemExit(f"Linux VM2 frontend Image not found: {args.linux_vm2_image}")
+    if not args.linux_initramfs.is_file():
+        raise SystemExit(f"Linux shared initramfs not found: {args.linux_initramfs}")
+
+
+def uses_default_initramfs(args):
+    return args.linux_initramfs.resolve() == DEFAULT_LINUX_INITRAMFS.resolve()
+
+
+def repack_default_initramfs(args):
+    if not uses_default_initramfs(args):
+        return
+    if not REPACK_INITRAMFS.is_file():
+        raise SystemExit(f"Linux initramfs repack script not found: {REPACK_INITRAMFS}")
+
+    # print(f"[kick] refresh shared Linux initramfs: {args.linux_initramfs}", flush=True)
+    subprocess.run(["sh", str(REPACK_INITRAMFS), str(args.linux_initramfs)], cwd=ROOT, check=True)
 
 
 def main():
@@ -94,20 +136,28 @@ def main():
         "-kernel",
         str(args.kernel),
         "-device",
-        f"loader,file={args.linux_image},addr={LINUX_IMAGE_STAGE_ADDR},force-raw=on",
+        f"loader,file={args.linux_vm1_image},addr={LINUX_VM1_IMAGE_STAGE_ADDR},force-raw=on",
+        "-device",
+        f"loader,file={args.linux_vm2_image},addr={LINUX_VM2_IMAGE_STAGE_ADDR},force-raw=on",
         "-device",
         f"loader,file={args.linux_initramfs},addr={LINUX_INITRAMFS_STAGE_ADDR},force-raw=on",
         *args.extra,
     ]
 
     if args.dry_run:
+        # print_image_plan(args)
         if args.build:
+            if uses_default_initramfs(args):
+                print(render(["sh", REPACK_INITRAMFS, args.linux_initramfs]))
             print(render(clean_cmd, args.toolchains))
             print(render(build_cmd, args.toolchains))
         print(render(qemu_cmd))
         return
 
+    verify_guest_images(args)
     if args.build:
+        # print_image_plan(args)
+        repack_default_initramfs(args)
         if args.toolchains and not args.toolchains.is_dir():
             raise SystemExit(f"Toolchain bin dir not found: {args.toolchains}")
         compiler = f"{args.cross_prefix}gcc"
@@ -121,11 +171,6 @@ def main():
         print("Build it with:")
         print(f"  {render(build_cmd, args.toolchains)}")
         raise SystemExit(1)
-    if not args.linux_image.is_file():
-        raise SystemExit(f"Linux Image not found: {args.linux_image}")
-    if not args.linux_initramfs.is_file():
-        raise SystemExit(f"Linux initramfs not found: {args.linux_initramfs}")
-
     qemu = shutil.which(args.qemu)
     if qemu is None:
         raise SystemExit(f"QEMU binary not found: {args.qemu}")

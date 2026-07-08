@@ -7,7 +7,7 @@
 #ifndef CONSOLE_H
 #define CONSOLE_H
 
-#include <vuart.h>
+#include <bsp/vuart.h>
 
 
 struct acrn_vcpu;

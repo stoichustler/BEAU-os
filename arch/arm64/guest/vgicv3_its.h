@@ -10,7 +10,7 @@
 #include <types.h>
 #include <vm.h>
 #include <vcpu.h>
-#include <dm/io_req.h>
+#include <bsp/io_req.h>
 #include <asm/guest/vgicv3.h>
 
 void arm64_vgicv3_its_init(struct arm64_vgicv3 *vgic);

@@ -29,7 +29,7 @@
 #include <vm.h>
 #include <asm/guest/ept.h>
 #include <ptdev.h>
-#include <vpci.h>
+#include <bsp/vpci.h>
 #include <asm/pci_dev.h>
 #include <logmsg.h>
 #include <delay.h>

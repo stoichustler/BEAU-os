@@ -6,7 +6,7 @@
 #include <types.h>
 #include <vm_config.h>
 #include <vm.h>
-#include <vacpi.h>
+#include <bsp/vacpi.h>
 #include <logmsg.h>
 #include <util.h>
 #include <asm/mmu.h>

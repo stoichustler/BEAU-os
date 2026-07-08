@@ -34,9 +34,9 @@
 */
 
 #include <vm.h>
-#include <pci.h>
+#include <bsp/pci.h>
 #include "vpci_priv.h"
-#include <vacpi.h>
+#include <bsp/vacpi.h>
 
 /**
  * @addtogroup vp-dm_vperipheral

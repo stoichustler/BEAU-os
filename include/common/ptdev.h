@@ -9,7 +9,7 @@
 #include <list.h>
 #include <spinlock.h>
 #include <timer.h>
-#include <vacpi.h>
+#include <bsp/vacpi.h>
 
 
 enum intx_ctlr {

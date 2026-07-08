@@ -12,7 +12,7 @@
 #include <schedule.h>
 #include <errno.h>
 #include <logmsg.h>
-#include <io_req.h>
+#include <bsp/io_req.h>
 #include <guest_memory.h>
 #include <acrn_common.h>
 #include <softirq.h>

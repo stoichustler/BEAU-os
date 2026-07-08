@@ -10,7 +10,7 @@
 #include <vboot.h>
 #include <elf.h>
 #include <logmsg.h>
-#include <vacpi.h>
+#include <bsp/vacpi.h>
 
 /* Define a memory block to store ELF format VM load params in guest address space
  * The params including:

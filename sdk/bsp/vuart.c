@@ -28,12 +28,12 @@
  */
 
 #include <types.h>
-#include <pci.h>
+#include <bsp/pci.h>
 #include <serial.h>
 #include <console.h>
-#include <vuart.h>
+#include <bsp/vuart.h>
 #ifdef CONFIG_VMCS9900
-#include <vmcs9900.h>
+#include <bsp/vmcs9900.h>
 #endif
 #include <vm.h>
 #include <logmsg.h>

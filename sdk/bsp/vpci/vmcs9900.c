@@ -6,9 +6,9 @@
 
 #include <vm.h>
 #include <asm/guest/ept.h>
-#include <vpci.h>
+#include <bsp/vpci.h>
 #include <logmsg.h>
-#include <vmcs9900.h>
+#include <bsp/vmcs9900.h>
 #include "vpci_priv.h"
 #include <errno.h>
 

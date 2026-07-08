@@ -17,10 +17,10 @@
 #include <types.h>
 #include <bits.h>
 #include <mmu.h>
-#include <dm/vuart.h>
-#include <dm/io_req.h>
-#include <dm/vpci.h>
-#include <dm/vrtc.h>
+#include <bsp/vuart.h>
+#include <bsp/io_req.h>
+#include <bsp/vpci.h>
+#include <bsp/vrtc.h>
 #include <spinlock.h>
 #include <vm_config.h>
 #include <fdt_api.h>

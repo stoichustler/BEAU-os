@@ -11,7 +11,7 @@
 #include <asm/mmu.h>
 #include <boot.h>
 #include <vboot.h>
-#include <vacpi.h>
+#include <bsp/vacpi.h>
 #include <efi_mmap.h>
 #include <errno.h>
 #include <logmsg.h>

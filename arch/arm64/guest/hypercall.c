@@ -15,6 +15,7 @@
 #include <version.h>
 #include <logmsg.h>
 #include <trace.h>
+#include <virtio_proxy.h>
 
 /*
  * 2026-06-30, hypercall principle:
@@ -85,6 +86,13 @@ static int32_t hcall_arm64_get_hw_info(struct acrn_vcpu *vcpu,
 	return copy_to_gpa(vcpu->vm, &hw_info, param1, sizeof(hw_info));
 }
 
+static int32_t hcall_arm64_virtio_proxy_backend(struct acrn_vcpu *vcpu,
+	__unused struct acrn_vm *target_vm, uint64_t param1,
+	__unused uint64_t param2)
+{
+	return virtio_proxy_backend_hcall(vcpu, param1);
+}
+
 static int32_t hcall_arm64_not_supported(__unused struct acrn_vcpu *vcpu,
 	__unused struct acrn_vm *target_vm, __unused uint64_t param1,
 	__unused uint64_t param2)
@@ -131,6 +139,10 @@ static const struct arm64_hc_dispatch arm64_hc_dispatch_table[] = {
 	},
 	[HC_IDX(HC_VM_WDT_KICK)] = {
 		.handler = hcall_vm_wdt_kick,
+		.permission_flags = GUEST_FLAG_STATIC_VM,
+	},
+	[HC_IDX(HC_VIRTIO_PROXY_BACKEND)] = {
+		.handler = hcall_arm64_virtio_proxy_backend,
 		.permission_flags = GUEST_FLAG_STATIC_VM,
 	},
 };
@@ -187,7 +199,8 @@ int32_t arm64_dispatch_hypercall(struct acrn_vcpu *vcpu)
 	}
 
 	vcpu->arch.regs.x0 = (uint64_t)ret;
-	if (ret < 0) {
+	if ((ret < 0) && !((hcall_id == HC_VIRTIO_PROXY_BACKEND) &&
+		((ret == -EBUSY) || (ret == -ENODEV)))) {
 		LOG_DBG("arm64 hypercall=0x%lx ret=%d", hcall_id, ret);
 	}
 	TRACE_2L(TRACE_VMEXIT_VMCALL, vm->vm_id, hcall_id);

@@ -34,7 +34,7 @@
 #include <spinlock.h>
 #include <io.h>
 #include <mmu.h>
-#include <pci.h>
+#include <bsp/pci.h>
 #include <pgtable.h>
 #include <serial.h>
 #include <logmsg.h>

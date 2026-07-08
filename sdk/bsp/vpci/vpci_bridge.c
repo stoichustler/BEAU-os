@@ -47,7 +47,7 @@
 #include <vm.h>
 #include <errno.h>
 #include <logmsg.h>
-#include <pci.h>
+#include <bsp/pci.h>
 #include "vpci_priv.h"
 
 /**

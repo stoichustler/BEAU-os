@@ -9,9 +9,9 @@
 #include <vm.h>
 #include <vm_config.h>
 #include <console.h>
-#include <vuart.h>
+#include <bsp/vuart.h>
 #include <rtl.h>
-#include <io_req.h>
+#include <bsp/io_req.h>
 #include <virtio_mmio.h>
 #include <virtio_console.h>
 

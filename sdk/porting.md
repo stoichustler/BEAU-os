@@ -86,14 +86,16 @@ VM2 Linux uses repository-local images staged by the platform launcher or board
 loader, then copied by BEAU:
 
 ```text
-sdk/image/linux/Image
+sdk/image/linux/vm1/Image
+sdk/image/linux/vm2/Image
 sdk/image/linux/Initramfs.cpio.gz
 ```
 
 The Linux-on-BEAU DTB remains a small embedded module:
 
 ```text
-sdk/image/linux/beau-linux.dtb
+sdk/image/linux/vm1/beau-linux.dtb
+sdk/image/linux/vm2/beau-linux.dtb
 ```
 
 `platform.S` should use `.incbin` only for LK, Zephyr, `platform.dtb`, and small DTB

@@ -6,7 +6,7 @@
 
 #include <types.h>
 #include <spinlock.h>
-#include <pci.h>
+#include <bsp/pci.h>
 #include <serial.h>
 #include <io.h>
 #include <mmu.h>

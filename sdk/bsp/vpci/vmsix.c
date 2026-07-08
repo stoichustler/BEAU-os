@@ -29,7 +29,7 @@
 #include <vm.h>
 #include <io.h>
 #include <errno.h>
-#include <vpci.h>
+#include <bsp/vpci.h>
 #include <asm/guest/ept.h>
 #include <asm/mmu.h>
 #include <logmsg.h>

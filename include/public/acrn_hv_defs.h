@@ -81,6 +81,7 @@
 #define HC_PROFILING_OPS            BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x02UL)
 #define HC_GET_HW_INFO              BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x03UL)
 #define HC_VM_WDT_KICK              BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x04UL)
+#define HC_VIRTIO_PROXY_BACKEND     BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x05UL)
 
 /* Trusty */
 #define HC_ID_TRUSTY_BASE           0x70UL
@@ -232,6 +233,46 @@ struct hv_npk_log_param {
 struct acrn_hw_info {
 	uint16_t cpu_num; /* Physical CPU number */
 	uint16_t reserved[3];
+} __aligned(8);
+
+/*
+ * BEAU virtio-proxy backend ABI.
+ *
+ * A backend VM uses this debug-range HVC during early bring-up to service a
+ * frontend VM's virtqueue without giving BEAU protocol-specific filesystem,
+ * block, network, I2C, or SPI logic.
+ *
+ *   backend VM HVC poll
+ *        -> BEAU copies one frontend descriptor chain into backend buffers
+ *        -> backend performs protocol work
+ *        -> backend HVC reply copies response bytes back to frontend memory
+ *        -> BEAU publishes used-ring completion and injects the frontend IRQ
+ */
+#define ACRN_VIRTIO_PROXY_OP_REGISTER	0U
+#define ACRN_VIRTIO_PROXY_OP_POLL	1U
+#define ACRN_VIRTIO_PROXY_OP_REPLY	2U
+
+#define ACRN_VIRTIO_PROXY_DATA_MAX	4096U
+#define ACRN_VIRTIO_PROXY_DESC_MAX	8U
+#define ACRN_VIRTIO_PROXY_FLAG_RO	0x1U
+
+struct acrn_virtio_proxy_desc {
+	uint32_t len;
+	uint32_t flags;
+} __aligned(8);
+
+struct acrn_virtio_proxy_ioc {
+	uint32_t op;
+	uint32_t status;
+	uint16_t frontend_vmid;
+	uint16_t queue_id;
+	uint16_t head;
+	uint16_t desc_count;
+	uint32_t in_len;
+	uint32_t out_len;
+	uint64_t in_gpa;
+	uint64_t out_gpa;
+	struct acrn_virtio_proxy_desc desc[ACRN_VIRTIO_PROXY_DESC_MAX];
 } __aligned(8);
 
 /**

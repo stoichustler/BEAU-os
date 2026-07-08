@@ -39,7 +39,7 @@
 #include <vm.h>
 #include <vcpu.h>
 #include <vm_config.h>
-#include <io_req.h>
+#include <bsp/io_req.h>
 #include <irq.h>
 #include <logmsg.h>
 #include <rtl.h>

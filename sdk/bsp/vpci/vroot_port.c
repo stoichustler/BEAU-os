@@ -6,7 +6,7 @@
  */
 
 #include <logmsg.h>
-#include <pci.h>
+#include <bsp/pci.h>
 #include <vm.h>
 #include <acrn_common.h>
 #include "vroot_port.h"

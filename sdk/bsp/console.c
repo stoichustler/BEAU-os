@@ -6,12 +6,12 @@
 
 #include <types.h>
 #include <cpu.h>
-#include <pci.h>
+#include <bsp/pci.h>
 #include <serial.h>
 #include <shell.h>
 #include <timer.h>
 #include <ticks.h>
-#include <vuart.h>
+#include <bsp/vuart.h>
 #include <logmsg.h>
 #include <acrn_hv_defs.h>
 #include <vm.h>

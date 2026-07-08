@@ -9,9 +9,9 @@
 #include <vm.h>
 #include <vcpu.h>
 #include <vm_config.h>
-#include <io_req.h>
+#include <bsp/io_req.h>
 #include <console.h>
-#include <vuart.h>
+#include <bsp/vuart.h>
 #include <debug/serial.h>
 #include <asm/guest/vgicv3.h>
 #include <asm/guest/vpl011.h>

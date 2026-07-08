@@ -19,14 +19,14 @@
 #include <errno.h>
 #include <logmsg.h>
 #include <asm/ioapic.h>
-#include <mmio_dev.h>
-#include <ivshmem.h>
-#include <vmcs9900.h>
+#include <bsp/mmio_dev.h>
+#include <bsp/ivshmem.h>
+#include <bsp/vmcs9900.h>
 #include <asm/rtcm.h>
 #include <irq.h>
 #include <ticks.h>
 #include <asm/cpuid.h>
-#include <vroot_port.h>
+#include <bsp/vroot_port.h>
 #include <pgtable.h>
 
 #define DBG_LEVEL_HYCALL	6U

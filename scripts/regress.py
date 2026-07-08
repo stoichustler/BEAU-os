@@ -17,13 +17,14 @@ LINUX_PROMPT = "uos "
 LK_PROMPT = "uos ~"
 HELP_STRESS_TARGETS = (
     (0, "sos ~", "VM0 Zephyr", 30.0),
-    (1, LK_PROMPT, "VM1 LK", 30.0),
+    (1, LINUX_PROMPT, "VM1 Linux", 60.0),
     (2, LINUX_PROMPT, "VM2 Linux", 60.0),
 )
 ENTER = "\r"
 CTRL_D = b"\x04"
-LINUX_IMAGE_STAGE_ADDR = "0x70000000"
+LINUX_VM1_IMAGE_STAGE_ADDR = "0x70000000"
 LINUX_INITRAMFS_STAGE_ADDR = "0x74000000"
+LINUX_VM2_IMAGE_STAGE_ADDR = "0x76000000"
 FATAL_PATTERNS = (
     "[cut here]",
     "unexpected arm64 trap",
@@ -79,7 +80,9 @@ def parse_args():
     parser.add_argument("--qemu", default=os.getenv("QEMU_SYSTEM_AARCH64", "qemu-system-aarch64"))
     parser.add_argument("--smp", default=getenv("BEAU_QEMU_SMP", "8"))
     parser.add_argument("-m", "--memory", default=getenv("BEAU_QEMU_MEM", "1024M"))
-    parser.add_argument("--linux-image", default=ROOT / "sdk/image/linux/Image", type=relpath)
+    parser.add_argument("--linux-image", default=None, type=relpath)
+    parser.add_argument("--linux-vm1-image", default=ROOT / "sdk/image/linux/vm1/Image", type=relpath)
+    parser.add_argument("--linux-vm2-image", default=ROOT / "sdk/image/linux/vm2/Image", type=relpath)
     parser.add_argument(
         "--linux-initramfs",
         dest="linux_initramfs",
@@ -113,6 +116,9 @@ def parse_args():
     if extra[:1] == ["--"]:
         extra = extra[1:]
     args.extra = extra
+    if args.linux_image is not None:
+        args.linux_vm1_image = args.linux_image
+        args.linux_vm2_image = args.linux_image
     return args
 
 
@@ -143,7 +149,9 @@ def qemu_cmd(args):
         "-kernel",
         str(args.kernel),
         "-device",
-        f"loader,file={args.linux_image},addr={LINUX_IMAGE_STAGE_ADDR},force-raw=on",
+        f"loader,file={args.linux_vm1_image},addr={LINUX_VM1_IMAGE_STAGE_ADDR},force-raw=on",
+        "-device",
+        f"loader,file={args.linux_vm2_image},addr={LINUX_VM2_IMAGE_STAGE_ADDR},force-raw=on",
         "-device",
         f"loader,file={args.linux_initramfs},addr={LINUX_INITRAMFS_STAGE_ADDR},force-raw=on",
         *args.extra,
@@ -412,8 +420,8 @@ def run_vsh_switch_stress(qemu, args):
     expect_vm2_id(qemu, "VM2 Linux identity after initial Enter burst")
     vsh_return(qemu, "return from stress VM2 initial", vmid=2)
 
-    vsh_enter(qemu, 1, LK_PROMPT, "stress VM1 LK shell")
-    send_enter_burst(qemu, args.stress_enters, args.stress_enter_delay, "VM1 LK", vmid=1)
+    vsh_enter(qemu, 1, LINUX_PROMPT, "stress VM1 Linux shell", timeout=30.0)
+    send_enter_burst(qemu, args.stress_enters, args.stress_enter_delay, "VM1 Linux", vmid=1)
     vsh_return(qemu, "return from stress VM1", vmid=1)
 
     for idx in range(args.stress_rounds):
@@ -423,7 +431,8 @@ def run_vsh_switch_stress(qemu, args):
             args.stress_enter_delay, f"round {label} VM0", vmid=0)
         vsh_return(qemu, f"stress round {label}: return from VM0", vmid=0)
 
-        vsh_enter(qemu, 1, LK_PROMPT, f"stress round {label}: VM1 LK shell")
+        vsh_enter(qemu, 1, LINUX_PROMPT, f"stress round {label}: VM1 Linux shell",
+            timeout=30.0)
         send_enter_burst(qemu, max(1, args.stress_enters // 4),
             args.stress_enter_delay, f"round {label} VM1", vmid=1)
         vsh_return(qemu, f"stress round {label}: return from VM1", vmid=1)
@@ -441,8 +450,10 @@ def run_vsh_switch_stress(qemu, args):
 def run_qemu(args, cmd):
     if not args.kernel.is_file():
         raise SystemExit(f"Kernel image not found: {args.kernel}")
-    if not args.linux_image.is_file():
-        raise SystemExit(f"Linux Image not found: {args.linux_image}")
+    if not args.linux_vm1_image.is_file():
+        raise SystemExit(f"Linux VM1 Image not found: {args.linux_vm1_image}")
+    if not args.linux_vm2_image.is_file():
+        raise SystemExit(f"Linux VM2 Image not found: {args.linux_vm2_image}")
     if not args.linux_initramfs.is_file():
         raise SystemExit(f"Linux initramfs not found: {args.linux_initramfs}")
     if shutil.which(args.qemu) is None:
@@ -487,8 +498,8 @@ def run_qemu(args, cmd):
             "vmstat",
             [
                 "┌─  vmstat vm0:Zephyr",
-                "┌─  vmstat vm1:LK",
-                "┌─  vmstat vm2:Linux",
+                "┌─  vmstat vm1:Linux-1",
+                "┌─  vmstat vm2:Linux-2",
                 "vcpus:configured:4 created:4",
                 "│   affinity:",
                 "boot:kernel:",
@@ -546,7 +557,7 @@ def run_qemu(args, cmd):
         qemu.expect(PROMPT, "return from VM0 shell")
 
         qemu.send("vsh 1" + ENTER)
-        qemu.expect(LK_PROMPT, "VM1 LK shell", keepalive=ENTER)
+        qemu.expect(LINUX_PROMPT, "VM1 Linux initramfs shell", timeout=60.0, keepalive=ENTER)
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM1 shell")
 

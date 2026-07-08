@@ -29,7 +29,7 @@
 #include <vm.h>
 #include <ptdev.h>
 #include <asm/guest/assign.h>
-#include <vpci.h>
+#include <bsp/vpci.h>
 #include <asm/vtd.h>
 #include "vpci_priv.h"
 

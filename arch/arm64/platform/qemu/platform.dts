@@ -223,10 +223,13 @@
 				interrupts = <0x0 0x10 0x4>;
 			};
 
-			virtio-fs-mmio@a000200 {
-				compatible = "beau,virtio-fs", "virtio,mmio";
+			virtio-proxy-mmio@a000200 {
+				compatible = "beau,virtio-proxy", "beau,virtio-fs", "virtio,mmio";
 				reg = <0x0 0x0a000200 0x0 0x00000200>;
 				interrupts = <0x0 0x11 0x4>;
+				beau,device-id = <26>;
+				beau,queue-num = <2>;
+				beau,queue-size = <64>;
 				beau,tag = "beau";
 			};
 		};
@@ -329,10 +332,10 @@
 #else
 			vboot@70000000 {
 				compatible = "beau,kernel", "beau,vboot";
-				tag = "Linux";
+				tag = "Linux-VM1";
 				reg = <0x0 0x70000000 0x0 0x0>;
 				size-source = "symbol";
-				size-symbol = "BEAU_LINUX_IMAGE_SIZE";
+				size-symbol = "BEAU_LINUX_VM1_IMAGE_SIZE";
 				load-addr = <0x0 0x58080000>;
 				entry-addr = <0x0 0x58080000>;
 				bootargs = "console=hvc0 rdinit=/init loglevel=7";
@@ -383,12 +386,12 @@
 				family = "linux";
 			};
 
-			vboot@70000000 {
+			vboot@76000000 {
 				compatible = "beau,kernel", "beau,vboot";
-				tag = "Linux";
-				reg = <0x0 0x70000000 0x0 0x0>;
+				tag = "Linux-VM2";
+				reg = <0x0 0x76000000 0x0 0x0>;
 				size-source = "symbol";
-				size-symbol = "BEAU_LINUX_IMAGE_SIZE";
+				size-symbol = "BEAU_LINUX_VM2_IMAGE_SIZE";
 				load-addr = <0x0 0x48080000>;
 				entry-addr = <0x0 0x48080000>;
 				bootargs = "console=hvc0 rdinit=/init loglevel=4";

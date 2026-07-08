@@ -84,7 +84,8 @@ qemu-system-aarch64 \
   -nographic \
   -serial mon:stdio \
   -kernel out/qemu_out/beau.debug.out \
-  -device loader,file=sdk/image/linux/Image,addr=0x70000000,force-raw=on \
+  -device loader,file=sdk/image/linux/vm1/Image,addr=0x70000000,force-raw=on \
+  -device loader,file=sdk/image/linux/vm2/Image,addr=0x76000000,force-raw=on \
   -device loader,file=sdk/image/linux/Initramfs.cpio.gz,addr=0x74000000,force-raw=on
 ```
 
@@ -97,32 +98,39 @@ qemu-system-aarch64 \
   - Load/entry: `0x42000000`
   - RAM identity window: `0x42000000-0x48000000`
   - pCPUs: 0, 2, 3, 4
-- VM1 is the LK pre-launched VM:
-  - Image: `sdk/image/lk.bin`
-  - Load/entry: `0x40100000`
-  - RAM identity window: `0x40000000-0x42000000`
-  - pCPUs: 3, 5, 6, 7
-- VM2 is the Linux pre-launched VM:
-  - Kernel image: `sdk/image/linux/Image`
+- VM1 is the Linux-1 pre-launched VM by default:
+  - Kernel image: `sdk/image/linux/vm1/Image`
   - QEMU kernel stage address: `0x70000000`
+  - Kernel load/entry: `0x58080000`
+  - Initramfs image: `sdk/image/linux/Initramfs.cpio.gz`
+  - QEMU initramfs stage address: `0x74000000`
+  - Initramfs load: `0x5c000000`
+  - DTB: `sdk/image/linux/vm1/beau-linux.dtb`
+  - RAM identity window: `0x58000000-0x60000000`
+  - pCPUs: 4, 2, 5, 6
+- VM2 is the Linux-2 pre-launched VM:
+  - Kernel image: `sdk/image/linux/vm2/Image`
+  - QEMU kernel stage address: `0x76000000`
   - Kernel load/entry: `0x48080000`
   - Initramfs image: `sdk/image/linux/Initramfs.cpio.gz`
   - QEMU initramfs stage address: `0x74000000`
   - Initramfs load: `0x4c000000`
-  - DTB: `sdk/image/linux/beau-linux.dtb`
+  - DTB: `sdk/image/linux/vm2/beau-linux.dtb`
   - RAM identity window: `0x48000000-0x50000000`
-  - pCPUs: 1, 4, 6, 7
-  - Boot console: `console=ttyAMA0 rdinit=/init earlycon=pl011,0x09000000`
+  - pCPUs: 7, 0, 3, 6
+  - Boot console: `console=hvc0 rdinit=/init loglevel=4`
   - Initramfs shell: `uos` prompt as root
 - pCPU3 is intentionally shared by VM0 and VM1 AP vCPUs.
   Each VM's vCPU0/BSP pCPU is private: VM0 uses pCPU2, VM1 uses pCPU5,
   and VM2 uses pCPU1.
 
 QEMU and rk356x both keep guest images under `sdk/image`. LK and Zephyr are
-embedded RTOS raw images. Linux `Image`, `Initramfs.cpio.gz`, `beau-linux.dts`, and
-`beau-linux.dtb` live under `sdk/image/linux`; `Image` and `Initramfs.cpio.gz` are staged
-by a loader and copied by BEAU, while `beau-linux.dtb` is embedded as the
-Linux-on-BEAU DTB module.
+embedded RTOS raw images. Linux VM1 and VM2 now use separate kernel/DTB assets
+under `sdk/image/linux/vm1` and `sdk/image/linux/vm2`, with the shared
+`sdk/image/linux/Initramfs.cpio.gz` staged once by QEMU. The per-VM Linux
+`Image` files are staged by a loader and copied by BEAU, while
+`vm1/beau-linux.dtb` and `vm2/beau-linux.dtb` are embedded as small
+Linux-on-BEAU DTB modules.
 
 The first `create_vcpu()` call creates vCPU0/BSP. The ARM64 creation order keeps
 the service VM BSP away from pCPU0 and keeps every VM BSP on a pCPU that is not
@@ -136,8 +144,9 @@ used by another VM.
   MMIO emulation.
 - Zephyr and LK are RTOS raw images and use `GUEST_FLAG_NO_FW`. This skips
   external ACPI/FDT boot modules; ARM64 can still pass a synthetic static vFDT.
-- VM2 Linux clears `GUEST_FLAG_NO_FW`, uses loader/module delivery for `Image`
-  and `Initramfs.cpio.gz`, and receives the embedded `beau-linux.dtb`.
+- Linux-1/Linux-2 clear `GUEST_FLAG_NO_FW`, use loader/module delivery for their
+  per-VM `Image` plus the shared `Initramfs.cpio.gz`, and receive their matching
+  embedded per-VM Linux DTB.
 - VM2 Linux keeps PL011 earlycon enabled so `vsh 2` can replay kernel logs even
   before the normal PL011 console driver is registered.
 - The host owns CNTP for scheduler ticks. Guest physical/virtual timer sysreg

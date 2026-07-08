@@ -93,6 +93,10 @@ static uint64_t arm64_dts_module_size(const char *symbol)
 #endif
 	else if (strcmp(symbol, "BEAU_LINUX_IMAGE_SIZE") == 0) {
 		size = BEAU_LINUX_IMAGE_SIZE;
+	} else if (strcmp(symbol, "BEAU_LINUX_VM1_IMAGE_SIZE") == 0) {
+		size = BEAU_LINUX_VM1_IMAGE_SIZE;
+	} else if (strcmp(symbol, "BEAU_LINUX_VM2_IMAGE_SIZE") == 0) {
+		size = BEAU_LINUX_VM2_IMAGE_SIZE;
 	} else if (strcmp(symbol, "BEAU_LINUX_INITRAMFS_SIZE") == 0) {
 		size = BEAU_LINUX_INITRAMFS_SIZE;
 	} else {

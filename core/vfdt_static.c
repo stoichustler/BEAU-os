@@ -9,7 +9,7 @@
 #include <vm_config.h>
 #if CONFIG_STATIC_VFDT
 #include <libfdt.h>
-#include <vfdt.h>
+#include <bsp/vfdt.h>
 #include <fdt_api.h>
 #include <logmsg.h>
 #endif

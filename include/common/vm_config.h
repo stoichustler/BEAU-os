@@ -8,7 +8,7 @@
 #define VM_CONFIG_H_
 
 #include <types.h>
-#include <pci.h>
+#include <bsp/pci.h>
 #ifndef CONFIG_STATIC_ARM64_PLATFORM
 #include <board_info.h>
 #endif
@@ -20,7 +20,7 @@
 #include <acrn_hv_defs.h>
 #include <schedule.h>
 #include <asm/vm_config.h>
-#include <vuart.h>
+#include <bsp/vuart.h>
 
 #define AFFINITY_CPU(n)		(1UL << (n))
 #define MAX_VCPUS_PER_VM	MAX_PCPU_NUM

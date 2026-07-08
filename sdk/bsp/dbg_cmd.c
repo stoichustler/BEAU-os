@@ -6,7 +6,7 @@
 
 #include <types.h>
 #include <rtl.h>
-#include <pci.h>
+#include <bsp/pci.h>
 #include <serial.h>
 #include <dbg_cmd.h>
 

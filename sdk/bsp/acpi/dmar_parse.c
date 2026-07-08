@@ -9,7 +9,7 @@
 #include <io.h>
 #include <spinlock.h>
 #include <asm/cpu_caps.h>
-#include <pci.h>
+#include <bsp/pci.h>
 #include <asm/vtd.h>
 #include <acpi.h>
 

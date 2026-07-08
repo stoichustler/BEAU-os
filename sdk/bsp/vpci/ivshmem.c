@@ -10,7 +10,7 @@
 #include <asm/guest/ept.h>
 #include <logmsg.h>
 #include <errno.h>
-#include <ivshmem.h>
+#include <bsp/ivshmem.h>
 #include <ivshmem_cfg.h>
 #include "vpci_priv.h"
 

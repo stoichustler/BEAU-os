@@ -1,3 +1,25 @@
+# BEAU OS
+
+
+## Hierarchy
+
+```
+.
+├── arch
+│   ├── arm64            // Arm64
+│   └── lds
+├── core                 // BEAU core services
+├── include
+├── lib
+├── scripts
+└── sdk
+    ├── beau             // Documentation
+    ├── bsp              // BEAU dev/vdev drivers
+    ├── codex
+    ├── image
+    └── udev             // Userspace implementation (ask if allow to modify)
+```
+
 ## Codex Working Requirements
 
 When Codex works on this repository, it must read this file first and also
@@ -36,12 +58,12 @@ confirmation before implementation. Document and discuss common-code timer,
 scheduler, vCPU, VM, IRQ, or memory-management optimizations first, then wait for
 approval before editing shared core code.
 
-Changes to `sdk/image/linux/beau-linux.dts` require explicit human confirmation
-before implementation. Treat VM2 Linux bootargs, CPU topology, device nodes,
-memory ranges, interrupt/timer properties, and debug-only boot parameters in
-this DTS as user-controlled. Discuss the intended DTS change first; after
-approval, update the generated `sdk/image/linux/beau-linux.dtb` only as part of
-that approved DTS change.
+Changes to `sdk/image/linux/vm1/beau-linux.dts` or
+`sdk/image/linux/vm2/beau-linux.dts` require explicit human confirmation before
+implementation. Treat Linux bootargs, CPU topology, device nodes, memory ranges,
+interrupt/timer properties, and debug-only boot parameters in these DTS files as
+user-controlled. Discuss the intended DTS change first; after approval, update
+the matching generated DTB only as part of that approved DTS change.
 
 ## ARM64 Development Status
 
@@ -71,7 +93,8 @@ qemu-system-aarch64 \
   -nographic \
   -serial mon:stdio \
   -kernel out/qemu_out/beau.debug.out \
-  -device loader,file=sdk/image/linux/Image,addr=0x70000000,force-raw=on \
+  -device loader,file=sdk/image/linux/vm1/Image,addr=0x70000000,force-raw=on \
+  -device loader,file=sdk/image/linux/vm2/Image,addr=0x76000000,force-raw=on \
   -device loader,file=sdk/image/linux/Initramfs.cpio.gz,addr=0x74000000,force-raw=on
 ```
 
@@ -112,10 +135,12 @@ Zephyr stays as an `.incbin` RTOS image under `sdk/image/zephyr.bin`. LK remains
 available as the optional VM1 RTOS image under `sdk/image/lk.bin` when
 `CONFIG_ENABLE_VM1_LK=1`, but the default QEMU 3OS scenario sets
 `CONFIG_ENABLE_VM1_LK=0` and boots RTOS + Linux-1 + Linux-2. Both Linux guests
-use `sdk/image/linux/Image` and `sdk/image/linux/Initramfs.cpio.gz`; QEMU stages
-them with `-device loader` at `0x70000000` and `0x74000000`, then BEAU copies
-the image pair into each Linux guest RAM window. The Linux DTBs remain embedded
-as small `.incbin` modules because they describe Linux running on BEAU.
+use the shared `sdk/image/linux/Initramfs.cpio.gz`, while their kernels are now
+staged separately from `sdk/image/linux/vm1/Image` and
+`sdk/image/linux/vm2/Image`. QEMU stages VM1 at `0x70000000`, the shared
+initramfs at `0x74000000`, and VM2 at `0x76000000`; BEAU copies each module
+into its Linux guest RAM window. The Linux DTBs remain embedded as small
+`.incbin` modules because they describe Linux running on BEAU.
 
 Current QEMU VM layout for the default `CONFIG_ENABLE_VM1_LK=0` build:
 
@@ -126,8 +151,8 @@ Current QEMU VM layout for the default `CONFIG_ENABLE_VM1_LK=0` build:
   - Identity RAM window: `0x42000000-0x48000000`
   - vCPUs: 4, ordered affinity `<1 2 3 5>`
 - VM1 is the Linux-1 pre-launched VM by default.
-  - Kernel image: `sdk/image/linux/Image`
-  - Kernel module tag: `Linux`
+  - Kernel image: `sdk/image/linux/vm1/Image`
+  - Kernel module tag: `Linux-VM1`
   - QEMU kernel stage address: `0x70000000`
   - Kernel load address and entry: `0x58080000`
   - Initramfs image: `sdk/image/linux/Initramfs.cpio.gz`
@@ -141,9 +166,9 @@ Current QEMU VM layout for the default `CONFIG_ENABLE_VM1_LK=0` build:
   - Optional LK path when `CONFIG_ENABLE_VM1_LK=1`: image `sdk/image/lk.bin`,
     RAM `0x40000000-0x42000000`, entry `0x40100000`, affinity `<3 5 6 7>`
 - VM2 is the Linux-2 pre-launched VM.
-  - Kernel image: `sdk/image/linux/Image`
-  - Kernel module tag: `linux`
-  - QEMU kernel stage address: `0x70000000`
+  - Kernel image: `sdk/image/linux/vm2/Image`
+  - Kernel module tag: `Linux-VM2`
+  - QEMU kernel stage address: `0x76000000`
   - Kernel load address and entry: `0x48080000`
   - Initramfs image: `sdk/image/linux/Initramfs.cpio.gz`
   - Initramfs module tag: `Initramfs.cpio.gz`
@@ -165,8 +190,9 @@ Current QEMU VM layout for the default `CONFIG_ENABLE_VM1_LK=0` build:
 The generated `out/qemu_out/beau.debug.out` has been boot-tested on QEMU. The
 build also emits `out/qemu_out/beau.out` as the base link image and
 `out/qemu_out/beau.debug.bin` as the raw debug image. Zephyr autostarts from
-its embedded RTOS image. Linux-1 and Linux-2 autostart when QEMU stages `Image`
-and `Initramfs.cpio.gz`; BEAU supplies the embedded per-VM Linux DTB modules.
+its embedded RTOS image. Linux-1 and Linux-2 autostart when QEMU stages their
+per-VM `Image` files and the shared `Initramfs.cpio.gz`; BEAU supplies the
+embedded per-VM Linux DTB modules.
 LK autostarts only in the optional `CONFIG_ENABLE_VM1_LK=1` VM1 build.
 The BEAU shell stays quiet during late guest AP bring-up; press Enter after the
 boot logs settle to show the `console:\>` prompt.
@@ -356,8 +382,9 @@ Current status:
 - The Makefile wires `platform.dtb` and the generated static config header into
   the normal dependencies, so BSP boot code and symbol-table objects rebuild
   when the DTS changes.
-- `sdk/image/linux/beau-linux.dts` was not changed. It remains the guest Linux
-  DTB source and still requires explicit approval before edits.
+- The per-VM Linux DTS files under `sdk/image/linux/vm1/` and
+  `sdk/image/linux/vm2/` were not changed. They remain guest Linux DTB sources
+  and still require explicit approval before edits.
 
 Validation run on 2026-07-07:
 
@@ -1051,8 +1078,8 @@ Read the dump in this order:
 
 1. Preserve the current standard QEMU root-console baseline before each
    interrupt/timer experiment.
-2. Do not change `sdk/image/linux/beau-linux.dts` unless the task explicitly
-   approves a DTS change.
+2. Do not change the per-VM Linux DTS files under `sdk/image/linux/vm1/` or
+   `sdk/image/linux/vm2/` unless the task explicitly approves a DTS change.
 3. Keep vtimer fixes in bounded sync points: vCPU switch-in/out,
    maintenance/EOI handling, timer IRQ injection, explicit sysreg/MMIO traps,
    or guest exits. Avoid always-on polling and broad backup timers unless a
@@ -1087,15 +1114,18 @@ Status as of 2026-06-18:
 - Keep VM2 Linux at 4 vCPUs for validation. `maxcpus=1` or `maxcpu=1` can hide
   the SMP/timer symptom and may be useful as a temporary comparison point, but
   it is not a fix for the 4-vCPU VM2 Linux path.
-- Keep Linux assets under `sdk/image/linux`; the active Linux DT source is
-  `sdk/image/linux/beau-linux.dts`. This DTS must only be changed by an
-  explicit manual edit. Do not let build scripts, regression scripts, or helper
-  tools rewrite it implicitly.
-- After manually changing `sdk/image/linux/beau-linux.dts`, regenerate the
-  embedded DTB explicitly with:
-  `dtc -I dts -O dtb -o sdk/image/linux/beau-linux.dtb sdk/image/linux/beau-linux.dts`.
-  The BEAU image must then be rebuilt because `beau-linux.dtb` is included by
-  `arch/arm64/platform/qemu/platform.S`.
+- Keep Linux assets under `sdk/image/linux`; the active Linux DT sources are
+  `sdk/image/linux/vm1/beau-linux.dts` and
+  `sdk/image/linux/vm2/beau-linux.dts`. These DTS files must only be changed by
+  explicit manual edits. Do not let build scripts, regression scripts, or helper
+  tools rewrite them implicitly.
+- After manually changing either Linux DTS, regenerate the matching embedded DTB
+  explicitly:
+  `dtc -I dts -O dtb -o sdk/image/linux/vm1/beau-linux.dtb sdk/image/linux/vm1/beau-linux.dts`
+  or
+  `dtc -I dts -O dtb -o sdk/image/linux/vm2/beau-linux.dtb sdk/image/linux/vm2/beau-linux.dts`.
+  The BEAU image must then be rebuilt because both per-VM Linux DTBs are
+  included by `arch/arm64/platform/qemu/platform.S`.
 - Timer DT interrupt IDs remain unchanged. The virtual timer still uses
   PPI/INTID 27 from `<1 13 4>`; current evidence does not require changing
   PPI27.
@@ -1298,8 +1328,9 @@ Selected repair direction after comparing Xen:
    run the standard QEMU regression and require VM0 Zephyr plus the configured
    Linux guests to pass root identity checks. In the optional
    `CONFIG_ENABLE_VM1_LK=1` path, require VM1 LK console progress instead.
-2. Keep `sdk/image/linux/beau-linux.dts` unchanged. Core scheduler changes
-   require explicit confirmation; the approved scope for this follow-up is the
+2. Keep the per-VM Linux DTS files under `sdk/image/linux/vm1/` and
+   `sdk/image/linux/vm2/` unchanged. Core scheduler changes require explicit
+   confirmation; the approved scope for this follow-up is the
    `core/schedule.c` no-op reschedule clear, not a scheduler algorithm switch.
 3. Reproduce the stall from VM2 root shell with the 4-vCPU configuration. On
    the first RCU warning, return to the BEAU shell and capture `dumpstat 2`,
@@ -1360,8 +1391,8 @@ Selected repair direction after comparing Xen:
   caused QEMU to stop producing useful shell output for more than 60 seconds.
   Keep the compact active-window model unless dynamic allocation is added.
 - Expanding the generated QEMU vFDT PL011 clocks to include both `uartclk` and
-  `apb_pclk` did not affect VM2. VM2 uses the embedded
-  `sdk/image/linux/beau-linux.dtb`, whose DTS already has both clocks.
+  `apb_pclk` did not affect VM2. VM2 uses its embedded per-VM Linux DTB under
+  `sdk/image/linux/vm2/`, whose DTS already has both clocks.
 
 ### Current WDT/vtimer Progress, 2026-06-26
 

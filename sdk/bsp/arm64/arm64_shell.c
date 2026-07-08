@@ -22,7 +22,9 @@
 #include <schedule.h>
 #include <ticks.h>
 #include <console.h>
-#include <vuart.h>
+#include <acrn_hv_defs.h>
+#include <virtio_proxy.h>
+#include <bsp/vuart.h>
 #include <debug/symbol.h>
 #include <asm/mmu.h>
 #include <asm/platform.h>
@@ -40,6 +42,9 @@
 #define SHELL_CMD_VMSTAT		"vmstat"
 #define SHELL_CMD_VMSTAT_PARAM		NULL
 #define SHELL_CMD_VMSTAT_HELP		"list arm64 vm state"
+#define SHELL_CMD_VIRTIOSTAT		"virtiostat"
+#define SHELL_CMD_VIRTIOSTAT_PARAM	"[vm id]"
+#define SHELL_CMD_VIRTIOSTAT_HELP	"list virtio-proxy transport state"
 #define SHELL_CMD_RESET			"reset"
 #define SHELL_CMD_RESET_PARAM		"<vm id>"
 #define SHELL_CMD_RESET_HELP		"reset a non-service VM by id"
@@ -55,6 +60,7 @@
 static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv);
 static int32_t shell_dumpstat(int32_t argc, char **argv);
 static int32_t shell_vmstat(int32_t argc, __unused char **argv);
+static int32_t shell_virtiostat(int32_t argc, char **argv);
 static int32_t shell_reset_vm(int32_t argc, char **argv);
 static int32_t shell_reboot(__unused int32_t argc, __unused char **argv);
 
@@ -76,6 +82,12 @@ struct shell_cmd arch_shell_cmds[] = {
 		.cmd_param	= SHELL_CMD_VMSTAT_PARAM,
 		.help_str	= SHELL_CMD_VMSTAT_HELP,
 		.fcn		= shell_vmstat,
+	},
+	{
+		.str		= SHELL_CMD_VIRTIOSTAT,
+		.cmd_param	= SHELL_CMD_VIRTIOSTAT_PARAM,
+		.help_str	= SHELL_CMD_VIRTIOSTAT_HELP,
+		.fcn		= shell_virtiostat,
 	},
 	{
 		.str		= SHELL_CMD_RESET,
@@ -1314,6 +1326,111 @@ static int32_t shell_vmstat(int32_t argc, __unused char **argv)
 		shell_item_end();
 	}
 
+	return 0;
+}
+
+static const char *shell_virtio_access_to_str(uint32_t access)
+{
+	return access == VIRTIO_PROXY_ACCESS_READONLY ? "ro" : "rw";
+}
+
+static const char *shell_virtio_hcall_op_to_str(uint32_t op)
+{
+	const char *str;
+
+	switch (op) {
+	case ACRN_VIRTIO_PROXY_OP_REGISTER:
+		str = "register";
+		break;
+	case ACRN_VIRTIO_PROXY_OP_POLL:
+		str = "poll";
+		break;
+	case ACRN_VIRTIO_PROXY_OP_REPLY:
+		str = "reply";
+		break;
+	default:
+		str = "-";
+		break;
+	}
+
+	return str;
+}
+
+static void shell_virtiostat_print_vm(uint16_t vm_id)
+{
+	struct virtio_proxy_stats stats;
+
+	if (!virtio_proxy_get_stats(vm_id, &stats)) {
+		return;
+	}
+
+	/*
+	 * 2026-07-08, virtio transport monitor:
+	 *
+	 * virtiostat intentionally reports only the common virtio-mmio/proxy
+	 * state: device id, queues, hcall ownership, pending descriptor chain, and
+	 * used-ring completion counters. It does not decode fs/blk/net/i2c/spi
+	 * protocol payloads, so the same command remains useful as more virtio
+	 * modules bind behind virtio_proxy.
+	 */
+	shell_item_begin("virtiostat vm%hu", vm_id);
+	shell_item_line("device:%u tag:%s access:%s mmio:0x%016lx+0x%lx irq:%u",
+		stats.device_id, stats.tag, shell_virtio_access_to_str(stats.access),
+		stats.base, stats.size, stats.irq);
+	shell_item_line("status:0x%08x isr:0x%08x notify:%lu backend:%s hcall:%s",
+		stats.status, stats.interrupt_status, stats.notify_count,
+		shell_yes_no(stats.backend_bound),
+		shell_yes_no(stats.hcall_backend_registered));
+	shell_item_line("pending:valid:%s sent:%s done:%s q:%hu head:%hu in:%hu out:%u out-desc:%hu",
+		shell_yes_no(stats.pending_valid), shell_yes_no(stats.pending_sent),
+		shell_yes_no(stats.pending_done), stats.pending_queue_id,
+		stats.pending_head, stats.pending_in_len, stats.pending_out_len,
+		stats.pending_out_count);
+	shell_item_line("hcall:register:%lu poll:%lu/%lu reply:%lu/%lu last:%s ret:%d",
+		stats.hcall_register_count, stats.hcall_poll_ok_count,
+		stats.hcall_poll_count, stats.hcall_reply_ok_count,
+		stats.hcall_reply_count,
+		shell_virtio_hcall_op_to_str(stats.last_hcall_op),
+		stats.last_hcall_ret);
+	shell_item_line("last-poll:q:%hu head:%hu last-reply:q:%hu head:%hu len:%u",
+		stats.last_poll_queue_id, stats.last_poll_head,
+		stats.last_reply_queue_id, stats.last_reply_head,
+		stats.last_reply_len);
+	shell_item_line("queue  ready  num    last_avail  desc               avail              used");
+	shell_item_line("─────  ─────  ─────  ──────────  ─────────────────  ─────────────────  ─────────────────");
+	for (uint16_t queue_id = 0U; queue_id < stats.queue_num; queue_id++) {
+		const struct virtio_proxy_queue_stats *queue = &stats.queues[queue_id];
+
+		shell_item_line("%-5hu  %-5s  %-5hu  %-10hu  0x%016lx  0x%016lx  0x%016lx",
+			queue_id, shell_yes_no(queue->ready), queue->num,
+			queue->last_avail_idx, queue->desc, queue->avail, queue->used);
+	}
+	shell_item_end();
+}
+
+static int32_t shell_virtiostat(int32_t argc, char **argv)
+{
+	int64_t param;
+
+	if (argc == 1) {
+		for (uint16_t vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
+			shell_virtiostat_print_vm(vm_id);
+		}
+		return 0;
+	}
+
+	if (argc != 2) {
+		shell_puts("usage: virtiostat [vm id]\r\n");
+		return -EINVAL;
+	}
+
+	param = strtol_deci(argv[1]);
+	if ((param < 0) || (param >= CONFIG_MAX_VM_NUM)) {
+		shell_puts("invalid vm id\r\n");
+		return -EINVAL;
+	}
+
+	shell_virtiostat_print_vm((uint16_t)param);
 	return 0;
 }
 

@@ -23,9 +23,11 @@
  * RAM IPA window. guest_ram_hpa is kept for platforms that need a non-identity
  * backing window, but the QEMU static RTOS layout intentionally keeps
  * IPA == PA. guest_gic*, guest_its*, guest_uart*, and guest_virtio* define IPA
- * ranges that trap to vGIC/vITS/virtio MMIO handlers.
+ * ranges that trap to vGIC/vITS/virtio MMIO handlers. virtio_proxy is a
+ * transport-owned window; DTS selects the advertised virtio device id and
+ * leaves protocol semantics to a backend module.
  */
-#define ARM64_VIRTIO_FS_TAG_MAX	36U
+#define ARM64_VIRTIO_PROXY_TAG_MAX	36U
 
 struct arch_vm_config {
 	uint64_t guest_ram_start;
@@ -48,11 +50,14 @@ struct arch_vm_config {
 	uint64_t guest_virtio_console_size;
 	uint32_t guest_virtio_console_irq;
 
-	uint64_t guest_virtio_fs_base;
-	uint64_t guest_virtio_fs_size;
-	uint32_t guest_virtio_fs_irq;
-	uint32_t guest_virtio_fs_access;
-	char guest_virtio_fs_tag[ARM64_VIRTIO_FS_TAG_MAX];
+	uint64_t guest_virtio_proxy_base;
+	uint64_t guest_virtio_proxy_size;
+	uint32_t guest_virtio_proxy_irq;
+	uint32_t guest_virtio_proxy_device_id;
+	uint16_t guest_virtio_proxy_queue_num;
+	uint16_t guest_virtio_proxy_queue_size;
+	uint32_t guest_virtio_proxy_access;
+	char guest_virtio_proxy_tag[ARM64_VIRTIO_PROXY_TAG_MAX];
 };
 
 #endif /* ARM64_VM_CONFIG_H */

@@ -32,7 +32,7 @@
 #include <asm/ioapic.h>
 #include <logmsg.h>
 #include <asm/host_pm.h>
-#include <pci.h>
+#include <bsp/pci.h>
 #include <acrn_common.h>
 #include <asm/rtcm.h>
 

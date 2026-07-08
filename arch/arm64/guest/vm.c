@@ -12,15 +12,15 @@
 #include <mmu.h>
 #include <pgtable.h>
 #include <per_cpu.h>
-#include <vfdt.h>
+#include <bsp/vfdt.h>
 #include <logmsg.h>
-#include <io_req.h>
+#include <bsp/io_req.h>
 #include <asm/sysreg.h>
 #include <asm/guest/vcpu_priv.h>
 #include <asm/guest/vgicv3.h>
 #include <asm/guest/vpl011.h>
 #include <virtio_console.h>
-#include <virtio_fs.h>
+#include <virtio_proxy.h>
 
 /*
  * 2026-06-30, VM/stage-2 principle:
@@ -125,10 +125,10 @@ static bool arm64_vm_uses_virtio_console(const struct acrn_vm_config *vm_config)
 		(vm_config->arch.guest_virtio_console_size != 0UL);
 }
 
-static bool arm64_vm_uses_virtio_fs(const struct acrn_vm_config *vm_config)
+static bool arm64_vm_uses_virtio_proxy(const struct acrn_vm_config *vm_config)
 {
 	return (vm_config->os_config.os_family == VM_OS_LINUX) &&
-		(vm_config->arch.guest_virtio_fs_size != 0UL);
+		(vm_config->arch.guest_virtio_proxy_size != 0UL);
 }
 
 static void validate_stage2_ram_identity(const struct acrn_vm *vm, uint64_t mem_start,
@@ -219,9 +219,9 @@ static void init_stage2_identity_map(struct acrn_vm *vm)
 		log_stage2_vio(vm, "vpl011", arch_config->guest_uart_base,
 			arch_config->guest_uart_size);
 	}
-	if (arm64_vm_uses_virtio_fs(get_vm_config(vm->vm_id))) {
-		log_stage2_vio(vm, "vfs", arch_config->guest_virtio_fs_base,
-			arch_config->guest_virtio_fs_size);
+	if (arm64_vm_uses_virtio_proxy(get_vm_config(vm->vm_id))) {
+		log_stage2_vio(vm, "vprox", arch_config->guest_virtio_proxy_base,
+			arch_config->guest_virtio_proxy_size);
 	}
 }
 
@@ -234,7 +234,7 @@ static void register_arm64_vio_mmio(struct acrn_vm *vm)
 	uint64_t its_size = arch_config->guest_its_size;
 	uint64_t uart_base = arch_config->guest_uart_base;
 	uint64_t virtio_console_base = arch_config->guest_virtio_console_base;
-	uint64_t virtio_fs_base = arch_config->guest_virtio_fs_base;
+	uint64_t virtio_proxy_base = arch_config->guest_virtio_proxy_base;
 
 	/*
 	 * The common IO request layer owns dispatch by GPA range. ARM64 registers
@@ -261,10 +261,10 @@ static void register_arm64_vio_mmio(struct acrn_vm *vm)
 			uart_base, uart_base + arch_config->guest_uart_size,
 			vm, false);
 	}
-	if (arm64_vm_uses_virtio_fs(get_vm_config(vm->vm_id))) {
-		register_mmio_emulation_handler(vm, virtio_fs_mmio_handler,
-			virtio_fs_base,
-			virtio_fs_base + arch_config->guest_virtio_fs_size,
+	if (arm64_vm_uses_virtio_proxy(get_vm_config(vm->vm_id))) {
+		register_mmio_emulation_handler(vm, virtio_proxy_mmio_handler,
+			virtio_proxy_base,
+			virtio_proxy_base + arch_config->guest_virtio_proxy_size,
 			vm, false);
 	}
 }
@@ -301,8 +301,8 @@ int32_t arch_init_vm(struct acrn_vm *vm, struct acrn_vm_config *vm_config)
 	} else {
 		arm64_vpl011_init_vm(vm);
 	}
-	if (arm64_vm_uses_virtio_fs(vm_config)) {
-		virtio_fs_init_vm(vm);
+	if (arm64_vm_uses_virtio_proxy(vm_config)) {
+		virtio_proxy_init_vm(vm);
 	}
 	register_arm64_vio_mmio(vm);
 
@@ -351,8 +351,8 @@ int32_t arch_reset_vm(struct acrn_vm *vm)
 	} else {
 		arm64_vpl011_reset_vm(vm);
 	}
-	if (arm64_vm_uses_virtio_fs(vm_config)) {
-		virtio_fs_reset_vm(vm);
+	if (arm64_vm_uses_virtio_proxy(vm_config)) {
+		virtio_proxy_reset_vm(vm);
 	}
 	vm->arch_vm.time_delta = -(int64_t)cpu_ticks();
 

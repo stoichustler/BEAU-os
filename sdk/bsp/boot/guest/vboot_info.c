@@ -16,8 +16,8 @@
 #include <reloc.h>
 #include <logmsg.h>
 #include <vboot.h>
-#include <vacpi.h>
-#include <vfdt.h>
+#include <bsp/vacpi.h>
+#include <bsp/vfdt.h>
 #ifdef ARCH_VBOOT_SEED_SUPPORT
 #include <asm/seed.h>
 #endif
