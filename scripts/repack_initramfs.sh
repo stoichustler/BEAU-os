@@ -41,17 +41,20 @@ mount -t devpts devpts /dev/pts 2>/dev/null || true
 #
 # Manual virtio-fs smoke test from the BEAU shell:
 #   1. vsh 1
-#      echo "hello from vm1" > /var/beau/README
+#      ls -l /var/beau
 #      <Ctrl-D>
 #   2. vsh 2
-#      mount -t virtiofs -o ro beau /var/beau
-#      ls -l /var/beau
+#      mount -t virtiofs -o rw beau /var/beau
+#      touch /var/beau/VM2-WRITE
+#      echo "hello from vm2" > /var/beau/README
+#      <Ctrl-D>
+#   3. vsh 1
 #      cat /var/beau/README
 #
-# Current baseline: VM1 is the writable backend export and VM2 is the
-# read-only frontend. If VM2 writes /var/beau before the mount command, that
-# file is created in VM2's local initramfs and will not appear in VM1. If VM2
-# writes after the ro mount, the command should fail; that confirms isolation.
+# Current baseline: VM2 is the writable frontend, while VM1 reads the backend
+# export state. If VM2 writes /var/beau before the mount command, that file is
+# created in VM2's local initramfs and will not appear in VM1. After the rw
+# mount, VM2 writes should be visible from VM1 through the backend.
 mkdir -p /var/beau
 chmod 0755 /var /var/beau 2>/dev/null || true
 

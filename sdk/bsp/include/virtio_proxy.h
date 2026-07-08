@@ -62,6 +62,7 @@ struct virtio_proxy_stats {
 	int32_t last_hcall_ret;
 	uint16_t last_poll_queue_id;
 	uint16_t last_poll_head;
+	uint32_t last_poll_status;
 	uint16_t last_reply_queue_id;
 	uint16_t last_reply_head;
 	uint32_t last_reply_len;

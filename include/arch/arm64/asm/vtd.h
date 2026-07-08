@@ -16,6 +16,31 @@ struct iommu_domain;
 #define INVALID_IRTE_ID		0xffffU
 #define ARM_SMMU_STREAM_ID_INVALID	0xffffffffU
 
+struct arm_smmu_hw_info {
+	uint64_t base;
+	uint64_t size;
+	uint64_t strtab_base;
+	uint64_t cmdq_base;
+	uint64_t evtq_base;
+	uint32_t idr0;
+	uint32_t idr1;
+	uint32_t idr5;
+	uint32_t iidr;
+	uint32_t aidr;
+	uint32_t sid_bits;
+	uint32_t oas_bits;
+	uint32_t strtab_log2_entries;
+	uint32_t cmdq_entries;
+	uint32_t evtq_entries;
+	int32_t init_status;
+	bool discovered;
+	bool probed;
+	bool aborted;
+	bool cmdq_enabled;
+	bool evtq_enabled;
+	bool ready;
+};
+
 /*
  * The common vPCI/ptdev code was originally wired to x86 VT-d names. ARM64
  * keeps this header as a small compatibility layer, but the implementation is
@@ -38,6 +63,8 @@ struct iommu_domain *create_iommu_domain(uint16_t vm_id, uint64_t root_table_hpa
 void destroy_iommu_domain(struct iommu_domain *domain);
 int32_t move_pt_device(struct iommu_domain *src, struct iommu_domain *dst,
 	uint8_t bus, uint8_t devfun);
+void arm_smmu_probe(uint64_t base, uint64_t size);
+void arm_smmu_get_hw_info(struct arm_smmu_hw_info *info);
 int32_t arm_smmu_assign_stream(struct iommu_domain *domain, uint32_t stream_id);
 int32_t arm_smmu_unassign_stream(struct iommu_domain *domain, uint32_t stream_id);
 bool arm_smmu_domain_valid(const struct iommu_domain *domain);

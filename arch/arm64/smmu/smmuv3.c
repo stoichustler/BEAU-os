@@ -5,10 +5,15 @@
  */
 
 #include <errno.h>
+#include <delay.h>
+#include <io.h>
 #include <irq.h>
 #include <logmsg.h>
+#include <pgtable.h>
 #include <spinlock.h>
+#include <util.h>
 #include <vm.h>
+#include <asm/mmu.h>
 #include <asm/vtd.h>
 #include <asm/irq.h>
 #include <asm/guest/vgicv3.h>
@@ -16,6 +21,60 @@
 
 #define ARM_SMMU_MAX_DOMAINS	CONFIG_MAX_VM_NUM
 #define ARM_SMMU_PCI_STREAM(bus, devfun)	((((uint32_t)(bus)) << 8U) | (uint32_t)(devfun))
+#define ARM_SMMU_IDR0_ST_LVL_SHIFT	27U
+#define ARM_SMMU_IDR0_ST_LVL_MASK	(3U << ARM_SMMU_IDR0_ST_LVL_SHIFT)
+#define ARM_SMMU_IDR0_ST_LVL_2LVL	1U
+#define ARM_SMMU_IDR1_CMDQS_SHIFT	21U
+#define ARM_SMMU_IDR1_CMDQS_MASK	(0x1fU << ARM_SMMU_IDR1_CMDQS_SHIFT)
+#define ARM_SMMU_IDR1_EVTQS_SHIFT	16U
+#define ARM_SMMU_IDR1_EVTQS_MASK	(0x1fU << ARM_SMMU_IDR1_EVTQS_SHIFT)
+#define ARM_SMMU_IDR1_SIDSIZE_MASK	0x3fU
+#define ARM_SMMU_IDR5_OAS_MASK		0x7U
+#define ARM_SMMU_IDR5_OAS_32_BIT	0U
+#define ARM_SMMU_IDR5_OAS_36_BIT	1U
+#define ARM_SMMU_IDR5_OAS_40_BIT	2U
+#define ARM_SMMU_IDR5_OAS_42_BIT	3U
+#define ARM_SMMU_IDR5_OAS_44_BIT	4U
+#define ARM_SMMU_IDR5_OAS_48_BIT	5U
+#define ARM_SMMU_IDR0			0x0000U
+#define ARM_SMMU_IDR1			0x0004U
+#define ARM_SMMU_IDR5			0x0014U
+#define ARM_SMMU_IIDR			0x0018U
+#define ARM_SMMU_AIDR			0x001cU
+#define ARM_SMMU_CR0			0x0020U
+#define ARM_SMMU_CR0ACK		0x0024U
+#define ARM_SMMU_CR0_SMMUEN		(1U << 0U)
+#define ARM_SMMU_CR0_EVTQEN		(1U << 2U)
+#define ARM_SMMU_CR0_CMDQEN		(1U << 3U)
+#define ARM_SMMU_GBPA			0x0044U
+#define ARM_SMMU_GBPA_UPDATE		(1U << 31U)
+#define ARM_SMMU_GBPA_ABORT		(1U << 20U)
+#define ARM_SMMU_IRQ_CTRL		0x0050U
+#define ARM_SMMU_IRQ_CTRLACK		0x0054U
+#define ARM_SMMU_STRTAB_BASE		0x0080U
+#define ARM_SMMU_STRTAB_BASE_RA		(1UL << 62U)
+#define ARM_SMMU_STRTAB_BASE_ADDR_MASK	0x000ffffffffffffc0UL
+#define ARM_SMMU_STRTAB_BASE_CFG	0x0088U
+#define ARM_SMMU_STRTAB_BASE_CFG_FMT_LINEAR	0U
+#define ARM_SMMU_Q_BASE_RWA		(1UL << 62U)
+#define ARM_SMMU_Q_BASE_ADDR_MASK	0x000ffffffffffffe0UL
+#define ARM_SMMU_CMDQ_BASE		0x0090U
+#define ARM_SMMU_CMDQ_PROD		0x0098U
+#define ARM_SMMU_CMDQ_CONS		0x009cU
+#define ARM_SMMU_EVTQ_BASE		0x00a0U
+#define ARM_SMMU_EVTQ_PROD		0x00a8U
+#define ARM_SMMU_EVTQ_CONS		0x00acU
+#define ARM_SMMU_QUEUE_LOG2_ENTRIES	4U
+#define ARM_SMMU_QUEUE_ENTRIES		(1U << ARM_SMMU_QUEUE_LOG2_ENTRIES)
+#define ARM_SMMU_CMD_DWORDS		2U
+#define ARM_SMMU_EVT_DWORDS		4U
+#define ARM_SMMU_STE_DWORDS		8U
+#define ARM_SMMU_STE_SIZE		(ARM_SMMU_STE_DWORDS * sizeof(uint64_t))
+#define ARM_SMMU_STRTAB_LOG2_MIN	0U
+#define ARM_SMMU_STRTAB_LOG2_MAX	8U
+#define ARM_SMMU_POLL_RETRIES		1000U
+#define ARM_SMMU_POLL_DELAY_US		1U
+#define ARM_SMMU_INIT_UNDISCOVERED	(-ENODEV)
 
 /*
  * BEAU ARM64 passthrough model, first stage.
@@ -62,7 +121,310 @@ static spinlock_t arm64_pt_msix_lock = { .head = 0U, .tail = 0U };
 static struct iommu_domain arm_smmu_domains[ARM_SMMU_MAX_DOMAINS];
 static struct arm_smmu_stream_state arm_smmu_streams[ARM_SMMU_MAX_SW_STREAMS];
 static struct arm64_pt_msix_state arm64_pt_msix_states[CONFIG_MAX_PT_IRQ_ENTRIES];
+static struct arm_smmu_hw_info arm_smmu_hw;
 static bool arm_smmu_hw_ready;
+static bool arm_smmu_assignment_ready;
+static uint64_t arm_smmu_strtab[1U << ARM_SMMU_STRTAB_LOG2_MAX][ARM_SMMU_STE_DWORDS]
+	__aligned(PAGE_SIZE);
+static uint64_t arm_smmu_cmdq[ARM_SMMU_QUEUE_ENTRIES][ARM_SMMU_CMD_DWORDS]
+	__aligned(PAGE_SIZE);
+static uint64_t arm_smmu_evtq[ARM_SMMU_QUEUE_ENTRIES][ARM_SMMU_EVT_DWORDS]
+	__aligned(PAGE_SIZE);
+
+static inline void *arm_smmu_reg(uint64_t base, uint32_t off)
+{
+	return (void *)(base + off);
+}
+
+static uint32_t arm_smmu_min_u32(uint32_t a, uint32_t b)
+{
+	return (a < b) ? a : b;
+}
+
+static uint32_t arm_smmu_oas_bits(uint32_t idr5)
+{
+	uint32_t bits;
+
+	switch (idr5 & ARM_SMMU_IDR5_OAS_MASK) {
+	case ARM_SMMU_IDR5_OAS_32_BIT:
+		bits = 32U;
+		break;
+	case ARM_SMMU_IDR5_OAS_36_BIT:
+		bits = 36U;
+		break;
+	case ARM_SMMU_IDR5_OAS_40_BIT:
+		bits = 40U;
+		break;
+	case ARM_SMMU_IDR5_OAS_42_BIT:
+		bits = 42U;
+		break;
+	case ARM_SMMU_IDR5_OAS_44_BIT:
+		bits = 44U;
+		break;
+	case ARM_SMMU_IDR5_OAS_48_BIT:
+	default:
+		bits = 48U;
+		break;
+	}
+
+	return bits;
+}
+
+static uint32_t arm_smmu_cmdq_log2_entries(uint32_t idr1)
+{
+	return (idr1 & ARM_SMMU_IDR1_CMDQS_MASK) >> ARM_SMMU_IDR1_CMDQS_SHIFT;
+}
+
+static uint32_t arm_smmu_evtq_log2_entries(uint32_t idr1)
+{
+	return (idr1 & ARM_SMMU_IDR1_EVTQS_MASK) >> ARM_SMMU_IDR1_EVTQS_SHIFT;
+}
+
+static uint32_t arm_smmu_log2_roundup(uint32_t value)
+{
+	uint32_t log2 = 0U;
+	uint32_t rounded = 1U;
+
+	while (rounded < value) {
+		rounded <<= 1U;
+		log2++;
+	}
+
+	return log2;
+}
+
+static uint32_t arm_smmu_strtab_log2_entries(uint32_t sid_bits)
+{
+	uint32_t policy_log2 = arm_smmu_log2_roundup(ARM_SMMU_MAX_SW_STREAMS);
+
+	return arm_smmu_min_u32(arm_smmu_min_u32(sid_bits, ARM_SMMU_STRTAB_LOG2_MAX),
+		policy_log2);
+}
+
+static int32_t arm_smmu_wait_reg32(uint32_t reg, uint32_t mask, uint32_t expected)
+{
+	uint32_t retry;
+
+	for (retry = 0U; retry < ARM_SMMU_POLL_RETRIES; retry++) {
+		if ((mmio_read32(arm_smmu_reg(arm_smmu_hw.base, reg)) & mask) == expected) {
+			return 0;
+		}
+		udelay(ARM_SMMU_POLL_DELAY_US);
+	}
+
+	return -ETIMEDOUT;
+}
+
+static int32_t arm_smmu_update_gbpa(uint32_t set, uint32_t clear)
+{
+	uint32_t reg;
+	int32_t ret;
+
+	ret = arm_smmu_wait_reg32(ARM_SMMU_GBPA, ARM_SMMU_GBPA_UPDATE, 0U);
+	if (ret != 0) {
+		return ret;
+	}
+
+	reg = mmio_read32(arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_GBPA));
+	reg &= ~clear;
+	reg |= set;
+	mmio_write32(reg | ARM_SMMU_GBPA_UPDATE, arm_smmu_reg(arm_smmu_hw.base,
+		ARM_SMMU_GBPA));
+
+	return arm_smmu_wait_reg32(ARM_SMMU_GBPA, ARM_SMMU_GBPA_UPDATE, 0U);
+}
+
+static void arm_smmu_zero_abort_tables(uint32_t strtab_log2)
+{
+	uint32_t strtab_entries = 1U << strtab_log2;
+
+	(void)memset(arm_smmu_strtab, 0U, strtab_entries * ARM_SMMU_STE_SIZE);
+	(void)memset(arm_smmu_cmdq, 0U, sizeof(arm_smmu_cmdq));
+	(void)memset(arm_smmu_evtq, 0U, sizeof(arm_smmu_evtq));
+
+	/*
+	 * 2026-07-09, SMMUv3 table ownership:
+	 *
+	 *   EL2 writes STE/CD/CMDQ/EVTQ in normal cacheable RAM
+	 *       -> clean to PoC
+	 *       -> SMMU table walker reads physical memory
+	 *
+	 * A zero linear STE is an abort entry for this bring-up stage. That is
+	 * intentional: a described StreamID becomes a hardware fault until a later
+	 * VM-domain stage replaces only that STE with stage-2 translation data.
+	 */
+	flush_cache_range(arm_smmu_strtab, strtab_entries * ARM_SMMU_STE_SIZE);
+	flush_cache_range(arm_smmu_cmdq, sizeof(arm_smmu_cmdq));
+	flush_cache_range(arm_smmu_evtq, sizeof(arm_smmu_evtq));
+}
+
+static int32_t arm_smmu_hw_enable_abort_locked(void)
+{
+	uint64_t strtab_pa;
+	uint64_t cmdq_pa;
+	uint64_t evtq_pa;
+	uint32_t sid_bits;
+	uint32_t strtab_log2;
+	uint32_t strtab_cfg;
+	uint32_t cr0;
+	int32_t ret;
+
+	if (!arm_smmu_hw.discovered) {
+		return ARM_SMMU_INIT_UNDISCOVERED;
+	}
+	sid_bits = arm_smmu_hw.idr1 & ARM_SMMU_IDR1_SIDSIZE_MASK;
+	if (((arm_smmu_hw.idr0 & ARM_SMMU_IDR0_ST_LVL_MASK) >>
+			ARM_SMMU_IDR0_ST_LVL_SHIFT) == ARM_SMMU_IDR0_ST_LVL_2LVL) {
+		LOG_WRN("SMMUv3 2-level stream table supported; using linear abort table subset");
+	}
+	if ((sid_bits > 31U) ||
+		(arm_smmu_cmdq_log2_entries(arm_smmu_hw.idr1) < ARM_SMMU_QUEUE_LOG2_ENTRIES)) {
+		LOG_ERR("SMMUv3 queue/SID capability too small idr1=0x%x", arm_smmu_hw.idr1);
+		return -ENODEV;
+	}
+	strtab_log2 = arm_smmu_strtab_log2_entries(sid_bits);
+	arm_smmu_zero_abort_tables(strtab_log2);
+
+	strtab_pa = hva2hpa(arm_smmu_strtab);
+	cmdq_pa = hva2hpa(arm_smmu_cmdq);
+	evtq_pa = hva2hpa(arm_smmu_evtq);
+	strtab_cfg = ARM_SMMU_STRTAB_BASE_CFG_FMT_LINEAR | strtab_log2;
+
+	/*
+	 * 2026-07-09, abort-default enable sequence:
+	 *
+	 *   zero STE table  -> STRTAB_BASE
+	 *   zero CMDQ       -> CMDQ_BASE
+	 *   GBPA.ABORT      -> unmatched traffic faults instead of bypass
+	 *   CR0.*EN         -> stream table + command queue become live
+	 *
+	 * The order matters. If SMMUEN is set before the stream table points at
+	 * known abort entries, an endpoint could DMA through stale reset state.
+	 * EVTQ is intentionally left disabled in this stage because its doorbell
+	 * registers live in SMMUv3 page1 on many implementations; BEAU DTS must
+	 * describe that page before EL2 can program it safely.
+	 */
+	mmio_write32(0U, arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CR0));
+	ret = arm_smmu_wait_reg32(ARM_SMMU_CR0ACK, ARM_SMMU_CR0_SMMUEN |
+		ARM_SMMU_CR0_EVTQEN | ARM_SMMU_CR0_CMDQEN, 0U);
+	if (ret != 0) {
+		return ret;
+	}
+
+	mmio_write64((strtab_pa & ARM_SMMU_STRTAB_BASE_ADDR_MASK) |
+		ARM_SMMU_STRTAB_BASE_RA, arm_smmu_reg(arm_smmu_hw.base,
+		ARM_SMMU_STRTAB_BASE));
+	mmio_write32(strtab_cfg, arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_STRTAB_BASE_CFG));
+	mmio_write64((cmdq_pa & ARM_SMMU_Q_BASE_ADDR_MASK) | ARM_SMMU_Q_BASE_RWA |
+		ARM_SMMU_QUEUE_LOG2_ENTRIES,
+		arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CMDQ_BASE));
+	mmio_write32(0U, arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CMDQ_PROD));
+	mmio_write32(0U, arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CMDQ_CONS));
+	if (arm_smmu_evtq_log2_entries(arm_smmu_hw.idr1) >= ARM_SMMU_QUEUE_LOG2_ENTRIES) {
+		mmio_write64((evtq_pa & ARM_SMMU_Q_BASE_ADDR_MASK) | ARM_SMMU_Q_BASE_RWA |
+			ARM_SMMU_QUEUE_LOG2_ENTRIES,
+			arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_EVTQ_BASE));
+	}
+
+	ret = arm_smmu_update_gbpa(ARM_SMMU_GBPA_ABORT, 0U);
+	if (ret != 0) {
+		return ret;
+	}
+	mmio_write32(0U, arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_IRQ_CTRL));
+	ret = arm_smmu_wait_reg32(ARM_SMMU_IRQ_CTRLACK, UINT32_MAX, 0U);
+	if (ret != 0) {
+		return ret;
+	}
+
+	cr0 = ARM_SMMU_CR0_CMDQEN | ARM_SMMU_CR0_SMMUEN;
+	mmio_write32(cr0, arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CR0));
+	ret = arm_smmu_wait_reg32(ARM_SMMU_CR0ACK, cr0, cr0);
+	if (ret != 0) {
+		return ret;
+	}
+
+	arm_smmu_hw.strtab_base = strtab_pa;
+	arm_smmu_hw.cmdq_base = cmdq_pa;
+	arm_smmu_hw.evtq_base = evtq_pa;
+	arm_smmu_hw.sid_bits = sid_bits;
+	arm_smmu_hw.oas_bits = arm_smmu_oas_bits(arm_smmu_hw.idr5);
+	arm_smmu_hw.strtab_log2_entries = strtab_log2;
+	arm_smmu_hw.cmdq_entries = ARM_SMMU_QUEUE_ENTRIES;
+	arm_smmu_hw.evtq_entries = (arm_smmu_evtq_log2_entries(arm_smmu_hw.idr1) >=
+		ARM_SMMU_QUEUE_LOG2_ENTRIES) ? ARM_SMMU_QUEUE_ENTRIES : 0U;
+	arm_smmu_hw.aborted = true;
+	arm_smmu_hw.cmdq_enabled = true;
+	arm_smmu_hw.evtq_enabled = false;
+	arm_smmu_hw.ready = true;
+	arm_smmu_hw_ready = true;
+	arm_smmu_assignment_ready = false;
+
+	return 0;
+}
+
+void arm_smmu_probe(uint64_t base, uint64_t size)
+{
+	uint64_t flags;
+	int32_t ret;
+
+	if ((base == 0UL) || (size < (ARM_SMMU_AIDR + sizeof(uint32_t)))) {
+		LOG_ERR("invalid SMMUv3 dts window base=0x%lx size=0x%lx", base, size);
+		return;
+	}
+
+	/*
+	 * 2026-07-09, SMMU discovery and abort-default programming:
+	 *
+	 *   platform.dts -> MMIO ID registers -> zero STEs -> SMMUEN
+	 *                                           |
+	 *                                           v
+	 *                            all described StreamIDs fault by default
+	 *
+	 * This protects against DMA bypass, but it is not a VM assignment path.
+	 * P1 must still replace one STE with a VM stage-2 descriptor and issue
+	 * command-queue sync before passthrough can succeed.
+	 */
+	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);
+	(void)memset(&arm_smmu_hw, 0U, sizeof(arm_smmu_hw));
+	arm_smmu_hw.base = base;
+	arm_smmu_hw.size = size;
+	arm_smmu_hw.idr0 = mmio_read32(arm_smmu_reg(base, ARM_SMMU_IDR0));
+	arm_smmu_hw.idr1 = mmio_read32(arm_smmu_reg(base, ARM_SMMU_IDR1));
+	arm_smmu_hw.idr5 = mmio_read32(arm_smmu_reg(base, ARM_SMMU_IDR5));
+	arm_smmu_hw.iidr = mmio_read32(arm_smmu_reg(base, ARM_SMMU_IIDR));
+	arm_smmu_hw.aidr = mmio_read32(arm_smmu_reg(base, ARM_SMMU_AIDR));
+	arm_smmu_hw.discovered = true;
+	arm_smmu_hw.probed = true;
+	arm_smmu_hw.ready = false;
+	arm_smmu_hw.init_status = ARM_SMMU_INIT_UNDISCOVERED;
+	arm_smmu_hw_ready = false;
+	arm_smmu_assignment_ready = false;
+	ret = arm_smmu_hw_enable_abort_locked();
+	arm_smmu_hw.init_status = ret;
+	spinlock_irqrestore_release(&arm_smmu_lock, flags);
+
+	if (ret == 0) {
+		LOG_INF("SMMUv3 ready at 0x%lx: abort-default streams=%u sid_bits=%u",
+			base, 1U << arm_smmu_hw.strtab_log2_entries, arm_smmu_hw.sid_bits);
+	} else {
+		LOG_ERR("SMMUv3 discovered at 0x%lx but abort-default init failed: %d",
+			base, ret);
+	}
+}
+
+void arm_smmu_get_hw_info(struct arm_smmu_hw_info *info)
+{
+	uint64_t flags;
+
+	if (info == NULL) {
+		return;
+	}
+
+	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);
+	*info = arm_smmu_hw;
+	info->ready = arm_smmu_hw_ready;
+	spinlock_irqrestore_release(&arm_smmu_lock, flags);
+}
 
 bool arm_smmu_ready(void)
 {
@@ -180,11 +542,12 @@ int32_t arm_smmu_assign_stream(struct iommu_domain *domain, uint32_t stream_id)
 		ret = -ENOMEM;
 	} else if ((stream->domain != NULL) && (stream->domain != domain)) {
 		ret = -EBUSY;
-	} else if (!arm_smmu_hw_ready) {
+	} else if (!arm_smmu_assignment_ready) {
 		/*
 		 * Do not remember the assignment on -ENODEV. A later platform
-		 * SMMU registration can retry from a clean state, and current
-		 * callers know the device was not made DMA-capable for the VM.
+		 * SMMU VM-domain stage can retry from a clean state. Abort-default
+		 * hardware readiness is not enough: the target STE must be replaced
+		 * with a VM stage-2 descriptor and synchronized before DMA is safe.
 		 */
 		stream->used = false;
 		ret = -ENODEV;
@@ -196,7 +559,7 @@ int32_t arm_smmu_assign_stream(struct iommu_domain *domain, uint32_t stream_id)
 	spinlock_irqrestore_release(&arm_smmu_lock, flags);
 
 	if (ret == -ENODEV) {
-		LOG_ERR("SMMUv3 not ready: reject stream 0x%x for vm%u",
+		LOG_ERR("SMMUv3 assignment not ready: reject stream 0x%x for vm%u",
 			stream_id, domain->vm_id);
 	}
 
@@ -220,7 +583,7 @@ int32_t arm_smmu_unassign_stream(struct iommu_domain *domain, uint32_t stream_id
 		ret = -ENODEV;
 	} else if (stream->domain != domain) {
 		ret = -EPERM;
-	} else if (!arm_smmu_hw_ready) {
+	} else if (!arm_smmu_assignment_ready) {
 		ret = -ENODEV;
 	} else {
 		/*

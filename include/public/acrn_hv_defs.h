@@ -263,6 +263,11 @@ struct acrn_virtio_proxy_desc {
 
 struct acrn_virtio_proxy_ioc {
 	uint32_t op;
+	/*
+	 * Failure: negative errno cast to u32.
+	 * POLL success: ACRN_VIRTIO_PROXY_FLAG_* bits for the frontend request.
+	 * Other success: zero.
+	 */
 	uint32_t status;
 	uint16_t frontend_vmid;
 	uint16_t queue_id;

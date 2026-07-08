@@ -11,12 +11,17 @@
 #include <libfdt.h>
 #include <logmsg.h>
 #include <rtl.h>
+#include <passthrough.h>
 #include <asm/irq.h>
 #include <asm/platform.h>
+#include <asm/vtd.h>
 #include <arm64_platform_dts.h>
 #include <virtio_proxy.h>
 
 #define ARM64_DTS_MMIO_REGION_MAX	8U
+#define ARM64_DTS_GIC_SPI		0U
+#define ARM64_DTS_IRQ_TYPE_EDGE_RISING	1U
+#define ARM64_DTS_IRQ_TYPE_LEVEL_HIGH	4U
 
 static const struct arm64_platform_dts_vm_storage *dts_storage;
 static uint16_t dts_bare_boot_option_count;
@@ -276,6 +281,163 @@ static void dts_parse_mmio_ranges(const void *fdt, int32_t platform)
 	}
 }
 
+static uint32_t dts_stream_id_from_iommus(const void *fdt, int32_t node)
+{
+	const fdt32_t *prop;
+	int32_t len;
+	int32_t smmu;
+	uint32_t phandle;
+	uint32_t stream_id;
+	uint32_t iommu_cells;
+
+	prop = fdt_getprop(fdt, node, "iommus", &len);
+	if (prop == NULL) {
+		return ARM_SMMU_STREAM_ID_INVALID;
+	}
+	if (len < (int32_t)(2U * sizeof(fdt32_t))) {
+		arm64_dts_panic("iommus", -EINVAL);
+	}
+
+	phandle = fdt32_to_cpu(prop[0]);
+	stream_id = fdt32_to_cpu(prop[1]);
+	smmu = fdt_node_offset_by_phandle(fdt, phandle);
+	if ((smmu < 0) || !dts_has_compatible(fdt, smmu, "arm,smmu-v3")) {
+		arm64_dts_panic("iommus arm,smmu-v3", smmu < 0 ? smmu : -EINVAL);
+	}
+
+	iommu_cells = dts_u32_prop(fdt, smmu, "#iommu-cells", 0U);
+	if (iommu_cells != 1U) {
+		arm64_dts_panic("#iommu-cells", -EINVAL);
+	}
+
+	return stream_id;
+}
+
+static uint32_t dts_parse_pt_stream_id(const void *fdt, int32_t node)
+{
+	uint32_t stream_id = dts_stream_id_from_iommus(fdt, node);
+
+	if (stream_id == ARM_SMMU_STREAM_ID_INVALID) {
+		stream_id = dts_u32_prop(fdt, node, "beau,stream-id",
+			ARM_SMMU_STREAM_ID_INVALID);
+	}
+	if (stream_id == ARM_SMMU_STREAM_ID_INVALID) {
+		arm64_dts_panic("passthrough stream-id", -EINVAL);
+	}
+
+	return stream_id;
+}
+
+static bool dts_parse_pt_spi(const void *fdt, int32_t node,
+	struct passthrough_spi_mapping *mapping)
+{
+	const fdt32_t *irq;
+	int32_t len;
+	uint32_t type;
+	uint32_t number;
+	uint32_t flags;
+	uint32_t phys_spi;
+	uint32_t virt_irq;
+
+	irq = fdt_getprop(fdt, node, "interrupts", &len);
+	if (irq == NULL) {
+		return false;
+	}
+	if (len < (int32_t)(3U * sizeof(fdt32_t))) {
+		arm64_dts_panic("passthrough interrupts", -EINVAL);
+	}
+
+	type = fdt32_to_cpu(irq[0]);
+	number = fdt32_to_cpu(irq[1]);
+	flags = fdt32_to_cpu(irq[2]);
+	if (type != ARM64_DTS_GIC_SPI) {
+		arm64_dts_panic("passthrough spi type", -EINVAL);
+	}
+
+	phys_spi = number + 32U;
+	if ((phys_spi < 32U) || (phys_spi >= ARM64_GIC_SPURIOUS_INTID)) {
+		arm64_dts_panic("passthrough phys spi", -EINVAL);
+	}
+
+	virt_irq = dts_u32_prop(fdt, node, "beau,guest-irq", UINT32_MAX);
+	if ((virt_irq < 32U) || (virt_irq >= ARM64_GIC_SPURIOUS_INTID)) {
+		arm64_dts_panic("passthrough guest irq", -EINVAL);
+	}
+
+	mapping->phys_spi = phys_spi;
+	mapping->virt_irq = virt_irq;
+	mapping->level = flags == ARM64_DTS_IRQ_TYPE_LEVEL_HIGH;
+	if ((flags != ARM64_DTS_IRQ_TYPE_LEVEL_HIGH) &&
+		(flags != ARM64_DTS_IRQ_TYPE_EDGE_RISING)) {
+		arm64_dts_panic("passthrough irq flags", -EINVAL);
+	}
+
+	return true;
+}
+
+static void dts_parse_passthrough_device(const void *fdt, int32_t node)
+{
+	struct passthrough_spi_mapping mapping;
+	uint32_t stream_id = dts_parse_pt_stream_id(fdt, node);
+	uint32_t owner_prop = dts_u32_prop(fdt, node, "beau,owner-vm",
+		ACRN_INVALID_VMID);
+	uint16_t owner_vmid;
+	const char *name = dts_string_prop(fdt, node, "beau,name", NULL);
+	bool writable = fdt_getprop(fdt, node, "beau,writable", NULL) != NULL;
+	int32_t ret;
+
+	/*
+	 * 2026-07-09, ARM64 passthrough policy parse:
+	 *
+	 *   platform.dts -> StreamID owner policy -> BSP passthrough ledger
+	 *                         |
+	 *                         v
+	 *                 later assignment must bind SMMU before MMIO
+	 *
+	 * This parser registers only static ownership policy. The SMMU driver
+	 * still fails closed until real stream-table hardware is ready.
+	 */
+	if ((owner_prop != ACRN_INVALID_VMID) && (owner_prop >= CONFIG_MAX_VM_NUM)) {
+		arm64_dts_panic("passthrough owner vm", -EINVAL);
+	}
+	owner_vmid = (uint16_t)owner_prop;
+
+	ret = passthrough_register_device_owner(stream_id, name, writable, owner_vmid);
+	if (ret != 0) {
+		arm64_dts_panic("passthrough device", ret);
+	}
+
+	if (dts_parse_pt_spi(fdt, node, &mapping)) {
+		ret = passthrough_register_spi(stream_id, &mapping);
+		if (ret != 0) {
+			arm64_dts_panic("passthrough spi", ret);
+		}
+	}
+}
+
+static void dts_parse_passthrough_policy(const void *fdt, int32_t platform)
+{
+	int32_t passthrough;
+	int32_t node;
+	uint32_t count = 0U;
+
+	passthrough = dts_child_by_unit_name(fdt, platform, "passthrough");
+	if (passthrough < 0) {
+		return;
+	}
+
+	fdt_for_each_subnode(node, fdt, passthrough) {
+		if (dts_has_compatible(fdt, node, "beau,passthrough-device")) {
+			dts_parse_passthrough_device(fdt, node);
+			count++;
+		}
+	}
+
+	if (count != 0U) {
+		LOG_INF("arm64 dts passthrough policy: %u device(s)", count);
+	}
+}
+
 void arm64_platform_dts_parse_info(const void *fdt, struct arm64_platform_dts_info *info)
 {
 	int32_t platform;
@@ -310,6 +472,7 @@ void arm64_platform_dts_parse_info(const void *fdt, struct arm64_platform_dts_in
 	info->uart_baud = dts_optional_u32_from_node(fdt, platform, "uart",
 		"current-speed", info->uart_baud);
 	dts_parse_mmio_ranges(fdt, platform);
+	dts_parse_passthrough_policy(fdt, platform);
 }
 
 const struct arm64_mem_region *arm64_platform_dts_mmio_regions(uint32_t *count)
@@ -388,6 +551,7 @@ void arm64_platform_dts_parse_board(const void *fdt,
 	int32_t soc;
 	int32_t gic;
 	int32_t its;
+	int32_t smmu;
 	int32_t uart;
 	int32_t vm;
 	int32_t generic;
@@ -430,6 +594,15 @@ void arm64_platform_dts_parse_board(const void *fdt,
 	if (its >= 0) {
 		dts_reg_by_index(fdt, its, 0U, &beau_config.gits_base,
 			&beau_config.gits_size);
+	}
+
+	smmu = dts_child_compatible(fdt, soc, "arm,smmu-v3");
+	if (smmu >= 0) {
+		uint64_t smmu_base;
+		uint64_t smmu_size;
+
+		dts_reg_by_index(fdt, smmu, 0U, &smmu_base, &smmu_size);
+		arm_smmu_probe(smmu_base, smmu_size);
 	}
 
 	uart = dts_child_compatible(fdt, soc, "arm,pl011");
@@ -762,18 +935,17 @@ static void dts_parse_arch(const void *fdt, int32_t generic,
 			sizeof(vm_config->arch.guest_virtio_proxy_tag),
 			dts_string_prop(fdt, virtio_proxy, "beau,tag", "beau"));
 		/*
-		 * 2026-07-08, test topology policy:
+		 * 2026-07-08, virtio-proxy access policy:
 		 *
-		 *   VM2 virtio-fs frontend(ro) -> BEAU virtio_proxy -> VM1 backend(rw)
+		 *   VM2 virtio-fs frontend(rw) -> BEAU virtio_proxy -> VM1 backend(rw export)
 		 *
 		 * The proxy records a coarse access hint so protocol backends can
-		 * reject mutating requests before completing descriptors. The generic
-		 * DTS node is shared by Linux VMs, so default the frontend VM2 to ro
-		 * and keep VM1 rw for the export side unless a board DTS overrides it.
+		 * reject mutating requests before completing descriptors. This access
+		 * bit describes the frontend request stream, not VM1's local shell
+		 * permissions. Keep the export writable by default so VM2 can create
+		 * or update files under /var/beau and VM1 can read the resulting state.
 		 */
-		access = dts_string_prop(fdt, virtio_proxy, "beau,access",
-			(vm_config->name[0] != '\0') &&
-			(strcmp(vm_config->name, "Linux-2") == 0) ? "ro" : "rw");
+		access = dts_string_prop(fdt, virtio_proxy, "beau,access", "rw");
 		vm_config->arch.guest_virtio_proxy_access =
 			(strcmp(access, "ro") == 0) ? VIRTIO_PROXY_ACCESS_READONLY :
 			VIRTIO_PROXY_ACCESS_READWRITE;

@@ -31,6 +31,7 @@
 #include <asm/guest/vcpu.h>
 #include <asm/guest/vgicv3.h>
 #include <asm/sysreg.h>
+#include <asm/vtd.h>
 #include "../shell_priv.h"
 
 #define SHELL_CMD_MEM_MAP		"mmap"
@@ -45,6 +46,9 @@
 #define SHELL_CMD_VIRTIOSTAT		"virtiostat"
 #define SHELL_CMD_VIRTIOSTAT_PARAM	"[vm id]"
 #define SHELL_CMD_VIRTIOSTAT_HELP	"list virtio-proxy transport state"
+#define SHELL_CMD_SMMUSTAT		"smmustat"
+#define SHELL_CMD_SMMUSTAT_PARAM	NULL
+#define SHELL_CMD_SMMUSTAT_HELP		"list ARM SMMUv3 discovery state"
 #define SHELL_CMD_RESET			"reset"
 #define SHELL_CMD_RESET_PARAM		"<vm id>"
 #define SHELL_CMD_RESET_HELP		"reset a non-service VM by id"
@@ -61,8 +65,10 @@ static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv);
 static int32_t shell_dumpstat(int32_t argc, char **argv);
 static int32_t shell_vmstat(int32_t argc, __unused char **argv);
 static int32_t shell_virtiostat(int32_t argc, char **argv);
+static int32_t shell_smmustat(int32_t argc, __unused char **argv);
 static int32_t shell_reset_vm(int32_t argc, char **argv);
 static int32_t shell_reboot(__unused int32_t argc, __unused char **argv);
+static const char *shell_yes_no(bool value);
 
 struct shell_cmd arch_shell_cmds[] = {
 	{
@@ -88,6 +94,12 @@ struct shell_cmd arch_shell_cmds[] = {
 		.cmd_param	= SHELL_CMD_VIRTIOSTAT_PARAM,
 		.help_str	= SHELL_CMD_VIRTIOSTAT_HELP,
 		.fcn		= shell_virtiostat,
+	},
+	{
+		.str		= SHELL_CMD_SMMUSTAT,
+		.cmd_param	= SHELL_CMD_SMMUSTAT_PARAM,
+		.help_str	= SHELL_CMD_SMMUSTAT_HELP,
+		.fcn		= shell_smmustat,
 	},
 	{
 		.str		= SHELL_CMD_RESET,
@@ -206,6 +218,60 @@ static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv)
 			shell_print_vm_stage2_maps(vm);
 		}
 	}
+
+	return 0;
+}
+
+/*
+ * 2026-07-09, SMMU monitor:
+ *
+ * smmustat is deliberately diagnostic-only. Probe can put the hardware into an
+ * abort-default state, but DMA assignment remains disabled until a later stage
+ * programs a VM-owned STE and synchronizes the command queue.
+ *
+ *   zero STEs + SMMUEN -> abort-default ready -> shell snapshot
+ *                               |
+ *                               v
+ *                    VM assignment still disabled
+ */
+static int32_t shell_smmustat(int32_t argc, __unused char **argv)
+{
+	struct arm_smmu_hw_info info;
+
+	if (argc > 1) {
+		shell_puts("usage: smmustat\r\n");
+		return -EINVAL;
+	}
+
+	(void)memset(&info, 0U, sizeof(info));
+	arm_smmu_get_hw_info(&info);
+
+	shell_puts("\r\nsmmustat:\r\n");
+	shell_item_begin("smmu");
+	shell_item_line("discovered:%s probed:%s abort:%s ready:%s",
+		shell_yes_no(info.discovered), shell_yes_no(info.probed),
+		shell_yes_no(info.aborted), shell_yes_no(info.ready));
+	shell_item_line("init.status:%d", info.init_status);
+	if (!info.discovered) {
+		shell_item_line("hardware:none");
+		shell_item_end();
+		return 0;
+	}
+
+	shell_item_line("mmio:base:0x%016lx size:0x%016lx", info.base, info.size);
+	shell_item_line("caps:sid.bits:%u oas.bits:%u streams:%u",
+		info.sid_bits, info.oas_bits, 1U << info.strtab_log2_entries);
+	shell_item_line("strtab:0x%016lx cmdq:0x%016lx evtq:0x%016lx",
+		info.strtab_base, info.cmdq_base, info.evtq_base);
+	shell_item_line("queue.entries:cmd:%u evt:%u cmdq.en:%s evtq.en:%s",
+		info.cmdq_entries, info.evtq_entries, shell_yes_no(info.cmdq_enabled),
+		shell_yes_no(info.evtq_enabled));
+	shell_item_line("idr0:0x%08x idr1:0x%08x idr5:0x%08x",
+		info.idr0, info.idr1, info.idr5);
+	shell_item_line("iidr:0x%08x aidr:0x%08x", info.iidr, info.aidr);
+	shell_item_line("ready.scope:abort-default only");
+	shell_item_line("assignment:disabled until VM domain STE programming");
+	shell_item_end();
 
 	return 0;
 }
@@ -1392,8 +1458,8 @@ static void shell_virtiostat_print_vm(uint16_t vm_id)
 		stats.hcall_reply_count,
 		shell_virtio_hcall_op_to_str(stats.last_hcall_op),
 		stats.last_hcall_ret);
-	shell_item_line("last-poll:q:%hu head:%hu last-reply:q:%hu head:%hu len:%u",
-		stats.last_poll_queue_id, stats.last_poll_head,
+	shell_item_line("last-poll:q:%hu head:%hu flags:0x%08x last-reply:q:%hu head:%hu len:%u",
+		stats.last_poll_queue_id, stats.last_poll_head, stats.last_poll_status,
 		stats.last_reply_queue_id, stats.last_reply_head,
 		stats.last_reply_len);
 	shell_item_line("queue  ready  num    last_avail  desc               avail              used");

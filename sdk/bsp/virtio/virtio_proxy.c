@@ -44,7 +44,7 @@
  *
  * The current VM1/VM2 virtio-fs test uses this exact split:
  *
- *   VM2 Linux virtio-fs frontend(ro)
+ *   VM2 Linux virtio-fs frontend(rw)
  *        -> QueueNotify trap
  *        -> BEAU virtio_proxy transport
  *        -> VM1-owned virtio-fs backend(rw export of /var/beau)
@@ -94,6 +94,7 @@ struct virtio_proxy_dev {
 	int32_t last_hcall_ret;
 	uint16_t last_poll_queue_id;
 	uint16_t last_poll_head;
+	uint32_t last_poll_status;
 	uint16_t last_reply_queue_id;
 	uint16_t last_reply_head;
 	uint32_t last_reply_len;
@@ -232,6 +233,7 @@ static void virtio_proxy_reset(struct virtio_mmio_dev *mmio)
 		dev->pending_out_len = 0U;
 		dev->pending_out_count = 0U;
 		dev->last_hcall_ret = 0;
+		dev->last_poll_status = 0U;
 		spinlock_release(&dev->lock);
 		if ((dev->backend_ops != NULL) && (dev->backend_ops->reset != NULL)) {
 			dev->backend_ops->reset(dev, dev->backend_priv);
@@ -388,9 +390,9 @@ void virtio_proxy_init_vm(struct acrn_vm *vm)
 	virtio_proxy_build_config(dev, vm_config);
 
 	/*
-	 * Access policy is transport metadata. BEAU records VM1 read-only versus
-	 * VM2 read-write here, but enforcement belongs to the backend that knows
-	 * the protocol operation being served.
+	 * Access policy is transport metadata. BEAU records the board-selected
+	 * read-only versus read-write hint here, but enforcement belongs to the
+	 * backend that knows the protocol operation being served.
 	 */
 	init.name = "virtio-proxy";
 	init.vm = vm;
@@ -579,6 +581,7 @@ bool virtio_proxy_get_stats(uint16_t vm_id, struct virtio_proxy_stats *stats)
 		stats->last_hcall_ret = dev->last_hcall_ret;
 		stats->last_poll_queue_id = dev->last_poll_queue_id;
 		stats->last_poll_head = dev->last_poll_head;
+		stats->last_poll_status = dev->last_poll_status;
 		stats->last_reply_queue_id = dev->last_reply_queue_id;
 		stats->last_reply_head = dev->last_reply_head;
 		stats->last_reply_len = dev->last_reply_len;
@@ -728,6 +731,7 @@ static int32_t virtio_proxy_hcall_poll(struct acrn_vcpu *vcpu,
 		ioc->desc_count = dev->pending_out_count;
 		ioc->status = (virtio_proxy_access(dev) == VIRTIO_PROXY_ACCESS_READONLY) ?
 			ACRN_VIRTIO_PROXY_FLAG_RO : 0U;
+		dev->last_poll_status = ioc->status;
 		for (uint16_t i = 0U; i < dev->pending_out_count; i++) {
 			ioc->desc[i].len = dev->pending_out[i].len;
 			ioc->desc[i].flags = VIRTIO_RING_F_WRITE;
@@ -826,6 +830,7 @@ int32_t virtio_proxy_backend_hcall(struct acrn_vcpu *vcpu, uint64_t ioc_gpa)
 		return -EFAULT;
 	}
 
+	ioc.status = 0U;
 	switch (ioc.op) {
 	case ACRN_VIRTIO_PROXY_OP_REGISTER:
 		ret = virtio_proxy_hcall_register(vcpu, &ioc);
@@ -842,7 +847,9 @@ int32_t virtio_proxy_backend_hcall(struct acrn_vcpu *vcpu, uint64_t ioc_gpa)
 	}
 
 	virtio_proxy_record_hcall_result(vcpu->vm->vm_id, &ioc, ret);
-	ioc.status = (uint32_t)ret;
+	if (ret != 0) {
+		ioc.status = (uint32_t)ret;
+	}
 	if (copy_to_gpa(vcpu->vm, &ioc, ioc_gpa, sizeof(ioc)) != 0) {
 		ret = -EFAULT;
 	}

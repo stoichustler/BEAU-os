@@ -19,6 +19,8 @@ struct passthrough_spi_mapping {
 
 int32_t passthrough_register_device(uint32_t stream_id, const char *name,
 	bool writable);
+int32_t passthrough_register_device_owner(uint32_t stream_id, const char *name,
+	bool writable, uint16_t owner_vmid);
 int32_t passthrough_register_spi(uint32_t stream_id,
 	const struct passthrough_spi_mapping *mapping);
 int32_t passthrough_assign_device(struct acrn_vm *vm, uint32_t stream_id,

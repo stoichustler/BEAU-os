@@ -38,6 +38,7 @@ struct bsp_pt_device {
 	uint32_t stream_id;
 	uint32_t irq;
 	uint16_t owner_vmid;
+	uint16_t policy_owner_vmid;
 	enum bsp_pt_owner owner;
 	bool valid;
 	bool writable;
@@ -95,6 +96,7 @@ static struct bsp_pt_device *bsp_pt_alloc_device(uint32_t stream_id,
 			dev->irq = IRQ_INVALID;
 			dev->owner = BSP_PT_OWNER_HOST;
 			dev->owner_vmid = ACRN_INVALID_VMID;
+			dev->policy_owner_vmid = ACRN_INVALID_VMID;
 			if (name != NULL) {
 				uint32_t j;
 
@@ -110,14 +112,15 @@ static struct bsp_pt_device *bsp_pt_alloc_device(uint32_t stream_id,
 	return dev;
 }
 
-int32_t passthrough_register_device(uint32_t stream_id, const char *name,
-	bool writable)
+int32_t passthrough_register_device_owner(uint32_t stream_id, const char *name,
+	bool writable, uint16_t owner_vmid)
 {
 	struct bsp_pt_device *dev;
 	uint64_t flags;
 	int32_t ret = 0;
 
-	if (!bsp_pt_valid_stream(stream_id)) {
+	if (!bsp_pt_valid_stream(stream_id) ||
+		((owner_vmid != ACRN_INVALID_VMID) && (owner_vmid >= CONFIG_MAX_VM_NUM))) {
 		return -EINVAL;
 	}
 
@@ -128,12 +131,23 @@ int32_t passthrough_register_device(uint32_t stream_id, const char *name,
 	}
 	if (dev == NULL) {
 		ret = -ENOMEM;
+	} else if ((dev->policy_owner_vmid != ACRN_INVALID_VMID) &&
+		(dev->policy_owner_vmid != owner_vmid)) {
+		ret = -EBUSY;
 	} else {
 		dev->writable = writable;
+		dev->policy_owner_vmid = owner_vmid;
 	}
 	spinlock_irqrestore_release(&bsp_pt_lock, flags);
 
 	return ret;
+}
+
+int32_t passthrough_register_device(uint32_t stream_id, const char *name,
+	bool writable)
+{
+	return passthrough_register_device_owner(stream_id, name, writable,
+		ACRN_INVALID_VMID);
 }
 
 int32_t passthrough_register_spi(uint32_t stream_id,
@@ -193,6 +207,9 @@ int32_t passthrough_assign_device(struct acrn_vm *vm, uint32_t stream_id,
 	} else if ((dev->owner == BSP_PT_OWNER_VM) &&
 		(dev->owner_vmid != vm->vm_id)) {
 		ret = -EBUSY;
+	} else if ((dev->policy_owner_vmid != ACRN_INVALID_VMID) &&
+		(dev->policy_owner_vmid != vm->vm_id)) {
+		ret = -EPERM;
 	} else if (writable && !dev->writable) {
 		ret = -EPERM;
 	}

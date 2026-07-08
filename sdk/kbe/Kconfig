@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+menuconfig BEAU
+	bool "BEAU hypervisor guest drivers"
+	depends on ARM64
+	default y
+	help
+	  Enable BEAU hypervisor paravirtual guest support.
+
+if BEAU
+
+config BEAU_VWDT
+	bool "BEAU hypervisor watchdog heartbeat"
+	default y
+	help
+	  Periodically kick the BEAU hypervisor VM watchdog from the Linux guest.
+	  This is a heartbeat only: if Linux stops scheduling the heartbeat worker,
+	  BEAU can mark the VM as stuck.
+
+config BEAU_VIRTIOFS_BACKEND
+	bool "BEAU VM1 virtio-fs backend"
+	depends on VIRTIO_FS
+	help
+	  Service BEAU virtio-proxy requests from a backend Linux VM.
+
+	  This first backend is intentionally small: it lets a frontend VM mount
+	  a virtio-fs export backed by the backend VM's /var/beau
+	  directory. BEAU still owns only the MMIO transport and descriptor
+	  copying; this driver owns FUSE request semantics and VFS access.
+
+endif

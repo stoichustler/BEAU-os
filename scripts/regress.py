@@ -520,6 +520,8 @@ def run_qemu(args, cmd):
         )
         qemu.command("mmap", ["arm64 memory mappings", "vm-0 s2", "vm-1 s2", "vm-2 s2"])
         qemu.command("irqstat", ["irqstat:"])
+        qemu.command("virtiostat 1", ["┌─  virtiostat vm1", "device:26", "tag:beau", "access:rw"])
+        qemu.command("virtiostat 2", ["┌─  virtiostat vm2", "device:26", "tag:beau", "access:rw"])
         qemu.command(
             "dumpstat 0",
             [
@@ -588,7 +590,7 @@ def main():
         if not args.no_build:
             print(render(build, args.toolchains))
         print(quote(qemu))
-        checks = "prompt, vcpus, schedstat, vmstat, mmap, irqstat, vsh 0, ctrl-d, vsh 1, ctrl-d, vsh 2, Linux initramfs shell"
+        checks = "prompt, vcpus, schedstat, vmstat, mmap, irqstat, virtiostat, vsh 0, ctrl-d, vsh 1, ctrl-d, vsh 2, Linux initramfs shell"
         if args.stress_vsh_switch:
             checks += ", VM console switch/Enter stress"
         if args.stress_vsh_help:

@@ -17,6 +17,7 @@
     ├── bsp              // BEAU dev/vdev drivers
     ├── codex
     ├── image
+    ├── kbe              // Linux kernel virtio backend
     └── udev             // Userspace implementation (ask if allow to modify)
 ```
 
