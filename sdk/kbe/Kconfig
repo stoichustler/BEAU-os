@@ -38,4 +38,15 @@ config BEAU_VIRTIORNG_BACKEND
 	  buffers; VM1 fills them with kernel random bytes and completes the
 	  descriptor through BEAU.
 
+config BEAU_VIRTIOBLK_BACKEND
+	bool "BEAU VM1 virtio-blk RAM backend"
+	default y
+	help
+	  Service BEAU virtio-proxy block requests from a backend Linux VM.
+
+	  Enable this with a frontend virtio-proxy device advertising virtio BLK
+	  device id 2. VM2's standard virtio-blk frontend sends request headers,
+	  data buffers, and status descriptors; VM1 stores data in a small RAM
+	  disk and completes the descriptor through BEAU.
+
 endif

@@ -323,8 +323,9 @@ int32_t arch_init_vm(struct acrn_vm *vm, struct acrn_vm_config *vm_config)
 	return 0;
 }
 
-int32_t arch_deinit_vm(__unused struct acrn_vm *vm)
+int32_t arch_deinit_vm(struct acrn_vm *vm)
 {
+	virtio_proxy_release_vm(vm);
 	return 0;
 }
 
@@ -353,6 +354,7 @@ int32_t arch_reset_vm(struct acrn_vm *vm)
 	 *          v
 	 *   start_vm() prepares and wakes BSP
 	 */
+	virtio_proxy_release_vm(vm);
 	reset_vm_ioreqs(vm);
 	arm64_vgicv3_init_vm(vm, vm_config->cpu_affinity);
 	if (arm64_vm_uses_virtio_console(vm_config)) {

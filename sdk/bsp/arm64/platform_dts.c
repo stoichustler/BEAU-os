@@ -869,7 +869,7 @@ static void dts_parse_os(const void *fdt, int32_t vm_node,
 	}
 }
 
-static void dts_parse_arch(const void *fdt, int32_t generic,
+static void dts_parse_arch(const void *fdt, int32_t generic, uint16_t vm_id,
 	struct acrn_vm_config *vm_config)
 {
 	int32_t gic = dts_child_compatible(fdt, generic, "arm,vgic-v3");
@@ -928,8 +928,19 @@ static void dts_parse_arch(const void *fdt, int32_t generic,
 	for (int32_t virtio_proxy = fdt_first_subnode(fdt, generic);
 		virtio_proxy >= 0; virtio_proxy = fdt_next_subnode(fdt, virtio_proxy)) {
 		struct arm64_virtio_proxy_config *proxy_config;
+		uint32_t frontend_vmid;
 
 		if (!dts_is_virtio_proxy(fdt, virtio_proxy)) {
+			continue;
+		}
+		frontend_vmid = dts_u32_prop(fdt, virtio_proxy, "beau,frontend-vmid",
+			ACRN_INVALID_VMID);
+		if ((frontend_vmid != ACRN_INVALID_VMID) &&
+			(frontend_vmid >= CONFIG_MAX_VM_NUM)) {
+			arm64_dts_panic("virtio-proxy frontend vm", -EINVAL);
+		}
+		if ((frontend_vmid != ACRN_INVALID_VMID) &&
+			(frontend_vmid != vm_id)) {
 			continue;
 		}
 		if (proxy_count >= ARM64_VIRTIO_PROXY_MAX) {
@@ -946,6 +957,9 @@ static void dts_parse_arch(const void *fdt, int32_t generic,
 		proxy_config->irq = fdt32_to_cpu(irq_prop[1]) + 32U;
 		proxy_config->device_id = dts_u32_prop(fdt, virtio_proxy,
 			"beau,device-id", VIRTIO_DEVICE_ID_FS);
+		proxy_config->frontend_vmid =
+			(uint16_t)((frontend_vmid == ACRN_INVALID_VMID) ? vm_id :
+			frontend_vmid);
 		proxy_config->queue_num =
 			(uint16_t)dts_u32_prop(fdt, virtio_proxy, "beau,queue-num",
 				VIRTIO_PROXY_QUEUE_NUM_DEFAULT);
@@ -1041,7 +1055,7 @@ static void dts_parse_vm_node(const void *fdt, int32_t generic, int32_t vm_node,
 
 	dts_parse_sched(fdt, vm_node, vm_config);
 	dts_parse_os(fdt, vm_node, vm_config, ops);
-	dts_parse_arch(fdt, generic, vm_config);
+	dts_parse_arch(fdt, generic, vm_id, vm_config);
 }
 
 static void dts_add_boot_option(const void *fdt, int32_t module,

@@ -310,11 +310,12 @@ LIB_MK = sdk/bsp/Makefile
 
 DISTCLEAN_OBJS := $(shell find $(BASEDIR) -name '*.o')
 VERSION := $(HV_OBJDIR)/include/version.h
+BANNER_H := $(HV_OBJDIR)/include/banner.h
 LINUX_IMAGE_SIZE_H :=
 ifeq ($(STATIC_ARM64_PLATFORM),y)
 LINUX_IMAGE_SIZE_H := $(HV_OBJDIR)/include/linux_image_sizes.h
 endif
-HEADERS := $(VERSION) $(HV_CONFIG_H) $(HV_CONFIG_TIMESTAMP) $(LINUX_IMAGE_SIZE_H)
+HEADERS := $(VERSION) $(BANNER_H) $(HV_CONFIG_H) $(HV_CONFIG_TIMESTAMP) $(LINUX_IMAGE_SIZE_H)
 
 ifeq ($(STATIC_ARM64_PLATFORM),y)
 $(HV_CONFIG_MK): | $(HV_CONFIG_DIR)
@@ -410,6 +411,18 @@ $(HV_OBJDIR)/include:
 	@mkdir -p $@
 endif
 endif
+
+$(BANNER_H): sdk/BANNER | $(HV_OBJDIR)/include
+	@echo "banner    $(notdir $@)"
+	@{ \
+		echo "/* Auto-generated from sdk/BANNER. */"; \
+		echo "#ifndef BANNER_H"; \
+		echo "#define BANNER_H"; \
+		echo "static const char beau_banner[] ="; \
+		awk '{ gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); printf "\"%s\\r\\n\"\n", $$0 }' $<; \
+		echo ";"; \
+		echo "#endif /* BANNER_H */"; \
+	} > $@
 
 ifneq ($(ARM64_PLATFORM_DTB),)
 $(ARM64_PLATFORM_DTB): arch/arm64/platform/$(PLATFORM)/platform.dts $(ARM64_PLATFORM_CFG_STAMP) | $(HV_OBJDIR)

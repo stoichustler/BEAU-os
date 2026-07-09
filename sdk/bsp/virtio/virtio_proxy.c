@@ -15,103 +15,7 @@
 #include <rtl.h>
 #include <bsp/io_req.h>
 #include <spinlock.h>
-#include <virtio_proxy.h>
-
-#define VIRTIO_PROXY_CONFIG_SIZE	64U
-#define VIRTIO_PROXY_CHAIN_LIMIT	ACRN_VIRTIO_PROXY_DESC_MAX
-#define VIRTIO_PROXY_PENDING_LOW	1U
-#define VIRTIO_PROXY_PENDING_HIGH	4U
-#define VIRTIO_PROXY_PENDING_MAX	VIRTIO_PROXY_PENDING_HIGH
-
-/*
- * 2026-07-08, virtio-proxy bridge model:
- *
- * virtio_proxy is a protocol-neutral virtio-mmio endpoint that lets a guest
- * frontend driver talk to a matching backend implementation through one common
- * transport shell.
- *
- *   guest VM frontend          BEAU proxy transport             backend owner
- *   -----------------          --------------------             -------------
- *   virtio-blk driver   <-->   device-id/config/vring   <-->   blk backend
- *   virtio-net driver   <-->   device-id/config/vring   <-->   net backend
- *   virtio-fs  driver   <-->   device-id/config/vring   <-->   fs backend
- *   virtio-i2c driver   <-->   device-id/config/vring   <-->   i2c backend
- *   virtio-spi driver   <-->   device-id/config/vring   <-->   spi backend
- *
- * The proxy owns only MMIO register emulation, queue lifetime notifications,
- * opaque config-space plumbing, and IRQ signaling through virtio_mmio. The
- * backend must own protocol semantics: descriptor-chain layout, request
- * validation, feature bits, access-policy enforcement, and used-ring
- * completion. Keeping this split prevents BEAU from embedding fake fs/blk/net
- * behavior in the transport layer.
- *
- * The current VM1/VM2 virtio-fs test uses this exact split:
- *
- *   VM2 Linux virtio-fs frontend(rw)
- *        -> QueueNotify trap
- *        -> BEAU virtio_proxy transport
- *        -> VM1-owned virtio-fs backend(rw export of /var/beau)
- *
- * BEAU must therefore preserve descriptor ownership and ordering, but it must
- * not interpret FUSE opcodes here. A future VM1 backend driver/daemon should
- * bind through virtio_proxy_bind_backend(), consume descriptor chains, perform
- * filesystem work against /var/beau, then publish used-ring completions.
- */
-struct virtio_proxy_fs_config {
-	char tag[VIRTIO_PROXY_TAG_MAX];
-	uint32_t num_request_queues;
-};
-
-struct virtio_proxy_pending_out {
-	uint64_t gpa;
-	uint32_t len;
-};
-
-struct virtio_proxy_pending {
-	bool valid;
-	bool sent;
-	bool done;
-	uint16_t queue_id;
-	uint16_t head;
-	uint16_t in_len;
-	uint32_t out_len;
-	uint8_t in[ACRN_VIRTIO_PROXY_DATA_MAX];
-	struct virtio_proxy_pending_out out[ACRN_VIRTIO_PROXY_DESC_MAX];
-	uint16_t out_count;
-};
-
-struct virtio_proxy_dev {
-	struct virtio_mmio_dev mmio;
-	spinlock_t lock;
-	uint16_t index;
-	uint8_t config[VIRTIO_PROXY_CONFIG_SIZE];
-	uint32_t config_size;
-	uint32_t device_id;
-	uint32_t access;
-	uint32_t throughput;
-	char tag[VIRTIO_PROXY_TAG_MAX];
-	const struct virtio_proxy_backend_ops *backend_ops;
-	void *backend_priv;
-	uint64_t notify_count;
-	bool no_backend_logged;
-	bool hcall_backend_registered;
-	bool hcall_backend_expected;
-	uint16_t pending_limit;
-	struct virtio_proxy_pending pending[VIRTIO_PROXY_PENDING_MAX];
-	uint64_t hcall_register_count;
-	uint64_t hcall_poll_count;
-	uint64_t hcall_poll_ok_count;
-	uint64_t hcall_reply_count;
-	uint64_t hcall_reply_ok_count;
-	uint32_t last_hcall_op;
-	int32_t last_hcall_ret;
-	uint16_t last_poll_queue_id;
-	uint16_t last_poll_head;
-	uint32_t last_poll_status;
-	uint16_t last_reply_queue_id;
-	uint16_t last_reply_head;
-	uint32_t last_reply_len;
-};
+#include "virtio_proxy.h"
 
 static struct virtio_proxy_dev virtio_proxy_devs[CONFIG_MAX_VM_NUM][ARM64_VIRTIO_PROXY_MAX];
 
@@ -165,7 +69,8 @@ static struct virtio_proxy_dev *virtio_proxy_find_hcall_target(uint16_t backend_
 
 	if (frontend_vmid < CONFIG_MAX_VM_NUM) {
 		dev = virtio_proxy_find_dev_by_device_id(frontend_vmid, device_id);
-		if ((dev == NULL) || !dev->hcall_backend_registered) {
+		if ((dev == NULL) || !dev->hcall_backend_registered ||
+			(dev->backend_vmid != backend_vmid)) {
 			dev = NULL;
 		}
 	} else {
@@ -176,7 +81,7 @@ static struct virtio_proxy_dev *virtio_proxy_find_hcall_target(uint16_t backend_
 
 				if (virtio_proxy_dev_matches(candidate, device_id) &&
 					candidate->hcall_backend_registered &&
-					(candidate->mmio.vm->vm_id != backend_vmid)) {
+					(candidate->backend_vmid == backend_vmid)) {
 					dev = candidate;
 					break;
 				}
@@ -246,6 +151,7 @@ static void virtio_proxy_build_config(struct virtio_proxy_dev *dev,
 	const struct arm64_virtio_proxy_config *proxy_config)
 {
 	struct virtio_proxy_fs_config fs_config;
+	struct virtio_proxy_blk_config blk_config;
 
 	(void)memset(dev->config, 0U, sizeof(dev->config));
 	dev->config_size = 0U;
@@ -277,6 +183,13 @@ static void virtio_proxy_build_config(struct virtio_proxy_dev *dev,
 			(uint32_t)proxy_config->queue_num - 1U : 1U;
 		(void)memcpy(dev->config, &fs_config, sizeof(fs_config));
 		dev->config_size = sizeof(fs_config);
+	} else if (dev->device_id == VIRTIO_DEVICE_ID_BLOCK) {
+		(void)memset(&blk_config, 0U, sizeof(blk_config));
+		blk_config.capacity = VIRTIO_PROXY_BLK_CAPACITY;
+		blk_config.size_max = VIRTIO_PROXY_BLK_SIZE_MAX;
+		blk_config.seg_max = VIRTIO_PROXY_BLK_SEG_MAX;
+		(void)memcpy(dev->config, &blk_config, sizeof(blk_config));
+		dev->config_size = sizeof(blk_config);
 	}
 }
 
@@ -470,6 +383,7 @@ void virtio_proxy_init_vm(struct acrn_vm *vm)
 		dev->access = proxy_config->access;
 		dev->throughput = proxy_config->throughput;
 		dev->hcall_backend_expected = true;
+		dev->backend_vmid = ACRN_INVALID_VMID;
 		dev->pending_limit =
 			(dev->throughput == VIRTIO_PROXY_THROUGHPUT_HIGH) ?
 			VIRTIO_PROXY_PENDING_HIGH : VIRTIO_PROXY_PENDING_LOW;
@@ -493,7 +407,10 @@ void virtio_proxy_init_vm(struct acrn_vm *vm)
 		init.device_id = dev->device_id;
 		init.queue_num = proxy_config->queue_num;
 		init.queue_size = proxy_config->queue_size;
-		init.device_features = 0UL;
+		init.device_features =
+			(dev->device_id == VIRTIO_DEVICE_ID_BLOCK) ?
+			((1UL << VIRTIO_BLK_F_SIZE_MAX) |
+			(1UL << VIRTIO_BLK_F_SEG_MAX)) : 0UL;
 		init.ops = &virtio_proxy_mmio_ops;
 		init.priv = dev;
 		virtio_mmio_init(&dev->mmio, &init);
@@ -510,6 +427,35 @@ void virtio_proxy_reset_vm(struct acrn_vm *vm)
 
 		if (dev != NULL) {
 			virtio_mmio_reset_dev(&dev->mmio);
+		}
+	}
+}
+
+void virtio_proxy_release_vm(struct acrn_vm *vm)
+{
+	if (vm == NULL) {
+		return;
+	}
+
+	for (uint16_t vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
+		for (uint16_t index = 0U; index < ARM64_VIRTIO_PROXY_MAX; index++) {
+			struct virtio_proxy_dev *dev =
+				virtio_proxy_get_dev_by_id_index(vm_id, index);
+
+			if ((dev == NULL) || (dev->mmio.vm == NULL)) {
+				continue;
+			}
+
+			spinlock_obtain(&dev->lock);
+			if (dev->hcall_backend_registered &&
+				(dev->backend_vmid == vm->vm_id)) {
+				dev->hcall_backend_registered = false;
+				dev->backend_vmid = ACRN_INVALID_VMID;
+				dev->no_backend_logged = false;
+				(void)memset(dev->pending, 0U, sizeof(dev->pending));
+				dev->last_hcall_ret = -ENODEV;
+			}
+			spinlock_release(&dev->lock);
 		}
 	}
 }
@@ -681,6 +627,7 @@ bool virtio_proxy_get_stats(uint16_t vm_id, uint16_t index,
 		stats->notify_count = dev->notify_count;
 		stats->backend_bound = dev->backend_ops != NULL;
 		stats->hcall_backend_registered = dev->hcall_backend_registered;
+		stats->backend_vmid = dev->backend_vmid;
 		stats->pending_limit = dev->pending_limit;
 		stats->pending_active = virtio_proxy_pending_active(dev);
 		if (pending != NULL) {
@@ -698,6 +645,8 @@ bool virtio_proxy_get_stats(uint16_t vm_id, uint16_t index,
 		stats->hcall_poll_ok_count = dev->hcall_poll_ok_count;
 		stats->hcall_reply_count = dev->hcall_reply_count;
 		stats->hcall_reply_ok_count = dev->hcall_reply_ok_count;
+		stats->hcall_busy_count = dev->hcall_busy_count;
+		stats->hcall_backpressure_count = dev->hcall_backpressure_count;
 		stats->last_hcall_op = dev->last_hcall_op;
 		stats->last_hcall_ret = dev->last_hcall_ret;
 		stats->last_poll_queue_id = dev->last_poll_queue_id;
@@ -837,10 +786,16 @@ static int32_t virtio_proxy_hcall_register(struct acrn_vcpu *vcpu,
 		(dev->mmio.vm->vm_id != vcpu->vm->vm_id)) {
 		spinlock_obtain(&dev->lock);
 		dev->hcall_register_count++;
-		dev->hcall_backend_registered = true;
-		dev->no_backend_logged = false;
+		if (dev->hcall_backend_registered &&
+			(dev->backend_vmid != vcpu->vm->vm_id)) {
+			ret = -EBUSY;
+		} else {
+			dev->hcall_backend_registered = true;
+			dev->backend_vmid = vcpu->vm->vm_id;
+			dev->no_backend_logged = false;
+			ret = 0;
+		}
 		spinlock_release(&dev->lock);
-		ret = 0;
 	}
 
 	return ret;
@@ -866,6 +821,7 @@ static int32_t virtio_proxy_hcall_poll(struct acrn_vcpu *vcpu,
 	vq = virtio_mmio_get_queue(&dev->mmio, ioc->queue_id);
 	pending = virtio_proxy_free_pending_slot(dev);
 	if (pending == NULL) {
+		dev->hcall_backpressure_count++;
 		ret = -EBUSY;
 		goto out;
 	}
@@ -877,6 +833,7 @@ static int32_t virtio_proxy_hcall_poll(struct acrn_vcpu *vcpu,
 		}
 	}
 	if (!pending->valid || pending->sent) {
+		dev->hcall_busy_count++;
 		ret = -EBUSY;
 		goto out;
 	}

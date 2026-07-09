@@ -21,6 +21,7 @@
 #include <irq.h>
 #include <debug/symbol.h>
 #include <bits.h>
+#include <banner.h>
 
 #define SHELL_PROMPT_STR	"console:\\> "
 #define SHELL_ASCII_BS		'\b'
@@ -280,6 +281,18 @@ static void shell_show_prompt(bool leading_newline)
 		shell_puts_unlocked("\r\n");
 	}
 	shell_puts_unlocked(SHELL_PROMPT_STR);
+	shell_input_active = true;
+	spinlock_irqrestore_release(&shell_tx_lock, rflags);
+}
+
+static void shell_show_banner_prompt(void)
+{
+	uint64_t rflags;
+
+	spinlock_irqsave_obtain(&shell_tx_lock, &rflags);
+	shell_puts_unlocked("\r\n" SHELL_COLOR_MAGENTA);
+	shell_puts_unlocked(beau_banner);
+	shell_puts_unlocked(SHELL_COLOR_RESET "\r\n" SHELL_PROMPT_STR);
 	shell_input_active = true;
 	spinlock_irqrestore_release(&shell_tx_lock, rflags);
 }
@@ -887,10 +900,7 @@ void shell_kick(void)
 		 */
 		if ((ch == '\r') || (ch == '\n')) {
 			shell_prompt_enabled = true;
-			shell_puts("\r\n"SHELL_COLOR_MAGENTA
-						"[κ][<BEAU OS>][2026]"
-						SHELL_COLOR_RESET"\r\n");
-			shell_show_prompt(true);
+			shell_show_banner_prompt();
 			is_cmd_cmplt = false;
 		}
 		return;

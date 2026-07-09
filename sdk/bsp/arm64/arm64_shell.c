@@ -1410,6 +1410,9 @@ static const char *shell_virtio_device_to_str(uint32_t device_id)
 	const char *str;
 
 	switch (device_id) {
+	case VIRTIO_DEVICE_ID_BLOCK:
+		str = "virtio-blk";
+		break;
 	case VIRTIO_DEVICE_ID_FS:
 		str = "virtio-fs";
 		break;
@@ -1459,14 +1462,27 @@ static bool shell_virtio_stats_active(const struct virtio_proxy_stats *stats)
 		(stats->hcall_register_count != 0UL));
 }
 
+static bool shell_virtio_is_grouped_device(uint32_t device_id)
+{
+	return (device_id == VIRTIO_DEVICE_ID_FS) ||
+		(device_id == VIRTIO_DEVICE_ID_RNG) ||
+		(device_id == VIRTIO_DEVICE_ID_BLOCK);
+}
+
 static void shell_virtiostat_print_summary_device(const struct virtio_proxy_stats *stats)
 {
 	uint16_t ready = 0U;
+	char backend[8];
 
 	for (uint16_t queue_id = 0U; queue_id < stats->queue_num; queue_id++) {
 		if (stats->queues[queue_id].ready) {
 			ready++;
 		}
+	}
+	if (stats->hcall_backend_registered) {
+		snprintf(backend, sizeof(backend), "vm%hu", stats->backend_vmid);
+	} else {
+		(void)strncpy_s(backend, sizeof(backend), "-", sizeof(backend) - 1U);
 	}
 
 	shell_item_begin("%s vm%hu:%hu", shell_virtio_device_to_str(stats->device_id),
@@ -1474,15 +1490,15 @@ static void shell_virtiostat_print_summary_device(const struct virtio_proxy_stat
 	shell_item_line("device:%3u tag:%12s access:%s throughput:%s",
 		stats->device_id, stats->tag, shell_virtio_access_to_str(stats->access),
 		shell_virtio_throughput_to_str(stats->throughput));
-	shell_item_line("state:status:0x%08x queues:%hu/%hu notify:%lu hcall:%s pending:%hu/%hu",
+	shell_item_line("state:status:0x%08x queues:%hu/%hu notify:%lu backend:%s pending:%hu/%hu",
 		stats->status, ready, stats->queue_num, stats->notify_count,
-		shell_yes_no(stats->hcall_backend_registered),
-		stats->pending_active, stats->pending_limit);
-	shell_item_line("hcall:register:%lu poll:%lu/%lu reply:%lu/%lu ret:%5s(%d)",
+		backend, stats->pending_active, stats->pending_limit);
+	shell_item_line("hcall:register:%lu poll:%lu/%lu reply:%lu/%lu busy:%lu bp:%lu ret:%5s(%d)",
 		stats->hcall_register_count, stats->hcall_poll_ok_count,
 		stats->hcall_poll_count, stats->hcall_reply_ok_count,
-		stats->hcall_reply_count, shell_errno_to_str(stats->last_hcall_ret),
-		stats->last_hcall_ret);
+		stats->hcall_reply_count, stats->hcall_busy_count,
+		stats->hcall_backpressure_count,
+		shell_errno_to_str(stats->last_hcall_ret), stats->last_hcall_ret);
 	shell_item_line("last:poll:q:%hu reply:q:%hu len:%u",
 		stats->last_poll_queue_id, stats->last_reply_queue_id, stats->last_reply_len);
 	shell_item_end();
@@ -1519,8 +1535,7 @@ static void shell_virtiostat_print_summary_others(void)
 
 		for (uint16_t index = 0U; index < count; index++) {
 			if (!virtio_proxy_get_stats(vm_id, index, &stats) ||
-				(stats.device_id == VIRTIO_DEVICE_ID_FS) ||
-				(stats.device_id == VIRTIO_DEVICE_ID_RNG) ||
+				shell_virtio_is_grouped_device(stats.device_id) ||
 				!shell_virtio_stats_active(&stats)) {
 				continue;
 			}
@@ -1533,6 +1548,7 @@ static void shell_virtiostat_print_summary(void)
 {
 	(void)shell_virtiostat_print_summary_for_device(VIRTIO_DEVICE_ID_FS);
 	(void)shell_virtiostat_print_summary_for_device(VIRTIO_DEVICE_ID_RNG);
+	(void)shell_virtiostat_print_summary_for_device(VIRTIO_DEVICE_ID_BLOCK);
 	shell_virtiostat_print_summary_others();
 }
 

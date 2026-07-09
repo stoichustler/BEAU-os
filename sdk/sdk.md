@@ -1,5 +1,10 @@
 # BEAU OS
 
+## Design Documentation
+
+- [smmu-dma-ioslation.md](beau/smmu-dma-ioslation.md)
+- [smmu-dts-policy-plan.md](beau/smmu-dts-policy-plan.md)
+
 
 ## Hierarchy
 

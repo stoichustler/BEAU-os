@@ -79,7 +79,7 @@
 /*
  * BEAU ARM64 passthrough model, first stage.
  *
- * Xen's SMMUv3 driver uses the VM P2M/stage-2 table as the SMMU stage-2 table.
+ * SMMUv3 driver uses the VM P2M/stage-2 table as the SMMU stage-2 table.
  * This file follows that model at the framework boundary:
  *
  *   VM vCPU access:  IPA ---- CPU stage-2 ----> PA
@@ -530,7 +530,7 @@ int32_t arm_smmu_assign_stream(struct iommu_domain *domain, uint32_t stream_id)
 
 	/*
 	 * A stream can have exactly one active owner. This is the software
-	 * equivalent of Xen's "device already assigned" guard and prevents a
+	 * equivalent of "device already assigned" guard and prevents a
 	 * device from DMAing with two VMIDs over its lifetime.
 	 */
 	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);

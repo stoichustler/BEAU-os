@@ -235,6 +235,7 @@
 				reg = <0x0 0x0a000200 0x0 0x00000200>;
 				interrupts = <0x0 0x11 0x4>;
 				beau,device-id = <26>;
+				beau,frontend-vmid = <2>;
 				beau,queue-num = <2>;
 				beau,queue-size = <64>;
 				beau,tag = "proxy-fs";
@@ -246,10 +247,23 @@
 				reg = <0x0 0x0a000400 0x0 0x00000200>;
 				interrupts = <0x0 0x12 0x4>;
 				beau,device-id = <4>;
+				beau,frontend-vmid = <2>;
 				beau,queue-num = <1>;
 				beau,queue-size = <64>;
 				beau,tag = "proxy-rng";
 				beau,throughput = "low";
+			};
+
+			virtio-proxy-blk-mmio@a000600 {
+				compatible = "beau,virtio-proxy", "beau,virtio-blk", "virtio,mmio";
+				reg = <0x0 0x0a000600 0x0 0x00000200>;
+				interrupts = <0x0 0x13 0x4>;
+				beau,device-id = <2>;
+				beau,frontend-vmid = <2>;
+				beau,queue-num = <1>;
+				beau,queue-size = <64>;
+				beau,tag = "proxy-blk";
+				beau,throughput = "high";
 			};
 		};
 

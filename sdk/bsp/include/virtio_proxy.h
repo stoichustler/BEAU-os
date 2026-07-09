@@ -49,6 +49,7 @@ struct virtio_proxy_stats {
 	uint64_t notify_count;
 	bool backend_bound;
 	bool hcall_backend_registered;
+	uint16_t backend_vmid;
 	bool pending_valid;
 	bool pending_sent;
 	bool pending_done;
@@ -64,6 +65,8 @@ struct virtio_proxy_stats {
 	uint64_t hcall_poll_ok_count;
 	uint64_t hcall_reply_count;
 	uint64_t hcall_reply_ok_count;
+	uint64_t hcall_busy_count;
+	uint64_t hcall_backpressure_count;
 	uint32_t last_hcall_op;
 	int32_t last_hcall_ret;
 	uint16_t last_poll_queue_id;
@@ -89,6 +92,7 @@ struct virtio_proxy_backend_ops {
 
 void virtio_proxy_init_vm(struct acrn_vm *vm);
 void virtio_proxy_reset_vm(struct acrn_vm *vm);
+void virtio_proxy_release_vm(struct acrn_vm *vm);
 int32_t virtio_proxy_mmio_handler(struct io_request *io_req,
 	void *handler_private_data);
 struct virtio_proxy_dev *virtio_proxy_get_dev(struct acrn_vm *vm, uint16_t index);

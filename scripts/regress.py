@@ -13,7 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CWD = Path.cwd()
 PROMPT = "console:\\>"
-LINUX_PROMPT = "uos "
+LINUX_PROMPT = "uos ~"
 LK_PROMPT = "uos ~"
 HELP_STRESS_TARGETS = (
     (0, "sos ~", "VM0 Zephyr", 30.0),
@@ -227,6 +227,15 @@ class QemuSession:
         self.proc.stdin.write(data)
         self.proc.stdin.flush()
 
+    def send_slow(self, data, delay=0.002):
+        if isinstance(data, str):
+            data = data.encode()
+        for byte in data:
+            self.proc.stdin.write(bytes([byte]))
+            self.proc.stdin.flush()
+            if delay > 0.0:
+                time.sleep(delay)
+
     def read_some(self, deadline):
         wait = max(0.0, min(0.25, deadline - time.monotonic()))
         for key, _ in self.selector.select(wait):
@@ -319,6 +328,22 @@ class QemuSession:
                 raise RuntimeError(f"{line!r} output contains rejected {pattern!r}")
         print(f"[pass] {line}: expected output found", flush=True)
 
+    def command_retry(self, line, patterns, rejects=None, attempts=8, delay=1.0):
+        last_error = None
+
+        for attempt in range(attempts):
+            try:
+                self.command(line, patterns, rejects=rejects)
+                return
+            except RuntimeError as err:
+                last_error = err
+                if attempt + 1 >= attempts:
+                    break
+                print(f"[regress] retry: {line}: {err}", flush=True)
+                self.drain_for(delay)
+
+        raise last_error
+
     def capture_vm_diagnostics(self, label, vmid):
         print(f"[regress] diagnostics: {label}", flush=True)
         old_ignore_fatal = self.ignore_fatal
@@ -371,19 +396,60 @@ def send_enter_burst(qemu, count, delay, name, vmid=None):
 
 
 def expect_vm2_id(qemu, name):
-	token = f"__beau_vm2_id_{int(time.monotonic() * 1000000)}__"
+    token = f"__beau_vm2_id_{int(time.monotonic() * 1000000)}__"
 
-	# The VM console can replay old output and echo the command line before the
-	# guest has executed it. A unique token plus the "[vmid 2]" output marker makes
-	# this check wait for fresh VM2 command output instead of a stale "gid=0".
-	qemu.send(f"echo {token}; id; echo {token}_done" + ENTER)
-	try:
-		text = qemu.expect(f"[vmid 2] {token}_done", name, timeout=20.0, keepalive=ENTER)
-		if "gid=0" not in text:
-			raise RuntimeError(f"{name}: id output missing gid=0")
-	except Exception:
-		qemu.capture_vm_diagnostics(name, 2)
-		raise
+    # The VM console can replay old output and echo the command line before the
+    # guest has executed it. A unique token plus the "[vmid 2]" output marker makes
+    # this check wait for fresh VM2 command output instead of a stale "gid=0".
+    qemu.send_slow(f"id; echo {token}_done" + ENTER)
+    try:
+        text = qemu.expect(f"[vmid 2] {token}_done", name, timeout=20.0, keepalive=ENTER)
+        if "gid=0" not in text:
+            raise RuntimeError(f"{name}: id output missing gid=0")
+        qemu.expect(LINUX_PROMPT, f"{name}: prompt", timeout=5.0, keepalive=ENTER)
+        qemu.drain_for(0.05)
+    except Exception:
+        qemu.capture_vm_diagnostics(name, 2)
+        raise
+
+
+def vm2_command(qemu, command, name, patterns=None, timeout=20.0, expect_rc=0):
+    token = f"__beau_vm2_cmd_{int(time.monotonic() * 1000000)}__"
+    patterns = [] if patterns is None else patterns
+    qemu.send_slow(f"{command}; rc=$?; echo {token}:$rc" + ENTER)
+    text = qemu.expect(f"[vmid 2] {token}:", name, timeout=timeout, keepalive=ENTER)
+    if f"{token}:{expect_rc}" not in text:
+        raise RuntimeError(f"{name}: command returned non-zero")
+    for pattern in patterns:
+        if pattern not in text:
+            raise RuntimeError(f"{name}: output missing {pattern!r}")
+    qemu.drain_for(0.05)
+    return text
+
+
+def expect_vm2_virtioblk(qemu, name):
+    try:
+        vm2_command(qemu, "test -b /dev/vda",
+                    f"{name}: block node")
+        vm2_command(qemu, "grep -q 2048 /sys/block/vda/size",
+                    f"{name}: sector count")
+        vm2_command(qemu, "mkdir -p /tmp",
+                    f"{name}: temp dir")
+        vm2_command(qemu, "rm -f /tmp/beau-blk.w /tmp/beau-blk.r",
+                    f"{name}: cleanup")
+        vm2_command(qemu, "printf BEAU-BLK-OK >/tmp/beau-blk.w",
+                    f"{name}: marker")
+        vm2_command(qemu, "dd if=/dev/zero bs=4085 count=1 >>/tmp/beau-blk.w 2>/dev/null",
+                    f"{name}: pad")
+        vm2_command(qemu, "dd if=/tmp/beau-blk.w of=/dev/vda bs=4096 count=1 2>/dev/null",
+                    f"{name}: write")
+        vm2_command(qemu, "dd if=/dev/vda of=/tmp/beau-blk.r bs=4096 count=1 2>/dev/null",
+                    f"{name}: read")
+        vm2_command(qemu, "cmp /tmp/beau-blk.w /tmp/beau-blk.r",
+                    name)
+    except Exception:
+        qemu.capture_vm_diagnostics(name, 2)
+        raise
 
 
 def run_guest_help(qemu, vmid, prompt, name, timeout):
@@ -520,9 +586,19 @@ def run_qemu(args, cmd):
         )
         qemu.command("mmap", ["arm64 memory mappings", "vm-0 s2", "vm-1 s2", "vm-2 s2"])
         qemu.command("irqstat", ["irqstat:"])
-        qemu.command(
+        qemu.command_retry(
             "virtiostat",
-            ["virtio-fs vm2:0", "device:26", "tag:beau", "throughput:high", "virtio-rng vm2:1", "device:4", "tag:beau-rng", "throughput:low"],
+            [
+                "virtio-fs vm2:0",
+                "device:",
+                "proxy-fs",
+                "throughput:high",
+                "virtio-rng vm2:1",
+                "proxy-rng",
+                "throughput:low",
+                "virtio-blk vm2:2",
+                "proxy-blk",
+            ],
         )
         qemu.command(
             "dumpstat 0",
@@ -572,6 +648,7 @@ def run_qemu(args, cmd):
             qemu.capture_vm_diagnostics("VM2 Linux initramfs shell timeout", 2)
             raise
         expect_vm2_id(qemu, "VM2 Linux root identity")
+        expect_vm2_virtioblk(qemu, "VM2 virtio-blk 4K write/read")
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM2 shell")
 
@@ -592,7 +669,7 @@ def main():
         if not args.no_build:
             print(render(build, args.toolchains))
         print(quote(qemu))
-        checks = "prompt, vcpus, schedstat, vmstat, mmap, irqstat, virtiostat, vsh 0, ctrl-d, vsh 1, ctrl-d, vsh 2, Linux initramfs shell"
+        checks = "prompt, vcpus, schedstat, vmstat, mmap, irqstat, virtiostat, vsh 0, ctrl-d, vsh 1, ctrl-d, vsh 2, Linux initramfs shell, virtio-blk 4K write/read"
         if args.stress_vsh_switch:
             checks += ", VM console switch/Enter stress"
         if args.stress_vsh_help:
