@@ -101,6 +101,10 @@ static void dispatch_interrupt_common(const struct intr_excp_ctx *ctx, bool hand
 	 * handler has consumed it.
 	 */
 	if (intid == ARM64_GIC_SPURIOUS_INTID) {
+		acrn_irq = arm64_domain_get_acrn_irq(ARM64_IRQD_GIC, intid);
+		if (arm64_is_valid_acrn_irq(acrn_irq)) {
+			count_irq(acrn_irq);
+		}
 		return;
 	}
 

@@ -39,6 +39,13 @@ struct virtio_proxy_queue_stats {
 	bool ready;
 };
 
+struct virtio_proxy_latency_stats {
+	uint64_t count;
+	uint64_t min_us;
+	uint64_t avg_us;
+	uint64_t max_us;
+};
+
 struct virtio_proxy_stats {
 	uint16_t vm_id;
 	uint16_t index;
@@ -75,6 +82,12 @@ struct virtio_proxy_stats {
 	uint64_t hcall_reply_ok_count;
 	uint64_t hcall_busy_count;
 	uint64_t hcall_backpressure_count;
+	uint64_t timeout_count;
+	uint64_t reset_count;
+	struct virtio_proxy_latency_stats latency_notify_poll;
+	struct virtio_proxy_latency_stats latency_poll_reply;
+	struct virtio_proxy_latency_stats latency_reply_irq;
+	struct virtio_proxy_latency_stats latency_total;
 	uint32_t last_hcall_op;
 	int32_t last_hcall_ret;
 	uint16_t last_poll_queue_id;

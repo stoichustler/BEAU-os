@@ -64,9 +64,11 @@ HV_CONFIG_H := $(HV_OBJDIR)/include/arm64_platform_config.h
 ifeq ($(PLATFORM),qemu)
 CONFIG_HV_RAM_START := 0x50000000
 CONFIG_MAX_PCPU_NUM := 8U
+CONFIG_IRQSTAT_LATENCY ?= y
 else ifeq ($(PLATFORM),rk356x)
 CONFIG_HV_RAM_START := 0x00A00000
 CONFIG_MAX_PCPU_NUM := 4U
+CONFIG_IRQSTAT_LATENCY ?= n
 endif
 CFLAGS += -include $(HV_CONFIG_H)
 HV_CONFIG_MK := $(HV_CONFIG_DIR)/config.mk
@@ -322,6 +324,7 @@ $(HV_CONFIG_MK): | $(HV_CONFIG_DIR)
 	@{ \
 		echo "CONFIG_HV_RAM_START=$(CONFIG_HV_RAM_START)"; \
 		echo "CONFIG_ARM64_GICV5=$(CONFIG_ARM64_GICV5)"; \
+		echo "CONFIG_IRQSTAT_LATENCY=$(CONFIG_IRQSTAT_LATENCY)"; \
 	} > $@
 
 $(HV_CONFIG_H): Makefile $(ARM64_PLATFORM_CFG_STAMP) | $(HV_OBJDIR)/include
@@ -340,6 +343,11 @@ $(HV_CONFIG_H): Makefile $(ARM64_PLATFORM_CFG_STAMP) | $(HV_OBJDIR)/include
 		echo "#ifndef CONFIG_ARM64_GICV5"; \
 		echo "#define CONFIG_ARM64_GICV5 0"; \
 		echo "#endif"; \
+		if [ "$(CONFIG_IRQSTAT_LATENCY)" = "y" ]; then \
+			echo "#define CONFIG_IRQSTAT_LATENCY 1"; \
+		else \
+			echo "#define CONFIG_IRQSTAT_LATENCY 0"; \
+		fi; \
 		echo "#define CONFIG_BOARD $(PLATFORM)"; \
 		echo "#define CONFIG_SCENARIO $(PLATFORM)"; \
 		echo "#define CONFIG_GUEST_KERNEL_RAWIMAGE 1"; \

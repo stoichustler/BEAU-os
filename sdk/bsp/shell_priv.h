@@ -85,7 +85,7 @@ struct shell {
 
 #define SHELL_CMD_IRQ_STATS		"irqstat"
 #define SHELL_CMD_IRQ_STATS_PARAM	NULL
-#define SHELL_CMD_IRQ_STATS_HELP	"list active host interrupt names and per-pcpu counts"
+#define SHELL_CMD_IRQ_STATS_HELP	"list host IRQ counts and ARM64 guest vIRQ latency"
 
 #define SHELL_CMD_VM_CONSOLE		"vsh"
 #define SHELL_CMD_VM_CONSOLE_PARAM	"<vm id>"

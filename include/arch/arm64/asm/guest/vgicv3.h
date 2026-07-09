@@ -11,6 +11,10 @@
 #include <spinlock.h>
 #include <asm/irq.h>
 
+#ifndef CONFIG_IRQSTAT_LATENCY
+#define CONFIG_IRQSTAT_LATENCY		0
+#endif
+
 #define ARM64_VGIC_MAX_LRS		8U
 #define ARM64_VGIC_SGI_NUM		16U
 #define ARM64_VGIC_PPI_NUM		16U
@@ -27,6 +31,7 @@
 #define ARM64_VGIC_ITS_EVENT_NUM	32U
 #define ARM64_VGIC_ITS_COLLECTION_NUM	ARM64_VGIC_MAX_VCPUS
 #define ARM64_VGIC_ITS_BASER_NUM	8U
+#define ARM64_VGIC_IRQSTAT_MAX		256U
 
 #define ARM64_VGIC_MAINTENANCE_INTID	ARM64_GIC_PPI_VGIC_MAINTENANCE
 
@@ -40,6 +45,36 @@
 struct acrn_vm;
 struct acrn_vcpu;
 struct io_request;
+
+/*
+ * Latency accumulator exported by irqstat. Values are converted to
+ * microseconds at snapshot time so the hot vGIC path can keep raw ticks.
+ */
+struct arm64_vgic_irq_latency_stats {
+	uint64_t count;		/* Number of samples included in this range. */
+	uint64_t min_us;	/* Minimum observed latency in microseconds. */
+	uint64_t avg_us;	/* Average observed latency in microseconds. */
+	uint64_t max_us;	/* Maximum observed latency in microseconds. */
+};
+
+/*
+ * Guest-visible virtual IRQ lifecycle counters. irqstat consumes this sparse
+ * snapshot; one entry is created only after a VM/target-vCPU/INTID actually
+ * sees activity.
+ */
+struct arm64_vgic_irq_stats {
+	uint16_t vm_id;		/* VM that owns the virtual interrupt. */
+	uint16_t vcpu_id;	/* Target virtual CPU for this interrupt. */
+	uint32_t virq;		/* Guest-visible GIC INTID. */
+	bool level;		/* True for level-triggered source semantics. */
+	bool in_flight;		/* True while an assert is waiting for completion. */
+	uint64_t assert_count;	/* Source asserted or injected the vIRQ. */
+	uint64_t deassert_count;	/* Source lowered a level-triggered vIRQ. */
+	uint64_t lr_count;	/* vGIC published the vIRQ into an LR. */
+	uint64_t eoi_count;	/* Guest completion observed by sync/EOI/DIR. */
+	struct arm64_vgic_irq_latency_stats assert_to_lr;
+	struct arm64_vgic_irq_latency_stats assert_to_eoi;
+};
 
 /*
  * Per-vCPU hardware virtualization context. List registers are the hardware
@@ -182,5 +217,6 @@ void arm64_vgicv3_sync_current_timer_line(struct acrn_vcpu *vcpu, bool level);
 void arm64_vgicv3_maintenance_irq_handler(uint32_t irq, void *data);
 void arm64_vgicv3_virtual_timer_irq_handler(uint32_t irq, void *data);
 int32_t arm64_vgicv3_mmio_handler(struct io_request *io_req, void *handler_private_data);
+uint16_t arm64_vgicv3_get_irq_stats(struct arm64_vgic_irq_stats *stats, uint16_t max);
 
 #endif /* ARM64_GUEST_VGICV3_H */

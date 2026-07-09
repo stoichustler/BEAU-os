@@ -9,12 +9,80 @@
 #include <irq.h>
 #include <common/softirq.h>
 #include <per_cpu.h>
+#include <rtl.h>
+#if CONFIG_IRQSTAT_LATENCY
+#include <ticks.h>
+#endif
 
 static spinlock_t irq_alloc_spinlock = { .head = 0U, .tail = 0U, };
+
+#if CONFIG_IRQSTAT_LATENCY
+struct irq_latency_accum {
+	uint64_t count;
+	uint64_t min_ticks;
+	uint64_t max_ticks;
+	uint64_t sum_ticks;
+};
+#endif
 
 uint64_t irq_alloc_bitmap[IRQ_ALLOC_BITMAP_SIZE];
 struct irq_desc irq_desc_array[NR_IRQS];
 static uint64_t irq_rsvd_bitmap[IRQ_ALLOC_BITMAP_SIZE];
+#if CONFIG_IRQSTAT_LATENCY
+static struct irq_latency_accum irq_latency[NR_IRQS];
+
+static void irq_record_latency(uint32_t irq, uint64_t delta_ticks)
+{
+	struct irq_latency_accum *latency = &irq_latency[irq];
+
+	if (latency->count == 0UL) {
+		latency->min_ticks = delta_ticks;
+		latency->max_ticks = delta_ticks;
+	} else {
+		if (delta_ticks < latency->min_ticks) {
+			latency->min_ticks = delta_ticks;
+		}
+		if (delta_ticks > latency->max_ticks) {
+			latency->max_ticks = delta_ticks;
+		}
+	}
+	if (latency->sum_ticks <= (UINT64_MAX - delta_ticks)) {
+		latency->sum_ticks += delta_ticks;
+	} else {
+		latency->sum_ticks = UINT64_MAX;
+	}
+	if (latency->count != UINT64_MAX) {
+		latency->count++;
+	}
+}
+#endif
+
+void get_irq_latency_stats(uint32_t irq, struct irq_latency_stats *stats)
+{
+	if (stats == NULL) {
+		return;
+	}
+
+	(void)memset(stats, 0U, sizeof(*stats));
+#if CONFIG_IRQSTAT_LATENCY
+	if (irq < NR_IRQS) {
+		struct irq_desc *desc = &irq_desc_array[irq];
+		const struct irq_latency_accum *latency = &irq_latency[irq];
+		uint64_t flags;
+
+		spinlock_irqsave_obtain(&desc->lock, &flags);
+		stats->count = latency->count;
+		if (latency->count != 0UL) {
+			stats->min_us = ticks_to_us(latency->min_ticks);
+			stats->avg_us = ticks_to_us(latency->sum_ticks / latency->count);
+			stats->max_us = ticks_to_us(latency->max_ticks);
+		}
+		spinlock_irqrestore_release(&desc->lock, flags);
+	}
+#else
+	(void)irq;
+#endif
+}
 
 /*
  * alloc an free irq if req_irq is IRQ_INVALID, or else set assigned
@@ -192,20 +260,37 @@ static void do_irq_common(const uint32_t irq, bool handle_softirq)
 
 	if (irq < NR_IRQS) {
 		desc = &irq_desc_array[irq];
+		count_irq(irq);
 
 		/* XXX irq_alloc_bitmap is used lockless here */
 		if (bitmap_test((uint16_t)(irq & 0x3FU), irq_alloc_bitmap + (irq >> 6U))) {
-			uint64_t *count = &per_cpu(irq_count, get_pcpu_id())[irq];
+#if CONFIG_IRQSTAT_LATENCY
+			uint64_t start_ticks = cpu_ticks();
+			uint64_t latency_flags;
 
-			if (*count != UINT64_MAX) {
-				(*count)++;
-			}
 			handle_irq(desc);
+			spinlock_irqsave_obtain(&desc->lock, &latency_flags);
+			irq_record_latency(irq, cpu_ticks() - start_ticks);
+			spinlock_irqrestore_release(&desc->lock, latency_flags);
+#else
+			handle_irq(desc);
+#endif
 		}
 	}
 
 	if (handle_softirq) {
 		do_softirq();
+	}
+}
+
+void count_irq(const uint32_t irq)
+{
+	if (irq < NR_IRQS) {
+		uint64_t *count = &per_cpu(irq_count, get_pcpu_id())[irq];
+
+		if (*count != UINT64_MAX) {
+			(*count)++;
+		}
 	}
 }
 

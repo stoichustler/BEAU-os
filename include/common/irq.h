@@ -25,6 +25,10 @@
 #define IRQF_LEVEL	(1U << 1U)	/* 1: level trigger; 0: edge trigger */
 #define IRQF_PT		(1U << 2U)	/* 1: for passthrough dev */
 
+#ifndef CONFIG_IRQSTAT_LATENCY
+#define CONFIG_IRQSTAT_LATENCY	0
+#endif
+
 typedef void (*irq_action_t)(uint32_t irq, void *priv_data);
 
 /**
@@ -42,6 +46,13 @@ struct irq_desc {
 	uint32_t flags;		/**< flags for trigger mode/ptdev */
 
 	spinlock_t lock;
+};
+
+struct irq_latency_stats {
+	uint64_t count;		/**< Number of IRQ handler latency samples. */
+	uint64_t min_us;	/**< Minimum handler service time in microseconds. */
+	uint64_t avg_us;	/**< Average handler service time in microseconds. */
+	uint64_t max_us;	/**< Maximum handler service time in microseconds. */
 };
 
 extern uint64_t irq_alloc_bitmap[IRQ_ALLOC_BITMAP_SIZE];
@@ -117,6 +128,8 @@ void set_irq_trigger_mode(uint32_t irq, bool is_level_triggered);
  */
 void do_irq(const uint32_t irq);
 void do_irq_no_softirq(const uint32_t irq);
+void count_irq(const uint32_t irq);
+void get_irq_latency_stats(uint32_t irq, struct irq_latency_stats *stats);
 
 /**
  * @brief Initialize interrupt

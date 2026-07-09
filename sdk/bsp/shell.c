@@ -22,6 +22,9 @@
 #include <debug/symbol.h>
 #include <bits.h>
 #include <banner.h>
+#ifdef CONFIG_ARM64
+#include <asm/guest/vgicv3.h>
+#endif
 
 #define SHELL_PROMPT_STR	"console:\\> "
 #define SHELL_ASCII_BS		'\b'
@@ -135,6 +138,9 @@ static spinlock_t shell_tx_lock = {0U};
 static bool shell_started;
 static bool shell_prompt_enabled;
 static bool shell_input_active;
+#ifdef CONFIG_ARM64
+static struct arm64_vgic_irq_stats shell_irqstat_vgic_stats[ARM64_VGIC_IRQSTAT_MAX];
+#endif
 
 static void shell_thread_main(__unused struct thread_object *obj);
 
@@ -1659,6 +1665,7 @@ struct irqstat_total {
 struct irqstat_snapshot {
 	uint64_t count[MAX_PCPU_NUM];
 	struct irqstat_total total;
+	struct irq_latency_stats latency;
 	bool show;
 };
 
@@ -1687,7 +1694,30 @@ static void irqstat_take_snapshot(uint32_t irq, uint16_t pcpu_num,
 	}
 
 	snapshot->show = (snapshot->total.count != 0UL) || has_handler;
+#if CONFIG_IRQSTAT_LATENCY
+	get_irq_latency_stats(irq, &snapshot->latency);
+#endif
 }
+
+#if CONFIG_IRQSTAT_LATENCY
+static void shell_irqstat_format_latency(char *buf, size_t size,
+	const struct irq_latency_stats *latency)
+{
+	if ((latency == NULL) || (latency->count == 0UL)) {
+		snprintf(buf, size, "-");
+	} else {
+		uint64_t min_ms = latency->min_us / 1000UL;
+		uint64_t avg_ms = latency->avg_us / 1000UL;
+		uint64_t max_ms = latency->max_us / 1000UL;
+		uint64_t min_frac = latency->min_us % 1000UL;
+		uint64_t avg_frac = latency->avg_us % 1000UL;
+		uint64_t max_frac = latency->max_us % 1000UL;
+
+		snprintf(buf, size, "%lu.%03lums/%lu.%03lums/%lu.%03lums",
+			min_ms, min_frac, avg_ms, avg_frac, max_ms, max_frac);
+	}
+}
+#endif
 
 static void shell_print_irq_cpu_headers(uint16_t pcpu_num)
 {
@@ -1698,7 +1728,6 @@ static void shell_print_irq_cpu_headers(uint16_t pcpu_num)
 		snprintf(temp_str, sizeof(temp_str), "cpu%-6hu", pcpu_id);
 		shell_puts(temp_str);
 	}
-	shell_puts("\r\n");
 }
 
 static void shell_print_irq_cpu_counts(const struct irqstat_snapshot *snapshot,
@@ -1718,17 +1747,102 @@ static void shell_print_irq_cpu_counts(const struct irqstat_snapshot *snapshot,
 		}
 		shell_puts(token);
 	}
-	shell_puts("\r\n");
 }
+
+#if defined(CONFIG_ARM64) && CONFIG_IRQSTAT_LATENCY
+static void shell_irqstat_format_vgic_latency(char *buf, size_t size,
+	const struct arm64_vgic_irq_latency_stats *latency)
+{
+	if ((latency == NULL) || (latency->count == 0UL)) {
+		snprintf(buf, size, "-");
+	} else {
+		uint64_t min_ms = latency->min_us / 1000UL;
+		uint64_t avg_ms = latency->avg_us / 1000UL;
+		uint64_t max_ms = latency->max_us / 1000UL;
+		uint64_t min_frac = latency->min_us % 1000UL;
+		uint64_t avg_frac = latency->avg_us % 1000UL;
+		uint64_t max_frac = latency->max_us % 1000UL;
+
+		snprintf(buf, size, "%lu.%03lums/%lu.%03lums/%lu.%03lums",
+			min_ms, min_frac, avg_ms, avg_frac, max_ms, max_frac);
+	}
+}
+#endif
+
+#ifdef CONFIG_ARM64
+static void shell_print_guest_irqstat(void)
+{
+	uint16_t count;
+	uint16_t idx;
+
+	count = arm64_vgicv3_get_irq_stats(shell_irqstat_vgic_stats,
+		ARRAY_SIZE(shell_irqstat_vgic_stats));
+	shell_puts("\r\nguest virq:\r\n");
+	if (count == 0U) {
+		shell_puts("(no guest-visible virtual IRQ activity)\r\n");
+		return;
+	}
+
+#if CONFIG_IRQSTAT_LATENCY
+	shell_puts("vm   vcpu virq  type  live assert   deassert lr       eoi      assert-lr min/avg/max     assert-eoi min/avg/max\r\n");
+	shell_puts("──── ──── ───── ───── ──── ──────── ──────── ──────── ──────── ───────────────────────── ─────────────────────────\r\n");
+#else
+	shell_puts("vm   vcpu virq  type  live assert   deassert lr       eoi\r\n");
+	shell_puts("──── ──── ───── ───── ──── ──────── ──────── ──────── ────────\r\n");
+#endif
+	for (idx = 0U; idx < count; idx++) {
+		char temp_str[MAX_STR_SIZE];
+		const struct arm64_vgic_irq_stats *entry = &shell_irqstat_vgic_stats[idx];
+
+#if CONFIG_IRQSTAT_LATENCY
+		char assert_to_lr[40U];
+		char assert_to_eoi[40U];
+
+		shell_irqstat_format_vgic_latency(assert_to_lr, sizeof(assert_to_lr),
+			&entry->assert_to_lr);
+		shell_irqstat_format_vgic_latency(assert_to_eoi, sizeof(assert_to_eoi),
+			&entry->assert_to_eoi);
+		snprintf(temp_str, sizeof(temp_str),
+			"%-4hu %-4hu %-5u %-5s %-4s %-8lu %-8lu %-8lu %-8lu %-25s %-25s\r\n",
+			entry->vm_id,
+			entry->vcpu_id,
+			entry->virq,
+			entry->level ? "level" : "edge",
+			entry->in_flight ? "Y" : "N",
+			entry->assert_count,
+			entry->deassert_count,
+			entry->lr_count,
+			entry->eoi_count,
+			assert_to_lr,
+			assert_to_eoi);
+#else
+		snprintf(temp_str, sizeof(temp_str),
+			"%-4hu %-4hu %-5u %-5s %-4s %-8lu %-8lu %-8lu %-8lu\r\n",
+			entry->vm_id,
+			entry->vcpu_id,
+			entry->virq,
+			entry->level ? "level" : "edge",
+			entry->in_flight ? "Y" : "N",
+			entry->assert_count,
+			entry->deassert_count,
+			entry->lr_count,
+			entry->eoi_count);
+#endif
+		shell_puts(temp_str);
+	}
+}
+#endif
 
 /*
  * 2026-06-30, irqstat monitor:
  *
- * irqstat is host-side interrupt accounting. It prints IRQ lines that either
- * have a registered handler or have observed counts, then keeps the per-pCPU
- * columns raw so interrupt affinity and unexpected routing stay visible.
+ * irqstat prints two layers of interrupt accounting:
  *
- *   irq_desc/action + per_cpu(irq_count) -> active/name + cpuN counts
+ * - host IRQ handler entries from irq_desc/action + per_cpu(irq_count)
+ * - ARM64 guest-visible vIRQ lifecycle and raise-to-LR/EOI latency
+ *
+ * Keeping both views in one command makes it possible to distinguish a missing
+ * EL2 physical IRQ from a vGIC delivery/completion problem.
  */
 static int32_t shell_irqstat(int32_t argc, __unused char **argv)
 {
@@ -1748,15 +1862,25 @@ static int32_t shell_irqstat(int32_t argc, __unused char **argv)
 	shell_puts(temp_str);
 	shell_puts("irq   name             active ");
 	shell_print_irq_cpu_headers(pcpu_num);
+#if CONFIG_IRQSTAT_LATENCY
+	shell_puts(" handler-lat min/avg/max");
+#endif
+	shell_puts("\r\n");
 	shell_puts("───── ──────────────── ──────");
 	for (uint16_t pcpu_id = 0U; pcpu_id < pcpu_num; pcpu_id++) {
 		shell_puts(" ────────");
 	}
+#if CONFIG_IRQSTAT_LATENCY
+	shell_puts(" ─────────────────────────");
+#endif
 	shell_puts("\r\n");
 
 	for (irq = 0U; irq < NR_IRQS; irq++) {
 		struct irqstat_snapshot snapshot;
 		bool allocated;
+#if CONFIG_IRQSTAT_LATENCY
+		char latency[40U];
+#endif
 
 		irqstat_take_snapshot(irq, pcpu_num, &snapshot);
 		if (!snapshot.show) {
@@ -1764,18 +1888,31 @@ static int32_t shell_irqstat(int32_t argc, __unused char **argv)
 		}
 
 		allocated = bitmap_test((uint16_t)(irq & 0x3FU), irq_alloc_bitmap + (irq >> 6U));
+#if CONFIG_IRQSTAT_LATENCY
+		shell_irqstat_format_latency(latency, sizeof(latency), &snapshot.latency);
+#endif
 		snprintf(temp_str, MAX_STR_SIZE, "%-5u %-16s %-6s",
 			irq,
 			arch_irq_name(irq),
 			allocated ? "Y" : "N");
 		shell_puts(temp_str);
 		shell_print_irq_cpu_counts(&snapshot, pcpu_num);
+#if CONFIG_IRQSTAT_LATENCY
+		snprintf(temp_str, MAX_STR_SIZE, " %-25s\r\n", latency);
+#else
+		snprintf(temp_str, MAX_STR_SIZE, "\r\n");
+#endif
+		shell_puts(temp_str);
 		shown++;
 	}
 
 	if (shown == 0U) {
 		shell_puts("(no active irq handlers and no interrupt counts)\r\n");
 	}
+
+#ifdef CONFIG_ARM64
+	shell_print_guest_irqstat();
+#endif
 
 	return 0;
 }

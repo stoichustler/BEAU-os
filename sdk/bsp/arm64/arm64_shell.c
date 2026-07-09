@@ -1483,6 +1483,35 @@ static const char *shell_errno_to_str(int32_t ret)
 	return str;
 }
 
+static void shell_virtio_format_ms(char *buf, size_t size, uint64_t us)
+{
+	if ((buf != NULL) && (size != 0U)) {
+		snprintf(buf, size, "%04lu.%04lums", us / 1000UL,
+			((us % 1000UL) * 10UL));
+	}
+}
+
+static void shell_virtio_latency_range_ms(char *buf, size_t size,
+	const struct virtio_proxy_latency_stats *stats)
+{
+	char min[24];
+	char avg[24];
+	char max[24];
+
+	if ((buf == NULL) || (size == 0U)) {
+		return;
+	}
+
+	if ((stats == NULL) || (stats->count == 0UL)) {
+		(void)strncpy_s(buf, size, "-/-/-ms", size - 1U);
+	} else {
+		shell_virtio_format_ms(min, sizeof(min), stats->min_us);
+		shell_virtio_format_ms(avg, sizeof(avg), stats->avg_us);
+		shell_virtio_format_ms(max, sizeof(max), stats->max_us);
+		snprintf(buf, size, "%s/%s/%s", min, avg, max);
+	}
+}
+
 static bool shell_virtio_stats_active(const struct virtio_proxy_stats *stats)
 {
 	return (stats != NULL) && ((stats->status != 0U) ||
@@ -1501,6 +1530,10 @@ static void shell_virtiostat_print_summary_device(const struct virtio_proxy_stat
 {
 	uint16_t ready = 0U;
 	char backend[8];
+	char notify_poll[64];
+	char poll_reply[64];
+	char reply_irq[64];
+	char total[64];
 
 	for (uint16_t queue_id = 0U; queue_id < stats->queue_num; queue_id++) {
 		if (stats->queues[queue_id].ready) {
@@ -1512,6 +1545,13 @@ static void shell_virtiostat_print_summary_device(const struct virtio_proxy_stat
 	} else {
 		(void)strncpy_s(backend, sizeof(backend), "-", sizeof(backend) - 1U);
 	}
+	shell_virtio_latency_range_ms(notify_poll, sizeof(notify_poll),
+		&stats->latency_notify_poll);
+	shell_virtio_latency_range_ms(poll_reply, sizeof(poll_reply),
+		&stats->latency_poll_reply);
+	shell_virtio_latency_range_ms(reply_irq, sizeof(reply_irq),
+		&stats->latency_reply_irq);
+	shell_virtio_latency_range_ms(total, sizeof(total), &stats->latency_total);
 
 	shell_item_begin("%s vm%hu:%hu", shell_virtio_device_to_str(stats->device_id),
 		stats->vm_id, stats->index);
@@ -1528,6 +1568,13 @@ static void shell_virtiostat_print_summary_device(const struct virtio_proxy_stat
 		stats->hcall_reply_count, stats->hcall_busy_count,
 		stats->hcall_backpressure_count,
 		shell_errno_to_str(stats->last_hcall_ret), stats->last_hcall_ret);
+	shell_item_line("latency:min/avg/max");
+	shell_item_line("  notify-poll:%s", notify_poll);
+	shell_item_line("  poll-reply: %s", poll_reply);
+	shell_item_line("  reply-irq:  %s", reply_irq);
+	shell_item_line("  total:      %s", total);
+	shell_item_line("fault:timeout:%lu reset:%lu samples:%lu",
+		stats->timeout_count, stats->reset_count, stats->latency_total.count);
 	shell_item_line("last:poll:q:%hu reply:q:%hu len:%u",
 		stats->last_poll_queue_id, stats->last_reply_queue_id, stats->last_reply_len);
 	shell_item_end();

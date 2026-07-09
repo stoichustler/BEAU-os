@@ -15,6 +15,7 @@
 #include <rtl.h>
 #include <bsp/io_req.h>
 #include <spinlock.h>
+#include <ticks.h>
 #include "virtio_proxy.h"
 
 static struct virtio_proxy_dev virtio_proxy_devs[CONFIG_MAX_VM_NUM][ARM64_VIRTIO_PROXY_MAX];
@@ -141,6 +142,88 @@ static uint16_t virtio_proxy_pending_active(const struct virtio_proxy_dev *dev)
 	return active;
 }
 
+static void virtio_proxy_latency_accum(struct virtio_proxy_latency_accum *stats,
+	uint64_t delta)
+{
+	if (stats == NULL) {
+		return;
+	}
+
+	if ((stats->count == 0UL) || (delta < stats->min)) {
+		stats->min = delta;
+	}
+	if (delta > stats->max) {
+		stats->max = delta;
+	}
+	if (stats->sum > (UINT64_MAX - delta)) {
+		stats->sum = UINT64_MAX;
+	} else {
+		stats->sum += delta;
+	}
+	stats->count++;
+}
+
+static void virtio_proxy_latency_export(
+	const struct virtio_proxy_latency_accum *src,
+	struct virtio_proxy_latency_stats *dst)
+{
+	if ((src == NULL) || (dst == NULL)) {
+		return;
+	}
+
+	dst->count = src->count;
+	if (src->count != 0UL) {
+		dst->min_us = ticks_to_us(src->min);
+		dst->avg_us = ticks_to_us(src->sum / src->count);
+		dst->max_us = ticks_to_us(src->max);
+	}
+}
+
+static void virtio_proxy_latency_complete_locked(struct virtio_proxy_dev *dev,
+	const struct virtio_proxy_pending *pending)
+{
+	if ((dev == NULL) || (pending == NULL) ||
+		(pending->notify_tick == 0UL) || (pending->poll_tick == 0UL) ||
+		(pending->reply_tick == 0UL) || (pending->irq_tick == 0UL)) {
+		return;
+	}
+
+	virtio_proxy_latency_accum(&dev->latency_notify_poll,
+		pending->poll_tick - pending->notify_tick);
+	virtio_proxy_latency_accum(&dev->latency_poll_reply,
+		pending->reply_tick - pending->poll_tick);
+	virtio_proxy_latency_accum(&dev->latency_reply_irq,
+		pending->irq_tick - pending->reply_tick);
+	virtio_proxy_latency_accum(&dev->latency_total,
+		pending->irq_tick - pending->notify_tick);
+}
+
+static void virtio_proxy_check_timeout_locked(struct virtio_proxy_dev *dev,
+	struct virtio_proxy_pending *pending, uint64_t now)
+{
+	uint64_t timeout_ticks = us_to_ticks(VIRTIO_PROXY_TIMEOUT_US);
+
+	if ((dev != NULL) && (pending != NULL) && pending->valid &&
+		pending->sent && !pending->done && !pending->timeout_reported &&
+		(pending->poll_tick != 0UL) &&
+		((now - pending->poll_tick) > timeout_ticks)) {
+		dev->timeout_count++;
+		pending->timeout_reported = true;
+	}
+}
+
+static void virtio_proxy_check_timeouts_locked(struct virtio_proxy_dev *dev,
+	uint64_t now)
+{
+	if (dev == NULL) {
+		return;
+	}
+
+	for (uint16_t i = 0U; i < dev->pending_limit; i++) {
+		virtio_proxy_check_timeout_locked(dev, &dev->pending[i], now);
+	}
+}
+
 static bool virtio_proxy_frontend_ready(const struct virtio_proxy_dev *dev)
 {
 	bool ready = false;
@@ -264,9 +347,11 @@ static void virtio_proxy_reset(struct virtio_mmio_dev *mmio)
 		 * in-flight descriptor references, and be ready for the frontend to
 		 * negotiate again from status 0.
 		 */
-		dev->notify_count = 0UL;
 		dev->no_backend_logged = false;
 		spinlock_obtain(&dev->lock);
+		dev->notify_count = 0UL;
+		dev->reset_count++;
+		(void)memset(dev->last_notify_tick, 0U, sizeof(dev->last_notify_tick));
 		(void)memset(dev->pending, 0U, sizeof(dev->pending));
 		dev->last_hcall_ret = 0;
 		dev->last_poll_status = 0U;
@@ -359,7 +444,10 @@ static void virtio_proxy_notify_queue(struct virtio_mmio_dev *mmio,
 		return;
 	}
 
+	spinlock_obtain(&dev->lock);
 	dev->notify_count++;
+	dev->last_notify_tick[queue_id] = cpu_ticks();
+	spinlock_release(&dev->lock);
 	if ((dev->backend_ops != NULL) && (dev->backend_ops->notify_queue != NULL)) {
 		/*
 		 * Notify is the main bridge handoff:
@@ -716,6 +804,16 @@ bool virtio_proxy_get_stats(uint16_t vm_id, uint16_t index,
 		stats->hcall_reply_ok_count = dev->hcall_reply_ok_count;
 		stats->hcall_busy_count = dev->hcall_busy_count;
 		stats->hcall_backpressure_count = dev->hcall_backpressure_count;
+		stats->timeout_count = dev->timeout_count;
+		stats->reset_count = dev->reset_count;
+		virtio_proxy_latency_export(&dev->latency_notify_poll,
+			&stats->latency_notify_poll);
+		virtio_proxy_latency_export(&dev->latency_poll_reply,
+			&stats->latency_poll_reply);
+		virtio_proxy_latency_export(&dev->latency_reply_irq,
+			&stats->latency_reply_irq);
+		virtio_proxy_latency_export(&dev->latency_total,
+			&stats->latency_total);
 		stats->last_hcall_op = dev->last_hcall_op;
 		stats->last_hcall_ret = dev->last_hcall_ret;
 		stats->last_poll_queue_id = dev->last_poll_queue_id;
@@ -895,6 +993,7 @@ static int32_t virtio_proxy_hcall_poll(struct acrn_vcpu *vcpu,
 		ioc->frontend_vmid, ioc->device_id);
 	struct virtio_proxy_pending *pending = NULL;
 	struct virtio_mmio_queue *vq;
+	uint64_t now;
 	uint16_t head;
 	int32_t ret = -ENODEV;
 
@@ -903,6 +1002,8 @@ static int32_t virtio_proxy_hcall_poll(struct acrn_vcpu *vcpu,
 	}
 
 	spinlock_obtain(&dev->lock);
+	now = cpu_ticks();
+	virtio_proxy_check_timeouts_locked(dev, now);
 	dev->hcall_poll_count++;
 	dev->last_poll_queue_id = ioc->queue_id;
 	vq = virtio_mmio_get_queue(&dev->mmio, ioc->queue_id);
@@ -920,6 +1021,8 @@ static int32_t virtio_proxy_hcall_poll(struct acrn_vcpu *vcpu,
 				ret = -EFAULT;
 				goto out;
 			}
+			pending->notify_tick = dev->last_notify_tick[ioc->queue_id] != 0UL ?
+				dev->last_notify_tick[ioc->queue_id] : now;
 		}
 	}
 	if (!pending->valid || pending->sent) {
@@ -947,6 +1050,7 @@ static int32_t virtio_proxy_hcall_poll(struct acrn_vcpu *vcpu,
 			ioc->desc[i].len = pending->out[i].len;
 			ioc->desc[i].flags = VIRTIO_RING_F_WRITE;
 		}
+		pending->poll_tick = now;
 		pending->sent = true;
 		dev->hcall_poll_ok_count++;
 		dev->last_poll_queue_id = pending->queue_id;
@@ -966,6 +1070,7 @@ static int32_t virtio_proxy_hcall_reply(struct acrn_vcpu *vcpu,
 	struct virtio_proxy_pending *pending;
 	struct virtio_mmio_queue *vq;
 	uint8_t buf[128];
+	uint64_t now;
 	uint32_t copied = 0U;
 	uint32_t remaining;
 	uint32_t chunk;
@@ -976,6 +1081,7 @@ static int32_t virtio_proxy_hcall_reply(struct acrn_vcpu *vcpu,
 	}
 
 	spinlock_obtain(&dev->lock);
+	now = cpu_ticks();
 	dev->hcall_reply_count++;
 	dev->last_reply_queue_id = ioc->queue_id;
 	dev->last_reply_head = ioc->head;
@@ -986,6 +1092,7 @@ static int32_t virtio_proxy_hcall_reply(struct acrn_vcpu *vcpu,
 		ret = -EINVAL;
 		goto out;
 	}
+	pending->reply_tick = now;
 	remaining = ioc->out_len;
 	for (uint16_t i = 0U; (i < pending->out_count) && (remaining > 0U); i++) {
 		uint32_t desc_off = 0U;
@@ -1020,6 +1127,8 @@ static int32_t virtio_proxy_hcall_reply(struct acrn_vcpu *vcpu,
 		goto out;
 	}
 	virtio_mmio_raise_used_irq(&dev->mmio);
+	pending->irq_tick = cpu_ticks();
+	virtio_proxy_latency_complete_locked(dev, pending);
 	(void)memset(pending, 0U, sizeof(*pending));
 	pending->done = true;
 	dev->hcall_reply_ok_count++;

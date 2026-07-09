@@ -230,6 +230,36 @@
 
 static uint32_t vgic_lr_count;
 static bool vgic_global_initialized;
+static spinlock_t vgic_irqstat_lock = { .head = 0U, .tail = 0U };
+
+#if CONFIG_IRQSTAT_LATENCY
+struct vgic_irqstat_latency_accum {
+	uint64_t count;
+	uint64_t min_ticks;
+	uint64_t max_ticks;
+	uint64_t sum_ticks;
+};
+#endif
+
+struct vgic_irqstat_entry {
+	bool valid;
+	uint16_t vm_id;
+	uint16_t vcpu_id;
+	uint32_t virq;
+	bool level;
+	bool in_flight;
+	uint64_t assert_count;
+	uint64_t deassert_count;
+	uint64_t lr_count;
+	uint64_t eoi_count;
+#if CONFIG_IRQSTAT_LATENCY
+	uint64_t last_assert_tick;
+	struct vgic_irqstat_latency_accum assert_to_lr;
+	struct vgic_irqstat_latency_accum assert_to_eoi;
+#endif
+};
+
+static struct vgic_irqstat_entry vgic_irqstats[ARM64_VGIC_IRQSTAT_MAX];
 
 static void vgicv3_sync_vcpu(struct acrn_vcpu *vcpu, bool is_current);
 static void vgicv3_flush_vcpu(struct acrn_vcpu *vcpu, bool is_current);
@@ -237,6 +267,244 @@ static int32_t vgic_inject_locked(struct arm64_vgicv3 *vgic,
 	struct acrn_vcpu *target_vcpu, uint32_t virq, bool level);
 static uint32_t vgic_lpi_index(uint32_t lpi);
 static bool vgic_irq_is_lpi(uint32_t virq);
+
+#if CONFIG_IRQSTAT_LATENCY
+static void vgic_irqstat_accum(struct vgic_irqstat_latency_accum *accum,
+	uint64_t delta_ticks)
+{
+	if (accum->count == 0UL) {
+		accum->min_ticks = delta_ticks;
+		accum->max_ticks = delta_ticks;
+	} else {
+		if (delta_ticks < accum->min_ticks) {
+			accum->min_ticks = delta_ticks;
+		}
+		if (delta_ticks > accum->max_ticks) {
+			accum->max_ticks = delta_ticks;
+		}
+	}
+	if (accum->sum_ticks <= (UINT64_MAX - delta_ticks)) {
+		accum->sum_ticks += delta_ticks;
+	} else {
+		accum->sum_ticks = UINT64_MAX;
+	}
+	if (accum->count != UINT64_MAX) {
+		accum->count++;
+	}
+}
+
+static void vgic_irqstat_export_latency(
+	const struct vgic_irqstat_latency_accum *src,
+	struct arm64_vgic_irq_latency_stats *dst)
+{
+	dst->count = src->count;
+	if (src->count == 0UL) {
+		dst->min_us = 0UL;
+		dst->avg_us = 0UL;
+		dst->max_us = 0UL;
+	} else {
+		dst->min_us = ticks_to_us(src->min_ticks);
+		dst->avg_us = ticks_to_us(src->sum_ticks / src->count);
+		dst->max_us = ticks_to_us(src->max_ticks);
+	}
+}
+#endif
+
+static struct vgic_irqstat_entry *vgic_irqstat_find_locked(uint16_t vm_id,
+	uint16_t vcpu_id, uint32_t virq, bool create)
+{
+	struct vgic_irqstat_entry *free_entry = NULL;
+	uint16_t idx;
+
+	for (idx = 0U; idx < ARM64_VGIC_IRQSTAT_MAX; idx++) {
+		struct vgic_irqstat_entry *entry = &vgic_irqstats[idx];
+
+		if (entry->valid) {
+			if ((entry->vm_id == vm_id) && (entry->vcpu_id == vcpu_id) &&
+				(entry->virq == virq)) {
+				return entry;
+			}
+		} else if (free_entry == NULL) {
+			free_entry = entry;
+		}
+	}
+
+	if (create && (free_entry != NULL)) {
+		(void)memset(free_entry, 0U, sizeof(*free_entry));
+		free_entry->valid = true;
+		free_entry->vm_id = vm_id;
+		free_entry->vcpu_id = vcpu_id;
+		free_entry->virq = virq;
+		return free_entry;
+	}
+
+	return NULL;
+}
+
+static void vgic_irqstat_record_assert(const struct acrn_vcpu *vcpu,
+	uint32_t virq, bool level)
+{
+	struct vgic_irqstat_entry *entry;
+	uint64_t flags;
+
+	if ((vcpu != NULL) && (vcpu->vm != NULL)) {
+		spinlock_irqsave_obtain(&vgic_irqstat_lock, &flags);
+		entry = vgic_irqstat_find_locked(vcpu->vm->vm_id, vcpu->vcpu_id,
+			virq, true);
+
+		if (entry != NULL) {
+			entry->level = level;
+			entry->assert_count++;
+#if CONFIG_IRQSTAT_LATENCY
+			if (!entry->in_flight) {
+				entry->last_assert_tick = cpu_ticks();
+			}
+#endif
+			entry->in_flight = true;
+		}
+		spinlock_irqrestore_release(&vgic_irqstat_lock, flags);
+	}
+}
+
+static void vgic_irqstat_record_deassert(const struct acrn_vcpu *vcpu,
+	uint32_t virq)
+{
+	struct vgic_irqstat_entry *entry;
+	uint64_t flags;
+
+	if ((vcpu != NULL) && (vcpu->vm != NULL)) {
+		spinlock_irqsave_obtain(&vgic_irqstat_lock, &flags);
+		entry = vgic_irqstat_find_locked(vcpu->vm->vm_id, vcpu->vcpu_id,
+			virq, true);
+
+		if (entry != NULL) {
+			entry->deassert_count++;
+		}
+		spinlock_irqrestore_release(&vgic_irqstat_lock, flags);
+	}
+}
+
+static void vgic_irqstat_record_lr(const struct acrn_vcpu *vcpu,
+	const struct arm64_vgic_irq *desc, bool new_lr)
+{
+	struct vgic_irqstat_entry *entry;
+	uint64_t flags;
+
+#if !CONFIG_IRQSTAT_LATENCY
+	(void)new_lr;
+#endif
+	if ((vcpu != NULL) && (vcpu->vm != NULL) && (desc != NULL)) {
+#if CONFIG_IRQSTAT_LATENCY
+		uint64_t now = cpu_ticks();
+#endif
+
+		spinlock_irqsave_obtain(&vgic_irqstat_lock, &flags);
+		entry = vgic_irqstat_find_locked(vcpu->vm->vm_id, vcpu->vcpu_id,
+			desc->virq, true);
+
+		if (entry != NULL) {
+			entry->level = desc->level;
+			entry->lr_count++;
+#if CONFIG_IRQSTAT_LATENCY
+			if (new_lr && entry->in_flight && (entry->last_assert_tick != 0UL) &&
+				(now >= entry->last_assert_tick)) {
+				vgic_irqstat_accum(&entry->assert_to_lr,
+					now - entry->last_assert_tick);
+			}
+#endif
+		}
+		spinlock_irqrestore_release(&vgic_irqstat_lock, flags);
+	}
+}
+
+static void vgic_irqstat_record_eoi(const struct acrn_vcpu *vcpu,
+	uint32_t virq)
+{
+	struct vgic_irqstat_entry *entry;
+	uint64_t flags;
+
+	if ((vcpu != NULL) && (vcpu->vm != NULL)) {
+#if CONFIG_IRQSTAT_LATENCY
+		uint64_t now = cpu_ticks();
+#endif
+
+		spinlock_irqsave_obtain(&vgic_irqstat_lock, &flags);
+		entry = vgic_irqstat_find_locked(vcpu->vm->vm_id, vcpu->vcpu_id,
+			virq, true);
+
+		if (entry != NULL) {
+			entry->eoi_count++;
+#if CONFIG_IRQSTAT_LATENCY
+			if (entry->in_flight && (entry->last_assert_tick != 0UL) &&
+				(now >= entry->last_assert_tick)) {
+				vgic_irqstat_accum(&entry->assert_to_eoi,
+					now - entry->last_assert_tick);
+			}
+#endif
+			entry->in_flight = false;
+		}
+		spinlock_irqrestore_release(&vgic_irqstat_lock, flags);
+	}
+}
+
+uint16_t arm64_vgicv3_get_irq_stats(struct arm64_vgic_irq_stats *stats, uint16_t max)
+{
+	uint64_t flags;
+	uint16_t copied = 0U;
+	uint16_t idx;
+
+	if ((stats == NULL) || (max == 0U)) {
+		return 0U;
+	}
+
+	spinlock_irqsave_obtain(&vgic_irqstat_lock, &flags);
+	for (idx = 0U; (idx < ARM64_VGIC_IRQSTAT_MAX) && (copied < max); idx++) {
+		const struct vgic_irqstat_entry *src = &vgic_irqstats[idx];
+		struct arm64_vgic_irq_stats *dst = &stats[copied];
+
+		if (!src->valid) {
+			continue;
+		}
+
+		(void)memset(dst, 0U, sizeof(*dst));
+		dst->vm_id = src->vm_id;
+		dst->vcpu_id = src->vcpu_id;
+		dst->virq = src->virq;
+		dst->level = src->level;
+		dst->in_flight = src->in_flight;
+		dst->assert_count = src->assert_count;
+		dst->deassert_count = src->deassert_count;
+		dst->lr_count = src->lr_count;
+		dst->eoi_count = src->eoi_count;
+#if CONFIG_IRQSTAT_LATENCY
+		vgic_irqstat_export_latency(&src->assert_to_lr, &dst->assert_to_lr);
+		vgic_irqstat_export_latency(&src->assert_to_eoi, &dst->assert_to_eoi);
+#endif
+		copied++;
+	}
+	spinlock_irqrestore_release(&vgic_irqstat_lock, flags);
+
+	return copied;
+}
+
+static void vgic_irqstat_reset_vm(uint16_t vm_id)
+{
+	uint64_t flags;
+	uint16_t idx;
+
+	spinlock_irqsave_obtain(&vgic_irqstat_lock, &flags);
+	for (idx = 0U; idx < ARM64_VGIC_IRQSTAT_MAX; idx++) {
+		struct vgic_irqstat_entry *entry = &vgic_irqstats[idx];
+
+		if (entry->valid && (entry->vm_id == vm_id)) {
+			entry->in_flight = false;
+#if CONFIG_IRQSTAT_LATENCY
+			entry->last_assert_tick = 0UL;
+#endif
+		}
+	}
+	spinlock_irqrestore_release(&vgic_irqstat_lock, flags);
+}
 
 static uint32_t min_u32(uint32_t a, uint32_t b)
 {
@@ -518,6 +786,7 @@ static void vgic_update_irq_lr(struct acrn_vcpu *vcpu, const struct arm64_vgic_i
 		 */
 		if (lr_pending || lr_active) {
 			vcpu->arch.vgic.lr[lr_idx] = make_lr_state(desc, lr_pending, lr_active);
+			vgic_irqstat_record_lr(vcpu, desc, false);
 		} else {
 			remove_lr(vcpu, (uint32_t)lr_idx);
 		}
@@ -672,6 +941,7 @@ static void vgicv3_requeue_lr(struct acrn_vcpu *vcpu, const struct arm64_vgic_ir
 	lr_idx = ctx->used_lrs;
 	ctx->lr[lr_idx] = make_lr(desc);
 	ctx->used_lrs++;
+	vgic_irqstat_record_lr(vcpu, desc, true);
 	if (loaded) {
 		write_ich_lr_el2(lr_idx, ctx->lr[lr_idx]);
 		write_ich_hcr_el2(vgicv3_control_hcr(ctx->hcr));
@@ -849,6 +1119,7 @@ static void vgicv3_complete_eoi_lrs(struct acrn_vcpu *vcpu, uint64_t eoi_lrs,
 
 			vgic_set_pending(&vcpu->vm->arch_vm.vgic, vcpu->vcpu_id, desc, keep_pending);
 			desc->active = false;
+			vgic_irqstat_record_eoi(vcpu, virq);
 			if (vgic_is_vtimer_irq(vcpu, virq)) {
 				arm64_vtimer_set_host_mask(vcpu, keep_pending);
 			}
@@ -893,6 +1164,7 @@ static void vgicv3_deactivate_irq_locked(struct acrn_vcpu *vcpu, uint32_t virq)
 	}
 	desc->active = false;
 	vgic_set_pending(&vcpu->vm->arch_vm.vgic, vcpu->vcpu_id, desc, keep_pending);
+	vgic_irqstat_record_eoi(vcpu, virq);
 	if (vgic_is_vtimer_irq(vcpu, virq)) {
 		arm64_vtimer_set_host_mask(vcpu, keep_pending);
 	}
@@ -951,6 +1223,7 @@ void arm64_vgicv3_init_vm(struct acrn_vm *vm, uint64_t cpu_affinity)
 	 * the same compact namespace even when the VM runs on sparse pCPU IDs.
 	 */
 	arm64_vgicv3_global_init();
+	vgic_irqstat_reset_vm(vm->vm_id);
 
 	(void)memset(vgic, 0U, sizeof(*vgic));
 	spinlock_init(&vgic->lock);
@@ -1268,6 +1541,7 @@ static bool vgicv3_complete_timer_lr(struct acrn_vcpu *vcpu,
 	desc->active = false;
 	vgic_set_pending(&vcpu->vm->arch_vm.vgic, vcpu->vcpu_id, desc, line_asserted);
 	remove_lr(vcpu, lr_idx);
+	vgic_irqstat_record_eoi(vcpu, desc->virq);
 	if (removed != NULL) {
 		*removed = true;
 	}
@@ -1305,6 +1579,11 @@ static void vgicv3_sync_timer_line_locked(struct acrn_vcpu *vcpu, bool is_curren
 	 * future deadline.
 	 */
 	desc->level = true;
+	if (line_asserted && !desc->pending) {
+		vgic_irqstat_record_assert(vcpu, virq, true);
+	} else if (!line_asserted && desc->pending) {
+		vgic_irqstat_record_deassert(vcpu, virq);
+	}
 	vgic_set_pending(vgic, vcpu->vcpu_id, desc, line_asserted);
 	lr_idx = find_lr_for_virq(vcpu, virq);
 	if (lr_idx >= 0) {
@@ -1892,6 +2171,7 @@ static void vgicv3_flush_vcpu(struct acrn_vcpu *vcpu, bool is_current)
 				 * follows the same pending-as-level-line rule here.
 				 */
 				ctx->lr[lr_idx] = make_lr(desc);
+				vgic_irqstat_record_lr(vcpu, desc, false);
 				if (!desc->level) {
 					vgic_set_pending(vgic, vcpu->vcpu_id, desc, false);
 				}
@@ -1905,6 +2185,7 @@ static void vgicv3_flush_vcpu(struct acrn_vcpu *vcpu, bool is_current)
 
 			ctx->lr[ctx->used_lrs] = make_lr(desc);
 			ctx->used_lrs++;
+			vgic_irqstat_record_lr(vcpu, desc, true);
 			if (!desc->level) {
 				vgic_set_pending(vgic, vcpu->vcpu_id, desc, false);
 			}
@@ -1936,6 +2217,7 @@ static void vgicv3_flush_vcpu(struct acrn_vcpu *vcpu, bool is_current)
 			lr_idx = find_lr_for_virq(vcpu, lpi);
 			if (lr_idx >= 0) {
 				ctx->lr[lr_idx] = make_lr(desc);
+				vgic_irqstat_record_lr(vcpu, desc, false);
 				vgic_set_pending(vgic, vcpu->vcpu_id, desc, false);
 				continue;
 			}
@@ -1946,6 +2228,7 @@ static void vgicv3_flush_vcpu(struct acrn_vcpu *vcpu, bool is_current)
 
 			ctx->lr[ctx->used_lrs] = make_lr(desc);
 			ctx->used_lrs++;
+			vgic_irqstat_record_lr(vcpu, desc, true);
 			vgic_set_pending(vgic, vcpu->vcpu_id, desc, false);
 		}
 
@@ -2033,6 +2316,7 @@ static int32_t vgic_inject_locked(struct arm64_vgicv3 *vgic, struct acrn_vcpu *t
 		vgicv3_sync_vcpu(target_vcpu, false);
 		desc->level = level;
 		vgic_set_pending(vgic, target_vcpu->vcpu_id, desc, true);
+		vgic_irqstat_record_assert(target_vcpu, virq, level);
 		if (vgicv3_vcpu_is_loaded(target_vcpu)) {
 			vgicv3_flush_vcpu(target_vcpu, false);
 		}
@@ -2161,6 +2445,7 @@ int32_t arm64_vgicv3_deassert_irq(struct acrn_vcpu *vcpu, uint32_t virq)
 		 */
 		vgic_set_pending(vgic, vcpu->vcpu_id, desc, false);
 		vgic_update_irq_lr(vcpu, desc);
+		vgic_irqstat_record_deassert(vcpu, virq);
 		if (vgicv3_vcpu_is_loaded(vcpu)) {
 			vgicv3_flush_vcpu(vcpu, false);
 		}
@@ -2685,6 +2970,8 @@ static void vgic_write_irq_bits(struct acrn_vcpu *vcpu, uint32_t irq_base, uint3
 				vcpu->vcpu_id;
 			desc = &vgic->irq[target_vcpu_id][virq];
 			vgic_set_pending(vgic, target_vcpu_id, desc, true);
+			vgic_irqstat_record_assert(vcpu_from_vid(vcpu->vm, target_vcpu_id),
+				virq, desc->level);
 			vgic_update_irq_row_lr(vcpu->vm, target_vcpu_id, desc);
 			break;
 		case VGICD_ICPENDR:
@@ -2693,6 +2980,8 @@ static void vgic_write_irq_bits(struct acrn_vcpu *vcpu, uint32_t irq_base, uint3
 				vcpu->vcpu_id;
 			desc = &vgic->irq[target_vcpu_id][virq];
 			vgic_set_pending(vgic, target_vcpu_id, desc, false);
+			vgic_irqstat_record_deassert(vcpu_from_vid(vcpu->vm, target_vcpu_id),
+				virq);
 			vgic_update_irq_row_lr(vcpu->vm, target_vcpu_id, desc);
 			break;
 		case VGICD_ISACTIVER:

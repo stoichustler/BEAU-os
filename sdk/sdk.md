@@ -471,15 +471,21 @@ init_thread_data(&vcpu->thread_obj, &params);
   This is a core scheduling behavior change and should be reviewed before it is
   kept. For a persistent per-vCPU policy, add an explicit per-vCPU scheduler
   configuration instead of hiding one-off overrides in the common vCPU path.
-- `irqstat` prints host IRQ handler entry counts, not guest-visible interrupt
-  injection or EOI counts. ARM64 maps ACRN IRQ numbers back to GIC SGI/PPI/SPI
+- `irqstat` prints host IRQ handler entry counts and, on ARM64, guest-visible
+  vIRQ lifecycle statistics. ARM64 maps ACRN IRQ numbers back to GIC SGI/PPI/SPI
   sources and names the EL2-owned SMP-call, CNTHP scheduler-timer PPI, CNTV
-  guest-timer host PPI, and vGIC-maintenance interrupts. It suppresses IRQs
+  guest-timer host PPI, and vGIC-maintenance interrupts. It suppresses host IRQs
   that have neither an active handler nor any recorded count, so unused INTIDs
-  do not fill the table. The compact table is `irq name active cpu0 ... cpuN`;
+  do not fill the host table. The host table is `irq name active cpu0 ... cpuN`;
   `active` shows whether the IRQ is allocated in the common IRQ table. Per-pCPU
   counters saturate at `UINT64_MAX` instead of wrapping; saturated fields print
-  as `sat`.
+  as `sat`. When `CONFIG_IRQSTAT_LATENCY=y`, the host `handler-lat` column is
+  EL2 handler service time, not the physical device line-to-GIC assertion
+  latency. Static QEMU builds enable this option by default; other static
+  platforms leave it disabled unless explicitly set. The ARM64 `guest virq`
+  table is sparse by active `vm/vcpu/virq` and always reports `assert`,
+  `deassert`, `lr`, `eoi`, and `in_flight`; latency-enabled builds additionally
+  report `assert-lr` and `assert-eoi` min/avg/max latency.
 - `dumpstat [vm id]` prints all created vCPUs in the VM, including the saved
   ARM64 register image, scheduler state, current-thread status, recent vCPU
   exit reason, recent virtual IRQ injection, recent guest timer programming or

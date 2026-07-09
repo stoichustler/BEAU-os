@@ -111,6 +111,7 @@
 #define VIRTIO_PROXY_PENDING_LOW	1U
 #define VIRTIO_PROXY_PENDING_HIGH	4U
 #define VIRTIO_PROXY_PENDING_MAX	VIRTIO_PROXY_PENDING_HIGH
+#define VIRTIO_PROXY_TIMEOUT_US		100000U
 
 /* Minimal virtio-blk feature/config values used by the QEMU validation path. */
 #define VIRTIO_BLK_F_SIZE_MAX		1U
@@ -177,15 +178,35 @@ struct virtio_proxy_pending_out {
 };
 
 /*
+ * struct virtio_proxy_latency_accum - tick-based min/avg/max accumulator.
+ *
+ * @count: Number of completed latency samples.
+ * @min: Minimum observed latency in ticks, zero until the first sample.
+ * @max: Maximum observed latency in ticks.
+ * @sum: Sum of observed latencies in ticks for average calculation.
+ */
+struct virtio_proxy_latency_accum {
+	uint64_t count;
+	uint64_t min;
+	uint64_t max;
+	uint64_t sum;
+};
+
+/*
  * struct virtio_proxy_pending - descriptor chain held for a backend poll.
  *
  * @valid: Slot contains a complete frontend descriptor chain.
  * @sent: Chain has been delivered to a backend through HVC poll.
  * @done: Backend replied and the chain has been completed to the frontend.
+ * @timeout_reported: Timeout for the current backend-owned request was counted.
  * @queue_id: Virtqueue index that produced this request.
  * @head: Head descriptor id from the frontend avail ring.
  * @in_len: Bytes copied from frontend-readable descriptors into @in.
  * @out_len: Total writable capacity across @out descriptors.
+ * @notify_tick: QueueNotify timestamp associated with this request.
+ * @poll_tick: Successful backend-poll timestamp.
+ * @reply_tick: Backend-reply entry timestamp.
+ * @irq_tick: Frontend used-ring IRQ timestamp.
  * @in: Contiguous copy of frontend-readable descriptor data.
  * @out: Frontend-writable descriptor slices preserved for reply copy-back.
  * @out_count: Number of valid entries in @out.
@@ -194,10 +215,15 @@ struct virtio_proxy_pending {
 	bool valid;
 	bool sent;
 	bool done;
+	bool timeout_reported;
 	uint16_t queue_id;
 	uint16_t head;
 	uint16_t in_len;
 	uint32_t out_len;
+	uint64_t notify_tick;
+	uint64_t poll_tick;
+	uint64_t reply_tick;
+	uint64_t irq_tick;
 	uint8_t in[ACRN_VIRTIO_PROXY_DATA_MAX];
 	struct virtio_proxy_pending_out out[ACRN_VIRTIO_PROXY_DESC_MAX];
 	uint16_t out_count;
@@ -232,6 +258,13 @@ struct virtio_proxy_pending {
  * @hcall_reply_ok_count: Replies that completed a frontend descriptor chain.
  * @hcall_busy_count: Polls that found no available frontend request.
  * @hcall_backpressure_count: Polls rejected because pending slots were full.
+ * @timeout_count: Number of in-flight requests that exceeded timeout budget.
+ * @reset_count: Number of frontend transport resets.
+ * @last_notify_tick: Last QueueNotify timestamp per virtqueue.
+ * @latency_notify_poll: QueueNotify to successful backend poll latency.
+ * @latency_poll_reply: Successful backend poll to backend reply latency.
+ * @latency_reply_irq: Backend reply to frontend IRQ latency.
+ * @latency_total: QueueNotify to frontend IRQ latency.
  * @last_hcall_op: Last backend HVC operation id.
  * @last_hcall_ret: Last backend HVC return value.
  * @last_poll_queue_id: Queue id from the last backend poll.
@@ -268,6 +301,13 @@ struct virtio_proxy_dev {
 	uint64_t hcall_reply_ok_count;
 	uint64_t hcall_busy_count;
 	uint64_t hcall_backpressure_count;
+	uint64_t timeout_count;
+	uint64_t reset_count;
+	uint64_t last_notify_tick[VIRTIO_MMIO_MAX_QUEUES];
+	struct virtio_proxy_latency_accum latency_notify_poll;
+	struct virtio_proxy_latency_accum latency_poll_reply;
+	struct virtio_proxy_latency_accum latency_reply_irq;
+	struct virtio_proxy_latency_accum latency_total;
 	uint32_t last_hcall_op;
 	int32_t last_hcall_ret;
 	uint16_t last_poll_queue_id;
