@@ -141,6 +141,64 @@ static uint16_t virtio_proxy_pending_active(const struct virtio_proxy_dev *dev)
 	return active;
 }
 
+static bool virtio_proxy_frontend_ready(const struct virtio_proxy_dev *dev)
+{
+	bool ready = false;
+
+	if (dev != NULL) {
+		for (uint16_t i = 0U; i < dev->mmio.queue_num; i++) {
+			if (dev->mmio.queues[i].ready) {
+				ready = true;
+				break;
+			}
+		}
+	}
+
+	return ready;
+}
+
+static void virtio_proxy_update_state_locked(struct virtio_proxy_dev *dev)
+{
+	bool frontend_ready;
+	bool backend_ready;
+
+	if (dev == NULL) {
+		return;
+	}
+
+	frontend_ready = virtio_proxy_frontend_ready(dev);
+	backend_ready = dev->hcall_backend_registered || (dev->backend_ops != NULL);
+	if (frontend_ready && backend_ready) {
+		dev->state = VIRTIO_PROXY_STATE_RUNNING;
+	} else if (backend_ready) {
+		dev->state = VIRTIO_PROXY_STATE_BACKEND_READY;
+	} else if (frontend_ready) {
+		dev->state = VIRTIO_PROXY_STATE_FRONTEND_READY;
+	} else {
+		dev->state = VIRTIO_PROXY_STATE_WAIT_BACKEND;
+	}
+}
+
+static void virtio_proxy_drop_backend_locked(struct virtio_proxy_dev *dev,
+	int32_t reason)
+{
+	if (dev == NULL) {
+		return;
+	}
+
+	dev->hcall_backend_registered = false;
+	dev->backend_vmid = ACRN_INVALID_VMID;
+	dev->no_backend_logged = false;
+	for (uint16_t i = 0U; i < dev->pending_limit; i++) {
+		if (dev->pending[i].valid && dev->pending[i].sent &&
+			!dev->pending[i].done) {
+			dev->pending[i].sent = false;
+		}
+	}
+	dev->last_hcall_ret = reason;
+	dev->state = VIRTIO_PROXY_STATE_BACKEND_LOST;
+}
+
 static bool virtio_proxy_enabled(const struct acrn_vm_config *vm_config)
 {
 	return (vm_config->os_config.os_family == VM_OS_LINUX) &&
@@ -212,6 +270,7 @@ static void virtio_proxy_reset(struct virtio_mmio_dev *mmio)
 		(void)memset(dev->pending, 0U, sizeof(dev->pending));
 		dev->last_hcall_ret = 0;
 		dev->last_poll_status = 0U;
+		virtio_proxy_update_state_locked(dev);
 		spinlock_release(&dev->lock);
 		if ((dev->backend_ops != NULL) && (dev->backend_ops->reset != NULL)) {
 			dev->backend_ops->reset(dev, dev->backend_priv);
@@ -234,6 +293,11 @@ static void virtio_proxy_queue_ready(struct virtio_mmio_dev *mmio,
 	if ((dev != NULL) && (dev->backend_ops != NULL) &&
 		(dev->backend_ops->queue_ready != NULL)) {
 		dev->backend_ops->queue_ready(dev, queue_id, dev->backend_priv);
+	}
+	if (dev != NULL) {
+		spinlock_obtain(&dev->lock);
+		virtio_proxy_update_state_locked(dev);
+		spinlock_release(&dev->lock);
 	}
 }
 
@@ -384,6 +448,7 @@ void virtio_proxy_init_vm(struct acrn_vm *vm)
 		dev->throughput = proxy_config->throughput;
 		dev->hcall_backend_expected = true;
 		dev->backend_vmid = ACRN_INVALID_VMID;
+		dev->state = VIRTIO_PROXY_STATE_WAIT_BACKEND;
 		dev->pending_limit =
 			(dev->throughput == VIRTIO_PROXY_THROUGHPUT_HIGH) ?
 			VIRTIO_PROXY_PENDING_HIGH : VIRTIO_PROXY_PENDING_LOW;
@@ -449,11 +514,7 @@ void virtio_proxy_release_vm(struct acrn_vm *vm)
 			spinlock_obtain(&dev->lock);
 			if (dev->hcall_backend_registered &&
 				(dev->backend_vmid == vm->vm_id)) {
-				dev->hcall_backend_registered = false;
-				dev->backend_vmid = ACRN_INVALID_VMID;
-				dev->no_backend_logged = false;
-				(void)memset(dev->pending, 0U, sizeof(dev->pending));
-				dev->last_hcall_ret = -ENODEV;
+				virtio_proxy_drop_backend_locked(dev, -ENODEV);
 			}
 			spinlock_release(&dev->lock);
 		}
@@ -492,6 +553,9 @@ int32_t virtio_proxy_bind_backend(uint16_t vm_id,
 	dev->backend_ops = ops;
 	dev->backend_priv = priv;
 	dev->no_backend_logged = false;
+	spinlock_obtain(&dev->lock);
+	virtio_proxy_update_state_locked(dev);
+	spinlock_release(&dev->lock);
 	return 0;
 }
 
@@ -503,6 +567,9 @@ void virtio_proxy_unbind_backend(uint16_t vm_id,
 	if ((dev != NULL) && (dev->backend_ops == ops) && (dev->backend_priv == priv)) {
 		dev->backend_ops = NULL;
 		dev->backend_priv = NULL;
+		spinlock_obtain(&dev->lock);
+		virtio_proxy_update_state_locked(dev);
+		spinlock_release(&dev->lock);
 	}
 }
 
@@ -540,7 +607,8 @@ const char *virtio_proxy_tag(const struct virtio_proxy_dev *proxy)
 
 bool virtio_proxy_backend_ready(const struct virtio_proxy_dev *proxy)
 {
-	return (proxy != NULL) && (proxy->backend_ops != NULL);
+	return (proxy != NULL) &&
+		(proxy->hcall_backend_registered || (proxy->backend_ops != NULL));
 }
 
 bool virtio_proxy_set_config(struct virtio_proxy_dev *proxy, const void *config,
@@ -615,6 +683,7 @@ bool virtio_proxy_get_stats(uint16_t vm_id, uint16_t index,
 		stats->device_id = dev->device_id;
 		stats->access = dev->access;
 		stats->throughput = dev->throughput;
+		stats->state = dev->state;
 		(void)strncpy_s(stats->tag, sizeof(stats->tag), dev->tag,
 			sizeof(stats->tag) - 1U);
 		stats->base = dev->mmio.base;
@@ -681,6 +750,23 @@ static struct virtio_proxy_pending *virtio_proxy_free_pending_slot(
 
 	for (uint16_t i = 0U; i < dev->pending_limit; i++) {
 		if (!dev->pending[i].valid && !dev->pending[i].sent) {
+			return &dev->pending[i];
+		}
+	}
+
+	return NULL;
+}
+
+static struct virtio_proxy_pending *virtio_proxy_unsent_pending_slot(
+	struct virtio_proxy_dev *dev, uint16_t queue_id)
+{
+	if (dev == NULL) {
+		return NULL;
+	}
+
+	for (uint16_t i = 0U; i < dev->pending_limit; i++) {
+		if (dev->pending[i].valid && !dev->pending[i].sent &&
+			(dev->pending[i].queue_id == queue_id)) {
 			return &dev->pending[i];
 		}
 	}
@@ -793,6 +879,7 @@ static int32_t virtio_proxy_hcall_register(struct acrn_vcpu *vcpu,
 			dev->hcall_backend_registered = true;
 			dev->backend_vmid = vcpu->vm->vm_id;
 			dev->no_backend_logged = false;
+			virtio_proxy_update_state_locked(dev);
 			ret = 0;
 		}
 		spinlock_release(&dev->lock);
@@ -819,17 +906,20 @@ static int32_t virtio_proxy_hcall_poll(struct acrn_vcpu *vcpu,
 	dev->hcall_poll_count++;
 	dev->last_poll_queue_id = ioc->queue_id;
 	vq = virtio_mmio_get_queue(&dev->mmio, ioc->queue_id);
-	pending = virtio_proxy_free_pending_slot(dev);
+	pending = virtio_proxy_unsent_pending_slot(dev, ioc->queue_id);
 	if (pending == NULL) {
-		dev->hcall_backpressure_count++;
-		ret = -EBUSY;
-		goto out;
-	}
-	if (virtio_mmio_pop_avail(&dev->mmio, vq, &head)) {
-		if (!virtio_proxy_copy_chain_to_pending(dev, vq, ioc->queue_id, head,
-			pending)) {
-			ret = -EFAULT;
+		pending = virtio_proxy_free_pending_slot(dev);
+		if (pending == NULL) {
+			dev->hcall_backpressure_count++;
+			ret = -EBUSY;
 			goto out;
+		}
+		if (virtio_mmio_pop_avail(&dev->mmio, vq, &head)) {
+			if (!virtio_proxy_copy_chain_to_pending(dev, vq, ioc->queue_id,
+				head, pending)) {
+				ret = -EFAULT;
+				goto out;
+			}
 		}
 	}
 	if (!pending->valid || pending->sent) {

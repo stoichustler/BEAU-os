@@ -23,6 +23,13 @@ struct virtio_proxy_dev;
 #define VIRTIO_PROXY_QUEUE_NUM_DEFAULT	2U
 #define VIRTIO_PROXY_QUEUE_SIZE_DEFAULT	64U
 
+/* Frontend/backend lifecycle states exported through virtiostat. */
+#define VIRTIO_PROXY_STATE_WAIT_BACKEND		0U
+#define VIRTIO_PROXY_STATE_FRONTEND_READY	1U
+#define VIRTIO_PROXY_STATE_BACKEND_READY	2U
+#define VIRTIO_PROXY_STATE_RUNNING		3U
+#define VIRTIO_PROXY_STATE_BACKEND_LOST		4U
+
 struct virtio_proxy_queue_stats {
 	uint16_t num;
 	uint16_t last_avail_idx;
@@ -38,6 +45,7 @@ struct virtio_proxy_stats {
 	uint32_t device_id;
 	uint32_t access;
 	uint32_t throughput;
+	uint32_t state;
 	char tag[VIRTIO_PROXY_TAG_MAX];
 	uint64_t base;
 	uint64_t size;

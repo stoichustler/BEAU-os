@@ -32,6 +32,77 @@
  * config-space plumbing, and IRQ signaling through virtio_mmio. Backends own
  * protocol semantics: descriptor-chain layout, request validation, feature
  * bits, access-policy enforcement, and used-ring completion.
+ *
+ * Runtime framework:
+ *
+ *   VM2 frontend Linux                         BEAU EL2                         VM1 backend Linux
+ *   ------------------                         -------                         -----------------
+ *
+ *   virtio driver
+ *      |
+ *      | MMIO probe/read config
+ *      v
+ *   virtio-mmio regs  <---------------->  virtio_proxy_dev
+ *      |                                  - device_id / tag / features
+ *      |                                  - static config bytes
+ *      |                                  - queue ready state
+ *      |
+ *      | QueueReady: desc/avail/used GPA
+ *      v
+ *   frontend vring   ----------------->   virtio_mmio_queue
+ *      |                                  - descriptor table GPA
+ *      |                                  - avail / used ring GPA
+ *      |
+ *      | QueueNotify trap
+ *      v
+ *   MMIO QueueNotify ----------------->   virtio_proxy_copy_chain_to_pending()
+ *                                         - copies frontend-readable descs
+ *                                         - records frontend-writable descs
+ *                                         - preserves queue id and head desc
+ *                                                  |
+ *                                                  | HVC poll(device_id, vmid, queue)
+ *                                                  v
+ *                                         virtio_proxy_pending  ------------> backend thread
+ *                                                  ^                         - fs/rng/blk semantics
+ *                                                  | HVC reply(out bytes)    - access policy
+ *                                                  |                         - status byte / payload
+ *                                                  |
+ *                                         virtio_proxy_hcall_reply()
+ *                                         - copies reply to writable descs
+ *                                         - pushes used-ring entry
+ *                                         - injects frontend IRQ
+ *      ^                                           |
+ *      | interrupt                                 |
+ *      +-------------------------------------------+
+ *
+ * The transport never parses FUSE, RNG, block, net, I2C, or SPI payloads.
+ * It only moves descriptor-chain bytes and reports completion. That keeps one
+ * high/low-throughput transport usable by multiple virtio protocols while VM1
+ * backend code remains responsible for protocol correctness and safety checks.
+ *
+ * Reset/recovery state model:
+ *
+ *   WAIT_BACKEND -------------- backend register ------------> BACKEND_READY
+ *        |                                                        |
+ *        | frontend queue ready                                  | frontend queue ready
+ *        v                                                        v
+ *   FRONTEND_READY ----------- backend register ------------> RUNNING
+ *        ^                                                        |
+ *        | frontend VM reset clears queues/pending                | backend VM reset/release
+ *        +--------------------------------------------------------+
+ *                                                                 |
+ *                                                                 v
+ *                                                            BACKEND_LOST
+ *                                                                 |
+ *                                      backend re-register + poll |
+ *                                                                 v
+ *                                                            RUNNING
+ *
+ * Frontend notify before backend registration never consumes the avail ring.
+ * If VM1 backend resets after BEAU has already popped a frontend request into a
+ * pending slot, BEAU marks that slot unsent instead of dropping it. The rebuilt
+ * VM1 backend can register again and poll the same request, while a VM2 reset
+ * clears guest transport state and pending slots before Linux negotiates again.
  */
 
 /* Common transport limits. */
@@ -143,6 +214,7 @@ struct virtio_proxy_pending {
  * @device_id: Virtio device id advertised to the frontend.
  * @access: Board-selected access hint, read-only or read-write.
  * @throughput: Board-selected throughput profile for pending slot depth.
+ * @state: Coarse frontend/backend lifecycle state for reset recovery.
  * @tag: Human-readable endpoint tag and protocol-specific config source.
  * @backend_ops: Optional in-hypervisor backend callbacks.
  * @backend_priv: Private pointer passed to @backend_ops callbacks.
@@ -178,6 +250,7 @@ struct virtio_proxy_dev {
 	uint32_t device_id;
 	uint32_t access;
 	uint32_t throughput;
+	uint32_t state;
 	char tag[VIRTIO_PROXY_TAG_MAX];
 	const struct virtio_proxy_backend_ops *backend_ops;
 	void *backend_priv;

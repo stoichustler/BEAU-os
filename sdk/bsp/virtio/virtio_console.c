@@ -15,6 +15,49 @@
 #include <virtio_mmio.h>
 #include <virtio_console.h>
 
+/*
+ * virtio-console runtime framework:
+ *
+ * virtio_console is a built-in BEAU console transport for each Linux VM. It is
+ * not a virtio-proxy device and does not forward requests to a VM backend by
+ * HVC. BEAU owns the full console data path and bridges the guest's
+ * virtio-console frontend to the per-VM console vUART used by the BEAU shell.
+ *
+ *   Linux VM frontend                          BEAU EL2
+ *   -----------------                          -------
+ *
+ *   virtio_console driver
+ *      |
+ *      | MMIO probe / queue setup
+ *      v
+ *   virtio-mmio regs  <---------------->  virtio_console_dev
+ *      |                                  - embedded virtio_mmio_dev
+ *      |                                  - tx/rx byte counters
+ *      |
+ *      | QueueReady RX
+ *      v
+ *   RX virtqueue    ------------------->  virtio_console_process_rx()
+ *      ^                                  - console_vm_rx_refill()
+ *      |                                  - vuart_get_rx_char()
+ *      |                                  - copy bytes into writable descs
+ *      |                                  - add used ring and inject IRQ
+ *      |
+ *      | guest reads from hvc/tty
+ *      |
+ *      | QueueNotify TX
+ *      v
+ *   TX virtqueue    ------------------->  virtio_console_process_tx()
+ *                                         - copy frontend-readable descs
+ *                                         - console_vm_tx_put()
+ *                                         - add used ring and inject IRQ
+ *
+ *   BEAU shell input  ---> console_vm_rx_refill() ---> VM console vUART
+ *   VM guest output   ---> console_vm_tx_put()    ---> BEAU shell/vsh ring
+ *
+ * Direction naming follows virtio-console convention from the device view:
+ * RX queue carries BEAU-to-guest input, TX queue carries guest-to-BEAU output.
+ */
+
 #define VIRTIO_CONSOLE_QUEUE_RX		0U
 #define VIRTIO_CONSOLE_QUEUE_TX		1U
 #define VIRTIO_CONSOLE_QUEUE_NUM	2U

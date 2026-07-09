@@ -1405,6 +1405,34 @@ static const char *shell_virtio_throughput_to_str(uint32_t throughput)
 	return throughput == VIRTIO_PROXY_THROUGHPUT_HIGH ? "high" : "low";
 }
 
+static const char *shell_virtio_state_to_str(uint32_t state)
+{
+	const char *str;
+
+	switch (state) {
+	case VIRTIO_PROXY_STATE_WAIT_BACKEND:
+		str = "wait-BE";
+		break;
+	case VIRTIO_PROXY_STATE_FRONTEND_READY:
+		str = "FE-ready";
+		break;
+	case VIRTIO_PROXY_STATE_BACKEND_READY:
+		str = "BE-ready";
+		break;
+	case VIRTIO_PROXY_STATE_RUNNING:
+		str = "run";
+		break;
+	case VIRTIO_PROXY_STATE_BACKEND_LOST:
+		str = "BE-lost";
+		break;
+	default:
+		str = "N/A";
+		break;
+	}
+
+	return str;
+}
+
 static const char *shell_virtio_device_to_str(uint32_t device_id)
 {
 	const char *str;
@@ -1420,7 +1448,7 @@ static const char *shell_virtio_device_to_str(uint32_t device_id)
 		str = "virtio-rng";
 		break;
 	default:
-		str = "virtio-device";
+		str = "virtio-dev";
 		break;
 	}
 
@@ -1490,9 +1518,10 @@ static void shell_virtiostat_print_summary_device(const struct virtio_proxy_stat
 	shell_item_line("device:%3u tag:%12s access:%s throughput:%s",
 		stats->device_id, stats->tag, shell_virtio_access_to_str(stats->access),
 		shell_virtio_throughput_to_str(stats->throughput));
-	shell_item_line("state:status:0x%08x queues:%hu/%hu notify:%lu backend:%s pending:%hu/%hu",
-		stats->status, ready, stats->queue_num, stats->notify_count,
-		backend, stats->pending_active, stats->pending_limit);
+	shell_item_line("state:%s status:0x%08x queues:%hu/%hu notify:%lu backend:%s pending:%hu/%hu",
+		shell_virtio_state_to_str(stats->state), stats->status, ready,
+		stats->queue_num, stats->notify_count, backend, stats->pending_active,
+		stats->pending_limit);
 	shell_item_line("hcall:register:%lu poll:%lu/%lu reply:%lu/%lu busy:%lu bp:%lu ret:%5s(%d)",
 		stats->hcall_register_count, stats->hcall_poll_ok_count,
 		stats->hcall_poll_count, stats->hcall_reply_ok_count,
