@@ -1,0 +1,45 @@
+#
+# BEAU HYPERVISOR 2026
+#
+# SPDX-License-Identifier: BSD-3-Clause
+#
+
+menu "ARM64 Guest Boot"
+
+config GUEST_KERNEL_RAWIMAGE
+	bool "Enable raw guest image loader"
+	default y
+	help
+	  Enable loading raw RTOS or Linux images from staged modules into the
+	  guest RAM window selected by platform.dts.
+
+config GUEST_KERNEL_BZIMAGE
+	bool "Enable bzImage guest loader"
+	default n
+	help
+	  Enable the legacy bzImage loader. Static ARM64 platforms normally keep
+	  this disabled.
+
+config GUEST_KERNEL_ELF
+	bool "Enable ELF guest loader"
+	default n
+	help
+	  Enable the ELF guest loader for platforms that provide ELF modules.
+	  The default QEMU and rk356x flows use raw images.
+
+config STATIC_VFDT
+	bool "Generate static guest FDTs"
+	default y
+	help
+	  Build BEAU's static guest FDT generation path. Linux guests receive
+	  their BEAU-supplied DTB from the hypervisor instead of firmware.
+
+config ENABLE_VM1_LK
+	bool "Boot LK as VM1 on QEMU"
+	default n
+	depends on PLATFORM_QEMU
+	help
+	  Replace the default Linux-1 VM with the optional LK RTOS image in the
+	  QEMU static scenario.
+
+endmenu

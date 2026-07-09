@@ -1,0 +1,24 @@
+#
+# BEAU HYPERVISOR 2026
+#
+# Copyright (C) 2026 Hustler Lo.
+# SPDX-License-Identifier: BSD-3-Clause
+#
+
+mainmenu "BEAU HYPERVISOR Configuration"
+
+menu "Build"
+
+config RELEASE
+	bool "Build release image"
+	default n
+	help
+	  Strip release images and mark generated version metadata as a release
+	  build. Debug builds keep profiling symbols and frame pointers enabled.
+
+endmenu
+
+source "arch/Kconfig"
+source "core/Kconfig"
+source "lib/Kconfig"
+source "sdk/bsp/Kconfig"

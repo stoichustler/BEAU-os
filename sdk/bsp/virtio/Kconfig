@@ -1,0 +1,16 @@
+#
+# BEAU HYPERVISOR 2026
+#
+# SPDX-License-Identifier: BSD-3-Clause
+#
+
+menu "Virtio"
+
+config IVSHMEM_ENABLED
+	bool "Enable IVSHMEM support"
+	default n
+	help
+	  Compile inter-VM shared memory support. The default static ARM64
+	  scenario does not expose IVSHMEM devices.
+
+endmenu

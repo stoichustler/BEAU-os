@@ -1,0 +1,16 @@
+#
+# BEAU HYPERVISOR 2026
+#
+# SPDX-License-Identifier: BSD-3-Clause
+#
+
+menu "ACPI"
+
+config ACPI_PARSE_ENABLED
+	bool "Enable ACPI table parser"
+	default n
+	help
+	  Enable ACPI parsing support for platforms that boot from ACPI tables.
+	  Static ARM64 QEMU and rk356x use device tree policy instead.
+
+endmenu

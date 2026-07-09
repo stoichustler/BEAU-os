@@ -1,0 +1,57 @@
+#
+# BEAU HYPERVISOR 2026
+#
+# SPDX-License-Identifier: BSD-3-Clause
+#
+
+if ARM64
+
+menu "ARM64 Options"
+
+config STATIC_ARM64_PLATFORM
+	bool
+	default y
+	help
+	  Use the BEAU ARM64 static platform path. Static platform builds read
+	  platform policy from arch/arm64/platform/<platform>/platform.dts and
+	  only keep compile-time limits in Kconfig.
+
+config RELOC
+	bool "Build relocatable hypervisor image"
+	default n
+	help
+	  Build the hypervisor as a position-independent image. The current
+	  QEMU and rk356x bring-up defaults link BEAU at the platform RAM base,
+	  so leave this disabled unless the boot path is updated accordingly.
+
+config HV_RAM_START
+	hex "Hypervisor RAM link address"
+	default 0x50000000 if PLATFORM_QEMU
+	default 0x00A00000 if PLATFORM_RK356X
+	help
+	  Link-time address where firmware or QEMU places the BEAU image. This
+	  value is substituted into arch/lds/link_ram.ld.in.
+
+config MAX_PCPU_NUM
+	int "Maximum physical CPU count"
+	default 8 if PLATFORM_QEMU
+	default 4 if PLATFORM_RK356X
+	range 1 64
+	help
+	  Compile-time upper bound for host physical CPUs. The runtime CPU list
+	  still comes from the platform device tree.
+
+config STACK_SIZE
+	int "Thread stack size"
+	default 8192
+	help
+	  Stack size in bytes for BEAU threads, vCPUs, shell, watchdog, and
+	  per-pCPU stacks.
+
+source "arch/arm64/platform/Kconfig"
+source "arch/arm64/gic/Kconfig"
+source "arch/arm64/guest/Kconfig"
+
+endmenu
+
+endif

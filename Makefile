@@ -1,5 +1,5 @@
 #
-# BEAU hypervisor Makefile
+# BEAU HYPERVISOR 2026
 #
 
 API_MAJOR_VERSION=1
@@ -41,47 +41,93 @@ ARCH_LDFLAGS :=
 STATIC_ARM64_PLATFORM := $(if $(filter arm64,$(ARCH)),$(if $(filter qemu rk356x,$(PLATFORM)),y,))
 
 ifeq ($(STATIC_ARM64_PLATFORM),y)
-BOARD := $(PLATFORM)
-SCENARIO := $(PLATFORM)
-RELEASE ?= n
 CROSS_COMPILE := aarch64-none-elf-
-CONFIG_BOARD := $(PLATFORM)
-CONFIG_SCENARIO := $(PLATFORM)
-CONFIG_RELEASE := n
-CONFIG_RELOC := n
-CONFIG_MULTIBOOT2 := n
-CONFIG_FDT_PARSE_ENABLED := n
-CONFIG_STATIC_VFDT := y
-CONFIG_ARM64_GICV5 ?= n
-CONFIG_GUEST_KERNEL_RAWIMAGE := y
-CONFIG_GUEST_KERNEL_BZIMAGE := n
-CONFIG_GUEST_KERNEL_ELF := n
-CONFIG_SCHED_BVT := y
-CONFIG_SCHED_RTDS := y
-CONFIG_ENABLE_VM1_LK ?= 0
 HV_CONFIG_DIR := $(HV_OBJDIR)/configs
 HV_CONFIG_H := $(HV_OBJDIR)/include/arm64_platform_config.h
-ifeq ($(PLATFORM),qemu)
-CONFIG_HV_RAM_START := 0x50000000
-CONFIG_MAX_PCPU_NUM := 8U
-CONFIG_IRQSTAT_LATENCY ?= y
-else ifeq ($(PLATFORM),rk356x)
-CONFIG_HV_RAM_START := 0x00A00000
-CONFIG_MAX_PCPU_NUM := 4U
-CONFIG_IRQSTAT_LATENCY ?= n
-endif
-CFLAGS += -include $(HV_CONFIG_H)
+HV_AUTOCONF_H := $(HV_OBJDIR)/include/generated/autoconf.h
 HV_CONFIG_MK := $(HV_CONFIG_DIR)/config.mk
+HV_DOTCONFIG := $(HV_CONFIG_DIR)/.config
+HV_PLATFORM_BCONFIG := arch/arm64/platform/$(PLATFORM)/Bconfig
+HV_KCONFIG := Kconfig
+HV_KCONFIG_GENERATOR := scripts/Kconfiglib/genconfig.py
+HV_KCONFIG_DEFCONFIG := scripts/Kconfiglib/defconfig.py
+HV_KCONFIG_SETCONFIG := scripts/Kconfiglib/setconfig.py
+HV_KCONFIG_MENUCONFIG := scripts/Kconfiglib/menuconfig.py
+HV_KCONFIG_FILES := $(HV_KCONFIG) $(shell find arch core lib sdk/bsp -name Kconfig -print)
+HV_KCONFIG_FILE_LIST := $(HV_CONFIG_DIR)/Kconfig.files
+HV_KCONFIG_DEPS_DIR := $(HV_CONFIG_DIR)/deps
 HV_CONFIG_TIMESTAMP := $(HV_CONFIG_DIR)/.configfiles.timestamp
-HV_DIFFCONFIG_LIST := $(HV_CONFIG_DIR)/.diffconfig
-ARM64_PLATFORM_CFG_STAMP := $(HV_CONFIG_DIR)/config-vm1-lk-$(CONFIG_ENABLE_VM1_LK).stamp
+KCONFIG_RELEASE_VALUE = $(if $(filter 1,$(RELEASE)),y,$(if $(filter 0,$(RELEASE)),n,$(RELEASE)))
+ifneq ($(filter command line,$(origin RELEASE)),)
+override CONFIG_RELEASE := $(KCONFIG_RELEASE_VALUE)
+endif
+define normalize_kconfig_bool
+ifeq ($(origin $(1)),command line)
+ifeq ($($(1)),1)
+override $(1) := y
+else ifeq ($($(1)),0)
+override $(1) := n
+endif
+endif
+endef
+KCONFIG_BOOL_VARS := \
+	CONFIG_ACPI_PARSE_ENABLED \
+	CONFIG_ARM64_GICV5 \
+	CONFIG_AUTOSTART_VM \
+	CONFIG_ENABLE_VM1_LK \
+	CONFIG_FDT_PARSE_ENABLED \
+	CONFIG_GUEST_KERNEL_BZIMAGE \
+	CONFIG_GUEST_KERNEL_ELF \
+	CONFIG_GUEST_KERNEL_RAWIMAGE \
+	CONFIG_HAS_HSM \
+	CONFIG_IVSHMEM_ENABLED \
+	CONFIG_IRQSTAT_LATENCY \
+	CONFIG_LAUNCH_VMS_FROM_BSP \
+	CONFIG_LOG_VERBOSE \
+	CONFIG_MULTIBOOT2 \
+	CONFIG_PLATFORM_QEMU \
+	CONFIG_PLATFORM_RK356X \
+	CONFIG_RELEASE \
+	CONFIG_RELOC \
+	CONFIG_SCHED_BVT \
+	CONFIG_SCHED_BVT_ONLY \
+	CONFIG_SCHED_HYBRID_BVT_RTDS \
+	CONFIG_SCHED_IORR \
+	CONFIG_SCHED_NOOP \
+	CONFIG_SCHED_PRIO \
+	CONFIG_SCHED_RTDS \
+	CONFIG_SCHED_RTDS_ONLY \
+	CONFIG_SECURITY_VM_FIXUP \
+	CONFIG_SERIAL_8250_PCI \
+	CONFIG_STATIC_ARM64_PLATFORM \
+	CONFIG_STATIC_QEMU_PLATFORM \
+	CONFIG_STATIC_RK356X_PLATFORM \
+	CONFIG_STATIC_VFDT \
+	CONFIG_VMCS9900
+$(foreach v,$(KCONFIG_BOOL_VARS),$(eval $(call normalize_kconfig_bool,$(v))))
+KCONFIG_RELEASE_ASSIGNMENT = $(if $(filter command line,$(origin RELEASE)),'RELEASE=$(KCONFIG_RELEASE_VALUE)')
+KCONFIG_CLI_ASSIGNMENTS = $(foreach v,$(filter CONFIG_%,$(.VARIABLES)),$(if $(filter command line override,$(origin $(v))),'$(patsubst CONFIG_%,%,$(v))=$($(v))')) $(KCONFIG_RELEASE_ASSIGNMENT)
+ifneq ($(strip $(KCONFIG_CLI_ASSIGNMENTS)),)
+KCONFIG_CLI_SYNC_TARGET := kconfig-cli-sync
+endif
+CONFIG_FREE_GOALS := clean distclean tags Bconfig defconfig menuconfig syncconfig
+CONFIG_REQUIRED_GOALS := $(filter-out $(CONFIG_FREE_GOALS),$(if $(MAKECMDGOALS),$(MAKECMDGOALS),all))
+ifneq ($(CONFIG_REQUIRED_GOALS),)
+include $(HV_CONFIG_MK)
+endif
+BOARD := $(patsubst "%",%,$(CONFIG_BOARD))
+SCENARIO := $(patsubst "%",%,$(CONFIG_SCENARIO))
+RELEASE := $(CONFIG_RELEASE)
+CONFIG_ENABLE_VM1_LK_DTS := $(if $(filter y,$(CONFIG_ENABLE_VM1_LK)),1,0)
+ARM64_PLATFORM_CFG_STAMP := $(HV_CONFIG_DIR)/config-vm1-lk-$(CONFIG_ENABLE_VM1_LK_DTS).stamp
 ARM64_PLATFORM_DTB := $(HV_OBJDIR)/platform.dtb
 LINUX_VM1_IMAGE := sdk/image/linux/vm1/Image
 LINUX_VM2_IMAGE := sdk/image/linux/vm2/Image
 LINUX_INITRAMFS := sdk/image/linux/Initramfs.cpio.gz
+CFLAGS += -include $(HV_CONFIG_H)
 ASFLAGS += -DARM64_PLATFORM_DTB_PATH=\"$(ARM64_PLATFORM_DTB)\"
 else
-include scripts/makefile/config.mk
+$(error Unsupported build configuration: ARCH=$(ARCH) PLATFORM=$(PLATFORM). Use ARCH=arm64 PLATFORM=qemu or PLATFORM=rk356x)
 endif
 
 ifeq ($(STATIC_ARM64_PLATFORM),y)
@@ -317,86 +363,110 @@ LINUX_IMAGE_SIZE_H :=
 ifeq ($(STATIC_ARM64_PLATFORM),y)
 LINUX_IMAGE_SIZE_H := $(HV_OBJDIR)/include/linux_image_sizes.h
 endif
-HEADERS := $(VERSION) $(BANNER_H) $(HV_CONFIG_H) $(HV_CONFIG_TIMESTAMP) $(LINUX_IMAGE_SIZE_H)
+HEADERS := $(VERSION) $(BANNER_H) $(HV_CONFIG_H) $(HV_CONFIG_TIMESTAMP) $(LINUX_IMAGE_SIZE_H) $(KCONFIG_CLI_SYNC_TARGET)
 
 ifeq ($(STATIC_ARM64_PLATFORM),y)
-$(HV_CONFIG_MK): | $(HV_CONFIG_DIR)
-	@{ \
-		echo "CONFIG_HV_RAM_START=$(CONFIG_HV_RAM_START)"; \
-		echo "CONFIG_ARM64_GICV5=$(CONFIG_ARM64_GICV5)"; \
-		echo "CONFIG_IRQSTAT_LATENCY=$(CONFIG_IRQSTAT_LATENCY)"; \
-	} > $@
-
-$(HV_CONFIG_H): Makefile $(ARM64_PLATFORM_CFG_STAMP) | $(HV_OBJDIR)/include
-	@echo "config    $(notdir $@)"
-	@{ \
-		echo "/* Auto-generated ARM64 static platform configuration. */"; \
+define WRITE_CONFIG_HEADER
+	$(Q){ \
+		echo "/* Auto-generated wrapper around Kconfiglib autoconf.h. */"; \
 		echo "#ifndef ARM64_PLATFORM_CONFIG_H"; \
 		echo "#define ARM64_PLATFORM_CONFIG_H"; \
-		echo "#define CONFIG_STATIC_ARM64_PLATFORM 1"; \
-		if [ "$(PLATFORM)" = "qemu" ]; then \
-			echo "#define CONFIG_STATIC_QEMU_PLATFORM 1"; \
-		fi; \
-		if [ "$(PLATFORM)" = "rk356x" ]; then \
-			echo "#define CONFIG_STATIC_RK356X_PLATFORM 1"; \
-		fi; \
-		echo "#ifndef CONFIG_ARM64_GICV5"; \
-		echo "#define CONFIG_ARM64_GICV5 0"; \
-		echo "#endif"; \
-		if [ "$(CONFIG_IRQSTAT_LATENCY)" = "y" ]; then \
-			echo "#define CONFIG_IRQSTAT_LATENCY 1"; \
-		else \
-			echo "#define CONFIG_IRQSTAT_LATENCY 0"; \
-		fi; \
-		echo "#define CONFIG_BOARD $(PLATFORM)"; \
-		echo "#define CONFIG_SCENARIO $(PLATFORM)"; \
-		echo "#define CONFIG_GUEST_KERNEL_RAWIMAGE 1"; \
-		echo "#define CONFIG_HAS_HSM 0"; \
-		echo "#define CONFIG_AUTOSTART_VM 1"; \
-		echo "#define CONFIG_LAUNCH_VMS_FROM_BSP 1"; \
-		echo "#define CONFIG_STATIC_VFDT 1"; \
-		echo "#define CONFIG_HV_RAM_START $(CONFIG_HV_RAM_START)UL"; \
-		echo "#define CONFIG_STACK_SIZE 8192U"; \
-		echo "#define CONFIG_SCHED_BVT y"; \
-		echo "#define CONFIG_SCHED_RTDS y"; \
-		echo "#define CONFIG_ENABLE_VM1_LK $(CONFIG_ENABLE_VM1_LK)"; \
-		echo "#define CONFIG_SERIAL_8250_PCI 0"; \
+		echo ""; \
+		echo "#include <generated/autoconf.h>"; \
+		echo ""; \
+		for sym in ARM64_GICV5 AUTOSTART_VM ENABLE_VM1_LK HAS_HSM IRQSTAT_LATENCY LAUNCH_VMS_FROM_BSP SERIAL_8250_PCI STATIC_ARM64_PLATFORM STATIC_VFDT; do \
+			echo "#ifndef CONFIG_$${sym}"; \
+			echo "#define CONFIG_$${sym} 0"; \
+			echo "#endif"; \
+		done; \
+		echo ""; \
+		echo "#undef CONFIG_CONSOLE_DEFAULT_VM"; \
 		echo "#define CONFIG_CONSOLE_DEFAULT_VM ACRN_INVALID_VMID"; \
-		echo "#define CONFIG_CONSOLE_LOGLEVEL_DEFAULT 6U"; \
-		echo "#define CONFIG_MEM_LOGLEVEL_DEFAULT 0U"; \
-		echo "#define CONFIG_NPK_LOGLEVEL_DEFAULT 0U"; \
+		echo "#undef CONFIG_VUART_TIMER_PCPU"; \
 		echo "#define CONFIG_VUART_TIMER_PCPU BSP_CPU_ID"; \
-		echo "#define CONFIG_VUART_RX_BUF_SIZE 256U"; \
-		echo "#define CONFIG_VUART_TX_BUF_SIZE 256U"; \
+		echo "#undef CONFIG_VM_CONSOLE_RINGBUF_VM_NUM"; \
 		echo "#define CONFIG_VM_CONSOLE_RINGBUF_VM_NUM (PRE_VM_NUM + SERVICE_VM_NUM)"; \
-		echo "#define CONFIG_VM_CONSOLE_RINGBUF_SIZE 4096U"; \
-		echo "#define CONFIG_MAX_EMULATED_MMIO_REGIONS 8U"; \
-		echo "#define CONFIG_MAX_MSIX_TABLE_NUM 16U"; \
-		echo "#define CONFIG_MAX_PCI_DEV_NUM 16U"; \
-		echo "#define CONFIG_MAX_PT_IRQ_ENTRIES 32U"; \
-		echo "#define CONFIG_MAX_IOAPIC_NUM 0U"; \
-		echo "#define CONFIG_SPACE_SIZE 0x10000000UL"; \
-		echo "#define CONFIG_ADDR 0xcf8U"; \
-		echo "#define CONFIG_DATA 0xcfcU"; \
-		echo "#define CONFIG_IGD_SBDF 0U"; \
-		echo "#define MAX_PCPU_NUM $(CONFIG_MAX_PCPU_NUM)"; \
-		echo "#define PRE_VM_NUM 2U"; \
-		echo "#define SERVICE_VM_NUM 1U"; \
-		echo "#define MAX_POST_VM_NUM 0U"; \
-		echo "#define MAX_TRUSTY_VM_NUM 0U"; \
-		echo "#define MAX_VUART_NUM_PER_VM 2U"; \
-		echo "#define RTVM_SEVERITY_LEVEL 0x30U"; \
+		echo ""; \
+		echo "#define MAX_PCPU_NUM CONFIG_MAX_PCPU_NUM"; \
+		echo "#define PRE_VM_NUM CONFIG_PRE_VM_NUM"; \
+		echo "#define SERVICE_VM_NUM CONFIG_SERVICE_VM_NUM"; \
+		echo "#define MAX_POST_VM_NUM CONFIG_MAX_POST_VM_NUM"; \
+		echo "#define MAX_TRUSTY_VM_NUM CONFIG_MAX_TRUSTY_VM_NUM"; \
+		echo "#define MAX_VUART_NUM_PER_VM CONFIG_MAX_VUART_NUM_PER_VM"; \
+		echo "#define RTVM_SEVERITY_LEVEL CONFIG_RTVM_SEVERITY_LEVEL"; \
+		echo ""; \
 		echo "#endif /* ARM64_PLATFORM_CONFIG_H */"; \
-	} > $@
+	} > $(HV_CONFIG_H)
+endef
 
-$(HV_CONFIG_TIMESTAMP): $(HV_CONFIG_MK)
+define RUN_GENCONFIG
+	$(Q)KCONFIG_CONFIG=$(HV_DOTCONFIG) python3 $(HV_KCONFIG_GENERATOR) \
+		--header-path $(HV_AUTOCONF_H) \
+		--config-out $(HV_DOTCONFIG) \
+		--sync-deps $(HV_KCONFIG_DEPS_DIR) \
+		--file-list $(HV_KCONFIG_FILE_LIST) \
+		$(HV_KCONFIG)
+	$(Q)cp $(HV_KCONFIG_DEPS_DIR)/auto.conf $(HV_CONFIG_MK)
+	$(Q)touch $(HV_CONFIG_MK) $(HV_AUTOCONF_H) $(HV_KCONFIG_FILE_LIST)
+	@echo "config    $(notdir $(HV_CONFIG_H))"
+	$(WRITE_CONFIG_HEADER)
+endef
+
+$(HV_CONFIG_MK) $(HV_AUTOCONF_H) $(HV_DOTCONFIG) $(HV_KCONFIG_FILE_LIST): Makefile $(HV_KCONFIG_FILES) $(HV_KCONFIG_GENERATOR) $(HV_KCONFIG_DEFCONFIG) $(HV_KCONFIG_SETCONFIG) $(HV_PLATFORM_BCONFIG) | $(HV_CONFIG_DIR) $(HV_KCONFIG_DEPS_DIR) $(HV_OBJDIR)/include/generated
+	@echo "config    $(notdir $@)"
+	$(Q)if [ ! -f $(HV_DOTCONFIG) ]; then \
+		KCONFIG_CONFIG=$(HV_DOTCONFIG) python3 $(HV_KCONFIG_DEFCONFIG) --kconfig $(HV_KCONFIG) $(HV_PLATFORM_BCONFIG); \
+	fi
+	$(Q)if [ -n "$(strip $(KCONFIG_CLI_ASSIGNMENTS))" ]; then \
+		KCONFIG_CONFIG=$(HV_DOTCONFIG) python3 $(HV_KCONFIG_SETCONFIG) --kconfig $(HV_KCONFIG) $(KCONFIG_CLI_ASSIGNMENTS); \
+	fi
+	$(RUN_GENCONFIG)
+
+$(HV_CONFIG_H): $(HV_AUTOCONF_H) $(HV_CONFIG_MK) Makefile | $(HV_OBJDIR)/include
+	@echo "config    $(notdir $@)"
+	$(WRITE_CONFIG_HEADER)
+
+$(HV_CONFIG_TIMESTAMP): $(HV_CONFIG_MK) $(HV_CONFIG_H)
 	@touch $@
 
-$(HV_CONFIG_DIR):
+$(HV_CONFIG_DIR) $(HV_KCONFIG_DEPS_DIR):
 	@mkdir -p $@
 
-$(ARM64_PLATFORM_CFG_STAMP): | $(HV_CONFIG_DIR)
+$(ARM64_PLATFORM_CFG_STAMP): $(HV_CONFIG_TIMESTAMP) | $(HV_CONFIG_DIR)
 	@touch $@
+
+.PHONY: Bconfig defconfig syncconfig menuconfig kconfig-cli-sync
+Bconfig defconfig: $(HV_PLATFORM_BCONFIG) | $(HV_CONFIG_DIR) $(HV_KCONFIG_DEPS_DIR) $(HV_OBJDIR)/include/generated
+	@echo "config    $(HV_PLATFORM_BCONFIG)"
+	$(Q)KCONFIG_CONFIG=$(HV_DOTCONFIG) python3 $(HV_KCONFIG_DEFCONFIG) --kconfig $(HV_KCONFIG) $(HV_PLATFORM_BCONFIG)
+	$(Q)$(MAKE) syncconfig ARCH=$(ARCH) PLATFORM=$(PLATFORM) HV_OBJDIR=$(HV_OBJDIR)
+
+kconfig-cli-sync: | $(HV_CONFIG_DIR) $(HV_KCONFIG_DEPS_DIR) $(HV_OBJDIR)/include/generated
+	@echo "config    command-line"
+	$(Q)if [ ! -f $(HV_DOTCONFIG) ]; then \
+		KCONFIG_CONFIG=$(HV_DOTCONFIG) python3 $(HV_KCONFIG_DEFCONFIG) --kconfig $(HV_KCONFIG) $(HV_PLATFORM_BCONFIG); \
+	fi
+	$(Q)if [ -n "$(strip $(KCONFIG_CLI_ASSIGNMENTS))" ]; then \
+		KCONFIG_CONFIG=$(HV_DOTCONFIG) python3 $(HV_KCONFIG_SETCONFIG) --kconfig $(HV_KCONFIG) $(KCONFIG_CLI_ASSIGNMENTS); \
+	fi
+	$(RUN_GENCONFIG)
+
+syncconfig: | $(HV_CONFIG_DIR) $(HV_KCONFIG_DEPS_DIR) $(HV_OBJDIR)/include/generated
+	@echo "config    $(notdir $(HV_DOTCONFIG))"
+	$(Q)if [ ! -f $(HV_DOTCONFIG) ]; then \
+		KCONFIG_CONFIG=$(HV_DOTCONFIG) python3 $(HV_KCONFIG_DEFCONFIG) --kconfig $(HV_KCONFIG) $(HV_PLATFORM_BCONFIG); \
+	fi
+	$(Q)if [ -n "$(strip $(KCONFIG_CLI_ASSIGNMENTS))" ]; then \
+		KCONFIG_CONFIG=$(HV_DOTCONFIG) python3 $(HV_KCONFIG_SETCONFIG) --kconfig $(HV_KCONFIG) $(KCONFIG_CLI_ASSIGNMENTS); \
+	fi
+	$(RUN_GENCONFIG)
+
+menuconfig: | $(HV_CONFIG_DIR) $(HV_KCONFIG_DEPS_DIR) $(HV_OBJDIR)/include/generated
+	$(Q)if [ ! -f $(HV_DOTCONFIG) ]; then \
+		KCONFIG_CONFIG=$(HV_DOTCONFIG) python3 $(HV_KCONFIG_DEFCONFIG) --kconfig $(HV_KCONFIG) $(HV_PLATFORM_BCONFIG); \
+	fi
+	$(Q)KCONFIG_CONFIG=$(HV_DOTCONFIG) python3 $(HV_KCONFIG_MENUCONFIG) $(HV_KCONFIG)
+	$(Q)$(MAKE) syncconfig ARCH=$(ARCH) PLATFORM=$(PLATFORM) HV_OBJDIR=$(HV_OBJDIR)
 
 ifneq ($(LINUX_IMAGE_SIZE_H),)
 $(LINUX_IMAGE_SIZE_H): Makefile $(LINUX_VM1_IMAGE) $(LINUX_VM2_IMAGE) $(LINUX_INITRAMFS) | $(HV_OBJDIR)/include
@@ -415,7 +485,7 @@ $(LINUX_IMAGE_SIZE_H): Makefile $(LINUX_VM1_IMAGE) $(LINUX_VM2_IMAGE) $(LINUX_IN
 		echo "#endif /* LINUX_IMAGE_SIZES_H */"; \
 	} > $@
 
-$(HV_OBJDIR)/include:
+$(HV_OBJDIR)/include $(HV_OBJDIR)/include/generated:
 	@mkdir -p $@
 endif
 endif
@@ -436,7 +506,7 @@ ifneq ($(ARM64_PLATFORM_DTB),)
 $(ARM64_PLATFORM_DTB): arch/arm64/platform/$(PLATFORM)/platform.dts $(ARM64_PLATFORM_CFG_STAMP) | $(HV_OBJDIR)
 	@echo "dtc       $(notdir $@)"
 	$(Q)$(CC) -E -x assembler-with-cpp -P \
-		-DCONFIG_ENABLE_VM1_LK=$(CONFIG_ENABLE_VM1_LK) $< -o $(HV_OBJDIR)/platform.pp.dts
+		-DCONFIG_ENABLE_VM1_LK=$(CONFIG_ENABLE_VM1_LK_DTS) $< -o $(HV_OBJDIR)/platform.pp.dts
 	$(Q)$(DTC) -I dts -O dtb -o $@ $(HV_OBJDIR)/platform.pp.dts
 
 $(HV_OBJDIR):

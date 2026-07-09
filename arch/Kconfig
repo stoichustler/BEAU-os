@@ -1,0 +1,27 @@
+#
+# BEAU HYPERVISOR 2026
+#
+# Copyright (C) 2026 Hustler Lo.
+# SPDX-License-Identifier: BSD-3-Clause
+#
+
+menu "Architecture"
+
+choice ARCH_CHOICE
+	prompt "Target architecture"
+	default ARM64
+	help
+	  Select the CPU architecture to build BEAU for. The current in-tree
+	  hypervisor build path is ARM64.
+
+config ARM64
+	bool "ARM64"
+	help
+	  Build the ARM64 EL2 hypervisor implementation used by the QEMU virt
+	  and rk356x platform ports.
+
+endchoice
+
+source "arch/arm64/Kconfig"
+
+endmenu

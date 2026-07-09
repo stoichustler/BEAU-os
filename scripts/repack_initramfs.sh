@@ -44,7 +44,7 @@ mount -t devpts devpts /dev/pts 2>/dev/null || true
 #      ls -l /var/beau
 #      <Ctrl-D>
 #   2. vsh 2
-#      mount -t virtiofs -o rw beau /var/beau
+#      mount -t virtiofs -o rw proxy-fs /var/beau
 #      touch /var/beau/VM2-WRITE
 #      echo "hello from vm2" > /var/beau/README
 #      <Ctrl-D>

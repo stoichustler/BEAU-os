@@ -1,0 +1,26 @@
+#
+# BEAU HYPERVISOR 2026
+#
+# SPDX-License-Identifier: BSD-3-Clause
+#
+
+menu "ARM64 Interrupt Controller"
+
+config ARM64_GICV5
+	bool "Use ARM GICv5 sources"
+	default n
+	help
+	  Build the experimental GICv5 implementation instead of the default
+	  GICv3 path. Enable only when validating a platform that provides the
+	  matching GICv5 hardware model.
+
+config IRQSTAT_LATENCY
+	bool "Collect interrupt latency statistics"
+	default y if PLATFORM_QEMU
+	default n if PLATFORM_RK356X
+	help
+	  Track assert-to-LR and assert-to-EOI timing for host and virtual
+	  interrupts. This is useful for QEMU diagnosis and can be disabled on
+	  constrained hardware builds.
+
+endmenu

@@ -1,0 +1,15 @@
+#
+# BEAU HYPERVISOR 2026
+#
+# SPDX-License-Identifier: BSD-3-Clause
+#
+
+menu "PCI"
+
+config SECURITY_VM_FIXUP
+	bool "Enable security VM ACPI fixup"
+	default n
+	help
+	  Enable legacy ACPI fixups for security VM device ownership.
+
+endmenu

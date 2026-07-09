@@ -1,0 +1,105 @@
+#
+# BEAU HYPERVISOR 2026
+#
+# SPDX-License-Identifier: BSD-3-Clause
+#
+
+menu "Core"
+
+config AUTOSTART_VM
+	bool "Autostart static VMs"
+	default y
+	help
+	  Start configured static VMs during BEAU boot. Disable only for bring-up
+	  flows that need to create or start VMs manually from the shell.
+
+config LAUNCH_VMS_FROM_BSP
+	bool "Launch static VMs from the BSP"
+	default y
+	help
+	  Launch static VMs from the boot CPU after platform initialization.
+	  The current ARM64 static platform path expects this to be enabled.
+
+choice SCHEDULER_POLICY
+	prompt "Scheduler policy"
+	default SCHED_HYBRID_BVT_RTDS
+	help
+	  Select the scheduler sources to compile. The default hybrid policy uses
+	  BVT for non-shared pCPUs and RTDS for shared pCPUs.
+
+config SCHED_HYBRID_BVT_RTDS
+	bool "Hybrid BVT/RTDS"
+	help
+	  Compile both BVT and RTDS. Runtime policy picks RTDS for shared pCPUs
+	  and BVT otherwise.
+
+config SCHED_NOOP
+	bool "No-op"
+	help
+	  Compile the no-op scheduler for minimal scheduling experiments.
+
+config SCHED_IORR
+	bool "I/O round-robin"
+	help
+	  Compile the I/O round-robin scheduler.
+
+config SCHED_BVT_ONLY
+	bool "BVT only"
+	help
+	  Compile only the Borrowed Virtual Time scheduler.
+
+config SCHED_RTDS_ONLY
+	bool "RTDS only"
+	help
+	  Compile only the Real-Time Deferrable Server scheduler.
+
+config SCHED_PRIO
+	bool "Priority"
+	help
+	  Compile the priority scheduler.
+
+endchoice
+
+config SCHED_BVT
+	bool
+	default y if SCHED_HYBRID_BVT_RTDS || SCHED_BVT_ONLY
+	help
+	  Internal compatibility symbol selecting BVT scheduler code.
+
+config SCHED_RTDS
+	bool
+	default y if SCHED_HYBRID_BVT_RTDS || SCHED_RTDS_ONLY
+	help
+	  Internal compatibility symbol selecting RTDS scheduler code.
+
+config MAX_EMULATED_MMIO_REGIONS
+	int "Maximum emulated MMIO regions per VM"
+	default 8
+	help
+	  Static allocation limit for MMIO traps owned by BEAU emulation code.
+
+config MAX_PT_IRQ_ENTRIES
+	int "Maximum passthrough IRQ entries"
+	default 32
+	help
+	  Static allocation limit for physical interrupt remapping records.
+
+config VM_WDT_MONITOR_VM_NUM
+	int "VM watchdog monitor count"
+	default 3
+	help
+	  Number of VM IDs scanned by the VM watchdog task.
+
+config VM_WDT_PRINT_PERIOD_MS
+	int "VM watchdog print period in milliseconds"
+	default 5000
+	help
+	  Minimum time between repeated watchdog diagnostic prints.
+
+config VM_WDT_TIMEOUT_MS
+	int "VM watchdog timeout in milliseconds"
+	default 15000
+	help
+	  VM heartbeat age that is considered timed out by the watchdog.
+
+endmenu

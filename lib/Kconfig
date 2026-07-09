@@ -1,0 +1,16 @@
+#
+# BEAU HYPERVISOR 2026
+#
+# SPDX-License-Identifier: BSD-3-Clause
+#
+
+menu "Libraries"
+
+config FDT_PARSE_ENABLED
+	bool "Enable runtime FDT parser"
+	default n
+	help
+	  Enable the runtime FDT parser path. Static ARM64 platforms currently
+	  use the static guest FDT path and leave this disabled.
+
+endmenu

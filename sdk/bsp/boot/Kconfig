@@ -1,0 +1,16 @@
+#
+# BEAU HYPERVISOR 2026
+#
+# SPDX-License-Identifier: BSD-3-Clause
+#
+
+menu "Boot"
+
+config MULTIBOOT2
+	bool "Enable Multiboot2 parser"
+	default n
+	help
+	  Compile Multiboot2 parsing support. Static ARM64 platforms normally
+	  use bare boot with staged modules instead.
+
+endmenu

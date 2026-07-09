@@ -1,0 +1,58 @@
+#
+# BEAU HYPERVISOR 2026
+#
+# SPDX-License-Identifier: BSD-3-Clause
+#
+
+menu "ARM64 Platform"
+
+choice PLATFORM_CHOICE
+	prompt "ARM64 platform"
+	default PLATFORM_QEMU
+	help
+	  Select the static ARM64 platform to build. The selected platform
+	  controls default build output naming, platform.dts input, and default
+	  compile-time limits.
+
+config PLATFORM_QEMU
+	bool "QEMU virt"
+	help
+	  Build the ARM64 QEMU virt platform using GICv3, PL011, and the
+	  default three-VM development scenario.
+
+config PLATFORM_RK356X
+	bool "Rockchip rk356x"
+	help
+	  Build the rk356x hardware-platform skeleton. Hardware validation is
+	  still board-specific and manual.
+
+endchoice
+
+config BOARD
+	string
+	default "qemu" if PLATFORM_QEMU
+	default "rk356x" if PLATFORM_RK356X
+	help
+	  Human-readable board name written into generated build metadata.
+
+config SCENARIO
+	string
+	default "qemu" if PLATFORM_QEMU
+	default "rk356x" if PLATFORM_RK356X
+	help
+	  Scenario name written into generated build metadata. Static ARM64
+	  platforms use the platform name as the scenario name.
+
+config STATIC_QEMU_PLATFORM
+	bool
+	default y if PLATFORM_QEMU
+	help
+	  Internal compatibility macro for QEMU-specific static platform code.
+
+config STATIC_RK356X_PLATFORM
+	bool
+	default y if PLATFORM_RK356X
+	help
+	  Internal compatibility macro for rk356x-specific static platform code.
+
+endmenu

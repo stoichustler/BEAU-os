@@ -1,0 +1,174 @@
+#
+# BEAU HYPERVISOR 2026
+#
+# SPDX-License-Identifier: BSD-3-Clause
+#
+
+menu "BSP"
+
+config HAS_HSM
+	bool "Enable HSM-backed I/O request path"
+	default n
+	help
+	  Enable code paths that depend on the legacy HSM I/O request model.
+	  Static ARM64 platforms use BEAU-owned MMIO dispatch and leave this
+	  disabled.
+
+config SERIAL_8250_PCI
+	bool "Use PCI 8250 serial port"
+	default n
+	help
+	  Route the debug serial driver through a PCI 8250 device. ARM64 QEMU
+	  and rk356x use MMIO serial devices instead.
+
+config CONSOLE_DEFAULT_VM
+	string "Default console VM"
+	default "ACRN_INVALID_VMID"
+	help
+	  Initial VM console owner. ACRN_INVALID_VMID means the BEAU shell owns
+	  host input and output until a vsh command selects a VM.
+
+config CONSOLE_LOGLEVEL_DEFAULT
+	int "Default console log level"
+	default 6
+	help
+	  Initial console log level used by BEAU logging.
+
+config MEM_LOGLEVEL_DEFAULT
+	int "Default memory log level"
+	default 0
+	help
+	  Initial memory log category verbosity.
+
+config NPK_LOGLEVEL_DEFAULT
+	int "Default NPK log level"
+	default 0
+	help
+	  Initial NPK log category verbosity. Static ARM64 builds keep this at
+	  zero unless tracing support is added.
+
+config VUART_TIMER_PCPU
+	string "vUART timer pCPU"
+	default "BSP_CPU_ID"
+	help
+	  CPU that owns the periodic vUART and console timer. BSP_CPU_ID keeps
+	  timer ownership on the boot CPU.
+
+config VUART_RX_BUF_SIZE
+	int "vUART RX buffer size"
+	default 256
+	help
+	  Receive buffer size in bytes for each virtual UART.
+
+config VUART_TX_BUF_SIZE
+	int "vUART TX buffer size"
+	default 256
+	help
+	  Transmit buffer size in bytes for each virtual UART.
+
+config VM_CONSOLE_RINGBUF_VM_NUM
+	string "VM console ring buffer count"
+	default "(PRE_VM_NUM + SERVICE_VM_NUM)"
+	help
+	  Number of per-VM console ring buffers. The default covers all static
+	  pre-launched and service VMs.
+
+config VM_CONSOLE_RINGBUF_SIZE
+	int "VM console ring buffer size"
+	default 4096
+	help
+	  Per-VM console ring buffer size in bytes. This must stay a power of
+	  two for the ring mask logic in sdk/bsp/console.c.
+
+config MAX_MSIX_TABLE_NUM
+	int "Maximum MSI-X table entries"
+	default 16
+	help
+	  Static allocation limit for emulated or passthrough MSI-X table
+	  entries.
+
+config MAX_PCI_DEV_NUM
+	int "Maximum PCI devices"
+	default 16
+	help
+	  Static allocation limit for BEAU PCI physical and virtual device
+	  records.
+
+config MAX_IOAPIC_NUM
+	int "Maximum IOAPIC count"
+	default 0
+	help
+	  Static IOAPIC allocation count. ARM64 static platforms use GIC and set
+	  this to zero.
+
+config SPACE_SIZE
+	hex "PCI MMCONFIG space size"
+	default 0x10000000
+	help
+	  Compatibility value used by shared PCI code for MMCONFIG space sizing.
+
+config ADDR
+	hex "PCI config address port"
+	default 0xcf8
+	help
+	  Compatibility value for legacy PCI configuration address port.
+
+config DATA
+	hex "PCI config data port"
+	default 0xcfc
+	help
+	  Compatibility value for legacy PCI configuration data port.
+
+config IGD_SBDF
+	hex "Integrated graphics SBDF"
+	default 0
+	help
+	  Compatibility SBDF used by shared passthrough PCI code. Static ARM64
+	  platforms do not currently pass through IGD.
+
+config PRE_VM_NUM
+	int "Pre-launched VM count"
+	default 2
+	help
+	  Number of pre-launched VMs in the static ARM64 scenario.
+
+config SERVICE_VM_NUM
+	int "Service VM count"
+	default 1
+	help
+	  Number of service VMs in the static ARM64 scenario.
+
+config MAX_POST_VM_NUM
+	int "Maximum post-launched VM count"
+	default 0
+	help
+	  Static allocation limit for post-launched VMs. Current ARM64 static
+	  platforms do not use post-launched VMs.
+
+config MAX_TRUSTY_VM_NUM
+	int "Maximum Trusty VM count"
+	default 0
+	help
+	  Static allocation limit for Trusty VMs. Current ARM64 static platforms
+	  do not use Trusty VMs.
+
+config MAX_VUART_NUM_PER_VM
+	int "Maximum vUARTs per VM"
+	default 2
+	help
+	  Number of virtual UART configuration slots per VM.
+
+config RTVM_SEVERITY_LEVEL
+	hex "RTVM severity level"
+	default 0x30
+	help
+	  Compatibility severity value used for real-time VM configuration.
+
+source "sdk/bsp/acpi/Kconfig"
+source "sdk/bsp/arm64/Kconfig"
+source "sdk/bsp/boot/Kconfig"
+source "sdk/bsp/pci/Kconfig"
+source "sdk/bsp/virtio/Kconfig"
+source "sdk/bsp/vpci/Kconfig"
+
+endmenu

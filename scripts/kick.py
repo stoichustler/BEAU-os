@@ -60,6 +60,11 @@ def parse_args():
     parser.add_argument("--toolchains", "--toolchain", default=toolchains, type=relpath)
     parser.add_argument("--cross-prefix", default=getenv("BEAU_CROSS_COMPILE", "aarch64-none-elf-"))
     parser.add_argument("--build", action="store_true")
+    parser.add_argument(
+        "--repack-initramfs",
+        action="store_true",
+        help="refresh the default shared Linux initramfs before building",
+    )
     parser.add_argument("-n", "--dry-run", action="store_true")
     args, extra = parser.parse_known_args()
     if extra[:1] == ["--"]:
@@ -100,26 +105,34 @@ def repack_default_initramfs(args):
     subprocess.run(["sh", str(REPACK_INITRAMFS), str(args.linux_initramfs)], cwd=ROOT, check=True)
 
 
+def make_cmd(args, *targets, jobs=False):
+    cmd = [
+        "make",
+        "ARCH=arm64",
+        "PLATFORM=qemu",
+        f"CROSS_COMPILE={args.cross_prefix}",
+    ]
+    if jobs:
+        cmd.append(f"-j{os.cpu_count() or 1}")
+    cmd.extend(targets)
+    return cmd
+
+
+def build_steps(args):
+    return [
+        make_cmd(args, "clean"),
+        make_cmd(args, "Bconfig"),
+        make_cmd(args, "all", jobs=True),
+    ]
+
+
 def main():
     args = parse_args()
     env = os.environ.copy()
     if args.toolchains:
         env["PATH"] = f"{args.toolchains}{os.pathsep}{env.get('PATH', '')}"
 
-    build_cmd = [
-        "make",
-        "ARCH=arm64",
-        "PLATFORM=qemu",
-        f"CROSS_COMPILE={args.cross_prefix}",
-        f"-j{os.cpu_count() or 1}",
-    ]
-    clean_cmd = [
-        "make",
-        "ARCH=arm64",
-        "PLATFORM=qemu",
-        f"CROSS_COMPILE={args.cross_prefix}",
-        "clean",
-    ]
+    build_cmds = build_steps(args)
     qemu_cmd = [
         args.qemu,
         "-machine",
@@ -147,35 +160,39 @@ def main():
     if args.dry_run:
         # print_image_plan(args)
         if args.build:
-            if uses_default_initramfs(args):
+            if args.repack_initramfs and uses_default_initramfs(args):
                 print(render(["sh", REPACK_INITRAMFS, args.linux_initramfs]))
-            print(render(clean_cmd, args.toolchains))
-            print(render(build_cmd, args.toolchains))
+            for cmd in build_cmds:
+                print(render(cmd, args.toolchains))
         print(render(qemu_cmd))
         return
 
     verify_guest_images(args)
     if args.build:
         # print_image_plan(args)
-        repack_default_initramfs(args)
+        if args.repack_initramfs:
+            repack_default_initramfs(args)
         if args.toolchains and not args.toolchains.is_dir():
             raise SystemExit(f"Toolchain bin dir not found: {args.toolchains}")
         compiler = f"{args.cross_prefix}gcc"
         if shutil.which(compiler, path=env.get("PATH")) is None:
             raise SystemExit(f"Compiler not found: {compiler}")
-        subprocess.run(clean_cmd, cwd=ROOT, env=env, check=True)
-        subprocess.run(build_cmd, cwd=ROOT, env=env, check=True)
+        for cmd in build_cmds:
+            subprocess.run(cmd, cwd=ROOT, env=env, check=True)
 
     if not args.kernel.is_file():
         print(f"Kernel image not found: {args.kernel}")
         print("Build it with:")
-        print(f"  {render(build_cmd, args.toolchains)}")
+        for cmd in build_cmds:
+            print(f"  {render(cmd, args.toolchains)}")
         raise SystemExit(1)
     qemu = shutil.which(args.qemu)
     if qemu is None:
         raise SystemExit(f"QEMU binary not found: {args.qemu}")
     qemu_cmd[0] = qemu
     os.chdir(ROOT)
+    # BEAU 2026
+    print("\nKICKING BEAU OS on QEMU\n")
     os.execvp(qemu, qemu_cmd)
 
 
