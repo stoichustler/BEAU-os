@@ -812,6 +812,62 @@ static inline void write_vbar_el2(uint64_t val)
 	asm volatile ("msr vbar_el2, %0; isb" : : "r" (val) : "memory");
 }
 
+static inline uint64_t read_elr_el2(void)
+{
+	uint64_t val;
+
+	asm volatile ("mrs %0, elr_el2" : "=r" (val));
+	return val;
+}
+
+static inline uint64_t read_spsr_el2(void)
+{
+	uint64_t val;
+
+	asm volatile ("mrs %0, spsr_el2" : "=r" (val));
+	return val;
+}
+
+static inline uint64_t read_esr_el2(void)
+{
+	uint64_t val;
+
+	asm volatile ("mrs %0, esr_el2" : "=r" (val));
+	return val;
+}
+
+static inline uint64_t read_far_el2(void)
+{
+	uint64_t val;
+
+	asm volatile ("mrs %0, far_el2" : "=r" (val));
+	return val;
+}
+
+static inline uint64_t read_hpfar_el2(void)
+{
+	uint64_t val;
+
+	asm volatile ("mrs %0, hpfar_el2" : "=r" (val));
+	return val;
+}
+
+static inline uint64_t read_hcr_el2(void)
+{
+	uint64_t val;
+
+	asm volatile ("mrs %0, hcr_el2" : "=r" (val));
+	return val;
+}
+
+static inline uint64_t read_vttbr_el2(void)
+{
+	uint64_t val;
+
+	asm volatile ("mrs %0, vttbr_el2" : "=r" (val));
+	return val;
+}
+
 static inline void write_ttbr0_el2(uint64_t val)
 {
 	asm volatile ("msr ttbr0_el2, %0" : : "r" (val) : "memory");

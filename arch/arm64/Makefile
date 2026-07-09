@@ -52,6 +52,7 @@ HOST_C_SRCS += arch/arm64/psci.c
 HOST_C_SRCS += arch/arm64/mmu.c
 HOST_C_SRCS += arch/arm64/pgtable.c
 HOST_C_SRCS += arch/arm64/irq.c
+HOST_C_SRCS += arch/arm64/panic.c
 ifeq ($(CONFIG_ARM64_GICV5),y)
 HOST_C_SRCS += arch/arm64/gic/gicv5.c
 HOST_C_SRCS += arch/arm64/gic/gicv5_its.c

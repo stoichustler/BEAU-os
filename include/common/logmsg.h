@@ -52,6 +52,7 @@ void asm_assert(int32_t line, const char *file, const char *txt);
  * @pre the severity > 0
  */
 void do_logmsg(uint32_t severity, const char *fmt, ...);
+void panic_dump_context(void);
 const char *logmsg_severity_color(uint32_t severity);
 /* Format uptime as HH:MM:SS.mmm,uuu to match SEAU/Zephyr log timestamps. */
 void format_log_timestamp(char *buffer, size_t size, uint64_t timestamp_us);
@@ -120,6 +121,7 @@ void vprintf(const char *fmt, va_list args);
 #define panic(...) 							\
 	do { LOG_FTL("panic: %s line: %d\n", __func__, __LINE__);	\
 		LOG_FTL(__VA_ARGS__); 					\
+		panic_dump_context();					\
 		while (1) { asm_pause(); }; } while (0)
 
 #endif /* LOGMSG_H */

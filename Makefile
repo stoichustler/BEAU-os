@@ -53,9 +53,12 @@ HV_KCONFIG_GENERATOR := scripts/Kconfiglib/genconfig.py
 HV_KCONFIG_DEFCONFIG := scripts/Kconfiglib/defconfig.py
 HV_KCONFIG_SETCONFIG := scripts/Kconfiglib/setconfig.py
 HV_KCONFIG_MENUCONFIG := scripts/Kconfiglib/menuconfig.py
+HV_KCONFIG_CHECKCONFIG := scripts/checkconfig.py
 HV_KCONFIG_FILES := $(HV_KCONFIG) $(shell find arch core lib sdk/bsp -name Kconfig -print)
+HV_PLATFORM_BCONFIGS := $(wildcard arch/arm64/platform/*/Bconfig)
 HV_KCONFIG_FILE_LIST := $(HV_CONFIG_DIR)/Kconfig.files
 HV_KCONFIG_DEPS_DIR := $(HV_CONFIG_DIR)/deps
+HV_KCONFIG_CHECK_STAMP := $(HV_CONFIG_DIR)/.checkconfig.timestamp
 HV_CONFIG_TIMESTAMP := $(HV_CONFIG_DIR)/.configfiles.timestamp
 KCONFIG_RELEASE_VALUE = $(if $(filter 1,$(RELEASE)),y,$(if $(filter 0,$(RELEASE)),n,$(RELEASE)))
 ifneq ($(filter command line,$(origin RELEASE)),)
@@ -110,7 +113,7 @@ KCONFIG_CLI_ASSIGNMENTS = $(foreach v,$(filter CONFIG_%,$(.VARIABLES)),$(if $(fi
 ifneq ($(strip $(KCONFIG_CLI_ASSIGNMENTS)),)
 KCONFIG_CLI_SYNC_TARGET := kconfig-cli-sync
 endif
-CONFIG_FREE_GOALS := clean distclean tags Bconfig defconfig menuconfig syncconfig
+CONFIG_FREE_GOALS := clean distclean tags Bconfig defconfig menuconfig syncconfig checkconfig
 CONFIG_REQUIRED_GOALS := $(filter-out $(CONFIG_FREE_GOALS),$(if $(MAKECMDGOALS),$(MAKECMDGOALS),all))
 ifneq ($(CONFIG_REQUIRED_GOALS),)
 include $(HV_CONFIG_MK)
@@ -412,7 +415,7 @@ define RUN_GENCONFIG
 	$(WRITE_CONFIG_HEADER)
 endef
 
-$(HV_CONFIG_MK) $(HV_AUTOCONF_H) $(HV_DOTCONFIG) $(HV_KCONFIG_FILE_LIST): Makefile $(HV_KCONFIG_FILES) $(HV_KCONFIG_GENERATOR) $(HV_KCONFIG_DEFCONFIG) $(HV_KCONFIG_SETCONFIG) $(HV_PLATFORM_BCONFIG) | $(HV_CONFIG_DIR) $(HV_KCONFIG_DEPS_DIR) $(HV_OBJDIR)/include/generated
+$(HV_CONFIG_MK) $(HV_AUTOCONF_H) $(HV_DOTCONFIG) $(HV_KCONFIG_FILE_LIST): Makefile $(HV_KCONFIG_FILES) $(HV_KCONFIG_GENERATOR) $(HV_KCONFIG_DEFCONFIG) $(HV_KCONFIG_SETCONFIG) $(HV_PLATFORM_BCONFIG) $(HV_KCONFIG_CHECK_STAMP) | $(HV_CONFIG_DIR) $(HV_KCONFIG_DEPS_DIR) $(HV_OBJDIR)/include/generated
 	@echo "config    $(notdir $@)"
 	$(Q)if [ ! -f $(HV_DOTCONFIG) ]; then \
 		KCONFIG_CONFIG=$(HV_DOTCONFIG) python3 $(HV_KCONFIG_DEFCONFIG) --kconfig $(HV_KCONFIG) $(HV_PLATFORM_BCONFIG); \
@@ -429,14 +432,21 @@ $(HV_CONFIG_H): $(HV_AUTOCONF_H) $(HV_CONFIG_MK) Makefile | $(HV_OBJDIR)/include
 $(HV_CONFIG_TIMESTAMP): $(HV_CONFIG_MK) $(HV_CONFIG_H)
 	@touch $@
 
+$(HV_KCONFIG_CHECK_STAMP): Makefile $(HV_KCONFIG_FILES) $(HV_KCONFIG_CHECKCONFIG) $(HV_PLATFORM_BCONFIGS) | $(HV_CONFIG_DIR)
+	@echo "check     Bconfig"
+	$(Q)python3 $(HV_KCONFIG_CHECKCONFIG) --kconfig $(HV_KCONFIG) $(HV_PLATFORM_BCONFIGS)
+	@touch $@
+
 $(HV_CONFIG_DIR) $(HV_KCONFIG_DEPS_DIR):
 	@mkdir -p $@
 
 $(ARM64_PLATFORM_CFG_STAMP): $(HV_CONFIG_TIMESTAMP) | $(HV_CONFIG_DIR)
 	@touch $@
 
-.PHONY: Bconfig defconfig syncconfig menuconfig kconfig-cli-sync
-Bconfig defconfig: $(HV_PLATFORM_BCONFIG) | $(HV_CONFIG_DIR) $(HV_KCONFIG_DEPS_DIR) $(HV_OBJDIR)/include/generated
+.PHONY: Bconfig defconfig syncconfig menuconfig kconfig-cli-sync checkconfig
+checkconfig: $(HV_KCONFIG_CHECK_STAMP)
+
+Bconfig defconfig: $(HV_PLATFORM_BCONFIG) $(HV_KCONFIG_CHECK_STAMP) | $(HV_CONFIG_DIR) $(HV_KCONFIG_DEPS_DIR) $(HV_OBJDIR)/include/generated
 	@echo "config    $(HV_PLATFORM_BCONFIG)"
 	$(Q)KCONFIG_CONFIG=$(HV_DOTCONFIG) python3 $(HV_KCONFIG_DEFCONFIG) --kconfig $(HV_KCONFIG) $(HV_PLATFORM_BCONFIG)
 	$(Q)$(MAKE) syncconfig ARCH=$(ARCH) PLATFORM=$(PLATFORM) HV_OBJDIR=$(HV_OBJDIR)

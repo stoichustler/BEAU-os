@@ -1863,7 +1863,7 @@ static int32_t shell_irqstat(int32_t argc, __unused char **argv)
 	shell_puts("irq   name             active ");
 	shell_print_irq_cpu_headers(pcpu_num);
 #if CONFIG_IRQSTAT_LATENCY
-	shell_puts(" handler-lat min/avg/max");
+	shell_puts("handler-lat min/avg/max");
 #endif
 	shell_puts("\r\n");
 	shell_puts("───── ──────────────── ──────");

@@ -22,6 +22,10 @@ static int32_t log_seq = 0;
 
 uint16_t mem_loglevel = CONFIG_MEM_LOGLEVEL_DEFAULT;
 
+__attribute__((weak)) void panic_dump_context(void)
+{
+}
+
 #define LOG_USEC_PER_MSEC	1000UL
 #define LOG_USEC_PER_SEC	1000000UL
 #define LOG_SEC_PER_MIN		60UL

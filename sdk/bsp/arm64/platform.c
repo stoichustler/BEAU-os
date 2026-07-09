@@ -64,7 +64,7 @@ const struct arm64_mem_region *arm64_get_platform_mmio_regions(uint32_t *count)
 static void fdt_check_ret(int32_t ret, const char *op)
 {
 	if (ret < 0) {
-		panic("failed to build arm64 service vm fdt: %s ret=%d", op, ret);
+		panic("failed to build arm64 service vm fdt: %s ret:%d", op, ret);
 	}
 }
 
