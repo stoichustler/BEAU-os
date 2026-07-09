@@ -14,6 +14,7 @@
 #include <per_cpu.h>
 #include <bsp/vfdt.h>
 #include <logmsg.h>
+#include <sprintf.h>
 #include <bsp/io_req.h>
 #include <asm/sysreg.h>
 #include <asm/guest/vcpu_priv.h>
@@ -128,7 +129,7 @@ static bool arm64_vm_uses_virtio_console(const struct acrn_vm_config *vm_config)
 static bool arm64_vm_uses_virtio_proxy(const struct acrn_vm_config *vm_config)
 {
 	return (vm_config->os_config.os_family == VM_OS_LINUX) &&
-		(vm_config->arch.guest_virtio_proxy_size != 0UL);
+		(vm_config->arch.guest_virtio_proxy_num != 0U);
 }
 
 static void validate_stage2_ram_identity(const struct acrn_vm *vm, uint64_t mem_start,
@@ -220,8 +221,13 @@ static void init_stage2_identity_map(struct acrn_vm *vm)
 			arch_config->guest_uart_size);
 	}
 	if (arm64_vm_uses_virtio_proxy(get_vm_config(vm->vm_id))) {
-		log_stage2_vio(vm, "vprox", arch_config->guest_virtio_proxy_base,
-			arch_config->guest_virtio_proxy_size);
+		for (uint16_t i = 0U; i < arch_config->guest_virtio_proxy_num; i++) {
+			char name[8];
+
+			snprintf(name, sizeof(name), "vprox%u", i);
+			log_stage2_vio(vm, name, arch_config->guest_virtio_proxy[i].base,
+				arch_config->guest_virtio_proxy[i].size);
+		}
 	}
 }
 
@@ -234,7 +240,6 @@ static void register_arm64_vio_mmio(struct acrn_vm *vm)
 	uint64_t its_size = arch_config->guest_its_size;
 	uint64_t uart_base = arch_config->guest_uart_base;
 	uint64_t virtio_console_base = arch_config->guest_virtio_console_base;
-	uint64_t virtio_proxy_base = arch_config->guest_virtio_proxy_base;
 
 	/*
 	 * The common IO request layer owns dispatch by GPA range. ARM64 registers
@@ -262,10 +267,14 @@ static void register_arm64_vio_mmio(struct acrn_vm *vm)
 			vm, false);
 	}
 	if (arm64_vm_uses_virtio_proxy(get_vm_config(vm->vm_id))) {
-		register_mmio_emulation_handler(vm, virtio_proxy_mmio_handler,
-			virtio_proxy_base,
-			virtio_proxy_base + arch_config->guest_virtio_proxy_size,
-			vm, false);
+		for (uint16_t i = 0U; i < arch_config->guest_virtio_proxy_num; i++) {
+			struct virtio_proxy_dev *proxy = virtio_proxy_get_dev(vm, i);
+			uint64_t base = arch_config->guest_virtio_proxy[i].base;
+			uint64_t size = arch_config->guest_virtio_proxy[i].size;
+
+			register_mmio_emulation_handler(vm, virtio_proxy_mmio_handler,
+				base, base + size, proxy, false);
+		}
 	}
 }
 

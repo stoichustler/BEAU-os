@@ -8,6 +8,8 @@ Linux kernel tree so they can be ported to multiple Linux versions.
 - `hcall.c`, `hcall.h`: shared BEAU HVC helpers and virtio-proxy ABI structs.
 - `virtio-fs-backend.c`: VM1 virtio-fs backend for VM2 frontend access to
   `/var/beau`.
+- `virtio-rng-backend.c`: VM1 virtio-rng backend for VM2 frontend entropy
+  requests through BEAU virtio-proxy.
 - `vwdt.c`: BEAU VM watchdog heartbeat driver.
 - `Kconfig`, `Makefile`: Kbuild integration snippets for `drivers/virt/beau`.
 
@@ -21,7 +23,8 @@ Linux kernel tree so they can be ported to multiple Linux versions.
 5. Run the target kernel's config update, then enable:
    - `CONFIG_BEAU`
    - `CONFIG_BEAU_VWDT`
-   - `CONFIG_BEAU_VIRTIOFS_BACKEND`
+   - one or more virtio-proxy backends, for example:
+     `CONFIG_BEAU_VIRTIOFS_BACKEND` and `CONFIG_BEAU_VIRTIORNG_BACKEND`
 6. Build the target kernel image and install it into the BEAU Linux image slot
    used by the VM that should run the driver.
 
@@ -31,3 +34,8 @@ The virtio-fs backend currently supports a narrow test export: VM2 can create,
 truncate, write, read, and update attributes for regular files directly under
 VM1's `/var/beau`. Directory mutation, rename, unlink, xattr, and full FUSE
 semantics are intentionally not implemented here.
+
+The virtio-proxy HVC ABI includes the virtio device id, so multiple protocol
+backends can register for the same frontend VM. The QEMU test topology uses
+VM2 virtio-fs (`device-id = 26`) and VM2 virtio-rng (`device-id = 4`) at the
+same time, both serviced by VM1 Linux backends.

@@ -37,8 +37,8 @@ code.
 
 ARM64 comments must stay concise and easy to understand. For non-obvious
 vGICv3, vtimer, vCPU entry/exit, trap, or scheduler handoff flows, combine short
-text with `sdk/item.md`-style ASCII diagrams so the ownership transition can be
-followed quickly. In short: 注释风格: 简洁易懂，图(`sdk/item.md`)文结合.
+text with `sdk/box-drawing.md`-style ASCII diagrams so the ownership transition can be
+followed quickly. In short: 注释风格: 简洁易懂，图(`sdk/box-drawing.md`)文结合.
 
 BEAU development now requires Codex-run build validation after code updates.
 When Codex changes hypervisor code, Codex must run the matching build command
@@ -1655,7 +1655,7 @@ New ARM64 virtualization code should use English comments for design intent,
 not line-by-line narration. The goal is to make the virtualization model
 auditable when memory, interrupt, and CPU state crosses an EL2/EL1 boundary.
 Comment style: keep the wording concise and easy to understand, and combine
-short text with `sdk/item.md`-style diagrams for complex state machines or
+short text with `sdk/box-drawing.md`-style diagrams for complex state machines or
 ownership handoffs.
 
 - Add a module-level comment when a file owns an architectural subsystem or a

@@ -20,6 +20,7 @@ struct beau_proxy_desc {
 struct beau_proxy_ioc {
 	u32 op;
 	u32 status;
+	u32 device_id;
 	u16 frontend_vmid;
 	u16 queue_id;
 	u16 head;

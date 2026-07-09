@@ -28,6 +28,22 @@
  * leaves protocol semantics to a backend module.
  */
 #define ARM64_VIRTIO_PROXY_TAG_MAX	36U
+#define ARM64_VIRTIO_PROXY_MAX		32U
+
+#define ARM64_VIRTIO_PROXY_THROUGHPUT_LOW	0U
+#define ARM64_VIRTIO_PROXY_THROUGHPUT_HIGH	1U
+
+struct arm64_virtio_proxy_config {
+	uint64_t base;
+	uint64_t size;
+	uint32_t irq;
+	uint32_t device_id;
+	uint16_t queue_num;
+	uint16_t queue_size;
+	uint32_t access;
+	uint32_t throughput;
+	char tag[ARM64_VIRTIO_PROXY_TAG_MAX];
+};
 
 struct arch_vm_config {
 	uint64_t guest_ram_start;
@@ -50,14 +66,8 @@ struct arch_vm_config {
 	uint64_t guest_virtio_console_size;
 	uint32_t guest_virtio_console_irq;
 
-	uint64_t guest_virtio_proxy_base;
-	uint64_t guest_virtio_proxy_size;
-	uint32_t guest_virtio_proxy_irq;
-	uint32_t guest_virtio_proxy_device_id;
-	uint16_t guest_virtio_proxy_queue_num;
-	uint16_t guest_virtio_proxy_queue_size;
-	uint32_t guest_virtio_proxy_access;
-	char guest_virtio_proxy_tag[ARM64_VIRTIO_PROXY_TAG_MAX];
+	uint16_t guest_virtio_proxy_num;
+	struct arm64_virtio_proxy_config guest_virtio_proxy[ARM64_VIRTIO_PROXY_MAX];
 };
 
 #endif /* ARM64_VM_CONFIG_H */

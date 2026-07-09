@@ -23,7 +23,7 @@
 #define ARM64_FDT_PHANDLE_UARTCLK	4U
 #define ARM64_FDT_PHANDLE_ITS		5U
 #define ARM64_FDT_PHANDLE_VIRTIO_CONSOLE 6U
-#define ARM64_FDT_PHANDLE_VIRTIO_PROXY	7U
+#define ARM64_FDT_PHANDLE_VIRTIO_PROXY_BASE 7U
 
 #define ARM64_FDT_GIC_SPI		0U
 #define ARM64_FDT_GIC_PPI		1U
@@ -127,7 +127,7 @@ static bool fdt_vm_uses_virtio_console(const struct acrn_vm_config *vm_config)
 static bool fdt_vm_uses_virtio_proxy(const struct acrn_vm_config *vm_config)
 {
 	return (vm_config->os_config.os_family == VM_OS_LINUX) &&
-		(vm_config->arch.guest_virtio_proxy_size != 0UL);
+		(vm_config->arch.guest_virtio_proxy_num != 0U);
 }
 
 static void fdt_begin_cpu_node(void *fdt, uint32_t vcpu_id)
@@ -361,19 +361,23 @@ static void fdt_add_virtio_console(void *fdt, struct acrn_vm *vm)
 	fdt_check_ret(fdt_end_node(fdt), "virtio console end");
 }
 
-static void fdt_add_virtio_proxy(void *fdt, struct acrn_vm *vm)
+static void fdt_add_virtio_proxy(void *fdt, struct acrn_vm *vm, uint16_t index)
 {
 	const struct arch_vm_config *arch_config = &get_vm_config(vm->vm_id)->arch;
-	uint64_t base = arch_config->guest_virtio_proxy_base;
-	uint32_t irq = arch_config->guest_virtio_proxy_irq;
+	const struct arm64_virtio_proxy_config *proxy_config;
+	uint64_t base;
+	uint32_t irq;
 	uint32_t interrupts[] = {
 		ARM64_FDT_GIC_SPI, 0U, ARM64_FDT_IRQ_TYPE_LEVEL,
 	};
 	char name[40];
 
-	if (arch_config->guest_virtio_proxy_size == 0UL) {
+	if (index >= arch_config->guest_virtio_proxy_num) {
 		return;
 	}
+	proxy_config = &arch_config->guest_virtio_proxy[index];
+	base = proxy_config->base;
+	irq = proxy_config->irq;
 	if (irq >= 32U) {
 		interrupts[1] = irq - 32U;
 	}
@@ -382,10 +386,11 @@ static void fdt_add_virtio_proxy(void *fdt, struct acrn_vm *vm)
 	fdt_check_ret(fdt_begin_node(fdt, name), "virtio proxy");
 	fdt_check_ret(fdt_property_string(fdt, "compatible", "virtio,mmio"),
 		"virtio compatible");
-	fdt_property_reg64(fdt, "reg", base, arch_config->guest_virtio_proxy_size);
+	fdt_property_reg64(fdt, "reg", base, proxy_config->size);
 	fdt_property_irq(fdt, "interrupts", interrupts, ARRAY_SIZE(interrupts));
 	fdt_check_ret(fdt_property_string(fdt, "status", "okay"), "virtio proxy status");
-	fdt_check_ret(fdt_property_u32(fdt, "phandle", ARM64_FDT_PHANDLE_VIRTIO_PROXY),
+	fdt_check_ret(fdt_property_u32(fdt, "phandle",
+		ARM64_FDT_PHANDLE_VIRTIO_PROXY_BASE + index),
 		"virtio proxy phandle");
 	fdt_check_ret(fdt_end_node(fdt), "virtio proxy end");
 }
@@ -419,7 +424,10 @@ void arch_init_service_vm_vfdt(struct acrn_vm *vm)
 		fdt_add_uart(fdt, vm);
 	}
 	if (fdt_vm_uses_virtio_proxy(get_vm_config(vm->vm_id))) {
-		fdt_add_virtio_proxy(fdt, vm);
+		for (uint16_t i = 0U;
+			i < get_vm_config(vm->vm_id)->arch.guest_virtio_proxy_num; i++) {
+			fdt_add_virtio_proxy(fdt, vm, i);
+		}
 	}
 
 	fdt_check_ret(fdt_end_node(fdt), "root end");

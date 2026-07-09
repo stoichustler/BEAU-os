@@ -36,7 +36,7 @@ description: Develop, debug, validate, and document the BEAU hypervisor in this 
    - Add English comments for design intent, architecture invariants, ownership, and failure modes.
    - For touched ARM64 virtualization modules, write compact comments that include:
      date, involved-module principle, and code-flow analysis.
-   - Pair non-obvious comments with `sdk/item.md`-style ASCII flow/framework
+   - Pair non-obvious comments with `sdk/box-drawing.md`-style ASCII flow/framework
      diagrams so the reader can follow ownership and state transitions quickly.
    - Keep these diagrams small and close to the relevant code; prefer one
      focused flow over broad architecture narration.

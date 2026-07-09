@@ -44,8 +44,8 @@
 #define SHELL_CMD_VMSTAT_PARAM		NULL
 #define SHELL_CMD_VMSTAT_HELP		"list arm64 vm state"
 #define SHELL_CMD_VIRTIOSTAT		"virtiostat"
-#define SHELL_CMD_VIRTIOSTAT_PARAM	"[vm id]"
-#define SHELL_CMD_VIRTIOSTAT_HELP	"list virtio-proxy transport state"
+#define SHELL_CMD_VIRTIOSTAT_PARAM	NULL
+#define SHELL_CMD_VIRTIOSTAT_HELP	"list active virtio-proxy devices"
 #define SHELL_CMD_SMMUSTAT		"smmustat"
 #define SHELL_CMD_SMMUSTAT_PARAM	NULL
 #define SHELL_CMD_SMMUSTAT_HELP		"list ARM SMMUv3 discovery state"
@@ -1400,103 +1400,150 @@ static const char *shell_virtio_access_to_str(uint32_t access)
 	return access == VIRTIO_PROXY_ACCESS_READONLY ? "ro" : "rw";
 }
 
-static const char *shell_virtio_hcall_op_to_str(uint32_t op)
+static const char *shell_virtio_throughput_to_str(uint32_t throughput)
+{
+	return throughput == VIRTIO_PROXY_THROUGHPUT_HIGH ? "high" : "low";
+}
+
+static const char *shell_virtio_device_to_str(uint32_t device_id)
 {
 	const char *str;
 
-	switch (op) {
-	case ACRN_VIRTIO_PROXY_OP_REGISTER:
-		str = "register";
+	switch (device_id) {
+	case VIRTIO_DEVICE_ID_FS:
+		str = "virtio-fs";
 		break;
-	case ACRN_VIRTIO_PROXY_OP_POLL:
-		str = "poll";
-		break;
-	case ACRN_VIRTIO_PROXY_OP_REPLY:
-		str = "reply";
+	case VIRTIO_DEVICE_ID_RNG:
+		str = "virtio-rng";
 		break;
 	default:
-		str = "-";
+		str = "virtio-device";
 		break;
 	}
 
 	return str;
 }
 
-static void shell_virtiostat_print_vm(uint16_t vm_id)
+static const char *shell_errno_to_str(int32_t ret)
 {
-	struct virtio_proxy_stats stats;
+	const char *str;
 
-	if (!virtio_proxy_get_stats(vm_id, &stats)) {
-		return;
+	switch (ret) {
+	case 0:
+		str = "OK";
+		break;
+	case -EBUSY:
+		str = "BUSY";
+		break;
+	case -ENODEV:
+		str = "NODEV";
+		break;
+	case -EINVAL:
+		str = "INVAL";
+		break;
+	case -EFAULT:
+		str = "FAULT";
+		break;
+	default:
+		str = "N/A";
+		break;
 	}
 
-	/*
-	 * 2026-07-08, virtio transport monitor:
-	 *
-	 * virtiostat intentionally reports only the common virtio-mmio/proxy
-	 * state: device id, queues, hcall ownership, pending descriptor chain, and
-	 * used-ring completion counters. It does not decode fs/blk/net/i2c/spi
-	 * protocol payloads, so the same command remains useful as more virtio
-	 * modules bind behind virtio_proxy.
-	 */
-	shell_item_begin("virtiostat vm%hu", vm_id);
-	shell_item_line("device:%u tag:%s access:%s mmio:0x%016lx+0x%lx irq:%u",
-		stats.device_id, stats.tag, shell_virtio_access_to_str(stats.access),
-		stats.base, stats.size, stats.irq);
-	shell_item_line("status:0x%08x isr:0x%08x notify:%lu backend:%s hcall:%s",
-		stats.status, stats.interrupt_status, stats.notify_count,
-		shell_yes_no(stats.backend_bound),
-		shell_yes_no(stats.hcall_backend_registered));
-	shell_item_line("pending:valid:%s sent:%s done:%s q:%hu head:%hu in:%hu out:%u out-desc:%hu",
-		shell_yes_no(stats.pending_valid), shell_yes_no(stats.pending_sent),
-		shell_yes_no(stats.pending_done), stats.pending_queue_id,
-		stats.pending_head, stats.pending_in_len, stats.pending_out_len,
-		stats.pending_out_count);
-	shell_item_line("hcall:register:%lu poll:%lu/%lu reply:%lu/%lu last:%s ret:%d",
-		stats.hcall_register_count, stats.hcall_poll_ok_count,
-		stats.hcall_poll_count, stats.hcall_reply_ok_count,
-		stats.hcall_reply_count,
-		shell_virtio_hcall_op_to_str(stats.last_hcall_op),
-		stats.last_hcall_ret);
-	shell_item_line("last-poll:q:%hu head:%hu flags:0x%08x last-reply:q:%hu head:%hu len:%u",
-		stats.last_poll_queue_id, stats.last_poll_head, stats.last_poll_status,
-		stats.last_reply_queue_id, stats.last_reply_head,
-		stats.last_reply_len);
-	shell_item_line("queue  ready  num    last_avail  desc               avail              used");
-	shell_item_line("─────  ─────  ─────  ──────────  ─────────────────  ─────────────────  ─────────────────");
-	for (uint16_t queue_id = 0U; queue_id < stats.queue_num; queue_id++) {
-		const struct virtio_proxy_queue_stats *queue = &stats.queues[queue_id];
+	return str;
+}
 
-		shell_item_line("%-5hu  %-5s  %-5hu  %-10hu  0x%016lx  0x%016lx  0x%016lx",
-			queue_id, shell_yes_no(queue->ready), queue->num,
-			queue->last_avail_idx, queue->desc, queue->avail, queue->used);
+static bool shell_virtio_stats_active(const struct virtio_proxy_stats *stats)
+{
+	return (stats != NULL) && ((stats->status != 0U) ||
+		(stats->notify_count != 0UL) || stats->hcall_backend_registered ||
+		(stats->hcall_register_count != 0UL));
+}
+
+static void shell_virtiostat_print_summary_device(const struct virtio_proxy_stats *stats)
+{
+	uint16_t ready = 0U;
+
+	for (uint16_t queue_id = 0U; queue_id < stats->queue_num; queue_id++) {
+		if (stats->queues[queue_id].ready) {
+			ready++;
+		}
 	}
+
+	shell_item_begin("%s vm%hu:%hu", shell_virtio_device_to_str(stats->device_id),
+		stats->vm_id, stats->index);
+	shell_item_line("device:%3u tag:%12s access:%s throughput:%s",
+		stats->device_id, stats->tag, shell_virtio_access_to_str(stats->access),
+		shell_virtio_throughput_to_str(stats->throughput));
+	shell_item_line("state:status:0x%08x queues:%hu/%hu notify:%lu hcall:%s pending:%hu/%hu",
+		stats->status, ready, stats->queue_num, stats->notify_count,
+		shell_yes_no(stats->hcall_backend_registered),
+		stats->pending_active, stats->pending_limit);
+	shell_item_line("hcall:register:%lu poll:%lu/%lu reply:%lu/%lu ret:%5s(%d)",
+		stats->hcall_register_count, stats->hcall_poll_ok_count,
+		stats->hcall_poll_count, stats->hcall_reply_ok_count,
+		stats->hcall_reply_count, shell_errno_to_str(stats->last_hcall_ret),
+		stats->last_hcall_ret);
+	shell_item_line("last:poll:q:%hu reply:q:%hu len:%u",
+		stats->last_poll_queue_id, stats->last_reply_queue_id, stats->last_reply_len);
 	shell_item_end();
 }
 
-static int32_t shell_virtiostat(int32_t argc, char **argv)
+static bool shell_virtiostat_print_summary_for_device(uint32_t device_id)
 {
-	int64_t param;
+	struct virtio_proxy_stats stats;
+	bool printed = false;
 
-	if (argc == 1) {
-		for (uint16_t vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
-			shell_virtiostat_print_vm(vm_id);
+	for (uint16_t vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
+		uint16_t count = virtio_proxy_device_count(vm_id);
+
+		for (uint16_t index = 0U; index < count; index++) {
+			if (!virtio_proxy_get_stats(vm_id, index, &stats) ||
+				(stats.device_id != device_id) ||
+				!shell_virtio_stats_active(&stats)) {
+				continue;
+			}
+			shell_virtiostat_print_summary_device(&stats);
+			printed = true;
 		}
-		return 0;
 	}
 
-	if (argc != 2) {
-		shell_puts("usage: virtiostat [vm id]\r\n");
+	return printed;
+}
+
+static void shell_virtiostat_print_summary_others(void)
+{
+	struct virtio_proxy_stats stats;
+
+	for (uint16_t vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
+		uint16_t count = virtio_proxy_device_count(vm_id);
+
+		for (uint16_t index = 0U; index < count; index++) {
+			if (!virtio_proxy_get_stats(vm_id, index, &stats) ||
+				(stats.device_id == VIRTIO_DEVICE_ID_FS) ||
+				(stats.device_id == VIRTIO_DEVICE_ID_RNG) ||
+				!shell_virtio_stats_active(&stats)) {
+				continue;
+			}
+			shell_virtiostat_print_summary_device(&stats);
+		}
+	}
+}
+
+static void shell_virtiostat_print_summary(void)
+{
+	(void)shell_virtiostat_print_summary_for_device(VIRTIO_DEVICE_ID_FS);
+	(void)shell_virtiostat_print_summary_for_device(VIRTIO_DEVICE_ID_RNG);
+	shell_virtiostat_print_summary_others();
+}
+
+static int32_t shell_virtiostat(int32_t argc, __unused char **argv)
+{
+	if (argc != 1) {
+		shell_puts("usage: virtiostat\r\n");
 		return -EINVAL;
 	}
 
-	param = strtol_deci(argv[1]);
-	if ((param < 0) || (param >= CONFIG_MAX_VM_NUM)) {
-		shell_puts("invalid vm id\r\n");
-		return -EINVAL;
-	}
-
-	shell_virtiostat_print_vm((uint16_t)param);
+	shell_virtiostat_print_summary();
 	return 0;
 }
 

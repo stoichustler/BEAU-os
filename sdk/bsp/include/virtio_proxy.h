@@ -17,6 +17,8 @@ struct virtio_proxy_dev;
 
 #define VIRTIO_PROXY_ACCESS_READONLY	0U
 #define VIRTIO_PROXY_ACCESS_READWRITE	1U
+#define VIRTIO_PROXY_THROUGHPUT_LOW	0U
+#define VIRTIO_PROXY_THROUGHPUT_HIGH	1U
 #define VIRTIO_PROXY_TAG_MAX		36U
 #define VIRTIO_PROXY_QUEUE_NUM_DEFAULT	2U
 #define VIRTIO_PROXY_QUEUE_SIZE_DEFAULT	64U
@@ -32,8 +34,10 @@ struct virtio_proxy_queue_stats {
 
 struct virtio_proxy_stats {
 	uint16_t vm_id;
+	uint16_t index;
 	uint32_t device_id;
 	uint32_t access;
+	uint32_t throughput;
 	char tag[VIRTIO_PROXY_TAG_MAX];
 	uint64_t base;
 	uint64_t size;
@@ -48,6 +52,8 @@ struct virtio_proxy_stats {
 	bool pending_valid;
 	bool pending_sent;
 	bool pending_done;
+	uint16_t pending_limit;
+	uint16_t pending_active;
 	uint16_t pending_queue_id;
 	uint16_t pending_head;
 	uint16_t pending_in_len;
@@ -85,6 +91,7 @@ void virtio_proxy_init_vm(struct acrn_vm *vm);
 void virtio_proxy_reset_vm(struct acrn_vm *vm);
 int32_t virtio_proxy_mmio_handler(struct io_request *io_req,
 	void *handler_private_data);
+struct virtio_proxy_dev *virtio_proxy_get_dev(struct acrn_vm *vm, uint16_t index);
 
 int32_t virtio_proxy_bind_backend(uint16_t vm_id,
 	const struct virtio_proxy_backend_ops *ops, void *priv);
@@ -104,6 +111,8 @@ bool virtio_proxy_set_config(struct virtio_proxy_dev *proxy, const void *config,
 bool virtio_proxy_set_device_features(struct virtio_proxy_dev *proxy,
 	uint64_t features);
 int32_t virtio_proxy_backend_hcall(struct acrn_vcpu *vcpu, uint64_t ioc_gpa);
-bool virtio_proxy_get_stats(uint16_t vm_id, struct virtio_proxy_stats *stats);
+uint16_t virtio_proxy_device_count(uint16_t vm_id);
+bool virtio_proxy_get_stats(uint16_t vm_id, uint16_t index,
+	struct virtio_proxy_stats *stats);
 
 #endif /* VIRTIO_PROXY_H */

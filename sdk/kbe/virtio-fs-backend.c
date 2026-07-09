@@ -36,6 +36,7 @@
 #include "hcall.h"
 
 #define BEAU_PROXY_FRONTEND_VM2		2U
+#define BEAU_PROXY_DEVICE_FS		26U
 #define BEAU_PROXY_QUEUE_HIPRIO		0U
 #define BEAU_PROXY_QUEUE_REQUEST	1U
 #define BEAU_ROOT_NODEID		FUSE_ROOT_ID
@@ -724,6 +725,7 @@ static int beau_backend_thread(void *data)
 
 	memset(ioc, 0, sizeof(*ioc));
 	ioc->op = BEAU_PROXY_OP_REGISTER;
+	ioc->device_id = BEAU_PROXY_DEVICE_FS;
 	ioc->frontend_vmid = BEAU_PROXY_FRONTEND_VM2;
 	while (!kthread_should_stop()) {
 		ret = beau_hcall_virtio_proxy_backend(ioc);
@@ -735,6 +737,7 @@ static int beau_backend_thread(void *data)
 	while (!kthread_should_stop()) {
 		memset(ioc, 0, sizeof(*ioc));
 		ioc->op = BEAU_PROXY_OP_POLL;
+		ioc->device_id = BEAU_PROXY_DEVICE_FS;
 		ioc->frontend_vmid = BEAU_PROXY_FRONTEND_VM2;
 		ioc->queue_id = queues[idx++ % ARRAY_SIZE(queues)];
 		ioc->in_gpa = virt_to_phys(beau_backend.in);

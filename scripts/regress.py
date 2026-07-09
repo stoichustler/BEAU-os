@@ -520,8 +520,10 @@ def run_qemu(args, cmd):
         )
         qemu.command("mmap", ["arm64 memory mappings", "vm-0 s2", "vm-1 s2", "vm-2 s2"])
         qemu.command("irqstat", ["irqstat:"])
-        qemu.command("virtiostat 1", ["┌─  virtiostat vm1", "device:26", "tag:beau", "access:rw"])
-        qemu.command("virtiostat 2", ["┌─  virtiostat vm2", "device:26", "tag:beau", "access:rw"])
+        qemu.command(
+            "virtiostat",
+            ["virtio-fs vm2:0", "device:26", "tag:beau", "throughput:high", "virtio-rng vm2:1", "device:4", "tag:beau-rng", "throughput:low"],
+        )
         qemu.command(
             "dumpstat 0",
             [

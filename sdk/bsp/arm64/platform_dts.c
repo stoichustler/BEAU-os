@@ -122,6 +122,13 @@ static bool dts_has_any_compatible(const void *fdt, int32_t node,
 		((second != NULL) && dts_has_compatible(fdt, node, second));
 }
 
+static bool dts_is_virtio_proxy(const void *fdt, int32_t node)
+{
+	return dts_has_compatible(fdt, node, "beau,virtio-proxy") ||
+		dts_has_compatible(fdt, node, "beau,virtio-fs") ||
+		dts_has_compatible(fdt, node, "beau,virtio-rng");
+}
+
 static int32_t dts_child_compatible(const void *fdt, int32_t parent, const char *compat)
 {
 	int32_t node;
@@ -257,6 +264,15 @@ static uint32_t dts_optional_u32_from_node(const void *fdt, int32_t parent,
 	int32_t node = dts_child_by_unit_name(fdt, parent, node_name);
 
 	return node < 0 ? default_value : dts_u32_prop(fdt, node, prop_name, default_value);
+}
+
+static uint32_t dts_parse_virtio_proxy_throughput(const void *fdt, int32_t node)
+{
+	const char *throughput = dts_string_prop(fdt, node, "beau,throughput", "low");
+
+	return (strcmp(throughput, "high") == 0) ?
+		ARM64_VIRTIO_PROXY_THROUGHPUT_HIGH :
+		ARM64_VIRTIO_PROXY_THROUGHPUT_LOW;
 }
 
 static void dts_parse_mmio_ranges(const void *fdt, int32_t platform)
@@ -859,16 +875,12 @@ static void dts_parse_arch(const void *fdt, int32_t generic,
 	int32_t gic = dts_child_compatible(fdt, generic, "arm,vgic-v3");
 	int32_t uart = dts_child_compatible(fdt, generic, "arm,vpl011");
 	int32_t virtio_console = dts_child_compatible(fdt, generic, "beau,virtio-console");
-	int32_t virtio_proxy = dts_child_compatible(fdt, generic, "beau,virtio-proxy");
 	int32_t its;
 	uint64_t base;
 	uint64_t size;
 	const fdt32_t *irq_prop;
 	const char *access;
-
-	if (virtio_proxy < 0) {
-		virtio_proxy = dts_child_compatible(fdt, generic, "beau,virtio-fs");
-	}
+	uint16_t proxy_count = 0U;
 
 	if (gic < 0) {
 		arm64_dts_panic("gic-mmio", gic);
@@ -913,27 +925,37 @@ static void dts_parse_arch(const void *fdt, int32_t generic,
 		vm_config->arch.guest_virtio_console_irq = fdt32_to_cpu(irq_prop[1]) + 32U;
 	}
 
-	if (virtio_proxy >= 0) {
+	for (int32_t virtio_proxy = fdt_first_subnode(fdt, generic);
+		virtio_proxy >= 0; virtio_proxy = fdt_next_subnode(fdt, virtio_proxy)) {
+		struct arm64_virtio_proxy_config *proxy_config;
+
+		if (!dts_is_virtio_proxy(fdt, virtio_proxy)) {
+			continue;
+		}
+		if (proxy_count >= ARM64_VIRTIO_PROXY_MAX) {
+			arm64_dts_panic("too many virtio-proxy nodes", -EINVAL);
+		}
+
+		proxy_config = &vm_config->arch.guest_virtio_proxy[proxy_count];
 		dts_reg_by_index(fdt, virtio_proxy, 0U,
-			&vm_config->arch.guest_virtio_proxy_base,
-			&vm_config->arch.guest_virtio_proxy_size);
+			&proxy_config->base, &proxy_config->size);
 		irq_prop = fdt_getprop(fdt, virtio_proxy, "interrupts", NULL);
 		if (irq_prop == NULL) {
 			arm64_dts_panic("virtio-proxy interrupts", -EINVAL);
 		}
-		vm_config->arch.guest_virtio_proxy_irq = fdt32_to_cpu(irq_prop[1]) + 32U;
-		vm_config->arch.guest_virtio_proxy_device_id =
-			dts_u32_prop(fdt, virtio_proxy, "beau,device-id",
-				VIRTIO_DEVICE_ID_FS);
-		vm_config->arch.guest_virtio_proxy_queue_num =
+		proxy_config->irq = fdt32_to_cpu(irq_prop[1]) + 32U;
+		proxy_config->device_id = dts_u32_prop(fdt, virtio_proxy,
+			"beau,device-id", VIRTIO_DEVICE_ID_FS);
+		proxy_config->queue_num =
 			(uint16_t)dts_u32_prop(fdt, virtio_proxy, "beau,queue-num",
 				VIRTIO_PROXY_QUEUE_NUM_DEFAULT);
-		vm_config->arch.guest_virtio_proxy_queue_size =
+		proxy_config->queue_size =
 			(uint16_t)dts_u32_prop(fdt, virtio_proxy, "beau,queue-size",
 				VIRTIO_PROXY_QUEUE_SIZE_DEFAULT);
-		dts_copy_string(vm_config->arch.guest_virtio_proxy_tag,
-			sizeof(vm_config->arch.guest_virtio_proxy_tag),
+		dts_copy_string(proxy_config->tag, sizeof(proxy_config->tag),
 			dts_string_prop(fdt, virtio_proxy, "beau,tag", "beau"));
+		proxy_config->throughput = dts_parse_virtio_proxy_throughput(fdt,
+			virtio_proxy);
 		/*
 		 * 2026-07-08, virtio-proxy access policy:
 		 *
@@ -946,15 +968,17 @@ static void dts_parse_arch(const void *fdt, int32_t generic,
 		 * or update files under /var/beau and VM1 can read the resulting state.
 		 */
 		access = dts_string_prop(fdt, virtio_proxy, "beau,access", "rw");
-		vm_config->arch.guest_virtio_proxy_access =
+		proxy_config->access =
 			(strcmp(access, "ro") == 0) ? VIRTIO_PROXY_ACCESS_READONLY :
 			VIRTIO_PROXY_ACCESS_READWRITE;
-		if ((vm_config->arch.guest_virtio_proxy_queue_num == 0U) ||
-			(vm_config->arch.guest_virtio_proxy_queue_num > VIRTIO_MMIO_MAX_QUEUES) ||
-			(vm_config->arch.guest_virtio_proxy_queue_size == 0U)) {
+		if ((proxy_config->size == 0UL) || (proxy_config->queue_num == 0U) ||
+			(proxy_config->queue_num > VIRTIO_MMIO_MAX_QUEUES) ||
+			(proxy_config->queue_size == 0U)) {
 			arm64_dts_panic("virtio-proxy queue", -EINVAL);
 		}
+		proxy_count++;
 	}
+	vm_config->arch.guest_virtio_proxy_num = proxy_count;
 }
 
 static uint16_t dts_vm_id_from_node(const void *fdt, int32_t node)

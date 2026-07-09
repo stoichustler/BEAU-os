@@ -269,6 +269,8 @@ struct acrn_virtio_proxy_ioc {
 	 * Other success: zero.
 	 */
 	uint32_t status;
+	/* Virtio device id used to select one proxy when a frontend VM has many. */
+	uint32_t device_id;
 	uint16_t frontend_vmid;
 	uint16_t queue_id;
 	uint16_t head;

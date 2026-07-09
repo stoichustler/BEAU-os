@@ -28,4 +28,14 @@ config BEAU_VIRTIOFS_BACKEND
 	  directory. BEAU still owns only the MMIO transport and descriptor
 	  copying; this driver owns FUSE request semantics and VFS access.
 
+config BEAU_VIRTIORNG_BACKEND
+	bool "BEAU VM1 virtio-rng backend"
+	help
+	  Service BEAU virtio-proxy RNG requests from a backend Linux VM.
+
+	  Enable this with a frontend virtio-proxy device advertising virtio RNG
+	  device id 4. VM2's standard virtio-rng frontend supplies writable
+	  buffers; VM1 fills them with kernel random bytes and completes the
+	  descriptor through BEAU.
+
 endif
