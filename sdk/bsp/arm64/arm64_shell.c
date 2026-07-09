@@ -1088,6 +1088,35 @@ static const char *shell_vmstat_wdt_status_to_str(enum vm_wdt_status status)
 	return str;
 }
 
+static const char *shell_vmstat_wdt_reason_to_str(enum vm_wdt_reason reason)
+{
+	const char *str;
+
+	switch (reason) {
+	case VM_WDT_REASON_HEARTBEAT:
+		str = "Heartbeat";
+		break;
+	case VM_WDT_REASON_VCPU_STALL:
+		str = "vCPUstall";
+		break;
+	case VM_WDT_REASON_IRQ_STORM:
+		str = "IRQstorm";
+		break;
+	case VM_WDT_REASON_CONSOLE_STUCK:
+		str = "consoleStuck";
+		break;
+	case VM_WDT_REASON_VIRTIO_STUCK:
+		str = "virtioStuck";
+		break;
+	case VM_WDT_REASON_NONE:
+	default:
+		str = "N/A";
+		break;
+	}
+
+	return str;
+}
+
 static int64_t shell_vmstat_ticks_delta_us(int64_t delta)
 {
 	if (delta < 0L) {
@@ -1169,9 +1198,13 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 		timer.pre_eret_flush_expired, timer.pre_eret_flush,
 		timer.lost_pending_lr, vm->arch_vm.time_delta);
 	if (vm_wdt_get_snapshot(vm_id, &wdt) == 0) {
-		shell_item_line("wdt:status:%s kick:%lu timeout:%lu age.ms:%lu token:0x%016lx",
+		uint64_t last_sec = wdt.last_ms / 1000UL;
+		uint64_t last_msec = wdt.last_ms % 1000UL;
+
+		shell_item_line("wdt:status:%7s reason:%12s (%02lu.%03lu) kick:%08lu timeout:%02lu token:0x%016lx",
 			shell_vmstat_wdt_status_to_str(wdt.status),
-			wdt.kick_count, wdt.timeout_count, wdt.age_ms, wdt.last_token);
+			shell_vmstat_wdt_reason_to_str(wdt.reason), last_sec, last_msec,
+			wdt.kick_count, wdt.timeout_count, wdt.last_token);
 	}
 	shell_item_line("console:selected:%s bound:%s ring:%u/%u drain:%u pending:%s",
 		shell_yes_no(console_vmid == vm_id), shell_yes_no(ring.vuart_bound),

@@ -31,9 +31,19 @@ enum vm_wdt_status {
 	VM_WDT_STATUS_STUCK,
 };
 
+enum vm_wdt_reason {
+	VM_WDT_REASON_NONE = 0U,
+	VM_WDT_REASON_HEARTBEAT,
+	VM_WDT_REASON_VCPU_STALL,
+	VM_WDT_REASON_IRQ_STORM,
+	VM_WDT_REASON_CONSOLE_STUCK,
+	VM_WDT_REASON_VIRTIO_STUCK,
+};
+
 struct vm_wdt_snapshot {
 	enum vm_wdt_status status;
-	uint64_t age_ms;
+	enum vm_wdt_reason reason;
+	uint64_t last_ms;
 	uint64_t kick_count;
 	uint64_t timeout_count;
 	uint64_t last_token;
