@@ -381,6 +381,8 @@ bool console_vm_vuart_bind(uint16_t vmid)
 {
 	struct vm_console_ringbuf *rb;
 	uint64_t rflags;
+	bool was_blocked = false;
+	bool is_blocked = false;
 	bool valid = false;
 
 	if (vmid < CONFIG_VM_CONSOLE_RINGBUF_VM_NUM) {
@@ -395,10 +397,14 @@ bool console_vm_vuart_bind(uint16_t vmid)
 		 * FIFO bytes pending so the timer/backend can drain backlog after
 		 * ownership is visible on the serial stream.
 		 */
+		was_blocked = vm_console_tx_blocked[vmid];
 		rb->vuart_bound = true;
 		rb->pending = (rb->prod != rb->cons);
-		(void)console_vm_tx_update_blocked_locked(vmid, rb);
+		is_blocked = console_vm_tx_update_blocked_locked(vmid, rb);
 		spinlock_irqrestore_release(&rb->lock, rflags);
+		if (was_blocked != is_blocked) {
+			console_vm_tx_space_changed(vmid);
+		}
 		valid = true;
 	}
 

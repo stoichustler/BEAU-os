@@ -19,6 +19,7 @@ struct arm64_vpl011_debug {
 	uint64_t irq_deassert_count;
 	uint32_t cr;
 	uint32_t imsc;
+	uint32_t fr;
 	uint32_t ris;
 	uint32_t pending;
 	uint8_t last_tx;

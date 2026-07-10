@@ -22,6 +22,8 @@
  * not a virtio-proxy device and does not forward requests to a VM backend by
  * HVC. BEAU owns the full console data path and bridges the guest's
  * virtio-console frontend to the per-VM console vUART used by the BEAU shell.
+ * The intended split is Linux -> virtio-console and RTOS -> vPL011; the
+ * frontend differs, but the host-side console ring and vsh backend are shared.
  *
  *   Linux VM frontend                          BEAU EL2
  *   -----------------                          -------

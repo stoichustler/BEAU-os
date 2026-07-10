@@ -29,6 +29,7 @@
 #define PL011_ICR		0x044U
 
 #define PL011_FR_TXFE		(1U << 7U)
+#define PL011_FR_RXFF		(1U << 6U)
 #define PL011_FR_TXFF		(1U << 5U)
 #define PL011_FR_RXFE		(1U << 4U)
 #define PL011_FR_BUSY		(1U << 3U)
@@ -49,6 +50,8 @@ static const uint8_t pl011_cid[] = { 0x0dU, 0xf0U, 0x05U, 0xb1U };
  * vPL011 is the ARM64 guest console device. Stage-2 deliberately leaves the
  * UART IPA unmapped, data-abort MMIO reaches this file, and the common console
  * ring remains the owner of host-side buffering and vsh replay ordering.
+ * The intended split is RTOS -> vPL011 and Linux -> virtio-console; this file
+ * remains the serial-compatible frontend for RTOS and fallback diagnostics.
  *
  *   guest PL011 MMIO
  *        -> stage-2 data abort
@@ -67,6 +70,7 @@ struct arm64_vpl011 {
 	uint32_t cr;
 	uint32_t ifls;
 	uint32_t imsc;
+	uint32_t fr;
 	uint32_t ris;
 	uint32_t pending;
 	uint8_t last_tx;
@@ -76,14 +80,43 @@ struct arm64_vpl011 {
 
 static struct arm64_vpl011 vpl011_devs[CONFIG_MAX_VM_NUM];
 
-static uint32_t vpl011_rx_int_state(struct acrn_vm *vm)
+static void vpl011_refresh_rx_state(struct acrn_vuart *console, struct arm64_vpl011 *vu)
 {
-	return vuart_rx_pending(vm_console_vuart(vm)) ? PL011_INT_RX_ANY : 0U;
+	uint32_t rx_count = vuart_rx_numchars(console);
+
+	/*
+	 * 2026-07-11, vPL011 state-cache principle:
+	 *
+	 * Linux polls FR/RIS/MIS heavily. Keep those registers as cached state and
+	 * update them only when the RX source changes, instead of recomputing FIFO
+	 * status and refreshing vGIC state on every status-register MMIO trap.
+	 *
+	 *   host input -> vUART RX FIFO -> cached FR/RIS -> vGIC level line
+	 */
+	if (rx_count == 0U) {
+		vu->fr |= PL011_FR_RXFE;
+		vu->fr &= ~PL011_FR_RXFF;
+		vu->ris &= ~PL011_INT_RX_ANY;
+	} else {
+		vu->fr &= ~PL011_FR_RXFE;
+		if (rx_count >= RX_BUF_SIZE) {
+			vu->fr |= PL011_FR_RXFF;
+		} else {
+			vu->fr &= ~PL011_FR_RXFF;
+		}
+
+		/*
+		 * Keep BEAU's established any-byte wakeup behavior so a single typed
+		 * character remains enough to wake a guest shell.
+		 */
+		vu->ris |= PL011_INT_RX_ANY;
+	}
 }
 
 static uint32_t vpl011_pending_state(struct acrn_vm *vm, const struct arm64_vpl011 *vu)
 {
-	return vu->ris | vpl011_rx_int_state(vm);
+	(void)vm;
+	return vu->ris;
 }
 
 static bool vpl011_tx_can_accept(const struct acrn_vm *vm)
@@ -94,11 +127,15 @@ static bool vpl011_tx_can_accept(const struct acrn_vm *vm)
 static void vpl011_refresh_tx_state(struct acrn_vm *vm, struct arm64_vpl011 *vu)
 {
 	if (vpl011_tx_can_accept(vm)) {
+		vu->fr |= PL011_FR_TXFE;
+		vu->fr &= ~(PL011_FR_TXFF | PL011_FR_BUSY);
 		if ((vu->ris & PL011_INT_TX) == 0U) {
 			vu->ris |= PL011_INT_TX;
 			vu->tx_irq_count++;
 		}
 	} else {
+		vu->fr &= ~PL011_FR_TXFE;
+		vu->fr |= PL011_FR_TXFF | PL011_FR_BUSY;
 		vu->ris &= ~PL011_INT_TX;
 	}
 }
@@ -170,6 +207,7 @@ static void vpl011_notify_rx(struct acrn_vuart *console)
 	} else {
 		console->ier &= (uint8_t)~IER_ERBFI;
 	}
+	vpl011_refresh_rx_state(console, vu);
 	vpl011_update_irq(vm, vu, true);
 }
 
@@ -206,6 +244,7 @@ void arm64_vpl011_init_vm(struct acrn_vm *vm)
 
 	(void)memset(vu, 0U, sizeof(*vu));
 	vu->ifls = 0x12U;
+	vu->fr = PL011_FR_TXFE | PL011_FR_RXFE;
 	vu->cr = (1U << 0U) | (1U << 8U) | (1U << 9U);
 	vu->initialized = true;
 	init_console_vuart(vm, irq);
@@ -231,6 +270,7 @@ void arm64_vpl011_get_debug(uint16_t vm_id, struct arm64_vpl011_debug *debug)
 		debug->irq_deassert_count = vu->irq_deassert_count;
 		debug->cr = vu->cr;
 		debug->imsc = vu->imsc;
+		debug->fr = vu->fr;
 		debug->ris = vu->ris;
 		debug->pending = vu->pending;
 		debug->last_tx = vu->last_tx;
@@ -243,6 +283,7 @@ static uint32_t vpl011_read(struct acrn_vm *vm, struct arm64_vpl011 *vu, uint32_
 	struct acrn_vuart *console = vm_console_vuart(vm);
 	uint32_t value = 0U;
 	bool update_irq = false;
+	bool kick_irq = false;
 	char ch;
 
 	switch (offset) {
@@ -253,21 +294,16 @@ static uint32_t vpl011_read(struct acrn_vm *vm, struct arm64_vpl011 *vu, uint32_
 		}
 		if (console_vm_rx_refill(console)) {
 			console->ier |= IER_ERBFI;
+			kick_irq = true;
 		}
 		if (!vuart_rx_pending(console)) {
 			console->ier &= (uint8_t)~IER_ERBFI;
 		}
+		vpl011_refresh_rx_state(console, vu);
 		update_irq = true;
 		break;
 	case PL011_FR:
-		if (vpl011_tx_can_accept(vm)) {
-			value = PL011_FR_TXFE;
-		} else {
-			value = PL011_FR_TXFF | PL011_FR_BUSY;
-		}
-		if (!vuart_rx_pending(console)) {
-			value |= PL011_FR_RXFE;
-		}
+		value = vu->fr;
 		break;
 	case PL011_IBRD:
 		value = vu->ibrd;
@@ -288,12 +324,10 @@ static uint32_t vpl011_read(struct acrn_vm *vm, struct arm64_vpl011 *vu, uint32_
 		value = vu->imsc;
 		break;
 	case PL011_RIS:
-		value = vu->ris | vpl011_rx_int_state(vm);
-		update_irq = true;
+		value = vu->ris;
 		break;
 	case PL011_MIS:
-		value = (vu->ris | vpl011_rx_int_state(vm)) & vu->imsc;
-		update_irq = true;
+		value = vu->ris & vu->imsc;
 		break;
 	default:
 		if ((offset >= PL011_PID_BASE) && (offset < (PL011_PID_BASE + sizeof(pl011_pid) * 4U))) {
@@ -305,7 +339,7 @@ static uint32_t vpl011_read(struct acrn_vm *vm, struct arm64_vpl011 *vu, uint32_
 	}
 
 	if (update_irq) {
-		vpl011_update_irq(vm, vu, false);
+		vpl011_update_irq(vm, vu, kick_irq);
 	} else {
 		vu->pending = vpl011_pending_state(vm, vu);
 	}
@@ -315,7 +349,7 @@ static uint32_t vpl011_read(struct acrn_vm *vm, struct arm64_vpl011 *vu, uint32_
 static void vpl011_write(struct acrn_vm *vm, struct arm64_vpl011 *vu, uint32_t offset, uint32_t value)
 {
 	struct acrn_vuart *console = vm_console_vuart(vm);
-	bool update_irq = true;
+	bool update_irq = false;
 	char ch;
 
 	switch (offset) {
@@ -340,9 +374,14 @@ static void vpl011_write(struct acrn_vm *vm, struct arm64_vpl011 *vu, uint32_t o
 		break;
 	case PL011_IMSC:
 		vpl011_set_imsc(console, vu, value);
+		update_irq = true;
 		break;
 	case PL011_ICR:
 		vu->ris &= ~value;
+		if ((value & PL011_INT_RX_ANY) != 0U) {
+			vpl011_refresh_rx_state(console, vu);
+		}
+		update_irq = true;
 		break;
 	default:
 		break;
