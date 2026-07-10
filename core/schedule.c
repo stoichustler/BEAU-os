@@ -15,13 +15,13 @@
 #include <irq.h>
 #include <trace.h>
 #include <ticks.h>
-#include <vm_config.h>
 #include <logmsg.h>
 #include <asm/guest/vm_reset.h>
 
 static struct list_head thread_list;
 static uint32_t thread_count;
 static bool thread_list_initialized;
+static struct sched_platform_config sched_platform_config;
 
 static void init_thread_list_once(void)
 {
@@ -85,92 +85,105 @@ static inline void set_thread_status(struct thread_object *obj, enum thread_obje
 	obj->status = status;
 }
 
-/*
- * Hybrid scheduler ownership model:
- *
- * 2026-07-10, scheduling principle:
- *
- *   static VM cpu_affinity
- *             |
- *             v
- *      per-pCPU owner
- *       /          \
- *      / shared     \ exclusive
- *     v              v
- *   RTDS           BVT
- *   periodic       proportional
- *   budget         virtual time
- *
- * BEAU keeps one scheduler instance per physical CPU. A thread never carries a
- * scheduler choice of its own; its scheduler is derived from thread->pcpu_id
- * and the selected per-pCPU sched_control. This keeps context-switch, wake, and
- * timer ownership local to one partitioned runqueue.
- *
- * For the ARM64 mixed-criticality scenario, static VM affinity is the policy
- * input:
- * - pCPUs assigned to more than one configured VM are shared cores and use
- *   RTDS, so each runnable vCPU is represented as a periodic budget server.
- * - pCPUs assigned to one configured VM are exclusive cores and use BVT, keeping
- *   the lower-overhead fair-share scheduler for helper threads and private vCPU
- *   execution.
- *
- * This function intentionally uses configured affinity rather than runtime VM
- * state. The scheduler must be selected during pCPU initialization, before all
- * VM threads necessarily exist, and must remain stable for every thread whose
- * private scheduler data was initialized against that pCPU.
- */
-static bool sched_pcpu_is_shared(uint16_t pcpu_id)
+void sched_set_platform_config(const struct sched_platform_config *config)
 {
-	const struct acrn_vm_config *vm_config;
-	uint16_t vm_id;
-	uint32_t users = 0U;
+	if (config == NULL) {
+		(void)memset(&sched_platform_config, 0U, sizeof(sched_platform_config));
+	} else {
+		(void)memcpy(&sched_platform_config, config, sizeof(sched_platform_config));
+	}
+}
 
-	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
-		vm_config = get_vm_config(vm_id);
-		if ((vm_config->cpu_affinity & (1UL << pcpu_id)) == 0UL) {
-			continue;
-		}
+const struct sched_platform_config *sched_get_platform_config(void)
+{
+	return &sched_platform_config;
+}
 
-		users++;
-		if (users > 1U) {
-			return true;
+static bool sched_cpupool_contains(const struct sched_cpupool_config *pool,
+	uint16_t pcpu_id)
+{
+	return (pool != NULL) && pool->configured && pool->has_pcpu_mask &&
+		((pool->pcpu_mask & AFFINITY_CPU(pcpu_id)) != 0UL);
+}
+
+const struct sched_cpupool_config *sched_get_pcpu_pool_config(uint16_t pcpu_id)
+{
+	const struct sched_cpupool_config *pool = NULL;
+
+	if (sched_platform_config.configured) {
+		if (sched_cpupool_contains(&sched_platform_config.exclusive, pcpu_id)) {
+			pool = &sched_platform_config.exclusive;
+		} else if (sched_cpupool_contains(&sched_platform_config.shared, pcpu_id)) {
+			pool = &sched_platform_config.shared;
 		}
 	}
 
-	return false;
+	return pool;
+}
+
+static struct acrn_scheduler *scheduler_from_policy(enum sched_policy_id policy)
+{
+	struct acrn_scheduler *scheduler = NULL;
+
+	switch (policy) {
+	case SCHED_POLICY_NOOP:
+		scheduler = &sched_noop;
+		break;
+	case SCHED_POLICY_IORR:
+		scheduler = &sched_iorr;
+		break;
+	case SCHED_POLICY_BVT:
+		scheduler = &sched_bvt;
+		break;
+	case SCHED_POLICY_RTDS:
+		scheduler = &sched_rtds;
+		break;
+	case SCHED_POLICY_CBS:
+		scheduler = &sched_cbs;
+		break;
+	case SCHED_POLICY_PRIO:
+		scheduler = &sched_prio;
+		break;
+	default:
+		break;
+	}
+
+	return scheduler;
+}
+
+static struct acrn_scheduler *select_dts_pcpu_scheduler(uint16_t pcpu_id)
+{
+	const struct sched_cpupool_config *pool = sched_get_pcpu_pool_config(pcpu_id);
+	struct acrn_scheduler *scheduler;
+
+	/*
+	 * 2026-07-10, DTS scheduler ownership:
+	 *
+	 *   /hypervisor/sched
+	 *       +-- exclusive-cpupool: pcpus + policy
+	 *       +-- shared-cpupool:    pcpus + policy
+	 *                  |
+	 *                  v
+	 *          one fixed scheduler per pCPU
+	 *
+	 * Kconfig only compiles scheduler backends in SCHED_DTS mode. The platform
+	 * device tree owns the pCPU pool membership and the selected algorithm.
+	 */
+	if (!sched_platform_config.configured || (pool == NULL)) {
+		panic("missing DTS scheduler cpupool for pCPU%hu", pcpu_id);
+	}
+
+	scheduler = scheduler_from_policy(pool->policy);
+	if (scheduler == NULL) {
+		panic("invalid DTS scheduler policy for pCPU%hu", pcpu_id);
+	}
+
+	return scheduler;
 }
 
 static struct acrn_scheduler *select_pcpu_scheduler(uint16_t pcpu_id)
 {
-	struct acrn_scheduler *scheduler = NULL;
-
-#if defined(CONFIG_SCHED_BVT) && defined(CONFIG_SCHED_RTDS)
-	/*
-	 * The hybrid policy is deliberately resolved once per pCPU, not per VM or
-	 * per vCPU. BVT and RTDS store different private data in thread_object->data,
-	 * so changing a pCPU's scheduler after threads have been initialized would
-	 * reinterpret that data with the wrong layout.
-	 */
-	scheduler = sched_pcpu_is_shared(pcpu_id) ? &sched_rtds : &sched_bvt;
-#else
-#ifdef CONFIG_SCHED_NOOP
-	scheduler = &sched_noop;
-#endif
-#ifdef CONFIG_SCHED_IORR
-	scheduler = &sched_iorr;
-#endif
-#ifdef CONFIG_SCHED_BVT
-	scheduler = &sched_bvt;
-#endif
-#ifdef CONFIG_SCHED_RTDS
-	scheduler = &sched_rtds;
-#endif
-#ifdef CONFIG_SCHED_PRIO
-	scheduler = &sched_prio;
-#endif
-#endif
-
-	return scheduler;
+	return select_dts_pcpu_scheduler(pcpu_id);
 }
 
 static void sched_mark_runnable(struct thread_object *obj, uint64_t now)
@@ -409,6 +422,12 @@ __attribute__((weak)) bool sched_get_bvt_stats(__unused const struct thread_obje
 
 __attribute__((weak)) bool sched_get_rtds_stats(__unused const struct thread_object *obj,
 	__unused struct sched_rtds_stats *stats)
+{
+	return false;
+}
+
+__attribute__((weak)) bool sched_get_cbs_stats(__unused const struct thread_object *obj,
+	__unused struct sched_cbs_stats *stats)
 {
 	return false;
 }

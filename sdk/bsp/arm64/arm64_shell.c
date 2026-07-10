@@ -177,17 +177,17 @@ static void shell_print_vm_stage2_maps(const struct acrn_vm *vm)
 	char domain[16];
 
 	snprintf(domain, sizeof(domain), "vm-%u s2", vm->vm_id);
-	shell_print_mem_map(domain, "ram", "normal",
+	shell_print_mem_map(domain, "RAM", "normal",
 		arch_config->guest_ram_start,
 		arch_config->guest_ram_hpa,
 		arch_config->guest_ram_size);
-	shell_print_mem_special(domain, "vgicd", "vio",
+	shell_print_mem_special(domain, "vGICD", "vio",
 		arch_config->guest_gicd_base,
 		arch_config->guest_gicd_size);
-	shell_print_mem_special(domain, "vgicr", "vio",
+	shell_print_mem_special(domain, "vGICR", "vio",
 		arch_config->guest_gicr_base,
 		arch_config->guest_gicr_size);
-	shell_print_mem_special(domain, "vpl011", "vio",
+	shell_print_mem_special(domain, "vPL011", "vio",
 		arch_config->guest_uart_base,
 		arch_config->guest_uart_size);
 }
@@ -971,7 +971,7 @@ static const char *shell_vm_state_to_str(enum vm_state state)
 		str = "paused";
 		break;
 	default:
-		str = "unknown";
+		str = "N/A";
 		break;
 	}
 
@@ -996,7 +996,7 @@ static const char *shell_vcpu_state_to_str(enum vcpu_state state)
 		str = "zombie";
 		break;
 	default:
-		str = "unknown";
+		str = "N/A";
 		break;
 	}
 
@@ -1094,19 +1094,19 @@ static const char *shell_vmstat_wdt_reason_to_str(enum vm_wdt_reason reason)
 
 	switch (reason) {
 	case VM_WDT_REASON_HEARTBEAT:
-		str = "Heartbeat";
+		str = "heartbeat";
 		break;
 	case VM_WDT_REASON_VCPU_STALL:
-		str = "vCPUstall";
+		str = "vcpustall";
 		break;
 	case VM_WDT_REASON_IRQ_STORM:
-		str = "IRQstorm";
+		str = "irqstorm";
 		break;
 	case VM_WDT_REASON_CONSOLE_STUCK:
-		str = "consoleStuck";
+		str = "console";
 		break;
 	case VM_WDT_REASON_VIRTIO_STUCK:
-		str = "virtioStuck";
+		str = "virtio";
 		break;
 	case VM_WDT_REASON_NONE:
 	default:

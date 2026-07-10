@@ -43,11 +43,11 @@
 	 * Hardware does not stack x0-x30. Save caller-visible state before the
 	 * C dispatcher can clobber it.
 	 */
-	stp	x0, x1, [sp, #CPU_REGS_OFFSET_X0]
-	stp	x2, x3, [sp, #CPU_REGS_OFFSET_X2]
-	stp	x4, x5, [sp, #CPU_REGS_OFFSET_X4]
-	stp	x6, x7, [sp, #CPU_REGS_OFFSET_X6]
-	stp	x8, x9, [sp, #CPU_REGS_OFFSET_X8]
+	stp	x0,  x1,  [sp, #CPU_REGS_OFFSET_X0]
+	stp	x2,  x3,  [sp, #CPU_REGS_OFFSET_X2]
+	stp	x4,  x5,  [sp, #CPU_REGS_OFFSET_X4]
+	stp	x6,  x7,  [sp, #CPU_REGS_OFFSET_X6]
+	stp	x8,  x9,  [sp, #CPU_REGS_OFFSET_X8]
 	stp	x10, x11, [sp, #CPU_REGS_OFFSET_X10]
 	stp	x12, x13, [sp, #CPU_REGS_OFFSET_X12]
 	stp	x14, x15, [sp, #CPU_REGS_OFFSET_X14]
@@ -91,11 +91,11 @@
 	ldr	x0, [sp, #CPU_REGS_OFFSET_SPSR]
 	/* Restore PSTATE so ERET returns with the original masks and EL mode. */
 	msr	spsr_el2, x0
-	ldp	x0, x1, [sp, #CPU_REGS_OFFSET_X0]
-	ldp	x2, x3, [sp, #CPU_REGS_OFFSET_X2]
-	ldp	x4, x5, [sp, #CPU_REGS_OFFSET_X4]
-	ldp	x6, x7, [sp, #CPU_REGS_OFFSET_X6]
-	ldp	x8, x9, [sp, #CPU_REGS_OFFSET_X8]
+	ldp	x0,  x1,  [sp, #CPU_REGS_OFFSET_X0]
+	ldp	x2,  x3,  [sp, #CPU_REGS_OFFSET_X2]
+	ldp	x4,  x5,  [sp, #CPU_REGS_OFFSET_X4]
+	ldp	x6,  x7,  [sp, #CPU_REGS_OFFSET_X6]
+	ldp	x8,  x9,  [sp, #CPU_REGS_OFFSET_X8]
 	ldp	x10, x11, [sp, #CPU_REGS_OFFSET_X10]
 	ldp	x12, x13, [sp, #CPU_REGS_OFFSET_X12]
 	ldp	x14, x15, [sp, #CPU_REGS_OFFSET_X14]
@@ -253,11 +253,11 @@ vcpu_exit_return:
 	ldr	x0, [sp, #CPU_REGS_OFFSET_SP]
 	/* Restore the guest's SP_EL1 before returning to EL1. */
 	msr	sp_el1, x0
-	ldp	x0, x1, [sp, #CPU_REGS_OFFSET_X0]
-	ldp	x2, x3, [sp, #CPU_REGS_OFFSET_X2]
-	ldp	x4, x5, [sp, #CPU_REGS_OFFSET_X4]
-	ldp	x6, x7, [sp, #CPU_REGS_OFFSET_X6]
-	ldp	x8, x9, [sp, #CPU_REGS_OFFSET_X8]
+	ldp	x0,  x1,  [sp, #CPU_REGS_OFFSET_X0]
+	ldp	x2,  x3,  [sp, #CPU_REGS_OFFSET_X2]
+	ldp	x4,  x5,  [sp, #CPU_REGS_OFFSET_X4]
+	ldp	x6,  x7,  [sp, #CPU_REGS_OFFSET_X6]
+	ldp	x8,  x9,  [sp, #CPU_REGS_OFFSET_X8]
 	ldp	x10, x11, [sp, #CPU_REGS_OFFSET_X10]
 	ldp	x12, x13, [sp, #CPU_REGS_OFFSET_X12]
 	ldp	x14, x15, [sp, #CPU_REGS_OFFSET_X14]

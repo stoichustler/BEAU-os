@@ -116,6 +116,19 @@
 		};
 	};
 
+	hypervisor {
+		sched {
+			exclusive-cpupool {
+				pcpus = <0 1 2 3>;
+				policy = "bvt";
+			};
+			shared-cpupool {
+				pcpus = <0xffffffff>;
+				policy = "cbs";
+			};
+		};
+	};
+
 	vm {
 		compatible = "beau,vm-config";
 		#address-cells = <1>;

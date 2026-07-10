@@ -178,6 +178,21 @@
 		};
 	};
 
+	hypervisor {
+		sched {
+			exclusive-cpupool {
+				pcpus = <0 1 4 7>;
+				policy = "bvt";
+			};
+			shared-cpupool {
+				pcpus = <2 3 5 6>;
+				policy = "cbs";
+				period = <3000>;
+				budget = <1500>;
+			};
+		};
+	};
+
 	vm {
 		compatible = "beau,vm-config";
 		#address-cells = <1>;

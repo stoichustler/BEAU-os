@@ -20,51 +20,42 @@ config LAUNCH_VMS_FROM_BSP
 	  Launch static VMs from the boot CPU after platform initialization.
 	  The current ARM64 static platform path expects this to be enabled.
 
-choice SCHEDULER_POLICY
-	prompt "Scheduler policy"
-	default SCHED_HYBRID_BVT_RTDS
+config SCHED_DTS
+	bool
+	default y
 	help
-	  Select the scheduler sources to compile. The default hybrid policy uses
-	  BVT for non-shared pCPUs and RTDS for shared pCPUs.
-
-config SCHED_HYBRID_BVT_RTDS
-	bool "Hybrid BVT/RTDS"
-	help
-	  Compile both BVT and RTDS. Runtime policy picks RTDS for shared pCPUs
-	  and BVT otherwise.
+	  Compile all built-in scheduler backends. Runtime policy is selected
+	  from /hypervisor/sched cpupool nodes in the static platform device tree.
 
 config SCHED_NOOP
-	bool "No-op"
+	bool
+	default y if SCHED_DTS
 	help
-	  Compile the no-op scheduler for minimal scheduling experiments.
+	  Internal compatibility symbol selecting no-op scheduler code.
 
 config SCHED_IORR
-	bool "I/O round-robin"
+	bool
+	default y if SCHED_DTS
 	help
-	  Compile the I/O round-robin scheduler.
-
-config SCHED_BVT_ONLY
-	bool "BVT only"
-	help
-	  Compile only the Borrowed Virtual Time scheduler.
-
-config SCHED_RTDS_ONLY
-	bool "RTDS only"
-	help
-	  Compile only the Real-Time Deferrable Server scheduler.
-
-config SCHED_PRIO
-	bool "Priority"
-	help
-	  Compile the priority scheduler.
-
-endchoice
+	  Internal compatibility symbol selecting I/O round-robin scheduler code.
 
 config SCHED_BVT
 	bool
-	default y if SCHED_HYBRID_BVT_RTDS || SCHED_BVT_ONLY
+	default y if SCHED_DTS
 	help
 	  Internal compatibility symbol selecting BVT scheduler code.
+
+config SCHED_RTDS
+	bool
+	default y if SCHED_DTS
+	help
+	  Internal compatibility symbol selecting RTDS scheduler code.
+
+config SCHED_CBS
+	bool
+	default y if SCHED_DTS
+	help
+	  Internal compatibility symbol selecting CBS scheduler code.
 
 config SCHED_BVT_MCU_MS
 	int "BVT minimum charging unit in milliseconds"
@@ -85,11 +76,11 @@ config SCHED_BVT_CSA_MCU
 	  programming the one-shot scheduler timer. Increase it to reduce timer
 	  churn; decrease it to reduce wake and fairness latency.
 
-config SCHED_RTDS
+config SCHED_PRIO
 	bool
-	default y if SCHED_HYBRID_BVT_RTDS || SCHED_RTDS_ONLY
+	default y if SCHED_DTS
 	help
-	  Internal compatibility symbol selecting RTDS scheduler code.
+	  Internal compatibility symbol selecting priority scheduler code.
 
 config MAX_EMULATED_MMIO_REGIONS
 	int "Maximum emulated MMIO regions per VM"

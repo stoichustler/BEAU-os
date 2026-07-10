@@ -27,13 +27,7 @@
 #define MAX_VM_OS_NAME_LEN	32U
 #define MAX_MOD_TAG_LEN		32U
 
-#if defined(CONFIG_SCHED_NOOP)
-#define SERVICE_VM_IDLE		""
-#elif defined(CONFIG_SCHED_PRIO)
-#define SERVICE_VM_IDLE		""
-#else
 #define SERVICE_VM_IDLE		"idle=halt "
-#endif
 
 #define PCI_DEV_TYPE_NONE		0U
 #define PCI_DEV_TYPE_PTDEV		(1U << 0U)

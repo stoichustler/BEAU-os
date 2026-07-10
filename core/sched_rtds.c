@@ -483,9 +483,19 @@ static void sched_rtds_deinit(struct sched_control *ctl)
 static void sched_rtds_init_data(struct thread_object *obj, __unused struct sched_params *params)
 {
 	struct sched_rtds_data *data = (struct sched_rtds_data *)obj->data;
+	const struct sched_cpupool_config *pool = sched_get_pcpu_pool_config(obj->pcpu_id);
 	uint32_t period_us = RTDS_DEFAULT_PERIOD_US;
 	uint32_t budget_us = RTDS_DEFAULT_BUDGET_US;
 	uint64_t now = cpu_ticks();
+
+	if ((pool != NULL) && (pool->policy == SCHED_POLICY_RTDS)) {
+		if (pool->period_us != 0U) {
+			period_us = pool->period_us;
+		}
+		if (pool->budget_us != 0U) {
+			budget_us = pool->budget_us;
+		}
+	}
 
 	period_us = max(period_us, RTDS_MIN_PERIOD_US);
 	budget_us = max(budget_us, RTDS_MIN_BUDGET_US);
@@ -631,7 +641,7 @@ bool sched_get_rtds_stats(const struct thread_object *obj, struct sched_rtds_sta
 
 struct acrn_scheduler sched_rtds = {
 	.name		= "sched_rtds",
-	.stat_desc	= "work-conserving partitioned-edf:period=4ms budget=2ms",
+	.stat_desc	= "work-conserving partitioned-edf:dts-defaults",
 	.init		= sched_rtds_init,
 	.init_data	= sched_rtds_init_data,
 	.pick_next	= sched_rtds_pick_next,

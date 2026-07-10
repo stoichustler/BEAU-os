@@ -1566,6 +1566,7 @@ static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 	uint16_t pcpu_num = get_pcpu_nums();
 	bool has_bvt_stats = false;
 	bool has_rtds_stats = false;
+	bool has_cbs_stats = false;
 	uint64_t window_ticks;
 
 	shell_schedstat_take_snapshot(&shell_schedstat_sample);
@@ -1612,6 +1613,7 @@ static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 		struct thread_object *thread = container_of(pos, struct thread_object, node);
 		struct sched_bvt_stats bvt;
 		struct sched_rtds_stats rtds;
+		struct sched_cbs_stats cbs;
 
 		if (sched_get_bvt_stats(thread, &bvt)) {
 			has_bvt_stats = true;
@@ -1619,7 +1621,10 @@ static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 		if (sched_get_rtds_stats(thread, &rtds)) {
 			has_rtds_stats = true;
 		}
-		if (has_bvt_stats && has_rtds_stats) {
+		if (sched_get_cbs_stats(thread, &cbs)) {
+			has_cbs_stats = true;
+		}
+		if (has_bvt_stats && has_rtds_stats && has_cbs_stats) {
 			break;
 		}
 	}
@@ -1677,6 +1682,37 @@ static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 					ticks_to_us(rtds.remaining_ticks),
 					(rtds.deadline_ticks > now) ?
 						ticks_to_us(rtds.deadline_ticks - now) : 0UL);
+				shell_puts(temp_str);
+			}
+		}
+	}
+
+	if (has_cbs_stats) {
+		uint64_t now = cpu_ticks();
+
+		/*
+		 * CBS stats show the active reservation server state. Deadline moves
+		 * forward when budget is replenished after depletion or wake admission.
+		 */
+		shell_puts("\r\nCBS stats:\r\n\r\n");
+		shell_puts("name             pcpu  state     period.us  budget.us  remain.us  deadline-in.us\r\n");
+		shell_puts("───────────────  ────  ────────  ─────────  ─────────  ─────────  ──────────────\r\n");
+
+		list_for_each(pos, head) {
+			struct thread_object *thread = container_of(pos, struct thread_object, node);
+			struct sched_cbs_stats cbs;
+
+			if (sched_get_cbs_stats(thread, &cbs)) {
+				snprintf(temp_str, MAX_STR_SIZE,
+					"%-15s  %-4hu  %-8s  %-9lu  %-9lu  %-9lu  %-11lu\r\n",
+					thread->name,
+					thread->pcpu_id,
+					thread_state_str(thread->status),
+					ticks_to_us(cbs.period_ticks),
+					ticks_to_us(cbs.budget_ticks),
+					ticks_to_us(cbs.remaining_ticks),
+					(cbs.deadline_ticks > now) ?
+						ticks_to_us(cbs.deadline_ticks - now) : 0UL);
 				shell_puts(temp_str);
 			}
 		}

@@ -42,6 +42,35 @@ struct sched_params {
 	int32_t bvt_warp_value;	/* EVT credit in MCU units while warp is active */
 	uint32_t bvt_warp_limit;	/* max charged MCU units for one warp window */
 	uint32_t bvt_unwarp_period;	/* cooldown in MCU units after a warp ends */
+
+	/* per-thread parameters for the CBS scheduler */
+	uint32_t cbs_period_us;	/* server period in microseconds */
+	uint32_t cbs_budget_us;	/* server execution budget in microseconds */
+};
+
+enum sched_policy_id {
+	SCHED_POLICY_NONE = 0,
+	SCHED_POLICY_NOOP,
+	SCHED_POLICY_IORR,
+	SCHED_POLICY_BVT,
+	SCHED_POLICY_RTDS,
+	SCHED_POLICY_CBS,
+	SCHED_POLICY_PRIO,
+};
+
+struct sched_cpupool_config {
+	bool configured;
+	bool has_pcpu_mask;
+	uint64_t pcpu_mask;
+	enum sched_policy_id policy;
+	uint32_t period_us;
+	uint32_t budget_us;
+};
+
+struct sched_platform_config {
+	bool configured;
+	struct sched_cpupool_config exclusive;
+	struct sched_cpupool_config shared;
 };
 
 struct sched_latency_stats {
@@ -61,6 +90,14 @@ struct sched_bvt_stats {
 };
 
 struct sched_rtds_stats {
+	uint64_t period_ticks;
+	uint64_t budget_ticks;
+	uint64_t remaining_ticks;
+	uint64_t deadline_ticks;
+	uint64_t last_start_ticks;
+};
+
+struct sched_cbs_stats {
 	uint64_t period_ticks;
 	uint64_t budget_ticks;
 	uint64_t remaining_ticks;
@@ -120,7 +157,7 @@ struct sched_control {
 	volatile bool priority_pending;
 };
 
-#define SCHEDULER_MAX_NUMBER 5U
+#define SCHEDULER_MAX_NUMBER 6U
 struct acrn_scheduler {
 	char name[16];
 	char stat_desc[64];
@@ -175,6 +212,14 @@ struct sched_rtds_control {
 	struct hv_timer tick_timer;
 };
 
+extern struct acrn_scheduler sched_cbs;
+struct sched_cbs_control {
+	struct list_head runqueue;
+	struct hv_timer tick_timer;
+	/* Cached one-shot deadline; 0 means no CBS timer is armed. */
+	uint64_t timer_deadline_ticks;
+};
+
 extern struct acrn_scheduler sched_prio;
 struct sched_prio_control {
 	struct list_head prio_queue;
@@ -194,6 +239,10 @@ void sched_account_tick(struct sched_control *ctl);
 void sched_get_latency(const struct thread_object *obj, struct sched_latency_stats *stats);
 bool sched_get_bvt_stats(const struct thread_object *obj, struct sched_bvt_stats *stats);
 bool sched_get_rtds_stats(const struct thread_object *obj, struct sched_rtds_stats *stats);
+bool sched_get_cbs_stats(const struct thread_object *obj, struct sched_cbs_stats *stats);
+void sched_set_platform_config(const struct sched_platform_config *config);
+const struct sched_platform_config *sched_get_platform_config(void);
+const struct sched_cpupool_config *sched_get_pcpu_pool_config(uint16_t pcpu_id);
 
 void init_sched(uint16_t pcpu_id);
 void deinit_sched(uint16_t pcpu_id);

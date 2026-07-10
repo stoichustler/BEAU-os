@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <bare.h>
 #include <vm_config.h>
+#include <schedule.h>
 #include <libfdt.h>
 #include <logmsg.h>
 #include <rtl.h>
@@ -235,6 +236,17 @@ static const char *dts_string_prop(const void *fdt, int32_t node, const char *na
 	const char *value = fdt_getprop(fdt, node, name, NULL);
 
 	return value != NULL ? value : default_value;
+}
+
+static const char *dts_required_string_prop(const void *fdt, int32_t node, const char *name)
+{
+	const char *value = fdt_getprop(fdt, node, name, NULL);
+
+	if (value == NULL) {
+		arm64_dts_panic(name, -FDT_ERR_NOTFOUND);
+	}
+
+	return value;
 }
 
 static bool dts_stringlist_contains(const void *fdt, int32_t node, const char *name,
@@ -811,6 +823,10 @@ static void dts_parse_sched(const void *fdt, int32_t vm_node,
 			dts_u32_prop(fdt, sched, "bvt-warp-limit", 0U);
 		vm_config->sched_params.bvt_unwarp_period =
 			dts_u32_prop(fdt, sched, "bvt-unwarp-period", 0U);
+		vm_config->sched_params.cbs_period_us =
+			dts_u32_prop(fdt, sched, "cbs-period-us", 0U);
+		vm_config->sched_params.cbs_budget_us =
+			dts_u32_prop(fdt, sched, "cbs-budget-us", 0U);
 	}
 }
 
@@ -1094,6 +1110,140 @@ static void dts_parse_boot_options(const void *fdt, int32_t vm_root,
 	*dts_storage->boot_option_count = dts_bare_boot_option_count;
 }
 
+static enum sched_policy_id dts_parse_sched_policy(const char *policy)
+{
+	enum sched_policy_id sched_policy = SCHED_POLICY_NONE;
+
+	if (strcmp(policy, "noop") == 0) {
+		sched_policy = SCHED_POLICY_NOOP;
+	} else if (strcmp(policy, "iorr") == 0) {
+		sched_policy = SCHED_POLICY_IORR;
+	} else if (strcmp(policy, "bvt") == 0) {
+		sched_policy = SCHED_POLICY_BVT;
+	} else if (strcmp(policy, "rtds") == 0) {
+		sched_policy = SCHED_POLICY_RTDS;
+	} else if (strcmp(policy, "cbs") == 0) {
+		sched_policy = SCHED_POLICY_CBS;
+	} else if (strcmp(policy, "prio") == 0) {
+		sched_policy = SCHED_POLICY_PRIO;
+	} else {
+		panic("unknown arm64 dts scheduler policy '%s'", policy);
+	}
+
+	return sched_policy;
+}
+
+static uint64_t dts_all_pcpus_mask(void)
+{
+	return (MAX_PCPU_NUM >= 64U) ? UINT64_MAX : ((1UL << MAX_PCPU_NUM) - 1UL);
+}
+
+static uint64_t dts_parse_sched_pcpus(const void *fdt, int32_t node)
+{
+	const fdt32_t *prop;
+	int32_t len;
+	int32_t cells;
+	int32_t i;
+	uint32_t pcpu_id;
+	uint64_t mask = 0UL;
+
+	prop = fdt_getprop(fdt, node, "pcpus", &len);
+	if ((prop == NULL) || (len <= 0) || ((len % (int32_t)sizeof(fdt32_t)) != 0)) {
+		arm64_dts_panic("scheduler pcpus", prop == NULL ? len : -EINVAL);
+	}
+
+	cells = len / (int32_t)sizeof(fdt32_t);
+	if ((cells == 1) && (fdt32_to_cpu(prop[0]) == UINT32_MAX)) {
+		return 0UL;
+	}
+
+	for (i = 0; i < cells; i++) {
+		pcpu_id = fdt32_to_cpu(prop[i]);
+		if (pcpu_id >= MAX_PCPU_NUM) {
+			panic("invalid arm64 dts scheduler pcpu id %u", pcpu_id);
+		}
+		if ((mask & AFFINITY_CPU(pcpu_id)) != 0UL) {
+			panic("duplicate arm64 dts scheduler pcpu id %u", pcpu_id);
+		}
+		mask |= AFFINITY_CPU(pcpu_id);
+	}
+
+	return mask;
+}
+
+static void dts_parse_sched_cpupool(const void *fdt, int32_t sched,
+	const char *node_name, struct sched_cpupool_config *pool)
+{
+	int32_t node = dts_child_by_unit_name(fdt, sched, node_name);
+
+	if (node < 0) {
+		arm64_dts_panic(node_name, node);
+	}
+
+	(void)memset(pool, 0U, sizeof(*pool));
+	pool->configured = true;
+	pool->has_pcpu_mask = true;
+	pool->pcpu_mask = dts_parse_sched_pcpus(fdt, node);
+	pool->policy = dts_parse_sched_policy(dts_required_string_prop(fdt, node, "policy"));
+	pool->period_us = dts_u32_prop(fdt, node, "period",
+		dts_u32_prop(fdt, node, "cbs-period-us",
+		dts_u32_prop(fdt, node, "rtds-period-us", 0U)));
+	pool->budget_us = dts_u32_prop(fdt, node, "budget",
+		dts_u32_prop(fdt, node, "cbs-budget-us",
+		dts_u32_prop(fdt, node, "rtds-budget-us", 0U)));
+}
+
+static void dts_validate_sched_config(const struct sched_platform_config *config)
+{
+	uint64_t exclusive_mask = config->exclusive.pcpu_mask;
+	uint64_t shared_mask = config->shared.pcpu_mask;
+	uint64_t all_mask = dts_all_pcpus_mask();
+
+	if (((exclusive_mask & shared_mask) != 0UL) ||
+		(((exclusive_mask | shared_mask) & ~all_mask) != 0UL)) {
+		panic("invalid arm64 dts scheduler cpupool overlap");
+	}
+	if ((exclusive_mask == 0UL) && (shared_mask == 0UL)) {
+		panic("arm64 dts scheduler cpupools cannot both be empty");
+	}
+	if ((exclusive_mask | shared_mask) != all_mask) {
+		panic("arm64 dts scheduler cpupools do not cover all pCPUs");
+	}
+}
+
+static void dts_parse_hypervisor_sched(const void *fdt)
+{
+	struct sched_platform_config config = { 0U };
+	int32_t hypervisor;
+	int32_t sched;
+
+	/*
+	 * 2026-07-10, scheduler policy comes only from platform.dts:
+	 *
+	 *   /hypervisor/sched
+	 *       +-- exclusive-cpupool: pcpus + policy
+	 *       +-- shared-cpupool:    pcpus + policy
+	 *
+	 * `pcpus = <-1>` is an explicit empty pool. It is valid for either pool
+	 * but not for both, and the non-empty side must still cover every pCPU not
+	 * listed in the other pool.
+	 */
+	hypervisor = fdt_path_offset(fdt, "/hypervisor");
+	if (hypervisor < 0) {
+		arm64_dts_panic("/hypervisor", hypervisor);
+	}
+	sched = dts_child_by_unit_name(fdt, hypervisor, "sched");
+	if (sched < 0) {
+		arm64_dts_panic("/hypervisor/sched", sched);
+	}
+
+	config.configured = true;
+	dts_parse_sched_cpupool(fdt, sched, "exclusive-cpupool", &config.exclusive);
+	dts_parse_sched_cpupool(fdt, sched, "shared-cpupool", &config.shared);
+	dts_validate_sched_config(&config);
+	sched_set_platform_config(&config);
+}
+
 void arm64_platform_dts_parse_vms(const void *fdt,
 	const struct arm64_platform_dts_ops *ops,
 	const struct arm64_platform_dts_vm_storage *storage)
@@ -1128,6 +1278,8 @@ void arm64_platform_dts_parse_vms(const void *fdt,
 	(void)memset(dts_storage->boot_options, 0U,
 		dts_storage->boot_option_capacity * sizeof(dts_storage->boot_options[0]));
 	*dts_storage->boot_option_count = 0U;
+
+	dts_parse_hypervisor_sched(fdt);
 
 	vm_root = fdt_path_offset(fdt, "/vm");
 	if (vm_root < 0) {
