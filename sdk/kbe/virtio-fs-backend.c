@@ -722,6 +722,7 @@ static int beau_backend_thread(void *data)
 	};
 	long ret;
 	unsigned int idx = 0;
+	unsigned int idle_polls = 0U;
 
 	memset(ioc, 0, sizeof(*ioc));
 	ioc->op = BEAU_PROXY_OP_REGISTER;
@@ -744,12 +745,13 @@ static int beau_backend_thread(void *data)
 		ioc->in_len = BEAU_PROXY_DATA_MAX;
 		ret = beau_hcall_virtio_proxy_backend(ioc);
 		if (ret) {
-			msleep(10);
+			beau_proxy_poll_idle_delay(&idle_polls);
 			continue;
 		}
+		beau_proxy_poll_active(&idle_polls);
 		ret = beau_handle_one(ioc);
 		if (ret)
-			msleep(10);
+			beau_proxy_poll_idle_delay(&idle_polls);
 	}
 
 	return 0;

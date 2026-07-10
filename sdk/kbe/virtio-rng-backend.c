@@ -81,6 +81,7 @@ static int beau_rng_handle_one(struct beau_proxy_ioc *ioc)
 static int beau_rng_backend_thread(void *data)
 {
 	struct beau_proxy_ioc *ioc = &beau_rng_backend.ioc;
+	unsigned int idle_polls = 0U;
 	long ret;
 
 	memset(ioc, 0, sizeof(*ioc));
@@ -104,12 +105,13 @@ static int beau_rng_backend_thread(void *data)
 		ioc->in_len = BEAU_PROXY_DATA_MAX;
 		ret = beau_hcall_virtio_proxy_backend(ioc);
 		if (ret) {
-			msleep(10);
+			beau_proxy_poll_idle_delay(&idle_polls);
 			continue;
 		}
+		beau_proxy_poll_active(&idle_polls);
 		ret = beau_rng_handle_one(ioc);
 		if (ret)
-			msleep(10);
+			beau_proxy_poll_idle_delay(&idle_polls);
 	}
 
 	return 0;

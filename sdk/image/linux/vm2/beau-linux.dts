@@ -116,4 +116,11 @@
 		interrupts = <0 19 4>;
 		status = "okay";
 	};
+
+	virtio_mmio@a000800 {
+		compatible = "virtio,mmio";
+		reg = <0x0 0x0a000800 0x0 0x00000200>;
+		interrupts = <0 20 4>;
+		status = "okay";
+	};
 };

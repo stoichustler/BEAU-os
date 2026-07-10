@@ -537,9 +537,10 @@ void virtio_proxy_init_vm(struct acrn_vm *vm)
 		dev->hcall_backend_expected = true;
 		dev->backend_vmid = ACRN_INVALID_VMID;
 		dev->state = VIRTIO_PROXY_STATE_WAIT_BACKEND;
-		dev->pending_limit =
-			(dev->throughput == VIRTIO_PROXY_THROUGHPUT_HIGH) ?
-			VIRTIO_PROXY_PENDING_HIGH : VIRTIO_PROXY_PENDING_LOW;
+			dev->pending_limit = proxy_config->pending_num != 0U ?
+				proxy_config->pending_num :
+				((dev->throughput == VIRTIO_PROXY_THROUGHPUT_HIGH) ?
+				VIRTIO_PROXY_PENDING_HIGH : VIRTIO_PROXY_PENDING_LOW);
 		if (dev->pending_limit > ARRAY_SIZE(dev->pending)) {
 			dev->pending_limit = ARRAY_SIZE(dev->pending);
 		}
@@ -560,10 +561,16 @@ void virtio_proxy_init_vm(struct acrn_vm *vm)
 		init.device_id = dev->device_id;
 		init.queue_num = proxy_config->queue_num;
 		init.queue_size = proxy_config->queue_size;
-		init.device_features =
-			(dev->device_id == VIRTIO_DEVICE_ID_BLOCK) ?
-			((1UL << VIRTIO_BLK_F_SIZE_MAX) |
-			(1UL << VIRTIO_BLK_F_SEG_MAX)) : 0UL;
+		if (dev->device_id == VIRTIO_DEVICE_ID_BLOCK) {
+			init.device_features =
+				(1UL << VIRTIO_BLK_F_SIZE_MAX) |
+				(1UL << VIRTIO_BLK_F_SEG_MAX);
+		} else if (dev->device_id == VIRTIO_DEVICE_ID_I2C) {
+			init.device_features =
+				1UL << VIRTIO_I2C_F_ZERO_LENGTH_REQUEST;
+		} else {
+			init.device_features = 0UL;
+		}
 		init.ops = &virtio_proxy_mmio_ops;
 		init.priv = dev;
 		virtio_mmio_init(&dev->mmio, &init);
@@ -964,10 +971,20 @@ static int32_t virtio_proxy_hcall_register(struct acrn_vcpu *vcpu,
 {
 	struct virtio_proxy_dev *dev = virtio_proxy_find_dev_by_device_id(
 		ioc->frontend_vmid, ioc->device_id);
+	uint8_t config[VIRTIO_PROXY_CONFIG_SIZE];
 	int32_t ret = -ENODEV;
 
 	if ((dev != NULL) && (dev->mmio.vm != NULL) &&
 		(dev->mmio.vm->vm_id != vcpu->vm->vm_id)) {
+		if ((ioc->register_flags & ACRN_VIRTIO_PROXY_REG_F_CONFIG) != 0U) {
+			if ((ioc->config_len > sizeof(config)) ||
+				((ioc->config_len != 0U) && (ioc->config_gpa == 0UL)) ||
+				((ioc->config_len != 0U) &&
+				(copy_from_gpa(vcpu->vm, config, ioc->config_gpa,
+				ioc->config_len) != 0))) {
+				return -EFAULT;
+			}
+		}
 		spinlock_obtain(&dev->lock);
 		dev->hcall_register_count++;
 		if (dev->hcall_backend_registered &&
@@ -977,6 +994,13 @@ static int32_t virtio_proxy_hcall_register(struct acrn_vcpu *vcpu,
 			dev->hcall_backend_registered = true;
 			dev->backend_vmid = vcpu->vm->vm_id;
 			dev->no_backend_logged = false;
+			if ((ioc->register_flags & ACRN_VIRTIO_PROXY_REG_F_FEATURES) != 0U) {
+				(void)virtio_proxy_set_device_features(dev,
+					ioc->device_features);
+			}
+			if ((ioc->register_flags & ACRN_VIRTIO_PROXY_REG_F_CONFIG) != 0U) {
+				(void)virtio_proxy_set_config(dev, config, ioc->config_len);
+			}
 			virtio_proxy_update_state_locked(dev);
 			ret = 0;
 		}

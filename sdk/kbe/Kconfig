@@ -49,4 +49,15 @@ config BEAU_VIRTIOBLK_BACKEND
 	  data buffers, and status descriptors; VM1 stores data in a small RAM
 	  disk and completes the descriptor through BEAU.
 
+config BEAU_VIRTIOI2C_BACKEND
+	bool "BEAU VM1 virtio-i2c EEPROM backend"
+	default y
+	help
+	  Service BEAU virtio-proxy I2C requests from a backend Linux VM.
+
+	  Enable this with a frontend virtio-proxy device advertising virtio I2C
+	  adapter device id 34. VM2's standard virtio-i2c frontend sends I2C
+	  message descriptors; VM1 exposes a small in-memory device at 7-bit
+	  address 0x50 for QEMU validation with i2c-tools.
+
 endif

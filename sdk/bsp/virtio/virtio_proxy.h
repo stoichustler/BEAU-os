@@ -109,8 +109,7 @@
 #define VIRTIO_PROXY_CONFIG_SIZE	64U
 #define VIRTIO_PROXY_CHAIN_LIMIT	ACRN_VIRTIO_PROXY_DESC_MAX
 #define VIRTIO_PROXY_PENDING_LOW	1U
-#define VIRTIO_PROXY_PENDING_HIGH	4U
-#define VIRTIO_PROXY_PENDING_MAX	VIRTIO_PROXY_PENDING_HIGH
+#define VIRTIO_PROXY_PENDING_HIGH	VIRTIO_PROXY_PENDING_MAX
 #define VIRTIO_PROXY_TIMEOUT_US		100000U
 
 /* Minimal virtio-blk feature/config values used by the QEMU validation path. */
@@ -119,6 +118,9 @@
 #define VIRTIO_PROXY_BLK_SIZE_MAX	4096U
 #define VIRTIO_PROXY_BLK_SEG_MAX	1U
 #define VIRTIO_PROXY_BLK_CAPACITY	2048UL
+
+/* virtio-i2c feature bits used by the QEMU validation path. */
+#define VIRTIO_I2C_F_ZERO_LENGTH_REQUEST	0U
 
 /*
  * struct virtio_proxy_fs_config - static virtio-fs config-space image.

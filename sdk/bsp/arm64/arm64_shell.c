@@ -2,7 +2,7 @@
  * Copyright (C) 2026 Hustler Lo.
  *
  * SPDX-License-Identifier: BSD-3-Clause
-		 */
+ */
 
 #include <types.h>
 #include <cpu.h>
@@ -1480,6 +1480,9 @@ static const char *shell_virtio_device_to_str(uint32_t device_id)
 	case VIRTIO_DEVICE_ID_RNG:
 		str = "virtio-rng";
 		break;
+	case VIRTIO_DEVICE_ID_I2C:
+		str = "virtio-i2c";
+		break;
 	default:
 		str = "virtio-dev";
 		break;
@@ -1556,7 +1559,8 @@ static bool shell_virtio_is_grouped_device(uint32_t device_id)
 {
 	return (device_id == VIRTIO_DEVICE_ID_FS) ||
 		(device_id == VIRTIO_DEVICE_ID_RNG) ||
-		(device_id == VIRTIO_DEVICE_ID_BLOCK);
+		(device_id == VIRTIO_DEVICE_ID_BLOCK) ||
+		(device_id == VIRTIO_DEVICE_ID_I2C);
 }
 
 static void shell_virtiostat_print_summary_device(const struct virtio_proxy_stats *stats)
@@ -1658,6 +1662,7 @@ static void shell_virtiostat_print_summary(void)
 	(void)shell_virtiostat_print_summary_for_device(VIRTIO_DEVICE_ID_FS);
 	(void)shell_virtiostat_print_summary_for_device(VIRTIO_DEVICE_ID_RNG);
 	(void)shell_virtiostat_print_summary_for_device(VIRTIO_DEVICE_ID_BLOCK);
+	(void)shell_virtiostat_print_summary_for_device(VIRTIO_DEVICE_ID_I2C);
 	shell_virtiostat_print_summary_others();
 }
 

@@ -28,11 +28,29 @@
 #define BEAU_BLK_DISK_BYTES		(1024U * 1024U)
 #define BEAU_BLK_ID			"beau-ramblk"
 
+struct beau_blk_config {
+	u64 capacity;
+	u32 size_max;
+	u32 seg_max;
+	u16 cylinders;
+	u8 heads;
+	u8 sectors;
+	u32 blk_size;
+	u8 physical_block_exp;
+	u8 alignment_offset;
+	u16 min_io_size;
+	u32 opt_io_size;
+	u8 wce;
+	u8 unused;
+	u16 num_queues;
+};
+
 struct beau_blk_backend {
 	struct task_struct *thread;
 	void *in;
 	void *out;
 	u8 *disk;
+	struct beau_blk_config config;
 	struct beau_proxy_ioc ioc;
 };
 
@@ -166,12 +184,18 @@ static int beau_blk_handle_one(struct beau_proxy_ioc *ioc)
 static int beau_blk_backend_thread(void *data)
 {
 	struct beau_proxy_ioc *ioc = &beau_blk_backend.ioc;
+	unsigned int idle_polls = 0U;
 	long ret;
 
 	memset(ioc, 0, sizeof(*ioc));
 	ioc->op = BEAU_PROXY_OP_REGISTER;
 	ioc->device_id = BEAU_PROXY_DEVICE_BLK;
 	ioc->frontend_vmid = BEAU_PROXY_FRONTEND_VM2;
+	ioc->device_features = (1ULL << VIRTIO_BLK_F_SIZE_MAX) |
+		(1ULL << VIRTIO_BLK_F_SEG_MAX);
+	ioc->config_gpa = virt_to_phys(&beau_blk_backend.config);
+	ioc->config_len = sizeof(beau_blk_backend.config);
+	ioc->register_flags = BEAU_PROXY_REG_F_FEATURES | BEAU_PROXY_REG_F_CONFIG;
 	while (!kthread_should_stop()) {
 		ret = beau_hcall_virtio_proxy_backend(ioc);
 		if (!ret)
@@ -189,12 +213,13 @@ static int beau_blk_backend_thread(void *data)
 		ioc->in_len = BEAU_PROXY_DATA_MAX;
 		ret = beau_hcall_virtio_proxy_backend(ioc);
 		if (ret) {
-			msleep(10);
+			beau_proxy_poll_idle_delay(&idle_polls);
 			continue;
 		}
+		beau_proxy_poll_active(&idle_polls);
 		ret = beau_blk_handle_one(ioc);
 		if (ret)
-			msleep(10);
+			beau_proxy_poll_idle_delay(&idle_polls);
 	}
 
 	return 0;
@@ -218,6 +243,9 @@ static int __init beau_virtioblk_backend_init(void)
 		vfree(beau_blk_backend.disk);
 		return -ENOMEM;
 	}
+	beau_blk_backend.config.capacity = BEAU_BLK_DISK_BYTES / BEAU_BLK_SECTOR_SIZE;
+	beau_blk_backend.config.size_max = 4096U;
+	beau_blk_backend.config.seg_max = 1U;
 
 	beau_blk_backend.thread = kthread_run(beau_blk_backend_thread, NULL,
 					      "beau-virtioblk-backend");

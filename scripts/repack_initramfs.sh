@@ -5,8 +5,13 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 ARCHIVE=${1:-"$ROOT/sdk/image/linux/Initramfs.cpio.gz"}
+case "$ARCHIVE" in
+/*) ;;
+*) ARCHIVE="$ROOT/$ARCHIVE" ;;
+esac
 TMPDIR_ROOT=${TMPDIR:-/tmp}
 WORKDIR=$(mktemp -d "$TMPDIR_ROOT/beau-initramfs.XXXXXX")
+ALPINE_MIRROR=${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}
 
 cleanup()
 {
@@ -14,6 +19,66 @@ cleanup()
 }
 
 trap cleanup EXIT
+
+fetch_url()
+{
+	url=$1
+	out=$2
+
+	if command -v curl >/dev/null 2>&1; then
+		curl -fsSL "$url" -o "$out"
+	elif command -v wget >/dev/null 2>&1; then
+		wget -q -O "$out" "$url"
+	else
+		echo "curl or wget is required to fetch $url" >&2
+		return 1
+	fi
+}
+
+install_alpine_apk()
+{
+	pkg=$1
+	repo=$2
+	arch=$(cat "$WORKDIR/etc/apk/arch")
+	version=$(cut -d. -f1,2 "$WORKDIR/etc/alpine-release")
+	index="$WORKDIR/tmp/APKINDEX.$repo.tar.gz"
+	apkindex="$WORKDIR/tmp/APKINDEX.$repo"
+	apkver=
+	apkfile=
+	url=
+
+	mkdir -p "$WORKDIR/tmp"
+	fetch_url "$ALPINE_MIRROR/v$version/$repo/$arch/APKINDEX.tar.gz" "$index"
+	tar -xzf "$index" -O APKINDEX > "$apkindex"
+	apkver=$(awk -v pkg="$pkg" 'BEGIN { RS = ""; FS = "\n" }
+		{
+			name = "";
+			ver = "";
+			for (i = 1; i <= NF; i++) {
+				if ($i == "P:" pkg) {
+					name = pkg;
+				} else if (substr($i, 1, 2) == "V:") {
+					ver = substr($i, 3);
+				}
+			}
+			if (name != "" && ver != "") {
+				print ver;
+				exit;
+			}
+		}' "$apkindex")
+	if [ -z "$apkver" ]; then
+		echo "package $pkg not found in Alpine v$version/$repo/$arch" >&2
+		return 1
+	fi
+
+	apkfile="$WORKDIR/tmp/$pkg-$apkver.apk"
+	url="$ALPINE_MIRROR/v$version/$repo/$arch/$pkg-$apkver.apk"
+	fetch_url "$url" "$apkfile"
+	tar --warning=no-unknown-keyword \
+		--exclude='.SIGN*' --exclude='.PKGINFO' \
+		-xzf "$apkfile" -C "$WORKDIR"
+	rm -f "$WORKDIR"/.SIGN* "$WORKDIR/.PKGINFO"
+}
 
 gzip -dc "$ARCHIVE" | (cd "$WORKDIR" && cpio -id --quiet --no-absolute-filenames)
 chmod 0755 "$WORKDIR"
@@ -98,5 +163,7 @@ EOF
 chmod 0755 "$WORKDIR/init"
 mkdir -p "$WORKDIR/var/beau"
 chmod 0755 "$WORKDIR/var" "$WORKDIR/var/beau"
+install_alpine_apk i2c-tools community
+rm -rf "$WORKDIR/tmp"
 (cd "$WORKDIR" && find . -print0 | cpio --null -o --quiet -H newc -R 0:0 | gzip -9 > "$ARCHIVE.tmp")
 mv "$ARCHIVE.tmp" "$ARCHIVE"

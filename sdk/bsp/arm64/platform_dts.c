@@ -963,11 +963,14 @@ static void dts_parse_arch(const void *fdt, int32_t generic, uint16_t vm_id,
 		proxy_config->queue_num =
 			(uint16_t)dts_u32_prop(fdt, virtio_proxy, "beau,queue-num",
 				VIRTIO_PROXY_QUEUE_NUM_DEFAULT);
-		proxy_config->queue_size =
-			(uint16_t)dts_u32_prop(fdt, virtio_proxy, "beau,queue-size",
-				VIRTIO_PROXY_QUEUE_SIZE_DEFAULT);
-		dts_copy_string(proxy_config->tag, sizeof(proxy_config->tag),
-			dts_string_prop(fdt, virtio_proxy, "beau,tag", "beau"));
+			proxy_config->queue_size =
+				(uint16_t)dts_u32_prop(fdt, virtio_proxy, "beau,queue-size",
+					VIRTIO_PROXY_QUEUE_SIZE_DEFAULT);
+			proxy_config->pending_num =
+				(uint16_t)dts_u32_prop(fdt, virtio_proxy, "beau,pending-num",
+					0U);
+			dts_copy_string(proxy_config->tag, sizeof(proxy_config->tag),
+				dts_string_prop(fdt, virtio_proxy, "beau,tag", "beau"));
 		proxy_config->throughput = dts_parse_virtio_proxy_throughput(fdt,
 			virtio_proxy);
 		/*
@@ -985,11 +988,12 @@ static void dts_parse_arch(const void *fdt, int32_t generic, uint16_t vm_id,
 		proxy_config->access =
 			(strcmp(access, "ro") == 0) ? VIRTIO_PROXY_ACCESS_READONLY :
 			VIRTIO_PROXY_ACCESS_READWRITE;
-		if ((proxy_config->size == 0UL) || (proxy_config->queue_num == 0U) ||
-			(proxy_config->queue_num > VIRTIO_MMIO_MAX_QUEUES) ||
-			(proxy_config->queue_size == 0U)) {
-			arm64_dts_panic("virtio-proxy queue", -EINVAL);
-		}
+			if ((proxy_config->size == 0UL) || (proxy_config->queue_num == 0U) ||
+				(proxy_config->queue_num > VIRTIO_MMIO_MAX_QUEUES) ||
+				(proxy_config->queue_size == 0U) ||
+				(proxy_config->pending_num > VIRTIO_PROXY_PENDING_MAX)) {
+				arm64_dts_panic("virtio-proxy queue", -EINVAL);
+			}
 		proxy_count++;
 	}
 	vm_config->arch.guest_virtio_proxy_num = proxy_count;

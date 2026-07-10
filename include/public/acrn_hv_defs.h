@@ -255,6 +255,8 @@ struct acrn_hw_info {
 #define ACRN_VIRTIO_PROXY_DATA_MAX	8192U
 #define ACRN_VIRTIO_PROXY_DESC_MAX	8U
 #define ACRN_VIRTIO_PROXY_FLAG_RO	0x1U
+#define ACRN_VIRTIO_PROXY_REG_F_FEATURES	0x1U
+#define ACRN_VIRTIO_PROXY_REG_F_CONFIG	0x2U
 
 struct acrn_virtio_proxy_desc {
 	uint32_t len;
@@ -279,6 +281,10 @@ struct acrn_virtio_proxy_ioc {
 	uint32_t out_len;
 	uint64_t in_gpa;
 	uint64_t out_gpa;
+	uint64_t device_features;
+	uint64_t config_gpa;
+	uint32_t config_len;
+	uint32_t register_flags;
 	struct acrn_virtio_proxy_desc desc[ACRN_VIRTIO_PROXY_DESC_MAX];
 } __aligned(8);
 

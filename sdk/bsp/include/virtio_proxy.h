@@ -22,6 +22,7 @@ struct virtio_proxy_dev;
 #define VIRTIO_PROXY_TAG_MAX		36U
 #define VIRTIO_PROXY_QUEUE_NUM_DEFAULT	2U
 #define VIRTIO_PROXY_QUEUE_SIZE_DEFAULT	64U
+#define VIRTIO_PROXY_PENDING_MAX	4U
 
 /* Frontend/backend lifecycle states exported through virtiostat. */
 #define VIRTIO_PROXY_STATE_WAIT_BACKEND		0U
