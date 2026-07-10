@@ -1080,7 +1080,7 @@ static void console_vm_ring_write_prefixed(uint16_t vmid, struct vm_console_ring
 	 * Prefix each visible guest line so interleaved host/guest diagnostics can
 	 * still be attributed after copying logs from a single serial stream.
 	 */
-	(void)snprintf(prefix, sizeof(prefix), "VM%u: ", vmid);
+	(void)snprintf(prefix, sizeof(prefix), "[vmid %u] ", vmid);
 	prefix_len = strnlen_s(prefix, sizeof(prefix));
 
 	for (uint32_t idx = 0U; idx < len; idx++) {
