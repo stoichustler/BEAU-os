@@ -435,7 +435,6 @@ static void dts_parse_passthrough_policy(const void *fdt, int32_t platform)
 {
 	int32_t passthrough;
 	int32_t node;
-	uint32_t count = 0U;
 
 	passthrough = dts_child_by_unit_name(fdt, platform, "passthrough");
 	if (passthrough < 0) {
@@ -445,12 +444,7 @@ static void dts_parse_passthrough_policy(const void *fdt, int32_t platform)
 	fdt_for_each_subnode(node, fdt, passthrough) {
 		if (dts_has_compatible(fdt, node, "beau,passthrough-device")) {
 			dts_parse_passthrough_device(fdt, node);
-			count++;
 		}
-	}
-
-	if (count != 0U) {
-		LOG_INF("arm64 dts passthrough policy: %u device(s)", count);
 	}
 }
 
@@ -1154,6 +1148,4 @@ void arm64_platform_dts_parse_vms(const void *fdt,
 	}
 
 	dts_parse_boot_options(fdt, vm_root, ops);
-	LOG_INF("arm64 platform dts parsed: %u boot modules",
-		*dts_storage->boot_option_count);
 }

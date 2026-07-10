@@ -10,33 +10,28 @@
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
-#include <linux/kthread.h>
 #include <linux/module.h>
-#include <linux/of.h>
-#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/virtio_i2c.h>
-#include <asm/memory.h>
 
-#include "hcall.h"
+#include "virtio-proxy-backend.h"
 
-#define BEAU_PROXY_FRONTEND_VM2		2U
 #define BEAU_PROXY_DEVICE_I2C		34U
 #define BEAU_I2C_QUEUE_REQUEST		0U
 #define BEAU_I2C_EEPROM_ADDR		0x50U
 #define BEAU_I2C_EEPROM_SIZE		256U
 
 struct beau_i2c_backend {
-	struct task_struct *thread;
-	void *in;
-	void *out;
+	struct beau_proxy_backend proxy;
 	u8 eeprom[BEAU_I2C_EEPROM_SIZE];
 	u8 offset;
 	bool fail_next;
-	struct beau_proxy_ioc ioc;
 };
 
 static struct beau_i2c_backend beau_i2c_backend;
+static const u16 beau_i2c_queues[] = {
+	BEAU_I2C_QUEUE_REQUEST,
+};
 
 static u16 beau_i2c_addr(const struct virtio_i2c_out_hdr *hdr)
 {
@@ -50,10 +45,7 @@ static u32 beau_i2c_flags(const struct virtio_i2c_out_hdr *hdr)
 
 static int beau_i2c_reply(struct beau_proxy_ioc *ioc, u32 out_len)
 {
-	ioc->op = BEAU_PROXY_OP_REPLY;
-	ioc->out_gpa = virt_to_phys(beau_i2c_backend.out);
-	ioc->out_len = out_len;
-	return beau_hcall_virtio_proxy_backend(ioc);
+	return beau_proxy_backend_reply(ioc, beau_i2c_backend.proxy.out, out_len);
 }
 
 static void beau_i2c_reply_status(u8 status, u32 out_len)
@@ -61,13 +53,13 @@ static void beau_i2c_reply_status(u8 status, u32 out_len)
 	if (out_len == 0U)
 		return;
 
-	memset(beau_i2c_backend.out, 0, out_len);
-	((u8 *)beau_i2c_backend.out)[out_len - 1U] = status;
+	memset(beau_i2c_backend.proxy.out, 0, out_len);
+	((u8 *)beau_i2c_backend.proxy.out)[out_len - 1U] = status;
 }
 
 static u8 beau_i2c_handle_read(u32 read_len)
 {
-	u8 *out = beau_i2c_backend.out;
+	u8 *out = beau_i2c_backend.proxy.out;
 	u32 pos = beau_i2c_backend.offset;
 
 	for (u32 i = 0U; i < read_len; i++)
@@ -96,10 +88,11 @@ static u8 beau_i2c_handle_write(const u8 *data, u32 len)
 	return VIRTIO_I2C_MSG_OK;
 }
 
-static int beau_i2c_handle_one(struct beau_proxy_ioc *ioc)
+static int beau_i2c_handle_one(struct beau_proxy_backend *proxy,
+			       struct beau_proxy_ioc *ioc)
 {
-	const struct virtio_i2c_out_hdr *hdr = beau_i2c_backend.in;
-	const u8 *payload = (const u8 *)beau_i2c_backend.in + sizeof(*hdr);
+	const struct virtio_i2c_out_hdr *hdr = proxy->in;
+	const u8 *payload = (const u8 *)proxy->in + sizeof(*hdr);
 	u32 payload_len;
 	u32 flags;
 	u32 reply_len;
@@ -147,74 +140,40 @@ static int beau_i2c_handle_one(struct beau_proxy_ioc *ioc)
 	return beau_i2c_reply(ioc, reply_len);
 }
 
-static int beau_i2c_backend_thread(void *data)
+static void beau_i2c_prepare_register(struct beau_proxy_backend *proxy,
+				      struct beau_proxy_ioc *ioc)
 {
-	struct beau_proxy_ioc *ioc = &beau_i2c_backend.ioc;
-	unsigned int idle_polls = 0U;
-	long ret;
-
-	memset(ioc, 0, sizeof(*ioc));
-	ioc->op = BEAU_PROXY_OP_REGISTER;
-	ioc->device_id = BEAU_PROXY_DEVICE_I2C;
-	ioc->frontend_vmid = BEAU_PROXY_FRONTEND_VM2;
 	ioc->device_features = 1ULL << VIRTIO_I2C_F_ZERO_LENGTH_REQUEST;
 	ioc->register_flags = BEAU_PROXY_REG_F_FEATURES;
-	while (!kthread_should_stop()) {
-		ret = beau_hcall_virtio_proxy_backend(ioc);
-		if (!ret)
-			break;
-		msleep(1000);
-	}
-
-	while (!kthread_should_stop()) {
-		memset(ioc, 0, sizeof(*ioc));
-		ioc->op = BEAU_PROXY_OP_POLL;
-		ioc->device_id = BEAU_PROXY_DEVICE_I2C;
-		ioc->frontend_vmid = BEAU_PROXY_FRONTEND_VM2;
-		ioc->queue_id = BEAU_I2C_QUEUE_REQUEST;
-		ioc->in_gpa = virt_to_phys(beau_i2c_backend.in);
-		ioc->in_len = BEAU_PROXY_DATA_MAX;
-		ret = beau_hcall_virtio_proxy_backend(ioc);
-		if (ret) {
-			beau_proxy_poll_idle_delay(&idle_polls);
-			continue;
-		}
-		beau_proxy_poll_active(&idle_polls);
-		ret = beau_i2c_handle_one(ioc);
-		if (ret)
-			beau_proxy_poll_idle_delay(&idle_polls);
-	}
-
-	return 0;
 }
 
 static int __init beau_virtioi2c_backend_init(void)
 {
-	const char *model = NULL;
+	struct beau_proxy_backend *proxy = &beau_i2c_backend.proxy;
+	int ret;
 
-	if (!of_root || of_property_read_string(of_root, "model", &model) ||
-	    !model || !strstr(model, "VM1"))
+	if (!beau_proxy_backend_is_vm1())
 		return 0;
 
-	beau_i2c_backend.in = kzalloc(BEAU_PROXY_DATA_MAX, GFP_KERNEL);
-	beau_i2c_backend.out = kzalloc(BEAU_PROXY_DATA_MAX, GFP_KERNEL);
-	if (!beau_i2c_backend.in || !beau_i2c_backend.out) {
-		kfree(beau_i2c_backend.in);
-		kfree(beau_i2c_backend.out);
-		return -ENOMEM;
-	}
+	proxy->name = "virtio-i2c";
+	proxy->thread_name = "beau-virtioi2c-backend";
+	proxy->device_id = BEAU_PROXY_DEVICE_I2C;
+	proxy->frontend_vmid = BEAU_PROXY_FRONTEND_VM2;
+	proxy->queues = beau_i2c_queues;
+	proxy->queue_count = ARRAY_SIZE(beau_i2c_queues);
+	proxy->handle_one = beau_i2c_handle_one;
+	proxy->prepare_register = beau_i2c_prepare_register;
 
+	ret = beau_proxy_backend_alloc_io(proxy);
+	if (ret != 0)
+		return ret;
 	for (u32 i = 0U; i < BEAU_I2C_EEPROM_SIZE; i++)
 		beau_i2c_backend.eeprom[i] = (u8)i;
 	memcpy(beau_i2c_backend.eeprom, "BEAU virtio-i2c proxy", 22U);
 
-	beau_i2c_backend.thread = kthread_run(beau_i2c_backend_thread, NULL,
-					      "beau-virtioi2c-backend");
-	if (IS_ERR(beau_i2c_backend.thread)) {
-		long ret = PTR_ERR(beau_i2c_backend.thread);
-
-		kfree(beau_i2c_backend.in);
-		kfree(beau_i2c_backend.out);
+	ret = beau_proxy_backend_start(proxy);
+	if (ret != 0) {
+		beau_proxy_backend_free_io(proxy);
 		return ret;
 	}
 
@@ -225,10 +184,8 @@ static int __init beau_virtioi2c_backend_init(void)
 
 static void __exit beau_virtioi2c_backend_exit(void)
 {
-	if (beau_i2c_backend.thread && !IS_ERR(beau_i2c_backend.thread))
-		kthread_stop(beau_i2c_backend.thread);
-	kfree(beau_i2c_backend.in);
-	kfree(beau_i2c_backend.out);
+	beau_proxy_backend_stop(&beau_i2c_backend.proxy);
+	beau_proxy_backend_free_io(&beau_i2c_backend.proxy);
 }
 
 late_initcall(beau_virtioi2c_backend_init);

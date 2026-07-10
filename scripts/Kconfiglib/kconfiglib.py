@@ -1564,7 +1564,7 @@ class Kconfig(object):
         with self._open(filename, "w") as f:
             f.write(contents)
 
-        return "Configuration saved to .config"
+        return ""
 
     def _config_contents(self, header):
         # write_config() helper. Returns the contents to write as a string,

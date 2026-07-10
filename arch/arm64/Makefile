@@ -105,9 +105,9 @@ MODULES += $(HOST_MOD)
 MODULES += $(VP_MOD)
 
 $(HOST_MOD): $(HOST_C_OBJS) $(HOST_S_OBJS)
-	$(Q)echo "ar        $(notdir $@)"
+	$(Q)echo "ar                 $(notdir $@)"
 	$(Q)$(AR) $(ARFLAGS) $(HOST_MOD) $(HOST_C_OBJS) $(HOST_S_OBJS)
 
 $(VP_MOD): $(VP_C_OBJS) $(VP_S_OBJS) $(VM_CFG_C_OBJS) $(VM_CFG_S_OBJS)
-	$(Q)echo "ar        $(notdir $@)"
+	$(Q)echo "ar                 $(notdir $@)"
 	$(Q)$(AR) $(ARFLAGS) $(VP_MOD) $(VP_C_OBJS) $(VP_S_OBJS) $(VM_CFG_C_OBJS) $(VM_CFG_S_OBJS)

@@ -10,18 +10,14 @@
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
-#include <linux/kthread.h>
 #include <linux/module.h>
-#include <linux/of.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/virtio_blk.h>
 #include <linux/vmalloc.h>
-#include <asm/memory.h>
 
-#include "hcall.h"
+#include "virtio-proxy-backend.h"
 
-#define BEAU_PROXY_FRONTEND_VM2		2U
 #define BEAU_PROXY_DEVICE_BLK		2U
 #define BEAU_BLK_QUEUE_REQUEST		0U
 #define BEAU_BLK_SECTOR_SIZE		512U
@@ -46,15 +42,15 @@ struct beau_blk_config {
 };
 
 struct beau_blk_backend {
-	struct task_struct *thread;
-	void *in;
-	void *out;
+	struct beau_proxy_backend proxy;
 	u8 *disk;
 	struct beau_blk_config config;
-	struct beau_proxy_ioc ioc;
 };
 
 static struct beau_blk_backend beau_blk_backend;
+static const u16 beau_blk_queues[] = {
+	BEAU_BLK_QUEUE_REQUEST,
+};
 
 static u32 beau_blk_req_type(const struct virtio_blk_outhdr *hdr)
 {
@@ -68,10 +64,7 @@ static u64 beau_blk_req_sector(const struct virtio_blk_outhdr *hdr)
 
 static int beau_blk_reply(struct beau_proxy_ioc *ioc, u32 out_len)
 {
-	ioc->op = BEAU_PROXY_OP_REPLY;
-	ioc->out_gpa = virt_to_phys(beau_blk_backend.out);
-	ioc->out_len = out_len;
-	return beau_hcall_virtio_proxy_backend(ioc);
+	return beau_proxy_backend_reply(ioc, beau_blk_backend.proxy.out, out_len);
 }
 
 static bool beau_blk_range_ok(u64 sector, u32 len, u32 *offset)
@@ -96,8 +89,8 @@ static int beau_blk_reply_status(struct beau_proxy_ioc *ioc, u8 status)
 	if ((ioc->out_len == 0U) || (ioc->out_len > BEAU_PROXY_DATA_MAX))
 		return -EINVAL;
 
-	memset(beau_blk_backend.out, 0, ioc->out_len);
-	((u8 *)beau_blk_backend.out)[ioc->out_len - 1U] = status;
+	memset(beau_blk_backend.proxy.out, 0, ioc->out_len);
+	((u8 *)beau_blk_backend.proxy.out)[ioc->out_len - 1U] = status;
 	return beau_blk_reply(ioc, ioc->out_len);
 }
 
@@ -111,8 +104,8 @@ static int beau_blk_handle_read(struct beau_proxy_ioc *ioc, u64 sector)
 		return beau_blk_reply_status(ioc, VIRTIO_BLK_S_IOERR);
 
 	data_len = ioc->out_len - 1U;
-	memcpy(beau_blk_backend.out, beau_blk_backend.disk + offset, data_len);
-	((u8 *)beau_blk_backend.out)[data_len] = VIRTIO_BLK_S_OK;
+	memcpy(beau_blk_backend.proxy.out, beau_blk_backend.disk + offset, data_len);
+	((u8 *)beau_blk_backend.proxy.out)[data_len] = VIRTIO_BLK_S_OK;
 	return beau_blk_reply(ioc, data_len + 1U);
 }
 
@@ -129,7 +122,7 @@ static int beau_blk_handle_write(struct beau_proxy_ioc *ioc, u64 sector)
 
 	data_len = ioc->in_len - sizeof(struct virtio_blk_outhdr);
 	memcpy(beau_blk_backend.disk + offset,
-	       (u8 *)beau_blk_backend.in + sizeof(struct virtio_blk_outhdr),
+	       (u8 *)beau_blk_backend.proxy.in + sizeof(struct virtio_blk_outhdr),
 	       data_len);
 	return beau_blk_reply_status(ioc, VIRTIO_BLK_S_OK);
 }
@@ -142,16 +135,17 @@ static int beau_blk_handle_get_id(struct beau_proxy_ioc *ioc)
 		return beau_blk_reply_status(ioc, VIRTIO_BLK_S_IOERR);
 
 	id_len = ioc->out_len - 1U;
-	memset(beau_blk_backend.out, 0, id_len);
-	memcpy(beau_blk_backend.out, BEAU_BLK_ID,
+	memset(beau_blk_backend.proxy.out, 0, id_len);
+	memcpy(beau_blk_backend.proxy.out, BEAU_BLK_ID,
 	       min_t(u32, id_len, sizeof(BEAU_BLK_ID) - 1U));
-	((u8 *)beau_blk_backend.out)[id_len] = VIRTIO_BLK_S_OK;
+	((u8 *)beau_blk_backend.proxy.out)[id_len] = VIRTIO_BLK_S_OK;
 	return beau_blk_reply(ioc, id_len + 1U);
 }
 
-static int beau_blk_handle_one(struct beau_proxy_ioc *ioc)
+static int beau_blk_handle_one(struct beau_proxy_backend *proxy,
+			       struct beau_proxy_ioc *ioc)
 {
-	const struct virtio_blk_outhdr *hdr = beau_blk_backend.in;
+	const struct virtio_blk_outhdr *hdr = proxy->in;
 	u32 type;
 	u64 sector;
 
@@ -181,65 +175,40 @@ static int beau_blk_handle_one(struct beau_proxy_ioc *ioc)
 	}
 }
 
-static int beau_blk_backend_thread(void *data)
+static void beau_blk_prepare_register(struct beau_proxy_backend *proxy,
+				      struct beau_proxy_ioc *ioc)
 {
-	struct beau_proxy_ioc *ioc = &beau_blk_backend.ioc;
-	unsigned int idle_polls = 0U;
-	long ret;
-
-	memset(ioc, 0, sizeof(*ioc));
-	ioc->op = BEAU_PROXY_OP_REGISTER;
-	ioc->device_id = BEAU_PROXY_DEVICE_BLK;
-	ioc->frontend_vmid = BEAU_PROXY_FRONTEND_VM2;
 	ioc->device_features = (1ULL << VIRTIO_BLK_F_SIZE_MAX) |
 		(1ULL << VIRTIO_BLK_F_SEG_MAX);
 	ioc->config_gpa = virt_to_phys(&beau_blk_backend.config);
 	ioc->config_len = sizeof(beau_blk_backend.config);
 	ioc->register_flags = BEAU_PROXY_REG_F_FEATURES | BEAU_PROXY_REG_F_CONFIG;
-	while (!kthread_should_stop()) {
-		ret = beau_hcall_virtio_proxy_backend(ioc);
-		if (!ret)
-			break;
-		msleep(1000);
-	}
-
-	while (!kthread_should_stop()) {
-		memset(ioc, 0, sizeof(*ioc));
-		ioc->op = BEAU_PROXY_OP_POLL;
-		ioc->device_id = BEAU_PROXY_DEVICE_BLK;
-		ioc->frontend_vmid = BEAU_PROXY_FRONTEND_VM2;
-		ioc->queue_id = BEAU_BLK_QUEUE_REQUEST;
-		ioc->in_gpa = virt_to_phys(beau_blk_backend.in);
-		ioc->in_len = BEAU_PROXY_DATA_MAX;
-		ret = beau_hcall_virtio_proxy_backend(ioc);
-		if (ret) {
-			beau_proxy_poll_idle_delay(&idle_polls);
-			continue;
-		}
-		beau_proxy_poll_active(&idle_polls);
-		ret = beau_blk_handle_one(ioc);
-		if (ret)
-			beau_proxy_poll_idle_delay(&idle_polls);
-	}
-
-	return 0;
 }
 
 static int __init beau_virtioblk_backend_init(void)
 {
-	const char *model = NULL;
+	struct beau_proxy_backend *proxy = &beau_blk_backend.proxy;
+	int ret;
 
-	if (!of_root || of_property_read_string(of_root, "model", &model) ||
-	    !model || !strstr(model, "VM1"))
+	if (!beau_proxy_backend_is_vm1())
 		return 0;
 
-	beau_blk_backend.in = kzalloc(BEAU_PROXY_DATA_MAX, GFP_KERNEL);
-	beau_blk_backend.out = kzalloc(BEAU_PROXY_DATA_MAX, GFP_KERNEL);
+	proxy->name = "virtio-blk";
+	proxy->thread_name = "beau-virtioblk-backend";
+	proxy->device_id = BEAU_PROXY_DEVICE_BLK;
+	proxy->frontend_vmid = BEAU_PROXY_FRONTEND_VM2;
+	proxy->queues = beau_blk_queues;
+	proxy->queue_count = ARRAY_SIZE(beau_blk_queues);
+	proxy->batch_entries = BEAU_PROXY_BATCH_MAX;
+	proxy->handle_one = beau_blk_handle_one;
+	proxy->prepare_register = beau_blk_prepare_register;
+
+	ret = beau_proxy_backend_alloc_io(proxy);
+	if (ret != 0)
+		return ret;
 	beau_blk_backend.disk = vzalloc(BEAU_BLK_DISK_BYTES);
-	if (!beau_blk_backend.in || !beau_blk_backend.out ||
-	    !beau_blk_backend.disk) {
-		kfree(beau_blk_backend.in);
-		kfree(beau_blk_backend.out);
+	if (!beau_blk_backend.disk) {
+		beau_proxy_backend_free_io(proxy);
 		vfree(beau_blk_backend.disk);
 		return -ENOMEM;
 	}
@@ -247,13 +216,9 @@ static int __init beau_virtioblk_backend_init(void)
 	beau_blk_backend.config.size_max = 4096U;
 	beau_blk_backend.config.seg_max = 1U;
 
-	beau_blk_backend.thread = kthread_run(beau_blk_backend_thread, NULL,
-					      "beau-virtioblk-backend");
-	if (IS_ERR(beau_blk_backend.thread)) {
-		long ret = PTR_ERR(beau_blk_backend.thread);
-
-		kfree(beau_blk_backend.in);
-		kfree(beau_blk_backend.out);
+	ret = beau_proxy_backend_start(proxy);
+	if (ret != 0) {
+		beau_proxy_backend_free_io(proxy);
 		vfree(beau_blk_backend.disk);
 		return ret;
 	}
@@ -265,10 +230,8 @@ static int __init beau_virtioblk_backend_init(void)
 
 static void __exit beau_virtioblk_backend_exit(void)
 {
-	if (beau_blk_backend.thread && !IS_ERR(beau_blk_backend.thread))
-		kthread_stop(beau_blk_backend.thread);
-	kfree(beau_blk_backend.in);
-	kfree(beau_blk_backend.out);
+	beau_proxy_backend_stop(&beau_blk_backend.proxy);
+	beau_proxy_backend_free_io(&beau_blk_backend.proxy);
 	vfree(beau_blk_backend.disk);
 }
 

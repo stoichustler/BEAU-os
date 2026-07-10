@@ -3,14 +3,3 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 #
-
-menu "ARM64 BSP"
-
-config LOG_VERBOSE
-	bool "Enable verbose ARM64 BSP logging"
-	default n
-	help
-	  Enable extra diagnostic messages in selected ARM64 boot, MMU, and
-	  guest image-loading paths.
-
-endmenu

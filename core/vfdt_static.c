@@ -28,7 +28,6 @@ void init_service_vm_vfdt(struct acrn_vm *vm)
 
 	vm->sw.fdt_info.src_addr = fdt;
 	vm->sw.fdt_info.size = fdt_totalsize(fdt);
-	LOG_INF("vm-%hu static vFDT size: 0x%08x", vm->vm_id, vm->sw.fdt_info.size);
 #else
 	(void)vm;
 #endif

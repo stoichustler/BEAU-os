@@ -127,6 +127,11 @@ void arm64_prepare_linux_vcpu_context(struct acrn_vcpu *vcpu, uint64_t entry, ui
 	arm64_vgicv3_reset_vcpu_boot_state(vcpu);
 }
 
+uint64_t arch_vcpu_get_entry(const struct acrn_vcpu *vcpu)
+{
+	return (vcpu != NULL) ? vcpu->arch.regs.elr : 0UL;
+}
+
 uint64_t arm64_vcpu_trace_guest_boundary(struct acrn_vcpu *vcpu, uint8_t event,
 	uint32_t source, int32_t status)
 {
@@ -493,9 +498,6 @@ void arch_vcpu_thread(struct thread_object *obj)
 	 * persistent register block is copied to/from a temporary trap frame rather
 	 * than being used directly as the live EL2 stack.
 	 */
-	LOG_INF("vm%u:vcpu%u enter guest EL1 at 0x%lx",
-		vcpu->vm->vm_id, vcpu->vcpu_id, vcpu->arch.regs.elr);
-
 	while (vcpu->state == VCPU_RUNNING) {
 		ret = arm64_process_vcpu_requests(vcpu);
 		if (ret < 0) {

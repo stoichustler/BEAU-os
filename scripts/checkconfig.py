@@ -146,6 +146,10 @@ def check_bconfig(kconfig, path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--kconfig", default="Kconfig", help="top-level Kconfig file")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="print a summary for each valid platform Bconfig file")
     parser.add_argument("bconfigs", nargs="+", help="platform Bconfig files")
     args = parser.parse_args()
 
@@ -157,7 +161,7 @@ def main():
         errors, count = check_bconfig(kconfig, path)
         if errors:
             all_errors.extend(errors)
-        else:
+        elif args.verbose:
             print(f"checkconfig: {path} covers {count} Kconfig symbols")
 
     if all_errors:

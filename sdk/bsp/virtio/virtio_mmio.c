@@ -12,6 +12,36 @@
 #include <rtl.h>
 #include <virtio_mmio.h>
 
+/*
+ * 2026-07-10, virtio-mmio virtualization principle:
+ *
+ * This file is the common virtio-mmio transport layer. It owns the guest-visible
+ * MMIO register block, queue address capture, used-ring IRQ status, and helpers
+ * for reading/writing descriptor rings in guest memory. Device-specific files
+ * own payload semantics through the ops callbacks.
+ *
+ *   guest virtio-mmio register access
+ *              |
+ *              v
+ *   io_req.c MMIO dispatch
+ *              |
+ *              v
+ *   virtio_mmio_mmio_handler()
+ *      |
+ *      +-- feature/status/config registers -> common state or ops->config
+ *      |
+ *      +-- queue setup registers           -> virtio_mmio_queue shadow
+ *      |
+ *      +-- QueueNotify                     -> ops->notify(queue)
+ *                                             - walk guest descriptors
+ *                                             - add used-ring entries
+ *                                             - raise used IRQ
+ *
+ * Ownership rule: the guest owns vring memory, EL2 owns the transport shadow
+ * and interrupt status, and each backend owns how descriptor payloads are
+ * interpreted.
+ */
+
 #define VIRTIO_MMIO_MAGIC_VALUE		0x000U
 #define VIRTIO_MMIO_VERSION		0x004U
 #define VIRTIO_MMIO_DEVICE_ID		0x008U

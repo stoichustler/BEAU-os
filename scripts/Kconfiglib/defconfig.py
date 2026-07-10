@@ -35,8 +35,8 @@ def main():
     args = parser.parse_args()
 
     kconf = kconfiglib.Kconfig(args.kconfig, suppress_traceback=True)
-    print(kconf.load_config(args.config))
-    print(kconf.write_config())
+    kconf.load_config(args.config)
+    kconf.write_config()
 
 
 if __name__ == "__main__":

@@ -482,6 +482,7 @@ int32_t arm64_process_vcpu_requests(struct acrn_vcpu *vcpu);
 bool arm64_is_acrn_hypercall(uint64_t hcall_id);
 int32_t arm64_dispatch_hypercall(struct acrn_vcpu *vcpu);
 void arm64_prepare_linux_vcpu_context(struct acrn_vcpu *vcpu, uint64_t entry, uint64_t x0);
+uint64_t arch_vcpu_get_entry(const struct acrn_vcpu *vcpu);
 uint64_t arm64_vcpu_trace_guest_boundary(struct acrn_vcpu *vcpu, uint8_t event,
 	uint32_t source, int32_t status);
 void arm64_vcpu_trace_vtimer(struct acrn_vcpu *vcpu, uint32_t event,

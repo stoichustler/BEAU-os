@@ -22,8 +22,6 @@
 #include <asm/seed.h>
 #endif
 
-#define DBG_LEVEL_BOOT	6U
-
 /*
  * Per-VM boot-info setup is a metadata pass, not the image-copy pass:
  *
@@ -35,6 +33,28 @@
  * This split lets the common VM launch path create vCPUs and stage-2 mappings
  * before touching guest RAM. The module source pointers remain host addresses;
  * load addresses are guest GPAs used later by copy_to_gpa().
+ *
+ * 2026-07-10, guest OS boot-service framework:
+ *
+ *   platform/DTS-authored vm_config
+ *          |
+ *          v
+ *   acrn_boot_info module table
+ *          |
+ *          v
+ *   init_vm_boot_info()
+ *     - match kernel/initramfs/FDT tags
+ *     - choose bootargs source
+ *     - record source host addresses
+ *          |
+ *          v
+ *   prepare_os_image()
+ *     - select raw/bzImage/ELF loader
+ *     - copy payloads into guest RAM
+ *     - set guest entry address
+ *
+ * The metadata pass never modifies guest memory. That keeps boot-module
+ * discovery independent from loader-specific placement and overlap checks.
  */
 
 /**
@@ -47,8 +67,6 @@ static void init_vm_ramdisk_info(struct acrn_vm *vm, const struct abi_module *mo
 		vm->sw.ramdisk_info.size = mod->size;
 	}
 
-	dev_dbg(DBG_LEVEL_BOOT, "vm-%hu Ramdisk at 0x%08x (0x%08x)", vm->vm_id,
-		(uint64_t)mod->start, mod->size);
 }
 
 /**
@@ -78,9 +96,6 @@ static int32_t init_vm_kernel_info(struct acrn_vm *vm, const struct abi_module *
 {
 	int32_t ret = -EINVAL;
 	struct acrn_vm_config *vm_config = get_vm_config(vm->vm_id);
-
-	dev_dbg(DBG_LEVEL_BOOT, "vm-%hu Kernel  at 0x%08x (0x%08x)", vm->vm_id,
-			(uint64_t)mod->start, mod->size);
 
 	vm->sw.kernel_type = vm_config->os_config.kernel_type;
 	if ((mod->start != NULL) && (mod->size != 0U)) {
@@ -208,8 +223,6 @@ static int32_t init_vm_sw_load(struct acrn_vm *vm, const struct acrn_boot_info *
 	int32_t ret = -EINVAL;
 	bool fw_loaded = false;
 
-	/* dev_dbg(DBG_LEVEL_BOOT, "mod counts=%d\n", abi->mods_count); */
-
 	/*
 	 * Find the kernel first because the kernel module may carry an optional
 	 * command-line suffix after its tag. Other modules are meaningful only
@@ -267,8 +280,6 @@ static int32_t init_vm_sw_load(struct acrn_vm *vm, const struct acrn_boot_info *
 			if (!fw_loaded) {
 				LOG_ERR("failed to load acpi module or fdt for vm%d", vm->vm_id);
 			}
-		} else if ((vm_config->guest_flags & GUEST_FLAG_NO_FW) != 0UL) {
-			dev_dbg(DBG_LEVEL_BOOT, "vm-%d boots without ACPI/FDT", vm->vm_id);
 		}
 
 	} else {

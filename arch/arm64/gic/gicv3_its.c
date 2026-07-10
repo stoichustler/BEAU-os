@@ -102,7 +102,6 @@ void beau_gicv3_its_init(uint64_t base, uint64_t size)
 
 		if ((ctlr & GITS_CTLR_QUIESCENT) != 0U) {
 			beau_gicv3_its_ready = true;
-			LOG_INF("GICv3 ITS at 0x%08lx (0x%08lx)", base, size);
 			return;
 		}
 		cpu_relax();

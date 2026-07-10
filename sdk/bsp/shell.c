@@ -26,6 +26,27 @@
 #include <asm/guest/vgicv3.h>
 #endif
 
+/*
+ * 2026-07-10, BEAU shell service principle:
+ *
+ * The shell is the interactive OS-service front end for BEAU diagnostics and
+ * VM console switching. It runs as a low-priority scheduler thread on the BSP
+ * and consumes the same physical console that VM consoles use through vsh.
+ *
+ *   host serial input
+ *          |
+ *          v
+ *   console ownership
+ *      |
+ *      +-- BEAU shell selected -> shell input editor -> shell_cmd table
+ *      |
+ *      +-- VM selected         -> vsh forwards bytes to that VM console
+ *
+ * Shell output may race with asynchronous logs. The shell redraw path preserves
+ * the user's current input line while allowing logs and monitor output to stay
+ * visible on the host console.
+ */
+
 #define SHELL_PROMPT_STR	"console:\\> "
 #define SHELL_ASCII_BS		'\b'
 #define SHELL_ASCII_TAB		'\t'
@@ -811,6 +832,15 @@ static bool shell_input_line(void)
 	return done;
 }
 
+static void shell_put_error(const char *msg)
+{
+	char temp_str[MAX_STR_SIZE];
+
+	snprintf(temp_str, MAX_STR_SIZE, "%s[π] BEAU: %s%s\r\n",
+		SHELL_COLOR_RED, msg, SHELL_COLOR_RESET);
+	shell_puts(temp_str);
+}
+
 static int32_t shell_process_cmd(const char *p_input_line)
 {
 	int32_t status = -EINVAL;
@@ -841,15 +871,15 @@ static int32_t shell_process_cmd(const char *p_input_line)
 		/* See if command is in cmds supported */
 		p_cmd = shell_find_cmd(cmd_argv[0]);
 		if (p_cmd == NULL) {
-			shell_puts("\r\n[ERR] Invalid Command.\r\n");
+			shell_put_error("invalid command.");
 			return -EINVAL;
 		}
 
 		status = p_cmd->fcn(cmd_argc, &cmd_argv[0]);
 		if (status == -EINVAL) {
-			shell_puts("\r\n[ERR] Invalid Parameters.\r\n");
+			shell_put_error("invalid parameters.");
 		} else if (status != 0) {
-			shell_puts("\r\n[ERR] Command launch failed.\r\n");
+			shell_put_error("command launch failed.");
 		} else {
 			/* No other state currently, do nothing */
 		}
@@ -1046,7 +1076,7 @@ static void shell_print_registered_commands(void)
 	char str[MAX_STR_SIZE];
 	uint32_t cmd_cnt = shell_cmd_total();
 	/* Print title */
-	shell_puts("\r\n\r\n────────── [BEAU commands] ──────────\r\n\r\n");
+	shell_puts("\r\n\r\n");
 
 	/* Proceed based on the number of registered commands. */
 	if (cmd_cnt == 0U) {
@@ -1963,7 +1993,9 @@ static int32_t shell_to_vm_console(int32_t argc, char **argv)
 	 * backlog pending for the periodic drain without adding a second command
 	 * path or a separate log viewer.
 	 */
-	snprintf(temp_str, TEMP_STR_SIZE, "\r\n──────── [switch to vm-%d shell] ────────\r\n", vm_id);
+	snprintf(temp_str, TEMP_STR_SIZE,
+		"\r\n%s──────── [switch to VM-%d console] ────────%s\r\n",
+		SHELL_COLOR_YELLOW, vm_id, SHELL_COLOR_RESET);
 	shell_puts(temp_str);
 	shell_set_input_active(false);
 	if (console_vmid != ACRN_INVALID_VMID) {

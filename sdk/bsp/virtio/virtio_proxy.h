@@ -111,6 +111,15 @@
 #define VIRTIO_PROXY_PENDING_LOW	1U
 #define VIRTIO_PROXY_PENDING_HIGH	VIRTIO_PROXY_PENDING_MAX
 #define VIRTIO_PROXY_TIMEOUT_US		100000U
+#define VIRTIO_PROXY_HEARTBEAT_TIMEOUT_US	5000000U
+#define VIRTIO_PROXY_WAIT_LOW_US	1000U
+#define VIRTIO_PROXY_WAIT_HIGH_US	100U
+#define VIRTIO_PROXY_CAP_SUPPORTED	\
+	(ACRN_VIRTIO_PROXY_CAP_WAIT_HINT | \
+	 ACRN_VIRTIO_PROXY_CAP_HEARTBEAT | \
+	 ACRN_VIRTIO_PROXY_CAP_STATS | \
+	 ACRN_VIRTIO_PROXY_CAP_BATCH | \
+	 ACRN_VIRTIO_PROXY_CAP_SHARED_RING)
 
 /* Minimal virtio-blk feature/config values used by the QEMU validation path. */
 #define VIRTIO_BLK_F_SIZE_MAX		1U
@@ -258,6 +267,8 @@ struct virtio_proxy_pending {
  * @hcall_poll_ok_count: Polls that returned a descriptor chain.
  * @hcall_reply_count: Total backend reply attempts.
  * @hcall_reply_ok_count: Replies that completed a frontend descriptor chain.
+ * @hcall_empty_poll_count: Polls that found no frontend request.
+ * @hcall_heartbeat_count: Backend liveness heartbeat count.
  * @hcall_busy_count: Polls that found no available frontend request.
  * @hcall_backpressure_count: Polls rejected because pending slots were full.
  * @timeout_count: Number of in-flight requests that exceeded timeout budget.
@@ -301,8 +312,20 @@ struct virtio_proxy_dev {
 	uint64_t hcall_poll_ok_count;
 	uint64_t hcall_reply_count;
 	uint64_t hcall_reply_ok_count;
+	uint64_t hcall_batch_poll_count;
+	uint64_t hcall_batch_poll_ok_count;
+	uint64_t hcall_batch_reply_count;
+	uint64_t hcall_batch_reply_ok_count;
+	uint64_t hcall_batch_poll_item_count;
+	uint64_t hcall_batch_reply_item_count;
+	uint64_t hcall_empty_poll_count;
+	uint64_t hcall_heartbeat_count;
 	uint64_t hcall_busy_count;
 	uint64_t hcall_backpressure_count;
+	uint32_t backend_abi_version;
+	uint32_t backend_caps;
+	uint64_t last_heartbeat_tick;
+	uint32_t last_wait_us;
 	uint64_t timeout_count;
 	uint64_t reset_count;
 	uint64_t last_notify_tick[VIRTIO_MMIO_MAX_QUEUES];
@@ -315,6 +338,7 @@ struct virtio_proxy_dev {
 	uint16_t last_poll_queue_id;
 	uint16_t last_poll_head;
 	uint32_t last_poll_status;
+	uint32_t last_batch_count;
 	uint16_t last_reply_queue_id;
 	uint16_t last_reply_head;
 	uint32_t last_reply_len;

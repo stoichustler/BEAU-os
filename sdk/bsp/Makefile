@@ -14,7 +14,7 @@ default: $(LIB_BSP)
 
 ifneq ($(CONFIG_RELEASE),y)
 $(LIB_BSP): $(OBJS)
-	@echo "ar        $(notdir $@)"
+	@echo "ar                 $(notdir $@)"
 	@$(AR) $(ARFLAGS) $(LIB_BSP) $(OBJS)
 endif
 
@@ -26,5 +26,5 @@ clean:
 
 $(HV_OBJDIR)/%.o: %.c
 	@[ ! -e $@ ] && mkdir -p $(dir $@) && mkdir -p $(HV_MODDIR); \
-	echo "cc        $(notdir $@)"; \
+	echo "cc                 $(notdir $@)"; \
 	$(CC) $(patsubst %, -I%, $(INCLUDE_PATH)) -I. -c $(CFLAGS) $(ARCH_CFLAGS) $< -o $@ -MMD -MT $@

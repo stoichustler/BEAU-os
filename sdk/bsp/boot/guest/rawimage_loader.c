@@ -16,6 +16,34 @@
 #include <mmu.h>
 #endif
 
+/*
+ * 2026-07-10, raw-image loader service principle:
+ *
+ * The raw-image loader is the BSP service that turns boot metadata into bytes
+ * inside a VM RAM window. It does not create stage-2 mappings and does not
+ * interpret Linux headers; it trusts vm_config for load and entry GPAs, then
+ * enforces that every copied payload fits the configured guest RAM contract.
+ *
+ *   vm->sw kernel/ramdisk/FDT metadata
+ *          |
+ *          v
+ *   range_fits() / range_overlaps()
+ *          |
+ *          v
+ *   copy_to_gpa()
+ *      |
+ *      +-- kernel Image
+ *      +-- optional initramfs
+ *      +-- optional FDT
+ *          |
+ *          v
+ *   vm->sw.kernel_info.kernel_entry_addr
+ *
+ * The loader reasons in guest GPAs even when current ARM64 platforms are
+ * identity-mapped. That keeps the service boundary compatible with future
+ * non-identity guest RAM placement.
+ */
+
 static bool range_overlaps(uint64_t start_a, uint64_t size_a, uint64_t start_b, uint64_t size_b)
 {
 	uint64_t end_a = start_a + size_a;
@@ -31,6 +59,25 @@ static bool range_fits(uint64_t addr, uint64_t size, uint64_t window_start, uint
 
 	return (addr_end > addr) && (window_end > window_start) &&
 		(addr >= window_start) && (addr_end <= window_end);
+}
+
+static uint64_t rawimage_range_end(uint64_t base, uint64_t size)
+{
+	if (size == 0UL) {
+		return base;
+	}
+	if ((size - 1UL) > (UINT64_MAX - base)) {
+		return UINT64_MAX;
+	}
+	return base + size - 1UL;
+}
+
+static void rawimage_log_load(uint16_t vm_id, const char *name, uint64_t base, uint64_t size)
+{
+	if (vm_id <= 2U) {
+		LOG_INF("VM%u: load %-7s [0x%016lx-0x%016lx] (0x%08lx)",
+			vm_id, name, base, rawimage_range_end(base, size), size);
+	}
 }
 
 #if defined(CONFIG_ARM64)
@@ -112,9 +159,10 @@ static int32_t load_rawimage(struct acrn_vm *vm)
 #endif
 
 	if (!range_fits(kernel_load_gpa, sw_kernel->kernel_size, ram_start, ram_size)) {
-		LOG_ERR("vm-%u:%-9s does not fit ram gpa[0x%lx-0x%lx]",
+		LOG_ERR("vm-%u:%-9s does not fit ram gpa [0x%016lx-0x%016lx] (0x%08lx)",
 			vm->vm_id, vm_config->os_config.kernel_mod_tag, kernel_load_gpa,
-			kernel_load_gpa + sw_kernel->kernel_size);
+			rawimage_range_end(kernel_load_gpa, sw_kernel->kernel_size),
+			(uint64_t)sw_kernel->kernel_size);
 		return -EFAULT;
 	}
 
@@ -128,9 +176,10 @@ static int32_t load_rawimage(struct acrn_vm *vm)
 		if (!range_fits(ramdisk_load_gpa, ramdisk_size, ram_start, ram_size) ||
 			range_overlaps(ramdisk_load_gpa, ramdisk_size, kernel_load_gpa,
 				sw_kernel->kernel_size)) {
-			LOG_ERR("vm-%u:%-9s does not fit ram gpa[0x%lx-0x%lx]",
+			LOG_ERR("vm-%u:%-9s does not fit ram gpa [0x%016lx-0x%016lx] (0x%08lx)",
 				vm->vm_id, vm_config->os_config.ramdisk_mod_tag, ramdisk_load_gpa,
-				ramdisk_load_gpa + ramdisk_size);
+				rawimage_range_end(ramdisk_load_gpa, ramdisk_size),
+				(uint64_t)ramdisk_size);
 			return -EFAULT;
 		}
 		ramdisk_info->load_addr = (void *)ramdisk_load_gpa;
@@ -155,8 +204,6 @@ static int32_t load_rawimage(struct acrn_vm *vm)
 			return -EFAULT;
 		}
 		vm->sw.fdt_info.load_addr = (void *)fdt_load_gpa;
-		LOG_INF("vm-%u FDT     at 0x%08lx (0x%08lx)",
-			vm->vm_id, fdt_load_gpa, vm->sw.fdt_info.size);
 #else
 		vm->sw.fdt_info.load_addr = (void *)0x40000000UL;
 #endif
@@ -164,36 +211,36 @@ static int32_t load_rawimage(struct acrn_vm *vm)
 
 	/* Copy the guest kernel image to its run-time location */
 	ret = copy_to_gpa(vm, sw_kernel->kernel_src_addr, kernel_load_gpa, sw_kernel->kernel_size);
-	if (ret == 0) {
-#ifdef CONFIG_LOG_VERBOSE
-		LOG_INF("vm-%u:%-9s copied to 1:1 ram gpa[0x%lx-0x%lx]",
+	if (ret != 0) {
+		LOG_ERR("vm-%u:%-9s does not fit 1:1 ram gpa [0x%016lx-0x%016lx] (0x%08lx)",
 			vm->vm_id, vm_config->os_config.kernel_mod_tag, kernel_load_gpa,
-			kernel_load_gpa + sw_kernel->kernel_size);
-#endif /* CONFIG_LOG_VERBOSE */
-	} else {
-		LOG_ERR("vm-%u:%-9s does not fit 1:1 ram gpa[0x%lx-0x%lx]",
-			vm->vm_id, vm_config->os_config.kernel_mod_tag, kernel_load_gpa,
-			kernel_load_gpa + sw_kernel->kernel_size);
+			rawimage_range_end(kernel_load_gpa, sw_kernel->kernel_size),
+			(uint64_t)sw_kernel->kernel_size);
 		return -EFAULT;
 	}
 
 	if (ramdisk_size > 0U) {
 		ret = copy_to_gpa(vm, ramdisk_info->src_addr, ramdisk_load_gpa, ramdisk_size);
-		if (ret == 0) {
-#ifdef CONFIG_LOG_VERBOSE
-			LOG_INF("vm-%u:%-9s copied to 1:1 ram gpa[0x%lx-0x%lx]",
+		if (ret != 0) {
+			LOG_ERR("vm-%u:%-9s does not fit 1:1 ram gpa [0x%016lx-0x%016lx] (0x%08lx)",
 				vm->vm_id, vm_config->os_config.ramdisk_mod_tag, ramdisk_load_gpa,
-				ramdisk_load_gpa + ramdisk_size);
-#endif /* CONFIG_LOG_VERBOSE */
-		} else {
-			LOG_ERR("vm-%u:%-9s does not fit 1:1 ram gpa[0x%lx-0x%lx]",
-				vm->vm_id, vm_config->os_config.ramdisk_mod_tag, ramdisk_load_gpa,
-				ramdisk_load_gpa + ramdisk_size);
+				rawimage_range_end(ramdisk_load_gpa, ramdisk_size),
+				(uint64_t)ramdisk_size);
 			return -EFAULT;
 		}
 	}
 
 	sw_kernel->kernel_entry_addr = (void *)vm_config->os_config.kernel_entry_addr;
+	rawimage_log_load(vm->vm_id, "KERNEL", kernel_load_gpa, sw_kernel->kernel_size);
+	if ((vm_config->os_config.os_family == VM_OS_LINUX) &&
+		(vm->sw.fdt_info.src_addr != NULL) && (vm->sw.fdt_info.size != 0U) &&
+		(vm->sw.fdt_info.load_addr != NULL)) {
+		rawimage_log_load(vm->vm_id, "DTB", (uint64_t)vm->sw.fdt_info.load_addr,
+			vm->sw.fdt_info.size);
+	}
+	if (ramdisk_size > 0U) {
+		rawimage_log_load(vm->vm_id, "RAMDISK", ramdisk_load_gpa, ramdisk_size);
+	}
 	return 0;
 }
 

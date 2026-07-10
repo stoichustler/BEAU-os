@@ -139,7 +139,7 @@ static uint64_t rtds_next_period_boundary(uint64_t now, uint64_t period_ticks)
 
 	/*
 	 * Use a fixed tick epoch instead of the vCPU/thread creation time. This
-	 * keeps all RTDS servers on the same pCPU aligned to the same 10ms grid and
+	 * keeps all RTDS servers on the same pCPU aligned to the same period grid and
 	 * makes equal-period reservations reproducible across boot timing changes.
 	 */
 	periods = (now / period_ticks) + 1UL;
@@ -631,7 +631,7 @@ bool sched_get_rtds_stats(const struct thread_object *obj, struct sched_rtds_sta
 
 struct acrn_scheduler sched_rtds = {
 	.name		= "sched_rtds",
-	.stat_desc	= "work-conserving partitioned-edf:period=10ms budget=3ms",
+	.stat_desc	= "work-conserving partitioned-edf:period=4ms budget=2ms",
 	.init		= sched_rtds_init,
 	.init_data	= sched_rtds_init_data,
 	.pick_next	= sched_rtds_pick_next,

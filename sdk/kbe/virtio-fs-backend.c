@@ -20,22 +20,18 @@
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
-#include <linux/kthread.h>
 #include <linux/mount.h>
 #include <linux/module.h>
 #include <linux/namei.h>
 #include <linux/mutex.h>
-#include <linux/of.h>
 #include <linux/slab.h>
 #include <linux/stat.h>
 #include <linux/string.h>
 #include <linux/uaccess.h>
 #include <uapi/linux/fuse.h>
-#include <asm/memory.h>
 
-#include "hcall.h"
+#include "virtio-proxy-backend.h"
 
-#define BEAU_PROXY_FRONTEND_VM2		2U
 #define BEAU_PROXY_DEVICE_FS		26U
 #define BEAU_PROXY_QUEUE_HIPRIO		0U
 #define BEAU_PROXY_QUEUE_REQUEST	1U
@@ -47,10 +43,9 @@
 #define BEAU_FUSE_MAX_PAYLOAD		(BEAU_PROXY_DATA_MAX - sizeof(struct fuse_in_header))
 
 struct beau_backend {
-	struct task_struct *thread;
+	struct beau_proxy_backend proxy;
 	void *in;
 	void *out;
-	struct beau_proxy_ioc ioc;
 	struct mutex map_lock;
 	struct beau_node {
 		u64 nodeid;
@@ -59,13 +54,14 @@ struct beau_backend {
 };
 
 static struct beau_backend beau_backend;
+static const u16 beau_fs_queues[] = {
+	BEAU_PROXY_QUEUE_HIPRIO,
+	BEAU_PROXY_QUEUE_REQUEST,
+};
 
 static int beau_reply(struct beau_proxy_ioc *ioc, void *out, u32 out_len)
 {
-	ioc->op = BEAU_PROXY_OP_REPLY;
-	ioc->out_gpa = virt_to_phys(out);
-	ioc->out_len = out_len;
-	return beau_hcall_virtio_proxy_backend(ioc);
+	return beau_proxy_backend_reply(ioc, out, out_len);
 }
 
 static int beau_reply_empty(struct beau_proxy_ioc *ioc)
@@ -77,10 +73,7 @@ static int beau_reply_empty(struct beau_proxy_ioc *ioc)
 	 * used element so the frontend can retire the request without waiting
 	 * for a protocol reply that must not exist.
 	 */
-	ioc->op = BEAU_PROXY_OP_REPLY;
-	ioc->out_gpa = 0;
-	ioc->out_len = 0;
-	return beau_hcall_virtio_proxy_backend(ioc);
+	return beau_proxy_backend_reply_empty(ioc);
 }
 
 static void beau_out_header(void *out, u32 payload_len, const struct fuse_in_header *in,
@@ -651,10 +644,15 @@ out:
 	return beau_reply_attr(ioc, in, path_name);
 }
 
-static int beau_handle_one(struct beau_proxy_ioc *ioc)
+static int beau_handle_one(struct beau_proxy_backend *proxy,
+			   struct beau_proxy_ioc *ioc)
 {
-	const struct fuse_in_header *in = beau_backend.in;
+	const struct fuse_in_header *in;
 	int ret;
+
+	beau_backend.in = proxy->in;
+	beau_backend.out = proxy->out;
+	in = beau_backend.in;
 
 	if (ioc->in_len < sizeof(*in) || in->len > ioc->in_len)
 		return -EINVAL;
@@ -713,68 +711,37 @@ static int beau_handle_one(struct beau_proxy_ioc *ioc)
 	return ret;
 }
 
-static int beau_backend_thread(void *data)
-{
-	struct beau_proxy_ioc *ioc = &beau_backend.ioc;
-	static const u16 queues[] = {
-		BEAU_PROXY_QUEUE_HIPRIO,
-		BEAU_PROXY_QUEUE_REQUEST,
-	};
-	long ret;
-	unsigned int idx = 0;
-	unsigned int idle_polls = 0U;
-
-	memset(ioc, 0, sizeof(*ioc));
-	ioc->op = BEAU_PROXY_OP_REGISTER;
-	ioc->device_id = BEAU_PROXY_DEVICE_FS;
-	ioc->frontend_vmid = BEAU_PROXY_FRONTEND_VM2;
-	while (!kthread_should_stop()) {
-		ret = beau_hcall_virtio_proxy_backend(ioc);
-		if (!ret)
-			break;
-		msleep(1000);
-	}
-
-	while (!kthread_should_stop()) {
-		memset(ioc, 0, sizeof(*ioc));
-		ioc->op = BEAU_PROXY_OP_POLL;
-		ioc->device_id = BEAU_PROXY_DEVICE_FS;
-		ioc->frontend_vmid = BEAU_PROXY_FRONTEND_VM2;
-		ioc->queue_id = queues[idx++ % ARRAY_SIZE(queues)];
-		ioc->in_gpa = virt_to_phys(beau_backend.in);
-		ioc->in_len = BEAU_PROXY_DATA_MAX;
-		ret = beau_hcall_virtio_proxy_backend(ioc);
-		if (ret) {
-			beau_proxy_poll_idle_delay(&idle_polls);
-			continue;
-		}
-		beau_proxy_poll_active(&idle_polls);
-		ret = beau_handle_one(ioc);
-		if (ret)
-			beau_proxy_poll_idle_delay(&idle_polls);
-	}
-
-	return 0;
-}
-
 static int __init beau_virtiofs_backend_init(void)
 {
-	const char *model = NULL;
+	struct beau_proxy_backend *proxy = &beau_backend.proxy;
+	int ret;
 
-	if (!of_root || of_property_read_string(of_root, "model", &model) ||
-	    !model || !strstr(model, "VM1"))
+	if (!beau_proxy_backend_is_vm1())
 		return 0;
 
-	beau_backend.in = kzalloc(BEAU_PROXY_DATA_MAX, GFP_KERNEL);
-	beau_backend.out = kzalloc(BEAU_PROXY_DATA_MAX, GFP_KERNEL);
-	if (!beau_backend.in || !beau_backend.out)
-		return -ENOMEM;
+	proxy->name = "virtio-fs";
+	proxy->thread_name = "beau-virtiofs-backend";
+	proxy->device_id = BEAU_PROXY_DEVICE_FS;
+	proxy->frontend_vmid = BEAU_PROXY_FRONTEND_VM2;
+	proxy->queues = beau_fs_queues;
+	proxy->queue_count = ARRAY_SIZE(beau_fs_queues);
+	proxy->batch_entries = BEAU_PROXY_BATCH_MAX;
+	proxy->handle_one = beau_handle_one;
+
+	ret = beau_proxy_backend_alloc_io(proxy);
+	if (ret != 0)
+		return ret;
+	beau_backend.in = proxy->in;
+	beau_backend.out = proxy->out;
 	mutex_init(&beau_backend.map_lock);
 
-	beau_backend.thread = kthread_run(beau_backend_thread, NULL,
-					  "beau-virtiofs-backend");
-	if (IS_ERR(beau_backend.thread))
-		return PTR_ERR(beau_backend.thread);
+	ret = beau_proxy_backend_start(proxy);
+	if (ret != 0) {
+		beau_proxy_backend_free_io(proxy);
+		beau_backend.in = NULL;
+		beau_backend.out = NULL;
+		return ret;
+	}
 
 	pr_info("BEAU virtio-fs backend started for %s\n", BEAU_EXPORT_PATH);
 	return 0;
@@ -782,10 +749,10 @@ static int __init beau_virtiofs_backend_init(void)
 
 static void __exit beau_virtiofs_backend_exit(void)
 {
-	if (beau_backend.thread && !IS_ERR(beau_backend.thread))
-		kthread_stop(beau_backend.thread);
-	kfree(beau_backend.in);
-	kfree(beau_backend.out);
+	beau_proxy_backend_stop(&beau_backend.proxy);
+	beau_proxy_backend_free_io(&beau_backend.proxy);
+	beau_backend.in = NULL;
+	beau_backend.out = NULL;
 }
 
 late_initcall(beau_virtiofs_backend_init);

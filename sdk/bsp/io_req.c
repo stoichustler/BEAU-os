@@ -22,6 +22,33 @@ static uint32_t acrn_hsm_notification_vector = HYPERVISOR_CALLBACK_HSM_VECTOR;
 #define MMIO_DEFAULT_VALUE_SIZE_4	(0xFFFFFFFFUL)
 #define MMIO_DEFAULT_VALUE_SIZE_8	(0xFFFFFFFFFFFFFFFFUL)
 
+/*
+ * 2026-07-10, IO-request virtualization principle:
+ *
+ * ARM64 device MMIO starts as a stage-2 data abort. vcpu_exit.c decodes the
+ * abort into vcpu->req, then this layer either completes it in EL2 through a
+ * registered handler or forwards it through the HSM shared page for an external
+ * device model.
+ *
+ *   stage-2 data abort
+ *          |
+ *          v
+ *   vcpu->req MMIO/PIO description
+ *          |
+ *          v
+ *   emulate_io()
+ *      |
+ *      +-- in-EL2 handler table
+ *      |      vGIC / vPL011 / virtio-mmio / virtio-proxy
+ *      |
+ *      +-- HSM shared request page
+ *             pending -> service VM/device model -> complete
+ *
+ * Ownership rule: vcpu->req is the EL2 working copy, registered handler tables
+ * are per-VM EL2 dispatch policy, and io_shared_page is guest/service-VM shared
+ * state that must be updated with explicit ordering around the processed flag.
+ */
+
 #if defined(HV_DEBUG)
 __unused static void acrn_print_request(uint16_t vcpu_id, const struct acrn_io_request *req)
 {

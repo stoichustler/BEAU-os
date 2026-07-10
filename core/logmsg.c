@@ -13,6 +13,29 @@
 #include <console.h>
 #include <npk_log.h>
 
+/*
+ * 2026-07-10, log service principle:
+ *
+ * do_logmsg() is the common fanout point for BEAU OS diagnostics. It formats
+ * one plain log line, then sends that same line to the enabled sinks: memory
+ * sbuf, host console, and optional NPK backend. Sink policy is level-gated, but
+ * formatting stays centralized so cross-sink correlation uses the same time,
+ * pCPU, severity, and sequence fields.
+ *
+ *   LOG_* caller
+ *        |
+ *        v
+ *   do_logmsg()
+ *     - timestamp + cpu + severity + seq
+ *        |
+ *        +-- mem_log()     -> ACRN_HVLOG sbuf
+ *        +-- console_log() -> active host console/shell
+ *        +-- npk_log()     -> platform debug sink
+ *
+ * Console colors are presentation-only. Memory and NPK sinks receive the plain
+ * BEAU prefix so tooling can parse the same message without terminal escapes.
+ */
+
 /* buf size should be identical to the size in hvlog option, which is
  * transfered to Service VM:
  * bsp/uefi/clearlinux/acrn.conf: hvlog=2M@0x1FE00000

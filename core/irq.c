@@ -14,6 +14,35 @@
 #include <ticks.h>
 #endif
 
+/*
+ * 2026-07-10, common IRQ service principle:
+ *
+ * core/irq.c owns the architecture-neutral IRQ descriptor table. Architecture
+ * code maps physical interrupt IDs into these common IRQ numbers; drivers and
+ * BEAU services register handlers here, and dispatch records counts/latency
+ * before running the selected action.
+ *
+ *   architecture IRQ source
+ *          |
+ *          v
+ *   arch domain/vector mapping
+ *          |
+ *          v
+ *   common irq_desc_array[irq]
+ *      |
+ *      +-- action + priv_data
+ *      +-- trigger flags
+ *      +-- per-pCPU counts
+ *      +-- optional latency stats
+ *          |
+ *          v
+ *   handler -> optional softirq
+ *
+ * The common layer does not EOI physical hardware. Architecture dispatch owns
+ * acknowledge/EOI ordering so device handlers run between those hardware
+ * boundary operations.
+ */
+
 static spinlock_t irq_alloc_spinlock = { .head = 0U, .tail = 0U, };
 
 #if CONFIG_IRQSTAT_LATENCY

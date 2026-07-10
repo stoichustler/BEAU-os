@@ -67,6 +67,8 @@ bool arm64_register_irq_domain(const char *name, uint32_t irq_num);
 uint32_t arm64_domain_get_acrn_irq(const char *name, uint32_t src_id);
 bool arm64_is_valid_acrn_irq(uint32_t irq);
 void arm64_gicv3_init_early(void);
+void arm64_gicv3_log_boot_info(void);
+uint64_t arm64_gicv3_redist_base(uint16_t pcpu_id);
 void arm64_gicv3_init(uint16_t pcpu_id);
 uint32_t arm64_gicv3_ack_irq(void);
 void arm64_gicv3_eoi_irq(uint32_t intid);

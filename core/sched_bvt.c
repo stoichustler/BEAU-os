@@ -10,9 +10,12 @@
 #include <schedule.h>
 #include <ticks.h>
 
-#define BVT_MCU_MS		1U
+#define BVT_STRINGIFY_HELPER(x)	#x
+#define BVT_STRINGIFY(x)	BVT_STRINGIFY_HELPER(x)
+
+#define BVT_MCU_MS		CONFIG_SCHED_BVT_MCU_MS
 /* context switch allowance */
-#define BVT_CSA_MCU		5U
+#define BVT_CSA_MCU		CONFIG_SCHED_BVT_CSA_MCU
 
 /*
  * limit the weight range to [1, 128]. It's enough to allocate CPU resources
@@ -535,7 +538,9 @@ static void sched_bvt_prioritize(struct thread_object *obj)
 
 struct acrn_scheduler sched_bvt = {
 	.name		= "sched_bvt",
-	.stat_desc	= "mcu:1ms csa:5 weight:1-128 warp:on-event",
+	.stat_desc	= "mcu:" BVT_STRINGIFY(CONFIG_SCHED_BVT_MCU_MS)
+			  "ms csa:" BVT_STRINGIFY(CONFIG_SCHED_BVT_CSA_MCU)
+			  " weight:1-128 warp:on-event",
 	.init		= sched_bvt_init,
 	.init_data	= sched_bvt_init_data,
 	.pick_next	= sched_bvt_pick_next,

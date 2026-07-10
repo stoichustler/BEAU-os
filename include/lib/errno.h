@@ -13,6 +13,8 @@
 #define EIO		5
 /** Indicates that not enough memory. */
 #define ENOMEM		12
+/** Indicates that operation should be tried again later. */
+#define EAGAIN		11
 /** Indicates Permission denied */
 #define EACCES		13
 /** Indicates there is fault. */
@@ -27,6 +29,8 @@
 #define ENOTTY		25
 /** Indicates the operation is obsoleted. */
 #define ENOSYS		38
+/** Indicates no data is currently available. */
+#define ENODATA		61
 /** Indicates that timeout occurs. */
 #define ETIMEDOUT	110
 

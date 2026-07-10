@@ -30,6 +30,7 @@ struct virtio_proxy_dev;
 #define VIRTIO_PROXY_STATE_BACKEND_READY	2U
 #define VIRTIO_PROXY_STATE_RUNNING		3U
 #define VIRTIO_PROXY_STATE_BACKEND_LOST		4U
+#define VIRTIO_PROXY_STATE_BACKEND_STALE	5U
 
 struct virtio_proxy_queue_stats {
 	uint16_t num;
@@ -65,7 +66,10 @@ struct virtio_proxy_stats {
 	uint64_t notify_count;
 	bool backend_bound;
 	bool hcall_backend_registered;
+	bool backend_healthy;
 	uint16_t backend_vmid;
+	uint32_t backend_abi_version;
+	uint32_t backend_caps;
 	bool pending_valid;
 	bool pending_sent;
 	bool pending_done;
@@ -81,8 +85,17 @@ struct virtio_proxy_stats {
 	uint64_t hcall_poll_ok_count;
 	uint64_t hcall_reply_count;
 	uint64_t hcall_reply_ok_count;
+	uint64_t hcall_batch_poll_count;
+	uint64_t hcall_batch_poll_ok_count;
+	uint64_t hcall_batch_reply_count;
+	uint64_t hcall_batch_reply_ok_count;
+	uint64_t hcall_batch_poll_item_count;
+	uint64_t hcall_batch_reply_item_count;
+	uint64_t hcall_empty_poll_count;
+	uint64_t hcall_heartbeat_count;
 	uint64_t hcall_busy_count;
 	uint64_t hcall_backpressure_count;
+	uint64_t heartbeat_age_ms;
 	uint64_t timeout_count;
 	uint64_t reset_count;
 	struct virtio_proxy_latency_stats latency_notify_poll;
@@ -94,6 +107,8 @@ struct virtio_proxy_stats {
 	uint16_t last_poll_queue_id;
 	uint16_t last_poll_head;
 	uint32_t last_poll_status;
+	uint32_t last_wait_us;
+	uint32_t last_batch_count;
 	uint16_t last_reply_queue_id;
 	uint16_t last_reply_head;
 	uint32_t last_reply_len;

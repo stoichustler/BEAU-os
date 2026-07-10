@@ -66,6 +66,25 @@ config SCHED_BVT
 	help
 	  Internal compatibility symbol selecting BVT scheduler code.
 
+config SCHED_BVT_MCU_MS
+	int "BVT minimum charging unit in milliseconds"
+	default 1
+	range 1 100
+	depends on SCHED_BVT
+	help
+	  Minimum charging unit used by the BVT virtual-time scheduler.
+	  Smaller values improve responsiveness at the cost of more timer activity.
+
+config SCHED_BVT_CSA_MCU
+	int "BVT context-switch allowance in MCU units"
+	default 5
+	range 1 100
+	depends on SCHED_BVT
+	help
+	  Extra BVT runtime allowance, expressed in BVT MCU units, used when
+	  programming the one-shot scheduler timer. Increase it to reduce timer
+	  churn; decrease it to reduce wake and fairness latency.
+
 config SCHED_RTDS
 	bool
 	default y if SCHED_HYBRID_BVT_RTDS || SCHED_RTDS_ONLY

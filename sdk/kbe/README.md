@@ -6,6 +6,9 @@ Linux kernel tree so they can be ported to multiple Linux versions.
 ## Files
 
 - `hcall.c`, `hcall.h`: shared BEAU HVC helpers and virtio-proxy ABI structs.
+- `virtio-proxy-backend.c`, `virtio-proxy-backend.h`: common VM1 backend
+  worker for registration, wait-hinted polling, batch/shared-buffer polling,
+  reply, and heartbeat.
 - `virtio-fs-backend.c`: VM1 virtio-fs backend for VM2 frontend access to
   `/var/beau`.
 - `virtio-rng-backend.c`: VM1 virtio-rng backend for VM2 frontend entropy
@@ -55,8 +58,18 @@ The virtio-i2c backend is also a validation backend. It exposes one in-memory
 offset, later write bytes update the map, and reads return bytes starting at
 the current offset.
 
-Backend poll loops use adaptive idle backoff instead of a fixed 10 ms sleep:
-freshly active devices retry at microsecond scale, then settle to 1 ms idle
-sleep after repeated empty polls. Backends may also provide protocol features
-and config-space bytes during `BEAU_PROXY_OP_REGISTER`; BEAU keeps board DTS
-defaults until a backend explicitly marks those register fields valid.
+Backend poll loops run through the common virtio-proxy worker. The worker
+registers ABI v3 capabilities, sends `BEAU_PROXY_OP_HEARTBEAT`, and uses
+BEAU-provided wait hints when polling returns `-ENODATA`. It falls back to
+adaptive idle backoff for older BEAU images or transient errors.
+
+High-throughput backends can use the ABI v3 shared batch buffer. VM1 registers
+`BEAU_PROXY_CAP_BATCH | BEAU_PROXY_CAP_SHARED_RING`; BEAU fills up to four
+`beau_proxy_batch_entry` records per `BEAU_PROXY_OP_BATCH_POLL`, and VM1
+completes them with one `BEAU_PROXY_OP_BATCH_REPLY`. The current QEMU path
+enables this for virtio-fs and virtio-blk. virtio-rng and virtio-i2c keep the
+single-request path because their request rate is low.
+
+Backends may also provide protocol features and config-space bytes during
+`BEAU_PROXY_OP_REGISTER`; BEAU keeps board DTS defaults until a backend
+explicitly marks those register fields valid.

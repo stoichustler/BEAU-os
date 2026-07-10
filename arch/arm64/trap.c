@@ -15,12 +15,29 @@
 #include <asm/trap.h>
 
 /*
- * EL2 trap dispatch is split by origin:
- * - host traps use this file directly and reboot after dumping state,
- * - guest exits are routed from the vector table into vcpu_exit.c.
+ * 2026-07-10, EL2 trap routing principle:
  *
- * IRQ handling is shared so physical interrupts taken in host or guest context
- * still enter the common IRQ core through the ARM64 IRQ domain translation.
+ * This file owns host-origin EL2 traps and the physical IRQ handoff into the
+ * common IRQ core. Guest-origin exits use the vector path in vcpu_exit.c so
+ * they can synchronize vCPU, vGIC, and vtimer state before returning to EL1.
+ *
+ *   exception taken at EL2
+ *          |
+ *          v
+ *   vector origin
+ *      |
+ *      +-- host EL2 context  -> dispatch_trap()
+ *      |                         - IRQ through GIC domain
+ *      |                         - unexpected sync/FIQ/SError dump + reset
+ *      |
+ *      +-- guest EL1 context -> vcpu_exit.c
+ *                                - save guest frame
+ *                                - emulate or inject
+ *                                - restore/resume guest frame
+ *
+ * Physical GIC INTIDs are hardware-local. They must be translated into ACRN
+ * IRQ numbers before common dispatch, and EOI'd only after the selected handler
+ * has consumed the interrupt.
  */
 void arm64_smp_call_irq_handler(__unused uint32_t irq, __unused void *data)
 {

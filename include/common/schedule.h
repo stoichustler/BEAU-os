@@ -112,6 +112,12 @@ struct sched_control {
 	uint64_t scheduler_ticks;
 	uint64_t context_switches;
 	uint64_t reschedule_requests;
+	/*
+	 * Fast path for deferred scheduler-specific priority requests. Producers set
+	 * this per-pCPU flag without taking scheduler_lock; schedule() consumes it
+	 * under the lock and only scans thread_list when the flag was observed.
+	 */
+	volatile bool priority_pending;
 };
 
 #define SCHEDULER_MAX_NUMBER 5U

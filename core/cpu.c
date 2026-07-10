@@ -9,6 +9,7 @@
 #include <logmsg.h>
 #include <bits.h>
 #include <schedule.h>
+#include <version.h>
 
 static volatile uint64_t pcpu_active_bitmap = 0UL;
 
@@ -118,10 +119,8 @@ bool start_pcpus(uint64_t mask)
 
 		/* Check to see if expected CPU is actually up */
 		if (!is_pcpu_active(i)) {
-			LOG_FTL("secondary cpu%hu failed to come up", i);
+			LOG_FTL("MP:    cpu%hu up failed", i);
 			pcpu_set_current_state(i, PCPU_STATE_DEAD);
-		} else {
-			LOG_INF("MP: secondary cpu%hu up", i);
 		}
 
 		i = ffs64(expected_start_mask);
@@ -145,7 +144,7 @@ bool wait_pcpus_running(uint64_t mask)
 		}
 
 		if (per_cpu(boot_state, i) != PCPU_STATE_RUNNING) {
-			LOG_FTL("secondary cpu%hu failed to enter running state", i);
+			LOG_FTL("MP:    cpu%hu run failed", i);
 			pcpu_set_current_state(i, PCPU_STATE_DEAD);
 		}
 
@@ -173,5 +172,6 @@ void cpu_dead(void)
  */
 void print_hv_banner(void)
 {
-	/* Unimplemented. */
+	LOG_INF("BEAU OS (HYPERVISOR) v%s [%s] %s (%s)", BEAU_OS_VERSION,
+		HV_BUILD_TYPE, HV_COMMIT_TIME, HV_COMMIT_DIRTY);
 }

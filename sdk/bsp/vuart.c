@@ -52,6 +52,37 @@
  * the device that are commonly used in this file.
  */
 
+/*
+ * 2026-07-10, vUART service principle:
+ *
+ * vUART is the byte FIFO and interrupt service used by guest console backends.
+ * The frontend device model owns register semantics, while this common layer
+ * owns RX/TX FIFO storage, backend callbacks, and UART-style interrupt reasons.
+ *
+ *   host/service input
+ *          |
+ *          v
+ *   vuart_putchar() / backend notify_rx()
+ *          |
+ *          v
+ *   guest-visible RX FIFO
+ *          |
+ *          v
+ *   virtual UART interrupt
+ *
+ *   guest TX register write
+ *          |
+ *          v
+ *   TX FIFO
+ *          |
+ *          v
+ *   console/vsh backend drains bytes
+ *
+ * FIFO ownership is protected by the vUART lock. Backend callbacks are optional
+ * so PL011, virtio-console, and future console transports can share the same
+ * byte queues without duplicating UART service state.
+ */
+
 #define init_vuart_lock(vu)	spinlock_init(&((vu)->lock))
 #define obtain_vuart_lock(vu, flags)	spinlock_irqsave_obtain(&((vu)->lock), &(flags))
 #define release_vuart_lock(vu, flags)	spinlock_irqrestore_release(&((vu)->lock), (flags))

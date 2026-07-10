@@ -14,8 +14,11 @@
 #include <console.h>
 #include <shell.h>
 #include <serial.h>
+#include <boot.h>
 #include <fdt_api.h>
+#include <barrier.h>
 #include <asm/platform.h>
+#include <asm/irq.h>
 #ifdef STACK_PROTECTOR
 #include <asm/security.h>
 #endif
@@ -52,6 +55,25 @@
  * then join the same init_pcpu_comm_post() path.
  */
 static void init_pcpu_comm_post(void);
+static volatile bool boot_vm_launch_released;
+
+static void arm64_release_vm_launch(void)
+{
+	cpu_write_memory_barrier();
+	boot_vm_launch_released = true;
+}
+
+static void arm64_wait_vm_launch(uint16_t pcpu_id)
+{
+	if (pcpu_id == BSP_CPU_ID) {
+		return;
+	}
+
+	while (!boot_vm_launch_released) {
+		asm_pause();
+	}
+	cpu_read_memory_barrier();
+}
 
 /*
  * 2026-06-30, ARM64 BSP stack handoff principle:
@@ -155,10 +177,12 @@ void init_secondary_pcpu(uint64_t mpidr)
 static void init_guest_mode(uint16_t pcpu_id)
 {
 	/*
-	 * VM launch is intentionally after IRQ, timer, scheduler, and AP bring-up.
-	 * Static VM creation builds vCPU scheduler threads; those threads must be
-	 * bound to initialized per-pCPU scheduler state before any guest can run.
+	 * VM launch is intentionally after IRQ, timer, scheduler, all-AP bring-up,
+	 * and BSP debug services. Static VM creation builds vCPU scheduler
+	 * threads across configured pCPU affinity sets; every target scheduler must
+	 * exist before any pCPU starts creating or waking guest vCPUs.
 	 */
+	arm64_wait_vm_launch(pcpu_id);
 	launch_vms(pcpu_id);
 }
 
@@ -168,6 +192,7 @@ static void init_pcpu_comm_post(void)
 
 	if (pcpu_id == BSP_CPU_ID) {
 		print_hv_banner();
+		arm64_gicv3_log_boot_info();
 	}
 
 	init_interrupt(pcpu_id);
@@ -179,6 +204,9 @@ static void init_pcpu_comm_post(void)
 	init_debug_post(pcpu_id);
 
 	pcpu_set_current_state(pcpu_id, PCPU_STATE_RUNNING);
+	LOG_INF("MP:    cpu%hu is running", pcpu_id);
+	LOG_INF("GICv3: cpu%hu redistributor at 0x%016lx",
+		pcpu_id, arm64_gicv3_redist_base(pcpu_id));
 
 	if (pcpu_id == BSP_CPU_ID) {
 		if (!start_pcpus(AP_MASK)) {
@@ -189,6 +217,7 @@ static void init_pcpu_comm_post(void)
 		}
 		shell_start();
 		vm_wdt_start();
+		arm64_release_vm_launch();
 	}
 
 	init_guest_mode(pcpu_id);

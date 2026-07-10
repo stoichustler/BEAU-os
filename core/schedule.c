@@ -88,6 +88,19 @@ static inline void set_thread_status(struct thread_object *obj, enum thread_obje
 /*
  * Hybrid scheduler ownership model:
  *
+ * 2026-07-10, scheduling principle:
+ *
+ *   static VM cpu_affinity
+ *             |
+ *             v
+ *      per-pCPU owner
+ *       /          \
+ *      / shared     \ exclusive
+ *     v              v
+ *   RTDS           BVT
+ *   periodic       proportional
+ *   budget         virtual time
+ *
  * BEAU keeps one scheduler instance per physical CPU. A thread never carries a
  * scheduler choice of its own; its scheduler is derived from thread->pcpu_id
  * and the selected per-pCPU sched_control. This keeps context-switch, wake, and
@@ -244,6 +257,7 @@ void init_sched(uint16_t pcpu_id)
 	ctl->scheduler_ticks = 0UL;
 	ctl->context_switches = 0UL;
 	ctl->reschedule_requests = 0UL;
+	ctl->priority_pending = false;
 	/*
 	 * Scheduler selection happens before idle/vCPU/helper threads are attached
 	 * to this pCPU. The chosen scheduler owns ctl->priv and the interpretation
@@ -498,19 +512,33 @@ void schedule(void)
 	char name[16];
 
 	obtain_schedule_lock(pcpu_id, &rflag);
-	/*
-	 * Consume one-shot priority requests before pick_next(). The request may be
-	 * raised from IRQ/vCPU paths that already hold unrelated locks, so those paths
-	 * only set a flag and request reschedule. The scheduler-specific callback runs
-	 * here under the scheduler lock, preserving a single lock owner for runqueue
-	 * ordering changes.
-	 */
-	list_for_each(pos, &thread_list) {
-		obj = container_of(pos, struct thread_object, node);
-		if ((obj->pcpu_id == pcpu_id) && obj->priority_pending) {
-			obj->priority_pending = false;
-			if ((scheduler->prioritize != NULL) && is_runnable_or_running(obj) && !obj->be_blocking) {
-				scheduler->prioritize(obj);
+	if (ctl->priority_pending) {
+		/*
+		 * Consume one-shot priority requests before pick_next(). Request paths
+		 * may already hold IRQ/vCPU locks, so they only set lockless flags and
+		 * raise NEED_RESCHEDULE. The per-pCPU flag keeps ordinary schedule()
+		 * calls from scanning the global thread list.
+		 *
+		 *   IRQ/vCPU event
+		 *        |
+		 *        v
+		 *   request_thread_priority()
+		 *        |
+		 *        v
+		 *   per-pCPU priority_pending
+		 *        |
+		 *        v
+		 *   schedule() -> scheduler->prioritize() -> pick_next()
+		 */
+		ctl->priority_pending = false;
+		list_for_each(pos, &thread_list) {
+			obj = container_of(pos, struct thread_object, node);
+			if ((obj->pcpu_id == pcpu_id) && obj->priority_pending) {
+				obj->priority_pending = false;
+				if ((scheduler->prioritize != NULL) &&
+					is_runnable_or_running(obj) && !obj->be_blocking) {
+					scheduler->prioritize(obj);
+				}
 			}
 		}
 	}
@@ -611,6 +639,7 @@ void request_thread_priority(struct thread_object *obj)
 	 */
 	if (scheduler->prioritize != NULL) {
 		obj->priority_pending = true;
+		per_cpu(sched_ctl, obj->pcpu_id).priority_pending = true;
 	}
 	make_reschedule_request(obj->pcpu_id);
 }

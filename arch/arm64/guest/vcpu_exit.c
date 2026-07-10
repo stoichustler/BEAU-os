@@ -43,6 +43,22 @@
  *   EL1 WFI/WFE trap     -> poll/update vtimer -> pending check -> maybe yield
  *   physical IRQ at EL2  -> dispatch IRQ/softirq -> maybe schedule
  *                         -> poll/update vtimer -> process vCPU requests
+ *
+ * 2026-07-10, synchronous exit demux:
+ *
+ *   ESR_EL2.EC
+ *      |
+ *      +-- HVC64      -> explicit hypercall ABI
+ *      +-- SYSREG     -> vGIC/vtimer/diagnostic sysreg emulation
+ *      +-- WFI/WFE    -> idle hint with vtimer/vGIC refresh before yield
+ *      +-- IABT S2    -> instruction-fetch fault diagnostics, no MMIO value
+ *      +-- DABT S2    -> load/store MMIO request when the IPA is registered
+ *      +-- unknown    -> fatal guest-exit diagnostic
+ *
+ * Instruction aborts and data aborts are deliberately separated. An
+ * instruction abort means the guest tried to fetch from unmapped or non-
+ * executable memory; a data abort can carry access width, direction, and target
+ * register information, so only data aborts may become MMIO emulation.
  */
 #define HPFAR_EL2_FIPA_MASK	0xfffffffff0UL
 #define FAR_EL2_PAGE_MASK	0xfffUL

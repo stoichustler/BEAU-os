@@ -11,6 +11,31 @@
 
 #ifdef CONFIG_ACRNTRACE_ENABLED
 
+/*
+ * 2026-07-10, trace service principle:
+ *
+ * The trace path is a low-overhead producer for fixed-size diagnostic records.
+ * Each pCPU writes only to its own ACRN_TRACE sbuf, avoiding a global trace lock
+ * on hot paths such as scheduler, timer, and exit diagnostics.
+ *
+ *   TRACE_* caller
+ *          |
+ *          v
+ *   per-pCPU trace_entry
+ *     - timestamp
+ *     - event id
+ *     - compact payload
+ *          |
+ *          v
+ *   per_cpu(sbuf)[ACRN_TRACE]
+ *          |
+ *          v
+ *   service-side trace reader
+ *
+ * If the trace sbuf is not registered, tracing is a no-op. Callers should not
+ * depend on trace delivery for correctness.
+ */
+
 /* sizeof(trace_entry) == 4 x 64bit */
 struct trace_entry {
 	uint64_t tsc; /* TSC */

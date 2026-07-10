@@ -12,6 +12,7 @@
 #include <logmsg.h>
 #include <schedule.h>
 #include <notify.h>
+#include <ticks.h>
 
 #include <asm/notify.h>
 
@@ -72,6 +73,11 @@ bool is_vcpu_bsp(const struct acrn_vcpu *vcpu)
 uint16_t pcpuid_from_vcpu(const struct acrn_vcpu *vcpu)
 {
 	return sched_get_pcpuid(&vcpu->thread_obj);
+}
+
+static bool vcpu_boot_log_enabled(const struct acrn_vcpu *vcpu)
+{
+	return (vcpu != NULL) && (vcpu->vm != NULL) && (vcpu->vm->vm_id <= 2U);
 }
 
 uint64_t vcpumask2pcpumask(struct acrn_vm *vm, uint64_t vdmask)
@@ -218,10 +224,6 @@ int32_t create_vcpu(struct acrn_vm *vm, uint16_t pcpu_id)
 		 * needs revise.
 		 */
 
-		LOG_INF("create vm%d:vcpu%d runs as %s vcpu",
-				vcpu->vm->vm_id, vcpu->vcpu_id,
-				is_vcpu_bsp(vcpu) ? "  primary" : "secondary");
-
 		cpu_compiler_barrier();
 
 		/*
@@ -273,14 +275,19 @@ void destroy_vcpu(struct acrn_vcpu *vcpu)
 
 void launch_vcpu(struct acrn_vcpu *vcpu)
 {
-	uint16_t pcpu_id = pcpuid_from_vcpu(vcpu);
-
-	LOG_DBG("vm%hu:vcpu%hu scheduled on pcpu%hu", vcpu->vm->vm_id,
-		vcpu->vcpu_id, pcpu_id);
+	uint64_t kick_tsc = cpu_ticks();
+	uint64_t kick_us;
 
 	vcpu_set_state(vcpu, VCPU_RUNNING);
 
 	wake_thread(&vcpu->thread_obj);
+
+	if (vcpu_boot_log_enabled(vcpu)) {
+		kick_us = ticks_to_us(cpu_ticks() - kick_tsc);
+		LOG_INF("VM%u: kick vcpu%hu on pcpu%hu at 0x%016lx +%6luus",
+			vcpu->vm->vm_id, vcpu->vcpu_id, pcpuid_from_vcpu(vcpu),
+			arch_vcpu_get_entry(vcpu), kick_us);
+	}
 }
 
 /* NOTE:

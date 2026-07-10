@@ -248,19 +248,45 @@ struct acrn_hw_info {
  *        -> backend HVC reply copies response bytes back to frontend memory
  *        -> BEAU publishes used-ring completion and injects the frontend IRQ
  */
+#define ACRN_VIRTIO_PROXY_ABI_VERSION	3U
+
 #define ACRN_VIRTIO_PROXY_OP_REGISTER	0U
 #define ACRN_VIRTIO_PROXY_OP_POLL	1U
 #define ACRN_VIRTIO_PROXY_OP_REPLY	2U
+#define ACRN_VIRTIO_PROXY_OP_HEARTBEAT	3U
+#define ACRN_VIRTIO_PROXY_OP_BATCH_POLL	4U
+#define ACRN_VIRTIO_PROXY_OP_BATCH_REPLY	5U
 
 #define ACRN_VIRTIO_PROXY_DATA_MAX	8192U
 #define ACRN_VIRTIO_PROXY_DESC_MAX	8U
+#define ACRN_VIRTIO_PROXY_BATCH_MAX	4U
+#define ACRN_VIRTIO_PROXY_BATCH_DATA_MAX	ACRN_VIRTIO_PROXY_DATA_MAX
 #define ACRN_VIRTIO_PROXY_FLAG_RO	0x1U
 #define ACRN_VIRTIO_PROXY_REG_F_FEATURES	0x1U
 #define ACRN_VIRTIO_PROXY_REG_F_CONFIG	0x2U
+#define ACRN_VIRTIO_PROXY_CAP_WAIT_HINT	0x1U
+#define ACRN_VIRTIO_PROXY_CAP_HEARTBEAT	0x2U
+#define ACRN_VIRTIO_PROXY_CAP_STATS	0x4U
+#define ACRN_VIRTIO_PROXY_CAP_BATCH	0x8U
+#define ACRN_VIRTIO_PROXY_CAP_SHARED_RING	0x10U
 
 struct acrn_virtio_proxy_desc {
 	uint32_t len;
 	uint32_t flags;
+} __aligned(8);
+
+struct acrn_virtio_proxy_batch_entry {
+	uint32_t status;
+	uint16_t queue_id;
+	uint16_t head;
+	uint16_t desc_count;
+	uint32_t in_len;
+	uint32_t out_len;
+	uint32_t reply_len;
+	uint32_t flags;
+	struct acrn_virtio_proxy_desc desc[ACRN_VIRTIO_PROXY_DESC_MAX];
+	uint8_t in[ACRN_VIRTIO_PROXY_BATCH_DATA_MAX];
+	uint8_t out[ACRN_VIRTIO_PROXY_BATCH_DATA_MAX];
 } __aligned(8);
 
 struct acrn_virtio_proxy_ioc {
@@ -285,6 +311,16 @@ struct acrn_virtio_proxy_ioc {
 	uint64_t config_gpa;
 	uint32_t config_len;
 	uint32_t register_flags;
+	uint32_t abi_version;
+	uint32_t ioc_size;
+	uint32_t backend_caps;
+	uint32_t wait_us;
+	uint64_t heartbeat_seq;
+	uint64_t batch_gpa;
+	uint32_t batch_len;
+	uint32_t batch_count;
+	uint32_t batch_entry_size;
+	uint32_t batch_flags;
 	struct acrn_virtio_proxy_desc desc[ACRN_VIRTIO_PROXY_DESC_MAX];
 } __aligned(8);
 

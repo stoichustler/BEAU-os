@@ -1205,7 +1205,6 @@ void arm64_vgicv3_global_init(void)
 			panic("gicv3 virtualization has no list registers");
 		}
 		vgic_global_initialized = true;
-		LOG_INF("GICv3 virtualization: %u list registers", vgic_lr_count);
 	}
 }
 

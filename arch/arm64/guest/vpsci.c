@@ -15,6 +15,30 @@
 #include <asm/psci.h>
 #include <asm/guest/vm_reset.h>
 
+/*
+ * 2026-07-10, PSCI virtualization principle:
+ *
+ * PSCI calls are guest power-management requests delivered through the same
+ * HVC/SMC exit path as other synchronous guest exits. BEAU handles only the
+ * local VM lifecycle edges needed by the static ARM64 model; host power state
+ * and dynamic VM creation stay outside this file.
+ *
+ *   guest PSCI call
+ *          |
+ *          v
+ *   vcpu_exit.c decodes function ID
+ *          |
+ *          +-- CPU_ON/OFF style calls -> vCPU lifecycle helpers
+ *          |
+ *          +-- SYSTEM_OFF             -> stop current vCPU
+ *          |
+ *          +-- SYSTEM_RESET           -> queue reset to idle owner
+ *
+ * Reset is deferred because the current vCPU exit still owns a live register
+ * frame. The idle thread is the stable owner that can pause all vCPUs, reset
+ * virtual devices, rebuild boot state, and then wake the BSP again.
+ */
+
 int64_t arm64_vpsci_system_off(struct acrn_vcpu *vcpu)
 {
 	if (vcpu == NULL) {

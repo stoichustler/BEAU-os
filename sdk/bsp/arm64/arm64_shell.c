@@ -1458,6 +1458,9 @@ static const char *shell_virtio_state_to_str(uint32_t state)
 	case VIRTIO_PROXY_STATE_BACKEND_LOST:
 		str = "BE-lost";
 		break;
+	case VIRTIO_PROXY_STATE_BACKEND_STALE:
+		str = "BE-stale";
+		break;
 	default:
 		str = "N/A";
 		break;
@@ -1510,6 +1513,9 @@ static const char *shell_errno_to_str(int32_t ret)
 		break;
 	case -EFAULT:
 		str = "FAULT";
+		break;
+	case -ENODATA:
+		str = "NODATA";
 		break;
 	default:
 		str = "N/A";
@@ -1595,16 +1601,27 @@ static void shell_virtiostat_print_summary_device(const struct virtio_proxy_stat
 	shell_item_line("device:%3u tag:%12s access:%s throughput:%s",
 		stats->device_id, stats->tag, shell_virtio_access_to_str(stats->access),
 		shell_virtio_throughput_to_str(stats->throughput));
-	shell_item_line("state:%s status:0x%08x queues:%hu/%hu notify:%lu backend:%s pending:%hu/%hu",
+	shell_item_line("state:%s status:0x%08x queues:%hu/%hu notify:%lu backend:%s health:%s pending:%hu/%hu",
 		shell_virtio_state_to_str(stats->state), stats->status, ready,
-		stats->queue_num, stats->notify_count, backend, stats->pending_active,
+		stats->queue_num, stats->notify_count, backend,
+		stats->backend_healthy ? "ok" : "stale", stats->pending_active,
 		stats->pending_limit);
-	shell_item_line("hcall:register:%lu poll:%lu/%lu reply:%lu/%lu busy:%lu bp:%lu ret:%5s(%d)",
+	shell_item_line("hcall:register:%lu poll:%lu/%lu empty:%lu reply:%lu/%lu busy:%lu bp:%lu ret:%6s(%d)",
 		stats->hcall_register_count, stats->hcall_poll_ok_count,
-		stats->hcall_poll_count, stats->hcall_reply_ok_count,
+		stats->hcall_poll_count, stats->hcall_empty_poll_count,
+		stats->hcall_reply_ok_count,
 		stats->hcall_reply_count, stats->hcall_busy_count,
 		stats->hcall_backpressure_count,
 		shell_errno_to_str(stats->last_hcall_ret), stats->last_hcall_ret);
+	shell_item_line("batch:poll:%lu/%lu items:%lu reply:%lu/%lu items:%lu last:%u",
+		stats->hcall_batch_poll_ok_count, stats->hcall_batch_poll_count,
+		stats->hcall_batch_poll_item_count,
+		stats->hcall_batch_reply_ok_count, stats->hcall_batch_reply_count,
+		stats->hcall_batch_reply_item_count, stats->last_batch_count);
+	shell_item_line("backend:abi:%u caps:0x%x heartbeat:%lu age:%lums wait:%uus",
+		stats->backend_abi_version, stats->backend_caps,
+		stats->hcall_heartbeat_count, stats->heartbeat_age_ms,
+		stats->last_wait_us);
 	shell_item_line("latency:min/avg/max");
 	shell_item_line("  notify-poll:%s", notify_poll);
 	shell_item_line("  poll-reply: %s", poll_reply);

@@ -14,7 +14,6 @@
 #include <per_cpu.h>
 #include <bsp/vfdt.h>
 #include <logmsg.h>
-#include <sprintf.h>
 #include <bsp/io_req.h>
 #include <asm/sysreg.h>
 #include <asm/guest/vcpu_priv.h>
@@ -36,6 +35,30 @@
  *
  *   VM config RAM window -> stage-2 identity map -> EL1 normal memory
  *   VM config device IPA -> no stage-2 leaf map  -> data abort -> vio MMIO
+ *
+ * 2026-07-10, ARM64 VM initialization framework:
+ *
+ *   common create_vm()
+ *          |
+ *          v
+ *   arch_init_vm()
+ *     - init_stage2_identity_map()
+ *     - arm64_vgicv3_init_vm()
+ *     - virtio/vPL011 backend state
+ *     - register_arm64_vio_mmio()
+ *          |
+ *          v
+ *   arch_init_vcpu()
+ *          |
+ *          v
+ *   arch_vm_prepare_bsp()
+ *          |
+ *          v
+ *   arm64_prepare_linux_vcpu_context()
+ *
+ * Stage-2 controls isolation, while the MMIO registration table controls
+ * emulation. A device window must be either mapped as guest RAM or registered
+ * as trapped MMIO, never both.
  */
 #define ARM64_STAGE2_PAGES_PER_VM	64UL
 #define ARM64_STAGE2_PAGE_NUM		(CONFIG_MAX_VM_NUM * ARM64_STAGE2_PAGES_PER_VM)
@@ -46,25 +69,23 @@ DEFINE_PAGE_TABLES(stage2_pages, ARM64_STAGE2_PAGE_NUM);
 DEFINE_PAGE_TABLE(stage2_pages_bitmap);
 static uint8_t stage2_zero_page[PAGE_SIZE] __aligned(PAGE_SIZE);
 static bool stage2_page_pool_initialized;
+static bool arm64_boot_vdev_logged;
 
-#ifdef CONFIG_LOG_VERBOSE
-static void log_stage2_map(const struct acrn_vm *vm, const char *name,
-	uint64_t ipa, uint64_t pa, uint64_t size)
+static bool arm64_vm_boot_log_enabled(uint16_t vm_id)
 {
-	LOG_INF("vm-%u stage-2 map (%6s) gpa[0x%08lx-0x%08lx]:hpa[0x%08lx-0x%08lx]",
-		vm->vm_id, name, ipa, ipa + size, pa, pa + size);
+	return vm_id <= 2U;
 }
 
-static void log_stage2_vio(const struct acrn_vm *vm, const char *name,
-	uint64_t ipa, uint64_t size)
+static uint64_t arm64_vm_range_end(uint64_t base, uint64_t size)
 {
-	LOG_INF("vm-%u stage-2 vio (%6s) gpa[0x%08lx-0x%08lx]",
-		vm->vm_id, name, ipa, ipa + size);
+	if (size == 0UL) {
+		return base;
+	}
+	if ((size - 1UL) > (UINT64_MAX - base)) {
+		return UINT64_MAX;
+	}
+	return base + size - 1UL;
 }
-#else
-#define log_stage2_map(vm, name, ipa, pa, size)
-#define log_stage2_vio(vm, name, ipa, size)
-#endif /* CONFIG_LOG_VERBOSE */
 
 static bool stage2_large_page_support(enum _page_table_level level, __unused uint64_t prot)
 {
@@ -132,6 +153,40 @@ static bool arm64_vm_uses_virtio_proxy(const struct acrn_vm_config *vm_config)
 		(vm_config->arch.guest_virtio_proxy_num != 0U);
 }
 
+static void arm64_vm_log_boot_vdevs(const struct acrn_vm *vm,
+	const struct acrn_vm_config *vm_config)
+{
+	const struct arch_vm_config *arch_config = &vm_config->arch;
+
+	if (arm64_boot_vdev_logged || !arm64_vm_boot_log_enabled(vm->vm_id)) {
+		return;
+	}
+
+	arm64_boot_vdev_logged = true;
+	LOG_INF("vGICv3: GICR      [0x%016lx-0x%016lx] (0x%08lx)",
+		arch_config->guest_gicr_base,
+		arm64_vm_range_end(arch_config->guest_gicr_base, arch_config->guest_gicr_size),
+		arch_config->guest_gicr_size);
+	LOG_INF("vGICv3: GICD      [0x%016lx-0x%016lx] (0x%08lx)",
+		arch_config->guest_gicd_base,
+		arm64_vm_range_end(arch_config->guest_gicd_base, arch_config->guest_gicd_size),
+		arch_config->guest_gicd_size);
+	if (arch_config->guest_its_size != 0UL) {
+		LOG_INF("vGICv3: ITS       [0x%016lx-0x%016lx] (0x%08lx)",
+			arch_config->guest_its_base,
+			arm64_vm_range_end(arch_config->guest_its_base,
+				arch_config->guest_its_size),
+			arch_config->guest_its_size);
+	}
+	if (!arm64_vm_uses_virtio_console(vm_config) && (arch_config->guest_uart_size != 0UL)) {
+		LOG_INF("vUART:            [0x%016lx-0x%016lx] (0x%08lx)",
+			arch_config->guest_uart_base,
+			arm64_vm_range_end(arch_config->guest_uart_base,
+				arch_config->guest_uart_size),
+			arch_config->guest_uart_size);
+	}
+}
+
 static void validate_stage2_ram_identity(const struct acrn_vm *vm, uint64_t mem_start,
 	uint64_t mem_hpa, uint64_t mem_size)
 {
@@ -193,42 +248,16 @@ static void init_stage2_identity_map(struct acrn_vm *vm)
 	 */
 	pgtable_add_map((uint64_t *)vm->root_stg2ptp, mem_hpa, mem_start,
 		mem_size, PAGE_S2_ATTR_NORMAL | PAGE_BLOCK_DESC, &vm->stg2_pgtable);
-	log_stage2_map(vm, "ram", mem_start, mem_hpa, mem_size);
 
 	pgtable_add_map((uint64_t *)vm->root_stg2ptp, hva2hpa(stage2_zero_page), 0UL,
 		PAGE_SIZE, PAGE_S2_MEMATTR_NORMAL | PAGE_S2_S2AP_READ |
 		PAGE_S2_SH_INNER | PAGE_S2_AF, &vm->stg2_pgtable);
-	log_stage2_map(vm, "zero", 0UL, hva2hpa(stage2_zero_page), PAGE_SIZE);
 
 	/*
-	 * Device IPA ranges are logged here but registered below as vio MMIO. The
-	 * absence of a stage-2 leaf mapping is what makes EL1 device accesses exit
-	 * to EL2 for emulation.
+	 * Device IPA ranges stay unmapped at stage-2 and are registered below as
+	 * vio MMIO. The absence of a stage-2 leaf mapping is what makes EL1 device
+	 * accesses exit to EL2 for emulation.
 	 */
-	log_stage2_vio(vm, "vgicd", arch_config->guest_gicd_base,
-		arch_config->guest_gicd_size);
-	log_stage2_vio(vm, "vgicr", arch_config->guest_gicr_base,
-		arch_config->guest_gicr_size);
-	if (arch_config->guest_its_size != 0UL) {
-		log_stage2_vio(vm, "vits", arch_config->guest_its_base,
-			arch_config->guest_its_size);
-	}
-	if (arm64_vm_uses_virtio_console(get_vm_config(vm->vm_id))) {
-		log_stage2_vio(vm, "vcon", arch_config->guest_virtio_console_base,
-			arch_config->guest_virtio_console_size);
-	} else {
-		log_stage2_vio(vm, "vpl011", arch_config->guest_uart_base,
-			arch_config->guest_uart_size);
-	}
-	if (arm64_vm_uses_virtio_proxy(get_vm_config(vm->vm_id))) {
-		for (uint16_t i = 0U; i < arch_config->guest_virtio_proxy_num; i++) {
-			char name[8];
-
-			snprintf(name, sizeof(name), "vprox%u", i);
-			log_stage2_vio(vm, name, arch_config->guest_virtio_proxy[i].base,
-				arch_config->guest_virtio_proxy[i].size);
-		}
-	}
 }
 
 static void register_arm64_vio_mmio(struct acrn_vm *vm)
@@ -245,6 +274,20 @@ static void register_arm64_vio_mmio(struct acrn_vm *vm)
 	 * The common IO request layer owns dispatch by GPA range. ARM64 registers
 	 * the guest interrupt-controller and UART windows here so data abort exits
 	 * can be converted into device-specific emulation callbacks.
+	 *
+	 *   guest load/store device IPA
+	 *              |
+	 *              v
+	 *   stage-2 no-map data abort
+	 *              |
+	 *              v
+	 *   vcpu_exit.c builds MMIO ioreq
+	 *              |
+	 *              v
+	 *   io_req.c range lookup
+	 *              |
+	 *              v
+	 *   vGIC / vPL011 / virtio handler
 	 */
 	register_mmio_emulation_handler(vm, arm64_vgicv3_mmio_handler,
 		gicd_base, gicd_base + arch_config->guest_gicd_size,
@@ -314,6 +357,7 @@ int32_t arch_init_vm(struct acrn_vm *vm, struct acrn_vm_config *vm_config)
 		virtio_proxy_init_vm(vm);
 	}
 	register_arm64_vio_mmio(vm);
+	arm64_vm_log_boot_vdevs(vm, vm_config);
 
 	if (is_static_configured_vm(vm) && (vm_config->fdt_config.fdt_mod_tag[0] == '\0')) {
 		init_service_vm_vfdt(vm);

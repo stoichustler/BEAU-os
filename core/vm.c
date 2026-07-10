@@ -14,6 +14,7 @@
 #include <logmsg.h>
 #include <sbuf.h>
 #include <sprintf.h>
+#include <ticks.h>
 #include <vm_wdt.h>
 #include <asm/notify.h>
 #include <host_pm.h>
@@ -29,6 +30,39 @@
 static struct acrn_vm vm_array[CONFIG_MAX_VM_NUM] __aligned(PAGE_SIZE);
 
 static struct acrn_vm *service_vm_ptr = NULL;
+
+/*
+ * 2026-07-10, common VM lifecycle principle:
+ *
+ * core/vm.c owns the VM state machine and static launch policy. Architecture
+ * code owns the EL2 virtualization payload attached to that VM: stage-2 tables,
+ * vGIC state, timer offset, and guest entry context. Keeping the split explicit
+ * prevents board/platform policy from leaking into common VM transitions.
+ *
+ *   platform vm_config
+ *          |
+ *          v
+ *   common VM object + locks
+ *          |
+ *          v
+ *   arch_init_vm()
+ *     - stage-2 root
+ *     - virtual devices
+ *     - MMIO trap handlers
+ *          |
+ *          v
+ *   create_vcpu() per configured pCPU
+ *          |
+ *          v
+ *   VM_CREATED
+ *          |
+ *          v
+ *   prepare_os_image() -> start_vm() -> VM_RUNNING
+ *
+ * The invariant is that VM_CREATED has all EL2 ownership structures allocated
+ * but no guest instruction has executed. Guest state becomes live only after
+ * start_vm() prepares the BSP and wakes its vCPU thread.
+ */
 
 uint16_t get_unused_vmid(void)
 {
@@ -217,6 +251,25 @@ static inline uint16_t get_vm_launch_pcpu_id(const struct acrn_vm_config *vm_con
 #endif
 }
 
+static bool vm_boot_log_enabled(uint16_t vm_id)
+{
+	return vm_id <= 2U;
+}
+
+static const char *vm_boot_load_order_name(enum acrn_vm_load_order load_order)
+{
+	switch (load_order) {
+	case SERVICE_VM:
+		return "service";
+	case PRE_LAUNCHED_VM:
+		return "prelaunch";
+	case POST_LAUNCHED_VM:
+		return "postlaunch";
+	default:
+		return "unknown";
+	}
+}
+
 static int32_t create_vm_vcpus(struct acrn_vm *vm, uint64_t pcpu_bitmap,
 	const struct acrn_vm_config *vm_config)
 {
@@ -255,10 +308,9 @@ static int32_t create_vm_vcpus(struct acrn_vm *vm, uint64_t pcpu_bitmap,
 	return status;
 }
 
-static void start_prepared_vm(struct acrn_vm *vm, const struct acrn_vm_config *vm_config)
+static void start_prepared_vm(struct acrn_vm *vm, __unused const struct acrn_vm_config *vm_config)
 {
 	start_vm(vm);
-	LOG_INF("kick vmid: %x os: %s", vm->vm_id, vm_config->name);
 }
 
 static void start_prepared_vms(struct acrn_vm *const start_vms[],
@@ -273,6 +325,23 @@ static void start_prepared_vms(struct acrn_vm *const start_vms[],
 
 		if (launcher_pcpu_vm == start_launcher_pcpu) {
 			start_prepared_vm(start_vms[idx], vm_config);
+		}
+	}
+}
+
+static void log_started_vms(struct acrn_vm *const start_vms[],
+	const struct acrn_vm_config *const start_vm_configs[], uint16_t start_count)
+{
+	uint16_t idx;
+
+	for (idx = 0U; idx < start_count; idx++) {
+		const struct acrn_vm *vm = start_vms[idx];
+		const struct acrn_vm_config *vm_config = start_vm_configs[idx];
+
+		if (vm_boot_log_enabled(vm->vm_id)) {
+			LOG_INF("VM%u: %-10s vm: %-8s started",
+				vm->vm_id, vm_boot_load_order_name(vm_config->load_order),
+				vm_config->name);
 		}
 	}
 }
@@ -372,6 +441,12 @@ void launch_vms(uint16_t pcpu_id)
 	const struct acrn_vm_config *start_vm_configs[CONFIG_MAX_VM_NUM];
 
 	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
+		int32_t create_status;
+		int32_t boot_status;
+		int32_t image_status;
+		uint64_t stage_tsc;
+		uint64_t stage_us;
+
 		vm_config = get_vm_config(vm_id);
 
 		if (vm_config->cpu_affinity == 0UL) {
@@ -403,20 +478,33 @@ void launch_vms(uint16_t pcpu_id)
 				 * so skip "start_vm" here for REE, and start it in TEE hypercall
 				 * HC_TEE_VCPU_BOOT_DONE.
 				 */
-				if (create_vm(vm_id, vm_config->cpu_affinity, vm_config, &vm) == 0) {
+				stage_tsc = cpu_ticks();
+				create_status = create_vm(vm_id, vm_config->cpu_affinity,
+					vm_config, &vm);
+				stage_us = ticks_to_us(cpu_ticks() - stage_tsc);
+				if (create_status == 0) {
 					if ((vm_config->guest_flags & GUEST_FLAG_REE) != 0U) {
 						/* Nothing need to do here, REE will start in TEE hypercall */
 					} else {
-						if ((init_vm_boot_info(vm) == 0) &&
-							(prepare_os_image(vm) == 0)) {
+						stage_tsc = cpu_ticks();
+						boot_status = init_vm_boot_info(vm);
+						image_status = (boot_status == 0) ?
+							prepare_os_image(vm) : boot_status;
+						stage_us = ticks_to_us(cpu_ticks() - stage_tsc);
+						if ((boot_status == 0) && (image_status == 0)) {
 							start_vms[start_count] = vm;
 							start_vm_configs[start_count] = vm_config;
 							start_count++;
 						} else {
-							LOG_ERR("stopping vm%d: no bootable kernel", vm_id);
+							LOG_ERR("VM%u: prepare failed +%6luus boot=%d image=%d k=%s",
+								vm_id, stage_us, boot_status, image_status,
+								vm_config->os_config.kernel_mod_tag);
 							(void)destroy_vm(vm);
 						}
 					}
+				} else {
+					LOG_ERR("VM%u: create failed +%6luus ret=%d name=%s",
+						vm_id, stage_us, create_status, vm_config->name);
 				}
 			}
 		}
@@ -435,6 +523,7 @@ void launch_vms(uint16_t pcpu_id)
 	 */
 	start_prepared_vms(start_vms, start_vm_configs, start_count, pcpu_id, false);
 	start_prepared_vms(start_vms, start_vm_configs, start_count, pcpu_id, true);
+	log_started_vms(start_vms, start_vm_configs, start_count);
 #else
 	(void)pcpu_id;
 #endif

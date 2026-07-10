@@ -23,6 +23,36 @@
 #include <vm_wdt.h>
 #include <virtio_proxy.h>
 
+/*
+ * 2026-07-10, VM watchdog service principle:
+ *
+ * The watchdog is a BEAU OS service that correlates several liveness signals
+ * instead of treating a missing guest heartbeat as the only failure mode.
+ * Guest HVC kicks prove that the guest OS timer path made forward progress;
+ * scheduler, IRQ, console, and virtio-proxy samples explain why progress may
+ * have stopped.
+ *
+ *   guest OS timer callback
+ *          |
+ *          v
+ *   HC_VM_WDT_KICK
+ *          |
+ *          v
+ *   vm_wdt_entry.last_kick_tsc
+ *          |
+ *          v
+ *   periodic BEAU watchdog thread
+ *      |
+ *      +-- heartbeat age     -> timeout
+ *      +-- runnable vCPU age -> vCPU stall
+ *      +-- IRQ sample delta  -> IRQ storm
+ *      +-- console backlog   -> console stuck
+ *      +-- proxy pending age -> virtio stuck
+ *
+ * Ownership rule: guests own the kick source, core/vm_wdt.c owns diagnosis and
+ * reporting, and device-specific modules own the counters used as evidence.
+ */
+
 #define VM_WDT_IRQ_STORM_PER_SEC	10000UL
 #define VM_WDT_QUEUE_STUCK_PERIODS	2U
 #define VM_WDT_STUCK_PERIOD_MAX		255U
@@ -399,11 +429,19 @@ static void vm_wdt_print_one(uint16_t vm_id, const struct vm_wdt_snapshot *snaps
 	color = vm_wdt_status_color(snapshot->status);
 	last_sec = snapshot->last_ms / 1000UL;
 	last_msec = snapshot->last_ms % 1000UL;
-	(void)snprintf(line, sizeof(line),
-		"%s[κ][%s] WDT: vm%hu:%7s status:%7s reason:%12s (%02lu.%03lus) kick:%08lu" SHELL_COLOR_RESET "\r\n",
-		color, timestamp_str, vm_id, vm_wdt_name(vm_id),
-		vm_wdt_status_str(snapshot->status), vm_wdt_reason_str(snapshot->reason),
-		last_sec, last_msec, snapshot->kick_count);
+	if (snapshot->status == VM_WDT_STATUS_STUCK) {
+		(void)snprintf(line, sizeof(line),
+			"%s[κ][%s] WDT: vm%hu:%7s status:%7s (%02lu.%03lus) kick:%08lu reason:%s" SHELL_COLOR_RESET "\r\n",
+			color, timestamp_str, vm_id, vm_wdt_name(vm_id),
+			vm_wdt_status_str(snapshot->status), last_sec, last_msec,
+			snapshot->kick_count, vm_wdt_reason_str(snapshot->reason));
+	} else {
+		(void)snprintf(line, sizeof(line),
+			"%s[κ][%s] WDT: vm%hu:%7s status:%7s (%02lu.%03lus) kick:%08lu" SHELL_COLOR_RESET "\r\n",
+			color, timestamp_str, vm_id, vm_wdt_name(vm_id),
+			vm_wdt_status_str(snapshot->status), last_sec, last_msec,
+			snapshot->kick_count);
+	}
 	if (shell_async_puts(line)) {
 		vm_wdt_mark_reported(vm_id, snapshot);
 	}

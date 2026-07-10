@@ -95,6 +95,17 @@ typedef int32_t (*gic_v3_initseq_t)(struct beau_gic_v3_softc *sc);
 
 static struct beau_gic_v3_softc gic_v3_sc;
 
+static uint64_t gic_range_end(uint64_t base, uint64_t size)
+{
+	if (size == 0UL) {
+		return base;
+	}
+	if ((size - 1UL) > (UINT64_MAX - base)) {
+		return UINT64_MAX;
+	}
+	return base + size - 1UL;
+}
+
 static inline void *gic_mmio(uint64_t base, uint32_t off)
 {
 	return (void *)(base + off);
@@ -441,6 +452,28 @@ void arm64_gicv3_init_early(void)
 
 	gic_v3_run_init_sequence(sc, gic_v3_primary_init);
 	sc->gic_initialized = true;
+}
+
+void arm64_gicv3_log_boot_info(void)
+{
+	const struct beau_gic_v3_softc *sc = &gic_v3_sc;
+
+	LOG_INF("GICv3: GICR       [0x%016lx-0x%016lx] (0x%08lx)",
+		sc->gic_redist, gic_range_end(sc->gic_redist, sc->gic_redist_size),
+		sc->gic_redist_size);
+	LOG_INF("GICv3: GICD       [0x%016lx-0x%016lx] (0x%08lx)",
+		sc->gic_dist, gic_range_end(sc->gic_dist, sc->gic_dist_size),
+		sc->gic_dist_size);
+	if (sc->gic_its_size != 0UL) {
+		LOG_INF("GICv3: ITS        [0x%016lx-0x%016lx] (0x%08lx)",
+			sc->gic_its, gic_range_end(sc->gic_its, sc->gic_its_size),
+			sc->gic_its_size);
+	}
+}
+
+uint64_t arm64_gicv3_redist_base(uint16_t pcpu_id)
+{
+	return (pcpu_id < MAX_PCPU_NUM) ? gic_v3_sc.gic_redist_bases[pcpu_id] : 0UL;
 }
 
 void arm64_gicv3_init(uint16_t pcpu_id)

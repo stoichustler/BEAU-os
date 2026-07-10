@@ -46,9 +46,14 @@ Expected BEAU-side signals:
 - rng queue 0 becomes ready after VM2 probes virtio-rng.
 - blk queue 0 becomes ready after VM2 probes virtio-blk.
 - i2c queue 0 becomes ready after VM2 probes virtio-i2c.
-- `backend:vm1` or growing `poll/reply` counters after VM1 backend starts.
-- `busy` means the backend poll found no available frontend request; `bp`
-  means the proxy pending slots were full and the backend was backpressured.
+- `backend:vm1`, `health:ok`, `backend:abi:3`, and growing heartbeat counters
+  after VM1 backend starts.
+- `empty` means BEAU returned `-ENODATA` with a wait hint because no frontend
+  request was available; `busy` means an in-flight request/pending slot was
+  not ready for another poll; `bp` means pending slots were full.
+- `batch:` counters grow on fs/blk traffic when VM1 negotiated
+  `BATCH | SHARED_RING`. This means multiple pending requests are transferred
+  through one shared VM1 batch buffer and completed with one batch reply HVC.
 - rng `last-reply len` grows when VM2 reads random bytes
 - blk `last-reply len` grows when VM2 reads or writes `/dev/vda`.
 

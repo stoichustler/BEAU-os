@@ -22,6 +22,7 @@
 #include <sprintf.h>
 #include <spinlock.h>
 #include <asm/guest/vm.h>
+#include "shell_priv.h"
 
 /*
  * 2026-06-30, console ownership principle:
@@ -37,6 +38,32 @@
  * bytes into a per-VM receive FIFO. vsh binds the host vuart to one VM console
  * at a time; unbound VMs keep buffering output until that vuart is bound again,
  * which prevents one noisy guest from stealing the BEAU shell.
+ *
+ * 2026-07-10, console service data flow:
+ *
+ *   physical UART
+ *      |
+ *      +-- console_vmid == ACRN_INVALID_VMID
+ *      |      -> shell input/output
+ *      |
+ *      +-- console_vmid == VMID
+ *             -> host input backlog
+ *             -> selected VM vUART RX FIFO
+ *
+ *   guest output
+ *      |
+ *      v
+ *   vPL011 / virtio-console backend
+ *      |
+ *      v
+ *   per-VM console ring
+ *      |
+ *      +-- bound by vsh   -> drain to host UART with VM prefix
+ *      +-- not selected   -> keep recent output for later replay
+ *
+ * The service invariant is single host-input owner, many guest-output
+ * producers. Backpressure and drop-oldest buffering protect the shell from
+ * being blocked by a noisy or stalled guest console.
  */
 struct hv_timer console_timer;
 
@@ -527,6 +554,7 @@ static bool console_vm_input_collect(uint16_t target_vmid)
 	uint32_t budget = VM_CONSOLE_INPUT_COLLECT_BUDGET;
 	char ch = -1;
 	bool collected = false;
+	char temp_str[TEMP_STR_SIZE];
 
 	console_vm_input_sync(target_vmid);
 	/*
@@ -547,7 +575,10 @@ static bool console_vm_input_collect(uint16_t target_vmid)
 			console_vm_vuart_unbind(target_vmid);
 			console_vmid = ACRN_INVALID_VMID;
 			console_vm_input_reset(ACRN_INVALID_VMID);
-			printf("\r\n\r\n──────── [switch to BEAU shell] ────────\r\n");
+			snprintf(temp_str, TEMP_STR_SIZE,
+				"\r\n%s──────── [switch to BEAU console] ────────%s\r\n",
+				SHELL_COLOR_YELLOW, SHELL_COLOR_RESET);
+			shell_puts(temp_str);
 			break;
 		}
 		(void)console_vm_input_put(ch);
@@ -1049,7 +1080,7 @@ static void console_vm_ring_write_prefixed(uint16_t vmid, struct vm_console_ring
 	 * Prefix each visible guest line so interleaved host/guest diagnostics can
 	 * still be attributed after copying logs from a single serial stream.
 	 */
-	(void)snprintf(prefix, sizeof(prefix), "[vmid %u] ", vmid);
+	(void)snprintf(prefix, sizeof(prefix), "VM%u: ", vmid);
 	prefix_len = strnlen_s(prefix, sizeof(prefix));
 
 	for (uint32_t idx = 0U; idx < len; idx++) {

@@ -58,23 +58,6 @@ static int nr_rsvd_regions;
  * Identity mapping keeps the address numbers equal; the descriptors still
  * provide memory type, shareability, access flag, and execute permissions.
  */
-#ifdef CONFIG_LOG_VERBOSE
-static void log_host_map(const char *name, uint64_t vaddr, uint64_t paddr, uint64_t size)
-{
-	LOG_INF("host stage-1 map (%6s) hva[0x%08lx-0x%08lx]:hpa[0x%08lx-0x%08lx]",
-		name, vaddr, vaddr + size, paddr, paddr + size);
-}
-
-static void log_host_unmap(const char *name, uint64_t vaddr, uint64_t size)
-{
-	LOG_INF("host stage-1 unmap (%6s) hva[0x%08lx-0x%08lx]",
-		name, vaddr, vaddr + size);
-}
-#else
-#define log_host_map(name, vaddr, paddr, size)
-#define log_host_unmap(name, vaddr, size)
-#endif /* CONFIG_LOG_VERBOSE */
-
 void init_phys_mem_range(void)
 {
 #ifdef CONFIG_FDT_PARSE_ENABLED
@@ -245,31 +228,23 @@ static void init_hv_mapping(void)
 		pgtable_add_map((uint64_t *)ppt_mmu_top_addr, mmio_regions[idx].base,
 			mmio_regions[idx].base, mmio_regions[idx].size,
 			PAGE_ATTR_DEVICE | PAGE_BLOCK_DESC, &ppt_pgtable);
-		log_host_map("mmio", mmio_regions[idx].base,
-			mmio_regions[idx].base, mmio_regions[idx].size);
 	}
 
 	pgtable_add_map((uint64_t *)ppt_mmu_top_addr, phys_mem_start,
 		phys_mem_start, phys_mem_size,
 		PAGE_ATTR_NORMAL | PAGE_BLOCK_DESC, &ppt_pgtable);
-	log_host_map("ram", phys_mem_start, phys_mem_start, phys_mem_size);
 
 	for (i = 0; i < nr_rsvd_regions; i++) {
 		pgtable_modify_or_del_map((uint64_t *)ppt_mmu_top_addr, rsvd_regions[i].addr,
 			rsvd_regions[i].size, 0UL, 0UL, &ppt_pgtable, MR_DEL);
-		log_host_unmap("rsvd", rsvd_regions[i].addr, rsvd_regions[i].size);
 	}
 
 	hva_base = get_hv_image_base();
 	pgtable_modify_or_del_map((uint64_t *)ppt_mmu_top_addr, hva_base,
 		get_hv_image_size(), 0UL, PAGE_PXN | PAGE_UXN, &ppt_pgtable, MR_MODIFY);
-	log_host_map("hv-img", hva_base, hva_base, get_hv_image_size());
 
 	init_ttbr0_el2 = (uint64_t)ppt_mmu_top_addr;
 	enable_paging();
-	if (arm64_mmu_is_enabled()) {
-		LOG_INF("MMU enabled: ttbr0_el2: 0x%016lx", init_ttbr0_el2);
-	}
 }
 
 void init_paging(void)
