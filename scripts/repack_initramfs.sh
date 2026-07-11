@@ -1,5 +1,5 @@
 #!/bin/sh
-# Rebuild the shared Linux initramfs used by VM1 and VM2.
+# Rebuild the shared Linux initramfs used by VM2 and VM3.
 
 set -eu
 
@@ -102,24 +102,23 @@ mkdir -p /dev/pts
 mount -t devpts devpts /dev/pts 2>/dev/null || true
 
 # /var/beau is the virtio-fs handoff point used by the BEAU proxy path:
-# VM1 exports it through the backend, while VM2 mounts the frontend there.
+# VM2 exports it through the backend, while VM3 mounts the frontend there.
 #
 # Manual virtio-fs smoke test from the BEAU shell:
-#   1. vsh 1
+#   1. vsh 2
 #      ls -l /var/beau
 #      <Ctrl-D>
-#   2. vsh 2
+#   2. vsh 3
 #      mount -t virtiofs -o rw proxy-fs /var/beau
-#      touch /var/beau/VM2-WRITE
-#      echo "hello from vm2" > /var/beau/README
+#      echo "hello from vm3" > /var/beau/README
 #      <Ctrl-D>
-#   3. vsh 1
+#   3. vsh 2
 #      cat /var/beau/README
 #
-# Current baseline: VM2 is the writable frontend, while VM1 reads the backend
-# export state. If VM2 writes /var/beau before the mount command, that file is
-# created in VM2's local initramfs and will not appear in VM1. After the rw
-# mount, VM2 writes should be visible from VM1 through the backend.
+# Current baseline: VM3 is the writable frontend, while VM2 reads the backend
+# export state. If VM3 writes /var/beau before the mount command, that file is
+# created in VM3's local initramfs and will not appear in VM2. After the rw
+# mount, VM3 writes should be visible from VM2 through the backend.
 mkdir -p /var/beau
 chmod 0755 /var /var/beau 2>/dev/null || true
 

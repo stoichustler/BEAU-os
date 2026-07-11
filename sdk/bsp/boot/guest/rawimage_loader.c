@@ -74,7 +74,7 @@ static uint64_t rawimage_range_end(uint64_t base, uint64_t size)
 
 static void rawimage_log_load(uint16_t vm_id, const char *name, uint64_t base, uint64_t size)
 {
-	if (vm_id <= 2U) {
+	if (vm_id <= 3U) {
 		LOG_INF("VM%u: load %-7s [0x%016lx-0x%016lx] (0x%08lx)",
 			vm_id, name, base, rawimage_range_end(base, size), size);
 	}
@@ -88,26 +88,23 @@ static uint64_t arm64_rawimage_fdt_load_gpa(struct acrn_vm *vm, uint64_t kernel_
 	uint64_t ram_start = arch_config->guest_ram_start;
 	uint64_t ram_size = arch_config->guest_ram_size;
 	uint64_t fdt_size = roundup((uint64_t)vm->sw.fdt_info.size, MEM_4K);
-	uint64_t fdt_load_gpa = ram_start;
+	uint64_t fdt_load_gpa;
 
 	if (fdt_size == 0UL) {
 		fdt_size = MEM_4K;
 	}
+	if ((ram_size <= fdt_size) || ((ram_start + ram_size) <= ram_start)) {
+		return 0UL;
+	}
+	fdt_load_gpa = (ram_start + ram_size - fdt_size) & ~(uint64_t)(MEM_4K - 1U);
 
 	/*
 	 * Static RTOS images do not have a Linux bootloader to choose safe module
-	 * addresses. Prefer the start of the VM RAM window for the synthetic FDT;
-	 * if that collides with the raw image, move it to the end of the same RAM
-	 * window. Returning 0 makes overlap explicit instead of silently corrupting
-	 * the kernel image.
+	 * addresses. Prefer the end of the VM RAM window for the FDT so it stays
+	 * away from the raw image text offset and from low-memory guest boot data.
+	 * Returning 0 makes overlap explicit instead of silently corrupting the
+	 * kernel image.
 	 */
-	if (range_overlaps(fdt_load_gpa, fdt_size, kernel_load_gpa, kernel_size)) {
-		if ((ram_size <= fdt_size) || ((ram_start + ram_size) <= ram_start)) {
-			return 0UL;
-		}
-		fdt_load_gpa = (ram_start + ram_size - fdt_size) & ~(uint64_t)(MEM_4K - 1U);
-	}
-
 	if (!range_fits(fdt_load_gpa, fdt_size, ram_start, ram_size) ||
 		range_overlaps(fdt_load_gpa, fdt_size, kernel_load_gpa, kernel_size) ||
 		range_overlaps(fdt_load_gpa, fdt_size, ramdisk_load_gpa, ramdisk_size)) {
@@ -230,10 +227,24 @@ static int32_t load_rawimage(struct acrn_vm *vm)
 		}
 	}
 
+	if ((vm->sw.fdt_info.src_addr != NULL) && (vm->sw.fdt_info.size != 0U) &&
+		(vm->sw.fdt_info.load_addr != NULL)) {
+		uint64_t fdt_load_gpa = (uint64_t)vm->sw.fdt_info.load_addr;
+
+		ret = copy_to_gpa(vm, vm->sw.fdt_info.src_addr, fdt_load_gpa,
+			vm->sw.fdt_info.size);
+		if (ret != 0) {
+			LOG_ERR("vm-%u:DTB does not fit 1:1 ram gpa [0x%016lx-0x%016lx] (0x%08lx)",
+				vm->vm_id, fdt_load_gpa,
+				rawimage_range_end(fdt_load_gpa, vm->sw.fdt_info.size),
+				(uint64_t)vm->sw.fdt_info.size);
+			return -EFAULT;
+		}
+	}
+
 	sw_kernel->kernel_entry_addr = (void *)vm_config->os_config.kernel_entry_addr;
 	rawimage_log_load(vm->vm_id, "KERNEL", kernel_load_gpa, sw_kernel->kernel_size);
-	if ((vm_config->os_config.os_family == VM_OS_LINUX) &&
-		(vm->sw.fdt_info.src_addr != NULL) && (vm->sw.fdt_info.size != 0U) &&
+	if ((vm->sw.fdt_info.src_addr != NULL) && (vm->sw.fdt_info.size != 0U) &&
 		(vm->sw.fdt_info.load_addr != NULL)) {
 		rawimage_log_load(vm->vm_id, "DTB", (uint64_t)vm->sw.fdt_info.load_addr,
 			vm->sw.fdt_info.size);

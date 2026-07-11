@@ -341,6 +341,46 @@ void virtio_console_reset_vm(struct acrn_vm *vm)
 	}
 }
 
+bool virtio_console_get_stats(uint16_t vm_id, struct virtio_console_stats *stats)
+{
+	struct virtio_console_dev *dev;
+
+	if ((stats == NULL) || (vm_id >= CONFIG_MAX_VM_NUM)) {
+		return false;
+	}
+
+	(void)memset(stats, 0U, sizeof(*stats));
+	dev = &virtio_console_devs[vm_id];
+	if ((dev->mmio.vm == NULL) || (dev->mmio.size == 0UL)) {
+		return false;
+	}
+
+	stats->active = true;
+	stats->base = dev->mmio.base;
+	stats->size = dev->mmio.size;
+	stats->irq = dev->mmio.irq;
+	stats->status = dev->mmio.status;
+	stats->interrupt_status = dev->mmio.interrupt_status;
+	stats->device_features = dev->mmio.device_features;
+	stats->driver_features = dev->mmio.driver_features;
+	stats->tx_count = dev->tx_count;
+	stats->rx_count = dev->rx_count;
+
+	for (uint16_t i = 0U;
+		(i < VIRTIO_CONSOLE_STAT_QUEUE_NUM) && (i < dev->mmio.queue_num); i++) {
+		const struct virtio_mmio_queue *vq = &dev->mmio.queues[i];
+
+		stats->queues[i].num = vq->num;
+		stats->queues[i].last_avail_idx = vq->last_avail_idx;
+		stats->queues[i].desc = vq->desc;
+		stats->queues[i].avail = vq->avail;
+		stats->queues[i].used = vq->used;
+		stats->queues[i].ready = vq->ready;
+	}
+
+	return true;
+}
+
 int32_t virtio_console_mmio_handler(struct io_request *io_req,
 	void *handler_private_data)
 {

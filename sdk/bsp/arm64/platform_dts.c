@@ -986,13 +986,13 @@ static void dts_parse_arch(const void *fdt, int32_t generic, uint16_t vm_id,
 		/*
 		 * 2026-07-08, virtio-proxy access policy:
 		 *
-		 *   VM2 virtio-fs frontend(rw) -> BEAU virtio_proxy -> VM1 backend(rw export)
+		 *   frontend VM request -> BEAU virtio_proxy -> backend VM protocol service
 		 *
 		 * The proxy records a coarse access hint so protocol backends can
 		 * reject mutating requests before completing descriptors. This access
-		 * bit describes the frontend request stream, not VM1's local shell
-		 * permissions. Keep the export writable by default so VM2 can create
-		 * or update files under /var/beau and VM1 can read the resulting state.
+		 * bit describes the frontend request stream, not the backend VM's local shell
+		 * permissions. Keep the export writable by default so the frontend VM
+		 * can create or update files and the backend VM can serve that state.
 		 */
 		access = dts_string_prop(fdt, virtio_proxy, "beau,access", "rw");
 		proxy_config->access =

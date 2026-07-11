@@ -35,7 +35,7 @@
  *
  * Runtime framework:
  *
- *   VM2 frontend Linux                         BEAU EL2                         VM1 backend Linux
+ *   VM3 frontend Linux                         BEAU EL2                         VM2 backend Linux
  *   ------------------                         -------                         -----------------
  *
  *   virtio driver
@@ -77,7 +77,7 @@
  *
  * The transport never parses FUSE, RNG, block, net, I2C, or SPI payloads.
  * It only moves descriptor-chain bytes and reports completion. That keeps one
- * high/low-throughput transport usable by multiple virtio protocols while VM1
+ * high/low-throughput transport usable by multiple virtio protocols while VM2
  * backend code remains responsible for protocol correctness and safety checks.
  *
  * Reset/recovery state model:
@@ -99,9 +99,9 @@
  *                                                            RUNNING
  *
  * Frontend notify before backend registration never consumes the avail ring.
- * If VM1 backend resets after BEAU has already popped a frontend request into a
+ * If VM2 backend resets after BEAU has already popped a frontend request into a
  * pending slot, BEAU marks that slot unsent instead of dropping it. The rebuilt
- * VM1 backend can register again and poll the same request, while a VM2 reset
+ * VM2 backend can register again and poll the same request, while a VM3 reset
  * clears guest transport state and pending slots before Linux negotiates again.
  */
 

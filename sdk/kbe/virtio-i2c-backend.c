@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * BEAU virtio-i2c backend for the VM1 <-> virtio_proxy <-> VM2 test path.
+ * BEAU virtio-i2c backend for the VM2 <-> virtio_proxy <-> VM3 test path.
  *
  * This backend intentionally exposes a small in-memory device at 7-bit I2C
- * address 0x50. It lets QEMU validation exercise the standard VM2 virtio-i2c
- * frontend and i2c-tools without depending on physical I2C hardware in VM1.
+ * address 0x50. It lets QEMU validation exercise the standard VM3 virtio-i2c
+ * frontend and i2c-tools without depending on physical I2C hardware in VM2.
  */
 
 #include <linux/delay.h>
@@ -152,13 +152,13 @@ static int __init beau_virtioi2c_backend_init(void)
 	struct beau_proxy_backend *proxy = &beau_i2c_backend.proxy;
 	int ret;
 
-	if (!beau_proxy_backend_is_vm1())
+	if (!beau_proxy_backend_is_vm2())
 		return 0;
 
 	proxy->name = "virtio-i2c";
 	proxy->thread_name = "beau-virtioi2c-backend";
 	proxy->device_id = BEAU_PROXY_DEVICE_I2C;
-	proxy->frontend_vmid = BEAU_PROXY_FRONTEND_VM2;
+	proxy->frontend_vmid = BEAU_PROXY_FRONTEND_VM3;
 	proxy->queues = beau_i2c_queues;
 	proxy->queue_count = ARRAY_SIZE(beau_i2c_queues);
 	proxy->handle_one = beau_i2c_handle_one;
@@ -191,5 +191,5 @@ static void __exit beau_virtioi2c_backend_exit(void)
 late_initcall(beau_virtioi2c_backend_init);
 module_exit(beau_virtioi2c_backend_exit);
 
-MODULE_DESCRIPTION("BEAU VM1 virtio-i2c EEPROM backend");
+MODULE_DESCRIPTION("BEAU VM2 virtio-i2c EEPROM backend");
 MODULE_LICENSE("GPL");

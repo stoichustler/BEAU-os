@@ -181,14 +181,14 @@
 	hypervisor {
 		sched {
 			exclusive-cpupool {
-				pcpus = <0 1 4 7>;
+				pcpus = <0 1 4 5>;
 				policy = "bvt";
 			};
 			shared-cpupool {
-				pcpus = <2 3 5 6>;
+				pcpus = <2 3 6 7>;
 				policy = "cbs";
 				period = <3000>;
-				budget = <1500>;
+				budget = <1000>;
 			};
 		};
 	};
@@ -232,6 +232,11 @@
 				};
 			};
 
+			/*
+			 * Guest console frontend policy:
+			 *   RTOS  <- vPL011
+			 *   Linux <- virtio-console
+			 */
 			uart-mmio@9000000 {
 				compatible = "arm,vpl011";
 				reg = <0x0 0x09000000 0x0 0x00001000>;
@@ -250,7 +255,7 @@
 				reg = <0x0 0x0a000200 0x0 0x00000200>;
 				interrupts = <0x0 0x11 0x4>;
 				beau,device-id = <26>;
-				beau,frontend-vmid = <2>;
+				beau,frontend-vmid = <3>;
 				beau,queue-num = <2>;
 				beau,queue-size = <64>;
 				beau,pending-num = <4>;
@@ -263,7 +268,7 @@
 				reg = <0x0 0x0a000400 0x0 0x00000200>;
 				interrupts = <0x0 0x12 0x4>;
 				beau,device-id = <4>;
-				beau,frontend-vmid = <2>;
+				beau,frontend-vmid = <3>;
 				beau,queue-num = <1>;
 				beau,queue-size = <64>;
 				beau,pending-num = <1>;
@@ -276,7 +281,7 @@
 				reg = <0x0 0x0a000600 0x0 0x00000200>;
 				interrupts = <0x0 0x13 0x4>;
 				beau,device-id = <2>;
-				beau,frontend-vmid = <2>;
+				beau,frontend-vmid = <3>;
 				beau,queue-num = <1>;
 				beau,queue-size = <64>;
 				beau,pending-num = <4>;
@@ -289,7 +294,7 @@
 				reg = <0x0 0x0a000800 0x0 0x00000200>;
 				interrupts = <0x0 0x14 0x4>;
 				beau,device-id = <34>;
-				beau,frontend-vmid = <2>;
+				beau,frontend-vmid = <3>;
 				beau,queue-num = <1>;
 				beau,queue-size = <64>;
 				beau,pending-num = <1>;
@@ -300,9 +305,9 @@
 
 		/*
 		 * 2026-07-08, QEMU cpu-affinity is ordered: entry N is vcpuN's pCPU.
-		 * Keep vcpu0 pCPUs unique across VMs. Secondary vCPUs may share;
-		 * pCPU0 is used only by a secondary vCPU to avoid three-way RTDS
-		 * contention on the secondary pool.
+		 * This 4OS layout keeps vCPU0 on an exclusive pCPU and maps
+		 * secondary vCPUs to shared pCPUs. VM0 and VM1 intentionally have
+		 * 2 vCPUs.
 		 */
 		vm@0 {
 			compatible = "beau,vm";
@@ -313,7 +318,7 @@
 			load-order = "service";
 			beau,static-mem = <0x0 0x42000000 0x0 0x06000000>;
 			direct-map;
-			cpu-affinity = <1 2 3 5>;
+			cpu-affinity = <0 2>;
 			guest-flags = "static", "no-fw";
 
 			sched {
@@ -343,87 +348,43 @@
 			reg = <1>;
 			#address-cells = <2>;
 			#size-cells = <2>;
-#if CONFIG_ENABLE_VM1_LK
-			beau,name = "LK";
-#else
-			beau,name = "Linux-1";
-#endif
+			beau,name = "RT-Thread";
 			load-order = "pre-std";
-#if CONFIG_ENABLE_VM1_LK
-			beau,static-mem = <0x0 0x40000000 0x0 0x02000000>;
-#else
-			beau,static-mem = <0x0 0x58000000 0x0 0x08000000>;
-#endif
+			beau,static-mem = <0x0 0x60000000 0x0 0x08000000>;
 			direct-map;
-#if CONFIG_ENABLE_VM1_LK
-			cpu-affinity = <3 5 6 7>;
-			guest-flags = "static", "no-fw";
-#else
-			cpu-affinity = <4 2 5 6>;
+			cpu-affinity = <1 7>;
 			guest-flags = "static";
-#endif
 
 			sched {
-#if CONFIG_ENABLE_VM1_LK
-				bvt-weight = <16>;
-#else
 				bvt-weight = <64>;
-#endif
 			};
 
 			os {
-#if CONFIG_ENABLE_VM1_LK
-				os-name = "LK";
+				os-name = "RT-Thread";
 				family = "rtos";
-#else
-				os-name = "Linux-1";
-				family = "linux";
-#endif
 			};
 
-#if CONFIG_ENABLE_VM1_LK
-			vboot@40100000 {
+			vboot@60080000 {
 				compatible = "beau,kernel", "beau,vboot";
-				tag = "LK";
+				tag = "RT-Thread";
 				source = "symbol";
-				addr-symbol = "arm64_lk_image_start";
+				addr-symbol = "arm64_rtthread_image_start";
 				size-source = "symbol";
-				size-symbol = "arm64_lk_image_size";
-				reg = <0x0 0x40100000 0x0 0x0>;
-				load-addr = <0x0 0x40100000>;
-				entry-addr = <0x0 0x40100000>;
-			};
-#else
-			vboot@70000000 {
-				compatible = "beau,kernel", "beau,vboot";
-				tag = "Linux-VM1";
-				reg = <0x0 0x70000000 0x0 0x0>;
-				size-source = "symbol";
-				size-symbol = "BEAU_LINUX_VM1_IMAGE_SIZE";
-				load-addr = <0x0 0x58080000>;
-				entry-addr = <0x0 0x58080000>;
-				bootargs = "console=hvc0 rdinit=/init loglevel=7";
+				size-symbol = "arm64_rtthread_image_size";
+				reg = <0x0 0x60080000 0x0 0x0>;
+				load-addr = <0x0 0x60080000>;
+				entry-addr = <0x0 0x60080000>;
 			};
 
-			vboot@74000000 {
-				compatible = "beau,ramdisk", "beau,vboot";
-				tag = "Initramfs";
-				reg = <0x0 0x74000000 0x0 0x0>;
-				size-source = "symbol";
-				size-symbol = "BEAU_LINUX_INITRAMFS_SIZE";
-				load-addr = <0x0 0x5c000000>;
-			};
-
-			vboot@5ff00000 {
+			vboot@67f00000 {
 				compatible = "beau,device-tree", "beau,vboot";
-				tag = "dtb-vm1";
+				tag = "dtb-rtthread";
 				source = "symbol";
-				addr-symbol = "arm64_beau_linux_vm1_dtb_start";
+				addr-symbol = "arm64_beau_rtthread_dtb_start";
 				size-source = "symbol";
-				size-symbol = "arm64_beau_linux_vm1_dtb_size";
-				reg = <0x0 0x5ff00000 0x0 0x0>;
+				size-symbol = "arm64_beau_rtthread_dtb_size";
+				reg = <0x0 0x67f00000 0x0 0x0>;
 			};
-#endif
 		};
 
 		vm@2 {
@@ -435,7 +396,7 @@
 			load-order = "pre-std";
 			beau,static-mem = <0x0 0x48000000 0x0 0x08000000>;
 			direct-map;
-			cpu-affinity = <7 0 3 6>;
+			cpu-affinity = <4 2 3 6>;
 			guest-flags = "static";
 
 			sched {
@@ -478,6 +439,58 @@
 				size-source = "symbol";
 				size-symbol = "arm64_beau_linux_vm2_dtb_size";
 				reg = <0x0 0x4f000000 0x0 0x0>;
+			};
+		};
+
+		vm@3 {
+			compatible = "beau,vm";
+			reg = <3>;
+			#address-cells = <2>;
+			#size-cells = <2>;
+			beau,name = "Linux-3";
+			load-order = "pre-std";
+			beau,static-mem = <0x0 0x58000000 0x0 0x08000000>;
+			direct-map;
+			cpu-affinity = <5 2 3 7>;
+			guest-flags = "static";
+
+			sched {
+				bvt-weight = <64>;
+			};
+
+			os {
+				os-name = "Linux-3";
+				family = "linux";
+			};
+
+			vboot@7c000000 {
+				compatible = "beau,kernel", "beau,vboot";
+				tag = "Linux-VM3";
+				reg = <0x0 0x7c000000 0x0 0x0>;
+				size-source = "symbol";
+				size-symbol = "BEAU_LINUX_VM3_IMAGE_SIZE";
+				load-addr = <0x0 0x58080000>;
+				entry-addr = <0x0 0x58080000>;
+				bootargs = "console=hvc0 rdinit=/init loglevel=4";
+			};
+
+			vboot@74000000 {
+				compatible = "beau,ramdisk", "beau,vboot";
+				tag = "Initramfs";
+				reg = <0x0 0x74000000 0x0 0x0>;
+				size-source = "symbol";
+				size-symbol = "BEAU_LINUX_INITRAMFS_SIZE";
+				load-addr = <0x0 0x5c000000>;
+			};
+
+			vboot@5f000000 {
+				compatible = "beau,device-tree", "beau,vboot";
+				tag = "dtb-vm3";
+				source = "symbol";
+				addr-symbol = "arm64_beau_linux_vm3_dtb_start";
+				size-source = "symbol";
+				size-symbol = "arm64_beau_linux_vm3_dtb_size";
+				reg = <0x0 0x5f000000 0x0 0x0>;
 			};
 		};
 	};

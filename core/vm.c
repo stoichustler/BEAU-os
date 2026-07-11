@@ -253,7 +253,7 @@ static inline uint16_t get_vm_launch_pcpu_id(const struct acrn_vm_config *vm_con
 
 static bool vm_boot_log_enabled(uint16_t vm_id)
 {
-	return vm_id <= 2U;
+	return vm_id < (SERVICE_VM_NUM + PRE_VM_NUM);
 }
 
 static const char *vm_boot_load_order_name(enum acrn_vm_load_order load_order)
@@ -339,7 +339,7 @@ static void log_started_vms(struct acrn_vm *const start_vms[],
 		const struct acrn_vm_config *vm_config = start_vm_configs[idx];
 
 		if (vm_boot_log_enabled(vm->vm_id)) {
-			LOG_INF("VM%u: %-10s vm: %-8s started",
+			LOG_INF("VM%u: %-10s vm: %9s started",
 				vm->vm_id, vm_boot_load_order_name(vm_config->load_order),
 				vm_config->name);
 		}

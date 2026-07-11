@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * BEAU virtio-blk backend for the VM1 <-> virtio_proxy <-> VM2 test path.
+ * BEAU virtio-blk backend for the VM2 <-> virtio_proxy <-> VM3 test path.
  *
- * This is intentionally a RAM-backed validation target. VM2's standard
+ * This is intentionally a RAM-backed validation target. VM3's standard
  * virtio-blk frontend owns queueing and request formatting, BEAU owns only
- * descriptor transport, and VM1 owns the block protocol semantics.
+ * descriptor transport, and VM2 owns the block protocol semantics.
  */
 
 #include <linux/delay.h>
@@ -190,13 +190,13 @@ static int __init beau_virtioblk_backend_init(void)
 	struct beau_proxy_backend *proxy = &beau_blk_backend.proxy;
 	int ret;
 
-	if (!beau_proxy_backend_is_vm1())
+	if (!beau_proxy_backend_is_vm2())
 		return 0;
 
 	proxy->name = "virtio-blk";
 	proxy->thread_name = "beau-virtioblk-backend";
 	proxy->device_id = BEAU_PROXY_DEVICE_BLK;
-	proxy->frontend_vmid = BEAU_PROXY_FRONTEND_VM2;
+	proxy->frontend_vmid = BEAU_PROXY_FRONTEND_VM3;
 	proxy->queues = beau_blk_queues;
 	proxy->queue_count = ARRAY_SIZE(beau_blk_queues);
 	proxy->batch_entries = BEAU_PROXY_BATCH_MAX;
@@ -238,5 +238,5 @@ static void __exit beau_virtioblk_backend_exit(void)
 late_initcall(beau_virtioblk_backend_init);
 module_exit(beau_virtioblk_backend_exit);
 
-MODULE_DESCRIPTION("BEAU VM1 virtio-blk RAM backend");
+MODULE_DESCRIPTION("BEAU VM2 virtio-blk RAM backend");
 MODULE_LICENSE("GPL");

@@ -5,33 +5,33 @@
  *
  * 2026-07-10, virtio-proxy transport principle:
  *
- * This file owns the EL2 transport boundary between a VM2 virtio frontend and a
- * VM1 backend. It intentionally does not understand FUSE, RNG, block, or I2C
+ * This file owns the EL2 transport boundary between a VM3 virtio frontend and a
+ * VM2 backend. It intentionally does not understand FUSE, RNG, block, or I2C
  * payload semantics; it only snapshots frontend descriptor chains, exposes them
  * to a registered backend through HVC, then completes the original used ring.
  *
- *   VM2 virtio-mmio notify
+ *   VM3 virtio-mmio notify
  *             |
  *             v
  *   copy desc chain into pending slot
  *             |
  *             v
- *   VM1 HVC poll / batch-poll
+ *   VM2 HVC poll / batch-poll
  *             |
  *             v
  *   backend protocol handler
  *             |
  *             v
- *   VM1 HVC reply / batch-reply
+ *   VM2 HVC reply / batch-reply
  *             |
  *             v
- *   copy reply into VM2 writable descs
+ *   copy reply into VM3 writable descs
  *             |
  *             v
- *   add used-ring entry + inject VM2 IRQ
+ *   add used-ring entry + inject VM3 IRQ
  *
- * Ownership rule: frontend vrings stay owned by VM2 Linux, pending slots are
- * EL2-owned copies, and request semantics stay owned by the VM1 backend.
+ * Ownership rule: frontend vrings stay owned by VM3 Linux, pending slots are
+ * EL2-owned copies, and request semantics stay owned by the VM2 backend.
  */
 
 #include <types.h>

@@ -77,7 +77,8 @@ uint16_t pcpuid_from_vcpu(const struct acrn_vcpu *vcpu)
 
 static bool vcpu_boot_log_enabled(const struct acrn_vcpu *vcpu)
 {
-	return (vcpu != NULL) && (vcpu->vm != NULL) && (vcpu->vm->vm_id <= 2U);
+	return (vcpu != NULL) && (vcpu->vm != NULL) &&
+		(vcpu->vm->vm_id < (SERVICE_VM_NUM + PRE_VM_NUM));
 }
 
 uint64_t vcpumask2pcpumask(struct acrn_vm *vm, uint64_t vdmask)

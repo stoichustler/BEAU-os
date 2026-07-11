@@ -52,6 +52,8 @@
 #define SHELL_ASCII_TAB		'\t'
 #define SHELL_ASCII_DEL		0x7fU
 #define SHELL_VT100_CLEAR_LINE	"\033[2K"
+#define SHELL_VLOG_CHUNK_SIZE	128U
+#define SHELL_VLOG_PREFIX_SIZE	16U
 #define SHELL_SCHEDSTAT_MAX_THREADS	((CONFIG_MAX_VM_NUM * MAX_VCPUS_PER_VM) + MAX_PCPU_NUM + 8U)
 #define SHELL_SCHEDSTAT_PERCENT_SCALE	1000UL
 
@@ -74,6 +76,7 @@ static int32_t shell_list_threads(__unused int32_t argc, __unused char **argv);
 static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv);
 static int32_t shell_irqstat(int32_t argc, char **argv);
 static int32_t shell_to_vm_console(int32_t argc, char **argv);
+static int32_t shell_vm_log(int32_t argc, char **argv);
 static const char *thread_state_str(enum thread_object_state state);
 
 static struct shell_cmd shell_cmds[] = {
@@ -130,6 +133,12 @@ static struct shell_cmd shell_cmds[] = {
 		.cmd_param	= SHELL_CMD_VM_CONSOLE_PARAM,
 		.help_str	= SHELL_CMD_VM_CONSOLE_HELP,
 		.fcn		= shell_to_vm_console,
+	},
+	{
+		.str		= SHELL_CMD_VM_LOG,
+		.cmd_param	= SHELL_CMD_VM_LOG_PARAM,
+		.help_str	= SHELL_CMD_VM_LOG_HELP,
+		.fcn		= shell_vm_log,
 	},
 };
 
@@ -1997,6 +2006,123 @@ uint16_t sanitize_vmid(uint16_t vmid)
 	}
 
 	return sanitized_vmid;
+}
+
+static void shell_vlog_flush(char *out, uint32_t *out_len)
+{
+	if (*out_len > 0U) {
+		out[*out_len] = '\0';
+		shell_puts(out);
+		*out_len = 0U;
+	}
+}
+
+static void shell_vlog_put_char(char *out, uint32_t *out_len, char ch)
+{
+	if (*out_len >= (MAX_STR_SIZE - 1U)) {
+		shell_vlog_flush(out, out_len);
+	}
+	out[*out_len] = ch;
+	(*out_len)++;
+}
+
+static void shell_vlog_put_bytes(char *out, uint32_t *out_len, const char *buf, uint32_t len)
+{
+	for (uint32_t idx = 0U; idx < len; idx++) {
+		shell_vlog_put_char(out, out_len, buf[idx]);
+	}
+}
+
+static void shell_vlog_write_prefixed(uint16_t vmid, const char *buf, uint32_t len,
+	bool *line_start, bool *last_cr)
+{
+	char prefix[SHELL_VLOG_PREFIX_SIZE];
+	char out[MAX_STR_SIZE];
+	uint32_t out_len = 0U;
+	size_t prefix_len;
+
+	(void)snprintf(prefix, sizeof(prefix), "[vmid %u] ", vmid);
+	prefix_len = strnlen_s(prefix, sizeof(prefix));
+
+	for (uint32_t idx = 0U; idx < len; idx++) {
+		char ch = buf[idx];
+
+		if (*line_start && (!*last_cr || (ch != '\n'))) {
+			shell_vlog_put_bytes(out, &out_len, prefix, (uint32_t)prefix_len);
+			*line_start = false;
+		}
+
+		shell_vlog_put_char(out, &out_len, ch);
+		if (ch == '\r') {
+			*line_start = true;
+			*last_cr = true;
+		} else if (ch == '\n') {
+			*line_start = true;
+			*last_cr = false;
+		} else {
+			*last_cr = false;
+		}
+	}
+	shell_vlog_flush(out, &out_len);
+}
+
+static int32_t shell_vm_log(int32_t argc, char **argv)
+{
+	struct console_vm_ring_stats stats = { 0U };
+	char temp_str[MAX_STR_SIZE];
+	char buf[SHELL_VLOG_CHUNK_SIZE];
+	int64_t param;
+	uint32_t offset = 0U;
+	bool line_start = true;
+	bool last_cr = false;
+	uint16_t vm_id;
+
+	if (argc != 2) {
+		shell_puts("usage: vlog <vm id>\r\n");
+		return -EINVAL;
+	}
+
+	param = strtol_deci(argv[1]);
+	if ((param < 0) || (param >= CONFIG_MAX_VM_NUM)) {
+		shell_puts("invalid vm id\r\n");
+		return -EINVAL;
+	}
+	vm_id = (uint16_t)param;
+	if (!console_vm_ring_get_stats(vm_id, &stats)) {
+		shell_puts("invalid vm id\r\n");
+		return -EINVAL;
+	}
+
+	(void)snprintf(temp_str, sizeof(temp_str),
+		"\r\nvlog vm%u: buffered:%u/%u dropped:%lu overflow:%lu drained:%lu\r\n",
+		vm_id, stats.queued, stats.capacity, stats.dropped_bytes,
+		stats.overflow_events, stats.drained_bytes);
+	shell_puts(temp_str);
+
+	if (stats.queued == 0U) {
+		shell_puts("(no buffered vm log)\r\n");
+		return 0;
+	}
+
+	while (offset < stats.queued) {
+		uint32_t want = stats.queued - offset;
+		uint32_t count;
+
+		if (want > SHELL_VLOG_CHUNK_SIZE) {
+			want = SHELL_VLOG_CHUNK_SIZE;
+		}
+		count = console_vm_ring_copy(vm_id, offset, buf, want);
+		if (count == 0U) {
+			break;
+		}
+		shell_vlog_write_prefixed(vm_id, buf, count, &line_start, &last_cr);
+		offset += count;
+	}
+	if (!line_start) {
+		shell_puts("\r\n");
+	}
+
+	return 0;
 }
 
 static int32_t shell_to_vm_console(int32_t argc, char **argv)

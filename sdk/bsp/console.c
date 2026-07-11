@@ -692,6 +692,50 @@ bool console_vm_ring_get_stats(uint16_t vmid, struct console_vm_ring_stats *stat
 	return valid;
 }
 
+uint32_t console_vm_ring_copy(uint16_t vmid, uint32_t offset, char *buf, uint32_t len)
+{
+	struct vm_console_ringbuf *rb;
+	uint64_t rflags;
+	uint32_t queued;
+	uint32_t count = 0U;
+	uint32_t cons;
+	uint32_t first;
+
+	if ((buf != NULL) && (vmid < CONFIG_VM_CONSOLE_RINGBUF_VM_NUM)) {
+		rb = &vm_console_ringbufs[vmid];
+		spinlock_irqsave_obtain(&rb->lock, &rflags);
+		/*
+		 * vlog is a read-only diagnostic path:
+		 *
+		 *   producer cons/prod snapshot -> copy bytes -> leave cons unchanged
+		 *
+		 * vsh remains the only live-drain owner. This lets the shell inspect
+		 * buffered boot output without stealing it from a later VM console
+		 * session.
+		 */
+		queued = console_ring_queued(rb->prod, rb->cons, VM_CONSOLE_RINGBUF_CAPACITY);
+		if (offset < queued) {
+			count = queued - offset;
+			if (count > len) {
+				count = len;
+			}
+			cons = rb->cons + offset;
+			first = CONFIG_VM_CONSOLE_RINGBUF_SIZE -
+				(cons & VM_CONSOLE_RINGBUF_MASK);
+			if (first > count) {
+				first = count;
+			}
+			(void)memcpy(buf, &rb->buf[cons & VM_CONSOLE_RINGBUF_MASK], first);
+			if (first < count) {
+				(void)memcpy(&buf[first], rb->buf, count - first);
+			}
+		}
+		spinlock_irqrestore_release(&rb->lock, rflags);
+	}
+
+	return count;
+}
+
 void console_vm_exception_log(uint16_t vmid, const char *buf, size_t len)
 {
 	struct vm_exception_ringbuf *rb;

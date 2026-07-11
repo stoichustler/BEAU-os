@@ -2,11 +2,11 @@
 /*
  * Common BEAU virtio_proxy backend worker.
  *
- * 2026-07-10, VM1 backend worker principle:
+ * 2026-07-10, VM2 backend worker principle:
  *
  * Backend modules own protocol semantics, while this worker owns the common HVC
  * lifecycle. A backend registers its virtio device id and queue set, polls BEAU
- * for pending VM2 requests, lets the protocol-specific handle_one() validate
+ * for pending VM3 requests, lets the protocol-specific handle_one() validate
  * and fill a reply, then completes the same request through BEAU.
  *
  *   fs/rng/blk/i2c backend module
@@ -18,7 +18,7 @@
  *   REGISTER -> POLL/BATCH_POLL -> handle_one() -> REPLY/BATCH_REPLY
  *              |                                      |
  *              v                                      v
- *        heartbeat / wait hint                 VM2 used-ring IRQ
+ *        heartbeat / wait hint                 VM3 used-ring IRQ
  *
  * The batch path uses the BEAU-filled entry array as a local shared ring for
  * metadata and payload buffers. handle_one() still sees the same logical IOC,
@@ -43,14 +43,14 @@
 #define BEAU_PROXY_HEARTBEAT_MS		1000U
 #define BEAU_PROXY_REGISTER_RETRY_MS	1000U
 
-bool beau_proxy_backend_is_vm1(void)
+bool beau_proxy_backend_is_vm2(void)
 {
 	const char *model = NULL;
 
 	return of_root && !of_property_read_string(of_root, "model", &model) &&
-		model && strstr(model, "VM1");
+		model && strstr(model, "VM2");
 }
-EXPORT_SYMBOL_GPL(beau_proxy_backend_is_vm1);
+EXPORT_SYMBOL_GPL(beau_proxy_backend_is_vm2);
 
 int beau_proxy_backend_alloc_io(struct beau_proxy_backend *backend)
 {
@@ -240,7 +240,7 @@ static void beau_proxy_backend_entry_to_ioc(struct beau_proxy_ioc *ioc,
 	memset(ioc, 0, sizeof(*ioc));
 	ioc->status = entry->status;
 	ioc->device_id = 0U;
-	ioc->frontend_vmid = BEAU_PROXY_FRONTEND_VM2;
+	ioc->frontend_vmid = BEAU_PROXY_FRONTEND_VM3;
 	ioc->queue_id = entry->queue_id;
 	ioc->head = entry->head;
 	ioc->desc_count = entry->desc_count;
@@ -362,7 +362,7 @@ int beau_proxy_backend_start(struct beau_proxy_backend *backend)
 		return -EINVAL;
 
 	backend->frontend_vmid = backend->frontend_vmid != 0U ?
-		backend->frontend_vmid : BEAU_PROXY_FRONTEND_VM2;
+		backend->frontend_vmid : BEAU_PROXY_FRONTEND_VM3;
 	backend->heartbeat_interval = msecs_to_jiffies(BEAU_PROXY_HEARTBEAT_MS);
 	backend->thread = kthread_run(beau_proxy_backend_thread, backend,
 				      "%s", backend->thread_name);

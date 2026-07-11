@@ -18,7 +18,7 @@ config BEAU_VWDT
 	  BEAU can mark the VM as stuck.
 
 config BEAU_VIRTIOFS_BACKEND
-	bool "BEAU VM1 virtio-fs backend"
+	bool "BEAU VM2 virtio-fs backend"
 	depends on VIRTIO_FS
 	help
 	  Service BEAU virtio-proxy requests from a backend Linux VM.
@@ -29,35 +29,35 @@ config BEAU_VIRTIOFS_BACKEND
 	  copying; this driver owns FUSE request semantics and VFS access.
 
 config BEAU_VIRTIORNG_BACKEND
-	bool "BEAU VM1 virtio-rng backend"
+	bool "BEAU VM2 virtio-rng backend"
 	help
 	  Service BEAU virtio-proxy RNG requests from a backend Linux VM.
 
 	  Enable this with a frontend virtio-proxy device advertising virtio RNG
-	  device id 4. VM2's standard virtio-rng frontend supplies writable
-	  buffers; VM1 fills them with kernel random bytes and completes the
+	  device id 4. VM3's standard virtio-rng frontend supplies writable
+	  buffers; VM2 fills them with kernel random bytes and completes the
 	  descriptor through BEAU.
 
 config BEAU_VIRTIOBLK_BACKEND
-	bool "BEAU VM1 virtio-blk RAM backend"
+	bool "BEAU VM2 virtio-blk RAM backend"
 	default y
 	help
 	  Service BEAU virtio-proxy block requests from a backend Linux VM.
 
 	  Enable this with a frontend virtio-proxy device advertising virtio BLK
-	  device id 2. VM2's standard virtio-blk frontend sends request headers,
-	  data buffers, and status descriptors; VM1 stores data in a small RAM
+	  device id 2. VM3's standard virtio-blk frontend sends request headers,
+	  data buffers, and status descriptors; VM2 stores data in a small RAM
 	  disk and completes the descriptor through BEAU.
 
 config BEAU_VIRTIOI2C_BACKEND
-	bool "BEAU VM1 virtio-i2c EEPROM backend"
+	bool "BEAU VM2 virtio-i2c EEPROM backend"
 	default y
 	help
 	  Service BEAU virtio-proxy I2C requests from a backend Linux VM.
 
 	  Enable this with a frontend virtio-proxy device advertising virtio I2C
-	  adapter device id 34. VM2's standard virtio-i2c frontend sends I2C
-	  message descriptors; VM1 exposes a small in-memory device at 7-bit
+	  adapter device id 34. VM3's standard virtio-i2c frontend sends I2C
+	  message descriptors; VM2 exposes a small in-memory device at 7-bit
 	  address 0x50 for QEMU validation with i2c-tools.
 
 endif

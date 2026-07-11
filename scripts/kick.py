@@ -12,6 +12,7 @@ CWD = Path.cwd()
 LINUX_VM1_IMAGE_STAGE_ADDR = "0x70000000"
 LINUX_INITRAMFS_STAGE_ADDR = "0x74000000"
 LINUX_VM2_IMAGE_STAGE_ADDR = "0x76000000"
+LINUX_VM3_IMAGE_STAGE_ADDR = "0x7c000000"
 DEFAULT_LINUX_INITRAMFS = ROOT / "sdk/image/linux/Initramfs.cpio.gz"
 REPACK_INITRAMFS = ROOT / "scripts/repack_initramfs.sh"
 
@@ -47,10 +48,11 @@ def parse_args():
         "--linux-image",
         default=None,
         type=relpath,
-        help="legacy: use one Linux Image for both VM1 backend and VM2 frontend",
+        help="legacy: use one Linux Image for both Linux VM2 and Linux VM3",
     )
     parser.add_argument("--linux-vm1-image", default=ROOT / "sdk/image/linux/vm1/Image", type=relpath)
     parser.add_argument("--linux-vm2-image", default=ROOT / "sdk/image/linux/vm2/Image", type=relpath)
+    parser.add_argument("--linux-vm3-image", default=ROOT / "sdk/image/linux/vm2/Image", type=relpath)
     parser.add_argument(
         "--linux-initramfs",
         dest="linux_initramfs",
@@ -71,22 +73,23 @@ def parse_args():
         extra = extra[1:]
     args.extra = extra
     if args.linux_image is not None:
-        args.linux_vm1_image = args.linux_image
         args.linux_vm2_image = args.linux_image
+        args.linux_vm3_image = args.linux_image
     return args
 
 
 def print_image_plan(args):
-    print(f"[kick] VM1 Linux backend Image: {args.linux_vm1_image}", flush=True)
-    print(f"[kick] VM2 Linux frontend Image: {args.linux_vm2_image}", flush=True)
+    print("[kick] VM1 RT-Thread Image: embedded sdk/image/rtthread.bin", flush=True)
+    print(f"[kick] VM2 Linux Image: {args.linux_vm2_image}", flush=True)
+    print(f"[kick] VM3 Linux Image: {args.linux_vm3_image}", flush=True)
     print(f"[kick] shared Linux initramfs: {args.linux_initramfs}", flush=True)
 
 
 def verify_guest_images(args):
-    if not args.linux_vm1_image.is_file():
-        raise SystemExit(f"Linux VM1 backend Image not found: {args.linux_vm1_image}")
     if not args.linux_vm2_image.is_file():
-        raise SystemExit(f"Linux VM2 frontend Image not found: {args.linux_vm2_image}")
+        raise SystemExit(f"Linux VM2 Image not found: {args.linux_vm2_image}")
+    if not args.linux_vm3_image.is_file():
+        raise SystemExit(f"Linux VM3 Image not found: {args.linux_vm3_image}")
     if not args.linux_initramfs.is_file():
         raise SystemExit(f"Linux shared initramfs not found: {args.linux_initramfs}")
 
@@ -149,9 +152,9 @@ def main():
         "-kernel",
         str(args.kernel),
         "-device",
-        f"loader,file={args.linux_vm1_image},addr={LINUX_VM1_IMAGE_STAGE_ADDR},force-raw=on",
-        "-device",
         f"loader,file={args.linux_vm2_image},addr={LINUX_VM2_IMAGE_STAGE_ADDR},force-raw=on",
+        "-device",
+        f"loader,file={args.linux_vm3_image},addr={LINUX_VM3_IMAGE_STAGE_ADDR},force-raw=on",
         "-device",
         f"loader,file={args.linux_initramfs},addr={LINUX_INITRAMFS_STAGE_ADDR},force-raw=on",
         *args.extra,

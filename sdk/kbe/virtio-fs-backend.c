@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * BEAU virtio-fs backend for the VM1 <-> virtio_proxy <-> VM2 test path.
+ * BEAU virtio-fs backend for the VM2 <-> virtio_proxy <-> VM3 test path.
  *
  * Principle:
  *
- *   VM2 virtio-fs frontend(rw)
+ *   VM3 virtio-fs frontend(rw)
  *        -> BEAU virtio_proxy copies one descriptor chain
- *        -> VM1 backend HVC poll receives opaque FUSE bytes
- *        -> VM1 VFS operates on /var/beau
- *        -> VM1 backend HVC reply copies FUSE bytes back
+ *        -> VM2 backend HVC poll receives opaque FUSE bytes
+ *        -> VM2 VFS operates on /var/beau
+ *        -> VM2 backend HVC reply copies FUSE bytes back
  *
  * BEAU deliberately does not parse FUSE opcodes. This driver is the protocol
  * endpoint; the hypervisor is only the MMIO transport and isolation boundary.
@@ -716,13 +716,13 @@ static int __init beau_virtiofs_backend_init(void)
 	struct beau_proxy_backend *proxy = &beau_backend.proxy;
 	int ret;
 
-	if (!beau_proxy_backend_is_vm1())
+	if (!beau_proxy_backend_is_vm2())
 		return 0;
 
 	proxy->name = "virtio-fs";
 	proxy->thread_name = "beau-virtiofs-backend";
 	proxy->device_id = BEAU_PROXY_DEVICE_FS;
-	proxy->frontend_vmid = BEAU_PROXY_FRONTEND_VM2;
+	proxy->frontend_vmid = BEAU_PROXY_FRONTEND_VM3;
 	proxy->queues = beau_fs_queues;
 	proxy->queue_count = ARRAY_SIZE(beau_fs_queues);
 	proxy->batch_entries = BEAU_PROXY_BATCH_MAX;
@@ -758,5 +758,5 @@ static void __exit beau_virtiofs_backend_exit(void)
 late_initcall(beau_virtiofs_backend_init);
 module_exit(beau_virtiofs_backend_exit);
 
-MODULE_DESCRIPTION("BEAU VM1 virtio-fs backend");
+MODULE_DESCRIPTION("BEAU VM2 virtio-fs backend");
 MODULE_LICENSE("GPL");

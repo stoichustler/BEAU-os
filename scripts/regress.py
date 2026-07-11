@@ -15,16 +15,20 @@ CWD = Path.cwd()
 PROMPT = "console:\\>"
 LINUX_PROMPT = "uos ~"
 LK_PROMPT = "uos ~"
+RTTHREAD_PROMPT = "RT />"
+ZEPHYR_PROMPT = "sos ~ "
 HELP_STRESS_TARGETS = (
-    (0, "sos ~", "VM0 Zephyr", 30.0),
-    (1, LINUX_PROMPT, "VM1 Linux", 60.0),
+    (0, ZEPHYR_PROMPT, "VM0 Zephyr", 30.0),
+    (1, RTTHREAD_PROMPT, "VM1 RT-Thread", 60.0),
     (2, LINUX_PROMPT, "VM2 Linux", 60.0),
+    (3, LINUX_PROMPT, "VM3 Linux", 60.0),
 )
 ENTER = "\r"
 CTRL_D = b"\x04"
 LINUX_VM1_IMAGE_STAGE_ADDR = "0x70000000"
 LINUX_INITRAMFS_STAGE_ADDR = "0x74000000"
 LINUX_VM2_IMAGE_STAGE_ADDR = "0x76000000"
+LINUX_VM3_IMAGE_STAGE_ADDR = "0x7c000000"
 FATAL_PATTERNS = (
     "[cut here]",
     "unexpected arm64 trap",
@@ -83,6 +87,7 @@ def parse_args():
     parser.add_argument("--linux-image", default=None, type=relpath)
     parser.add_argument("--linux-vm1-image", default=ROOT / "sdk/image/linux/vm1/Image", type=relpath)
     parser.add_argument("--linux-vm2-image", default=ROOT / "sdk/image/linux/vm2/Image", type=relpath)
+    parser.add_argument("--linux-vm3-image", default=ROOT / "sdk/image/linux/vm2/Image", type=relpath)
     parser.add_argument(
         "--linux-initramfs",
         dest="linux_initramfs",
@@ -117,8 +122,8 @@ def parse_args():
         extra = extra[1:]
     args.extra = extra
     if args.linux_image is not None:
-        args.linux_vm1_image = args.linux_image
         args.linux_vm2_image = args.linux_image
+        args.linux_vm3_image = args.linux_image
     return args
 
 
@@ -149,9 +154,9 @@ def qemu_cmd(args):
         "-kernel",
         str(args.kernel),
         "-device",
-        f"loader,file={args.linux_vm1_image},addr={LINUX_VM1_IMAGE_STAGE_ADDR},force-raw=on",
-        "-device",
         f"loader,file={args.linux_vm2_image},addr={LINUX_VM2_IMAGE_STAGE_ADDR},force-raw=on",
+        "-device",
+        f"loader,file={args.linux_vm3_image},addr={LINUX_VM3_IMAGE_STAGE_ADDR},force-raw=on",
         "-device",
         f"loader,file={args.linux_initramfs},addr={LINUX_INITRAMFS_STAGE_ADDR},force-raw=on",
         *args.extra,
@@ -396,25 +401,29 @@ def send_enter_burst(qemu, count, delay, name, vmid=None):
         raise
 
 
-def expect_vm2_id(qemu, name):
-    token = f"__beau_vm2_id_{int(time.monotonic() * 1000000)}__"
+def expect_linux_id(qemu, vmid, name):
+    token = f"__beau_vm{vmid}_id_{int(time.monotonic() * 1000000)}__"
 
     # The VM console can replay old output and echo the command line before the
-    # guest has executed it. A unique token plus the "[vmid 2]" output marker makes
-    # this check wait for fresh VM2 command output instead of a stale "gid=0".
+    # guest has executed it. A unique token plus the "[vmid N]" output marker
+    # makes this check wait for fresh command output instead of stale "gid=0".
     qemu.send_slow(f"id; echo {token}_done" + ENTER)
     try:
-        text = qemu.expect(f"[vmid 2] {token}_done", name, timeout=20.0, keepalive=ENTER)
+        text = qemu.expect(f"[vmid {vmid}] {token}_done", name, timeout=20.0, keepalive=ENTER)
         if "gid=0" not in text:
             raise RuntimeError(f"{name}: id output missing gid=0")
         qemu.expect(LINUX_PROMPT, f"{name}: prompt", timeout=5.0, keepalive=ENTER)
         qemu.drain_for(0.05)
     except Exception:
-        qemu.capture_vm_diagnostics(name, 2)
+        qemu.capture_vm_diagnostics(name, vmid)
         raise
 
 
-def expect_vm1_kbe_backends(qemu, name):
+def expect_vm2_id(qemu, name):
+    expect_linux_id(qemu, 2, name)
+
+
+def expect_vm2_kbe_backends(qemu, name):
     checks = (
         "dmesg | grep -q 'BEAU virtio-fs backend started'",
         "dmesg | grep -q 'BEAU virtio-rng backend started'",
@@ -422,9 +431,9 @@ def expect_vm1_kbe_backends(qemu, name):
         "dmesg | grep -q 'BEAU virtio-i2c backend started'",
     )
     try:
-        vm_command(qemu, 1, " && ".join(checks), name, timeout=30.0)
+        vm_command(qemu, 2, " && ".join(checks), name, timeout=30.0)
     except Exception:
-        qemu.capture_vm_diagnostics(name, 1)
+        qemu.capture_vm_diagnostics(name, 2)
         raise
 
 
@@ -446,98 +455,98 @@ def vm_command(qemu, vmid, command, name, patterns=None, timeout=20.0, expect_rc
     return text
 
 
-def vm2_command(qemu, command, name, patterns=None, timeout=20.0, expect_rc=0):
-    return vm_command(qemu, 2, command, name, patterns=patterns,
+def vm3_command(qemu, command, name, patterns=None, timeout=20.0, expect_rc=0):
+    return vm_command(qemu, 3, command, name, patterns=patterns,
                       timeout=timeout, expect_rc=expect_rc)
 
 
-def expect_vm2_virtiofs(qemu, name):
+def expect_vm3_virtiofs(qemu, name):
     try:
-        vm2_command(qemu, "mkdir -p /mnt/beau /tmp",
+        vm3_command(qemu, "mkdir -p /mnt/beau /tmp",
                     f"{name}: mount dirs")
-        vm2_command(qemu, "umount /mnt/beau 2>/dev/null || true",
+        vm3_command(qemu, "umount /mnt/beau 2>/dev/null || true",
                     f"{name}: cleanup old mount")
-        vm2_command(qemu, "mount -t virtiofs -o rw proxy-fs /mnt/beau",
+        vm3_command(qemu, "mount -t virtiofs -o rw proxy-fs /mnt/beau",
                     f"{name}: mount proxy-fs", timeout=30.0)
-        vm2_command(qemu, "printf BEAU-FS-OK >/mnt/beau/proxy-regress.txt",
+        vm3_command(qemu, "printf BEAU-FS-OK >/mnt/beau/proxy-regress.txt",
                     f"{name}: write file")
-        vm2_command(qemu, "cat /mnt/beau/proxy-regress.txt",
+        vm3_command(qemu, "cat /mnt/beau/proxy-regress.txt",
                     f"{name}: read file", patterns=["BEAU-FS-OK"])
-        vm2_command(qemu, "umount /mnt/beau",
+        vm3_command(qemu, "umount /mnt/beau",
                     f"{name}: unmount", timeout=30.0)
     except Exception:
-        qemu.capture_vm_diagnostics(name, 2)
+        qemu.capture_vm_diagnostics(name, 3)
         raise
 
 
-def expect_vm2_virtiorng(qemu, name):
+def expect_vm3_virtiorng(qemu, name):
     try:
-        vm2_command(qemu, "test -c /dev/hwrng",
+        vm3_command(qemu, "test -c /dev/hwrng",
                     f"{name}: hwrng node")
-        vm2_command(qemu, "grep -q virtio /sys/class/misc/hw_random/rng_current",
+        vm3_command(qemu, "grep -q virtio /sys/class/misc/hw_random/rng_current",
                     f"{name}: virtio rng selected")
-        vm2_command(qemu, "dd if=/dev/hwrng of=/tmp/beau-rng.bin bs=32 count=1 2>/dev/null",
+        vm3_command(qemu, "dd if=/dev/hwrng of=/tmp/beau-rng.bin bs=32 count=1 2>/dev/null",
                     f"{name}: read hwrng")
-        vm2_command(qemu, "test $(wc -c </tmp/beau-rng.bin) -eq 32",
+        vm3_command(qemu, "test $(wc -c </tmp/beau-rng.bin) -eq 32",
                     f"{name}: hwrng size")
-        vm2_command(qemu, "dd if=/dev/zero of=/tmp/beau-rng-zero.bin bs=32 count=1 2>/dev/null; ! cmp -s /tmp/beau-rng.bin /tmp/beau-rng-zero.bin",
+        vm3_command(qemu, "dd if=/dev/zero of=/tmp/beau-rng-zero.bin bs=32 count=1 2>/dev/null; ! cmp -s /tmp/beau-rng.bin /tmp/beau-rng-zero.bin",
                     f"{name}: hwrng nonzero")
     except Exception:
-        qemu.capture_vm_diagnostics(name, 2)
+        qemu.capture_vm_diagnostics(name, 3)
         raise
 
 
-def expect_vm2_virtioblk(qemu, name):
+def expect_vm3_virtioblk(qemu, name):
     try:
-        vm2_command(qemu, "test -b /dev/vda",
+        vm3_command(qemu, "test -b /dev/vda",
                     f"{name}: block node")
-        vm2_command(qemu, "grep -q 2048 /sys/block/vda/size",
+        vm3_command(qemu, "grep -q 2048 /sys/block/vda/size",
                     f"{name}: sector count")
-        vm2_command(qemu, "mkdir -p /tmp",
+        vm3_command(qemu, "mkdir -p /tmp",
                     f"{name}: temp dir")
-        vm2_command(qemu, "rm -f /tmp/beau-blk.w /tmp/beau-blk.r",
+        vm3_command(qemu, "rm -f /tmp/beau-blk.w /tmp/beau-blk.r",
                     f"{name}: cleanup")
-        vm2_command(qemu, "printf BEAU-BLK-OK >/tmp/beau-blk.w",
+        vm3_command(qemu, "printf BEAU-BLK-OK >/tmp/beau-blk.w",
                     f"{name}: marker")
-        vm2_command(qemu, "dd if=/dev/zero bs=4085 count=1 >>/tmp/beau-blk.w 2>/dev/null",
+        vm3_command(qemu, "dd if=/dev/zero bs=4085 count=1 >>/tmp/beau-blk.w 2>/dev/null",
                     f"{name}: pad")
-        vm2_command(qemu, "dd if=/tmp/beau-blk.w of=/dev/vda bs=4096 count=1 2>/dev/null",
+        vm3_command(qemu, "dd if=/tmp/beau-blk.w of=/dev/vda bs=4096 count=1 2>/dev/null",
                     f"{name}: write")
-        vm2_command(qemu, "dd if=/dev/vda of=/tmp/beau-blk.r bs=4096 count=1 2>/dev/null",
+        vm3_command(qemu, "dd if=/dev/vda of=/tmp/beau-blk.r bs=4096 count=1 2>/dev/null",
                     f"{name}: read")
-        vm2_command(qemu, "cmp /tmp/beau-blk.w /tmp/beau-blk.r",
+        vm3_command(qemu, "cmp /tmp/beau-blk.w /tmp/beau-blk.r",
                     name)
     except Exception:
-        qemu.capture_vm_diagnostics(name, 2)
+        qemu.capture_vm_diagnostics(name, 3)
         raise
 
 
-def expect_vm2_virtioi2c(qemu, name):
+def expect_vm3_virtioi2c(qemu, name):
     try:
-        vm2_command(qemu, "test -c /dev/i2c-0",
+        vm3_command(qemu, "test -c /dev/i2c-0",
                     f"{name}: i2c dev node")
-        vm2_command(qemu, "i2cdetect -y 0",
+        vm3_command(qemu, "i2cdetect -y 0",
                     f"{name}: detect 0x50", patterns=["50"], timeout=30.0)
-        vm2_command(qemu, "i2ctransfer -y 0 w1@0x50 0x00 r16 >/tmp/beau-i2c-prefix.txt",
+        vm3_command(qemu, "i2ctransfer -y 0 w1@0x50 0x00 r16 >/tmp/beau-i2c-prefix.txt",
                     f"{name}: read EEPROM prefix", timeout=30.0)
-        vm2_command(qemu, "test $(wc -w </tmp/beau-i2c-prefix.txt) -eq 16",
+        vm3_command(qemu, "test $(wc -w </tmp/beau-i2c-prefix.txt) -eq 16",
                     f"{name}: read EEPROM prefix size")
-        vm2_command(qemu, "i2ctransfer -y 0 w3@0x50 0x10 0xab 0xcd",
+        vm3_command(qemu, "i2ctransfer -y 0 w3@0x50 0x10 0xab 0xcd",
                     f"{name}: write EEPROM bytes", timeout=30.0)
-        vm2_command(qemu, "i2ctransfer -y 0 w1@0x50 0x10 r2 >/tmp/beau-i2c-readback.txt",
+        vm3_command(qemu, "i2ctransfer -y 0 w1@0x50 0x10 r2 >/tmp/beau-i2c-readback.txt",
                     f"{name}: read EEPROM bytes", timeout=30.0)
-        vm2_command(qemu, "test $(wc -w </tmp/beau-i2c-readback.txt) -eq 2",
+        vm3_command(qemu, "test $(wc -w </tmp/beau-i2c-readback.txt) -eq 2",
                     f"{name}: read EEPROM byte count")
     except Exception:
-        qemu.capture_vm_diagnostics(name, 2)
+        qemu.capture_vm_diagnostics(name, 3)
         raise
 
 
-def expect_vm2_virtio_proxy_smoke(qemu):
-    expect_vm2_virtiofs(qemu, "VM2 virtio-fs mount/write/read")
-    expect_vm2_virtiorng(qemu, "VM2 virtio-rng read")
-    expect_vm2_virtioblk(qemu, "VM2 virtio-blk 4K write/read")
-    expect_vm2_virtioi2c(qemu, "VM2 virtio-i2c detect/transfer")
+def expect_vm3_virtio_proxy_smoke(qemu):
+    expect_vm3_virtiofs(qemu, "VM3 virtio-fs mount/write/read")
+    expect_vm3_virtiorng(qemu, "VM3 virtio-rng read")
+    expect_vm3_virtioblk(qemu, "VM3 virtio-blk 4K write/read")
+    expect_vm3_virtioi2c(qemu, "VM3 virtio-i2c detect/transfer")
 
 
 def run_guest_help(qemu, vmid, prompt, name, timeout):
@@ -574,18 +583,18 @@ def run_vsh_switch_stress(qemu, args):
     expect_vm2_id(qemu, "VM2 Linux identity after initial Enter burst")
     vsh_return(qemu, "return from stress VM2 initial", vmid=2)
 
-    vsh_enter(qemu, 1, LINUX_PROMPT, "stress VM1 Linux shell", timeout=30.0)
-    send_enter_burst(qemu, args.stress_enters, args.stress_enter_delay, "VM1 Linux", vmid=1)
+    vsh_enter(qemu, 1, RTTHREAD_PROMPT, "stress VM1 RT-Thread shell", timeout=30.0)
+    send_enter_burst(qemu, args.stress_enters, args.stress_enter_delay, "VM1 RT-Thread", vmid=1)
     vsh_return(qemu, "return from stress VM1", vmid=1)
 
     for idx in range(args.stress_rounds):
         label = idx + 1
-        vsh_enter(qemu, 0, "sos ~", f"stress round {label}: VM0 Zephyr shell")
+        vsh_enter(qemu, 0, ZEPHYR_PROMPT, f"stress round {label}: VM0 Zephyr shell")
         send_enter_burst(qemu, max(1, args.stress_enters // 4),
             args.stress_enter_delay, f"round {label} VM0", vmid=0)
         vsh_return(qemu, f"stress round {label}: return from VM0", vmid=0)
 
-        vsh_enter(qemu, 1, LINUX_PROMPT, f"stress round {label}: VM1 Linux shell",
+        vsh_enter(qemu, 1, RTTHREAD_PROMPT, f"stress round {label}: VM1 RT-Thread shell",
             timeout=30.0)
         send_enter_burst(qemu, max(1, args.stress_enters // 4),
             args.stress_enter_delay, f"round {label} VM1", vmid=1)
@@ -598,16 +607,23 @@ def run_vsh_switch_stress(qemu, args):
         expect_vm2_id(qemu, f"stress round {label}: VM2 identity after switch")
         vsh_return(qemu, f"stress round {label}: return from VM2", vmid=2)
 
+        vsh_enter(qemu, 3, LINUX_PROMPT, f"stress round {label}: VM3 Linux shell",
+            timeout=30.0)
+        send_enter_burst(qemu, args.stress_enters, args.stress_enter_delay,
+            f"round {label} VM3", vmid=3)
+        expect_linux_id(qemu, 3, f"stress round {label}: VM3 identity after switch")
+        vsh_return(qemu, f"stress round {label}: return from VM3", vmid=3)
+
     print("[pass] VM console switch stress complete", flush=True)
 
 
 def run_qemu(args, cmd):
     if not args.kernel.is_file():
         raise SystemExit(f"Kernel image not found: {args.kernel}")
-    if not args.linux_vm1_image.is_file():
-        raise SystemExit(f"Linux VM1 Image not found: {args.linux_vm1_image}")
     if not args.linux_vm2_image.is_file():
         raise SystemExit(f"Linux VM2 Image not found: {args.linux_vm2_image}")
+    if not args.linux_vm3_image.is_file():
+        raise SystemExit(f"Linux VM3 Image not found: {args.linux_vm3_image}")
     if not args.linux_initramfs.is_file():
         raise SystemExit(f"Linux initramfs not found: {args.linux_initramfs}")
     if shutil.which(args.qemu) is None:
@@ -617,7 +633,7 @@ def run_qemu(args, cmd):
     with QemuSession(cmd, args.log, args.timeout) as qemu:
         qemu.disable_terminal_replies = args.no_terminal_replies
         qemu.expect(PROMPT, "BEAU shell prompt", keepalive=ENTER)
-        qemu.command("vcpus", [
+        qemu.command_retry("vcpus", [
             "vcpu",
             "pcpu_mode",
             "exclusive",
@@ -626,8 +642,9 @@ def run_qemu(args, cmd):
             "since.us",
             "vm0:vcpu0",
             "vm2:vcpu2",
+            "vm3:vcpu0",
         ])
-        qemu.command("schedstat", [
+        qemu.command_retry("schedstat", [
             "schedstat pcpus:",
             "Per-pCPU hybrid scheduler counters:",
             "pcpu",
@@ -636,7 +653,7 @@ def run_qemu(args, cmd):
             "exclusive",
             "shared",
             "sched_bvt",
-            "sched_rtds",
+            "sched_cbs",
             "busy%",
             "timer",
             "switches",
@@ -646,15 +663,17 @@ def run_qemu(args, cmd):
             "CPU usage since previous schedstat:",
             "cpu%",
             "BVT stats:",
-            "RTDS stats:",
+            "CBS stats:",
         ])
-        qemu.command(
+        qemu.command_retry(
             "vmstat",
             [
                 "┌─  vmstat vm0:Zephyr",
-                "┌─  vmstat vm1:Linux-1",
+                "┌─  vmstat vm1:RT-Thread",
                 "┌─  vmstat vm2:Linux-2",
+                "┌─  vmstat vm3:Linux-3",
                 "vcpus:configured:4 created:4",
+                "vcpus:configured:2 created:2",
                 "│   affinity:",
                 "boot:kernel:",
                 "gic:initialized:",
@@ -666,31 +685,30 @@ def run_qemu(args, cmd):
                 "sched",
                 "diag",
                 "bvt:weight:",
-                "rtds:period-us:",
                 "timer:PPI27",
                 "vgic:PPI27",
             ],
             ["assertion failed", "stack check fails", "fatal error"],
         )
-        qemu.command("mmap", ["arm64 memory mappings", "vm-0 s2", "vm-1 s2", "vm-2 s2"])
-        qemu.command("irqstat", ["irqstat:"])
+        qemu.command_retry("mmap", ["arm64 memory mappings", "vm-0 s2", "vm-1 s2", "vm-2 s2", "vm-3 s2"])
+        qemu.command_retry("irqstat", ["irqstat:"])
         qemu.command_retry(
             "virtiostat",
             [
-                "virtio-fs vm2:0",
+                "virtio-fs vm3:0",
                 "device:",
                 "proxy-fs",
                 "throughput:high",
-                "virtio-rng vm2:1",
+                "virtio-rng vm3:1",
                 "proxy-rng",
                 "throughput:low",
-                "virtio-blk vm2:2",
+                "virtio-blk vm3:2",
                 "proxy-blk",
-                "virtio-i2c vm2:3",
+                "virtio-i2c vm3:3",
                 "proxy-i2c",
             ],
         )
-        qemu.command(
+        qemu.command_retry(
             "dumpstat 0",
             [
                 "┌─  dumpstat vm0",
@@ -722,13 +740,12 @@ def run_qemu(args, cmd):
         )
 
         qemu.send("vsh 0" + ENTER)
-        qemu.expect("sos ~", "VM0 Zephyr shell", keepalive=ENTER)
+        qemu.expect(ZEPHYR_PROMPT, "VM0 Zephyr shell", keepalive=ENTER)
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM0 shell")
 
         qemu.send("vsh 1" + ENTER)
-        qemu.expect(LINUX_PROMPT, "VM1 Linux initramfs shell", timeout=60.0, keepalive=ENTER)
-        expect_vm1_kbe_backends(qemu, "VM1 BEAU KBE backend startup")
+        qemu.expect(RTTHREAD_PROMPT, "VM1 RT-Thread shell", timeout=60.0, keepalive=ENTER)
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM1 shell")
 
@@ -739,24 +756,20 @@ def run_qemu(args, cmd):
             qemu.capture_vm_diagnostics("VM2 Linux initramfs shell timeout", 2)
             raise
         expect_vm2_id(qemu, "VM2 Linux root identity")
-        expect_vm2_virtio_proxy_smoke(qemu)
+        expect_vm2_kbe_backends(qemu, "VM2 BEAU KBE backend startup")
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM2 shell")
-        qemu.command_retry(
-            "virtiostat",
-            [
-                "virtio-fs vm2:0",
-                "virtio-rng vm2:1",
-                "virtio-blk vm2:2",
-                "virtio-i2c vm2:3",
-                "health:ok",
-                "backend:abi:3",
-                "batch:",
-                "items:",
-            ],
-            attempts=6,
-            delay=1.0,
-        )
+
+        qemu.send("vsh 3" + ENTER)
+        try:
+            qemu.expect(LINUX_PROMPT, "VM3 Linux initramfs shell", timeout=60.0, keepalive=ENTER)
+        except Exception:
+            qemu.capture_vm_diagnostics("VM3 Linux initramfs shell timeout", 3)
+            raise
+        expect_linux_id(qemu, 3, "VM3 Linux root identity")
+        expect_vm3_virtio_proxy_smoke(qemu)
+        qemu.send(CTRL_D)
+        qemu.expect(PROMPT, "return from VM3 shell")
 
         if args.stress_vsh_switch:
             run_vsh_switch_stress(qemu, args)
@@ -775,7 +788,7 @@ def main():
         if not args.no_build:
             print(render(build, args.toolchains))
         print(quote(qemu))
-        checks = "prompt, vcpus, schedstat, vmstat, mmap, irqstat, virtiostat, vsh 0, ctrl-d, vsh 1, KBE backend dmesg, ctrl-d, vsh 2, Linux initramfs shell, virtiofs mount/write/read, virtio-rng read, virtio-blk 4K write/read, virtio-i2c detect/transfer, final virtiostat health/batch"
+        checks = "prompt, vcpus, schedstat, vmstat, mmap, irqstat, virtiostat, vsh 0, ctrl-d, vsh 1, RT-Thread shell, ctrl-d, vsh 2, Linux-2 backend shell, ctrl-d, vsh 3, Linux-3 frontend shell"
         if args.stress_vsh_switch:
             checks += ", VM console switch/Enter stress"
         if args.stress_vsh_help:

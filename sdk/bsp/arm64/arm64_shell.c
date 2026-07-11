@@ -23,6 +23,7 @@
 #include <ticks.h>
 #include <console.h>
 #include <acrn_hv_defs.h>
+#include <virtio_console.h>
 #include <virtio_proxy.h>
 #include <bsp/vuart.h>
 #include <debug/symbol.h>
@@ -1040,6 +1041,41 @@ static void shell_print_cpu_bitmap(uint64_t bitmap)
 	}
 }
 
+static void shell_print_vm_affinity(const struct acrn_vm_config *vm_config,
+	const struct acrn_vm *vm)
+{
+	char temp_str[MAX_STR_SIZE];
+	bool first = true;
+	uint16_t vcpu_id;
+
+	if (vm->hw.created_vcpus == 0U) {
+		shell_print_cpu_bitmap(vm_config->cpu_affinity);
+		return;
+	}
+
+	/*
+	 * 2026-07-11, vCPU affinity display:
+	 * cpu_affinity is a bitmap and loses DTS order. Runtime vCPU objects keep
+	 * the real vCPU->pCPU binding, so print that order to make vCPU0 placement
+	 * explicit in vmstat.
+	 */
+	for (vcpu_id = 0U; vcpu_id < vm->hw.created_vcpus; vcpu_id++) {
+		const struct acrn_vcpu *vcpu = vcpu_from_vid((struct acrn_vm *)vm, vcpu_id);
+
+		if (vcpu == NULL) {
+			continue;
+		}
+		(void)snprintf(temp_str, MAX_STR_SIZE, "%svcpu%hu:pcpu%hu",
+			first ? "" : ",", vcpu_id, vcpu->thread_obj.pcpu_id);
+		shell_puts(temp_str);
+		first = false;
+	}
+
+	if (first) {
+		shell_puts("-");
+	}
+}
+
 static uint32_t shell_cpu_bitmap_weight(uint64_t bitmap)
 {
 	uint32_t weight = 0U;
@@ -1166,6 +1202,7 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 	struct shell_vmstat_timer_summary timer = { 0U };
 	struct vm_wdt_snapshot wdt = { 0U };
 	struct console_vm_ring_stats ring = { 0U };
+	struct virtio_console_stats vcon = { 0U };
 	struct acrn_vuart *vu = NULL;
 	char temp_str[MAX_STR_SIZE];
 
@@ -1184,7 +1221,7 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 		shell_vm_state_to_str(vm->state), vm_config->guest_flags,
 		(uint32_t)vm_config->load_order);
 	shell_puts("│   affinity:");
-	shell_print_cpu_bitmap(vm_config->cpu_affinity);
+	shell_print_vm_affinity(vm_config, vm);
 	shell_puts("\r\n");
 
 	shell_item_line("gic:initialized:%s vcpus:%hu rdist:%hu lr-count:%u vmcr:0x%08x ctlr:0x%08x",
@@ -1215,6 +1252,19 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 		shell_item_line("        vuart:active:%s irq:%u rx:%u tx:%u ier:0x%02x lsr:0x%02x",
 			shell_yes_no(vu->active), vu->irq, vuart_rx_numchars(vu),
 			vu->txfifo.num, vu->ier, vu->lsr);
+	}
+	if (virtio_console_get_stats(vm_id, &vcon)) {
+		shell_item_line("        virtio-console:active:%s irq:%u status:0x%02x isr:0x%02x tx:%lu rx:%lu",
+			shell_yes_no(vcon.active), vcon.irq, vcon.status,
+			vcon.interrupt_status, vcon.tx_count, vcon.rx_count);
+		for (uint16_t qid = 0U; qid < VIRTIO_CONSOLE_STAT_QUEUE_NUM; qid++) {
+			const struct virtio_console_queue_stats *queue = &vcon.queues[qid];
+
+			shell_item_line("        vcon.q%hu ready:%s num:%hu idx:%hu desc:0x%016lx avail:0x%016lx used:0x%016lx",
+				qid, shell_yes_no(queue->ready), queue->num,
+				queue->last_avail_idx, queue->desc, queue->avail,
+				queue->used);
+		}
 	}
 
 	(void)snprintf(temp_str, MAX_STR_SIZE, "boot:kernel:%s entry:0x%016lx load:0x%016lx",

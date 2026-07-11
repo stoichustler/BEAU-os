@@ -6,7 +6,7 @@
 
 #include "hcall.h"
 
-#define BEAU_PROXY_FRONTEND_VM2		2U
+#define BEAU_PROXY_FRONTEND_VM3		3U
 
 struct task_struct;
 
@@ -39,7 +39,7 @@ struct beau_proxy_backend {
 				 struct beau_proxy_ioc *ioc);
 };
 
-bool beau_proxy_backend_is_vm1(void);
+bool beau_proxy_backend_is_vm2(void);
 int beau_proxy_backend_alloc_io(struct beau_proxy_backend *backend);
 void beau_proxy_backend_free_io(struct beau_proxy_backend *backend);
 int beau_proxy_backend_start(struct beau_proxy_backend *backend);

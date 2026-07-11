@@ -96,31 +96,4 @@
 		status = "okay";
 	};
 
-	virtio_mmio@a000200 {
-		compatible = "virtio,mmio";
-		reg = <0x0 0x0a000200 0x0 0x00000200>;
-		interrupts = <0 17 4>;
-		status = "okay";
-	};
-
-	virtio_mmio@a000400 {
-		compatible = "virtio,mmio";
-		reg = <0x0 0x0a000400 0x0 0x00000200>;
-		interrupts = <0 18 4>;
-		status = "okay";
-	};
-
-	virtio_mmio@a000600 {
-		compatible = "virtio,mmio";
-		reg = <0x0 0x0a000600 0x0 0x00000200>;
-		interrupts = <0 19 4>;
-		status = "okay";
-	};
-
-	virtio_mmio@a000800 {
-		compatible = "virtio,mmio";
-		reg = <0x0 0x0a000800 0x0 0x00000200>;
-		interrupts = <0 20 4>;
-		status = "okay";
-	};
 };

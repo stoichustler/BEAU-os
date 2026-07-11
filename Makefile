@@ -4,7 +4,7 @@
 
 API_MAJOR_VERSION=1
 API_MINOR_VERSION=0
-BEAU_OS_VERSION ?= 0.0.4
+BEAU_OS_VERSION ?= 0.0.5
 
 GCC_MAJOR=$(shell echo __GNUC__ | $(CC) -E -x c - | tail -n 1)
 GCC_MINOR=$(shell echo __GNUC_MINOR__ | $(CC) -E -x c - | tail -n 1)
@@ -125,7 +125,9 @@ ARM64_PLATFORM_CFG_STAMP := $(HV_CONFIG_DIR)/config-vm1-lk-$(CONFIG_ENABLE_VM1_L
 ARM64_PLATFORM_DTB := $(HV_OBJDIR)/platform.dtb
 LINUX_VM1_IMAGE := sdk/image/linux/vm1/Image
 LINUX_VM2_IMAGE := sdk/image/linux/vm2/Image
+LINUX_VM3_IMAGE ?= $(LINUX_VM2_IMAGE)
 LINUX_INITRAMFS := sdk/image/linux/Initramfs.cpio.gz
+RTTHREAD_IMAGE := sdk/image/rtthread.bin
 CFLAGS += -include $(HV_CONFIG_H)
 ASFLAGS += -DARM64_PLATFORM_DTB_PATH=\"$(ARM64_PLATFORM_DTB)\"
 else
@@ -482,11 +484,12 @@ menuconfig: | $(HV_CONFIG_DIR) $(HV_KCONFIG_DEPS_DIR) $(HV_OBJDIR)/include/gener
 	$(Q)$(MAKE) syncconfig ARCH=$(ARCH) PLATFORM=$(PLATFORM) HV_OBJDIR=$(HV_OBJDIR)
 
 ifneq ($(LINUX_IMAGE_SIZE_H),)
-$(LINUX_IMAGE_SIZE_H): Makefile $(LINUX_VM1_IMAGE) $(LINUX_VM2_IMAGE) $(LINUX_INITRAMFS) | $(HV_OBJDIR)/include
+$(LINUX_IMAGE_SIZE_H): Makefile $(LINUX_VM1_IMAGE) $(LINUX_VM2_IMAGE) $(LINUX_VM3_IMAGE) $(LINUX_INITRAMFS) | $(HV_OBJDIR)/include
 	@echo "image              $(notdir $@)"
 	@{ \
 		vm1_image_size=$$(stat -c %s $(LINUX_VM1_IMAGE)); \
 		vm2_image_size=$$(stat -c %s $(LINUX_VM2_IMAGE)); \
+		vm3_image_size=$$(stat -c %s $(LINUX_VM3_IMAGE)); \
 		initramfs_size=$$(stat -c %s $(LINUX_INITRAMFS)); \
 		echo "/* Auto-generated from sdk/image. */"; \
 		echo "#ifndef LINUX_IMAGE_SIZES_H"; \
@@ -494,6 +497,7 @@ $(LINUX_IMAGE_SIZE_H): Makefile $(LINUX_VM1_IMAGE) $(LINUX_VM2_IMAGE) $(LINUX_IN
 		echo "#define BEAU_LINUX_IMAGE_SIZE $${vm1_image_size}U"; \
 		echo "#define BEAU_LINUX_VM1_IMAGE_SIZE $${vm1_image_size}U"; \
 		echo "#define BEAU_LINUX_VM2_IMAGE_SIZE $${vm2_image_size}U"; \
+		echo "#define BEAU_LINUX_VM3_IMAGE_SIZE $${vm3_image_size}U"; \
 		echo "#define BEAU_LINUX_INITRAMFS_SIZE $${initramfs_size}U"; \
 		echo "#endif /* LINUX_IMAGE_SIZES_H */"; \
 	} > $@
@@ -646,8 +650,16 @@ sdk/image/linux/vm2/beau-linux.dtb: sdk/image/linux/vm2/beau-linux.dts
 	$(Q)echo "dtc                $@"
 	$(Q)$(DTC) -I dts -O dtb -o $@ $<
 
+sdk/image/linux/vm3/beau-linux.dtb: sdk/image/linux/vm3/beau-linux.dts
+	$(Q)echo "dtc                $@"
+	$(Q)$(DTC) -I dts -O dtb -o $@ $<
+
+sdk/image/rtthread/beau-rtthread.dtb: sdk/image/rtthread/beau-rtthread.dts
+	$(Q)echo "dtc                $@"
+	$(Q)$(DTC) -I dts -O dtb -o $@ $<
+
 $(HV_OBJDIR)/arch/arm64/platform/$(PLATFORM)/platform.o: sdk/image/lk.bin sdk/image/zephyr.bin $(ARM64_PLATFORM_DTB)
-$(HV_OBJDIR)/arch/arm64/platform/qemu/platform.o: sdk/image/linux/vm1/beau-linux.dtb sdk/image/linux/vm2/beau-linux.dtb
+$(HV_OBJDIR)/arch/arm64/platform/qemu/platform.o: $(RTTHREAD_IMAGE) sdk/image/rtthread/beau-rtthread.dtb sdk/image/linux/vm1/beau-linux.dtb sdk/image/linux/vm2/beau-linux.dtb sdk/image/linux/vm3/beau-linux.dtb
 endif
 
 $(HV_OBJDIR)/%.o: %.S $(HEADERS) $(ARCH_PRE_BUILD_TARGETS)
