@@ -688,17 +688,17 @@ void beau_gicv3_its_init(uint64_t base, uint64_t size)
 			ret = beau_gicv3_its_setup_hw();
 			if (ret == 0) {
 				beau_gicv3_its_ready = true;
-				LOG_INF("gicv3 its enabled base=0x%lx target=0x%lx",
+				LOG_INF("GICv3:  ITS enabled base:0x%08lx target:0x%08lx",
 					base, beau_gicv3_its_collection_target);
 			} else {
-				LOG_ERR("gicv3 its setup failed ret=%d", ret);
+				LOG_ERR("GICv3:  ITS setup failed ret=%d", ret);
 			}
 			return;
 		}
 		cpu_relax();
 	}
 
-	LOG_ERR("gicv3 its quiesce timeout base=0x%lx size=0x%lx ctlr=0x%x",
+	LOG_ERR("GICv3:  ITS quiesce timeout base=0x%lx size=0x%lx ctlr=0x%x",
 		base, size, beau_gits_read_4(GITS_CTLR));
 }
 

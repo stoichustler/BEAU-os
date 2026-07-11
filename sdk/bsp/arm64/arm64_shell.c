@@ -338,7 +338,7 @@ static void shell_pcistat_print_bars(const struct pci_vdev *vdev)
 		}
 		type = ((vbar->bar_type.io_space.indicator == 1U) && !vbar->is_mem64hi) ?
 			"io" : "mem";
-		shell_item_line("      bar%u:%s gpa:0x%016lx hpa:0x%016lx size:0x%016lx",
+		shell_item_line("     bar%u:%s gpa:0x%016lx hpa:0x%016lx size:0x%016lx",
 			bar_idx, type, vbar->base_gpa, vbar->base_hpa, vbar->size);
 	}
 }
@@ -361,8 +361,9 @@ static void shell_pcistat_print_msi(const struct pci_vdev *vdev)
 		mask = shell_pci_vcfg_read(vdev, vdev->msi.capoff + mask_offset, 4U);
 	}
 
-	shell_item_line("      msi:cap:0x%02x len:%u 64:%s pvm:%s enabled:%s ctrl:0x%04x mask:0x%08x",
-		vdev->msi.capoff, vdev->msi.caplen, shell_yes_no(vdev->msi.is_64bit),
+	shell_item_line("     msi:cap:0x%02x len:%u vectors:%u 64:%s pvm:%s enabled:%s ctrl:0x%04x mask:0x%08x",
+		vdev->msi.capoff, vdev->msi.caplen, vdev->msi.vector_count,
+		shell_yes_no(vdev->msi.is_64bit),
 		shell_yes_no(pvm), shell_yes_no((ctrl & PCIM_MSICTRL_MSI_ENABLE) != 0U),
 		ctrl, mask);
 }
@@ -389,13 +390,15 @@ static void shell_pcistat_print_msix(const struct pci_vdev *vdev)
 		hole_size = ((table_gpa + table_size + PAGE_SIZE - 1UL) & PAGE_MASK) - hole_gpa;
 	}
 
-	shell_item_line("      msix:cap:0x%02x len:%u table:bar%u off:0x%08x count:%u enabled:%s masked:%s",
+	shell_item_line("     msix:cap:0x%02x len:%u table:bar%u off:0x%08x count:%u enabled:%s masked:%s on-msi:%s programmed:%s",
 		vdev->msix.capoff, vdev->msix.caplen, vdev->msix.table_bar,
 		vdev->msix.table_offset, vdev->msix.table_count,
 		shell_yes_no((ctrl & PCIM_MSIXCTRL_MSIX_ENABLE) != 0U),
-		shell_yes_no((ctrl & PCIM_MSIXCTRL_FUNCTION_MASK) != 0U));
+		shell_yes_no((ctrl & PCIM_MSIXCTRL_FUNCTION_MASK) != 0U),
+		shell_yes_no(vdev->msix.is_vmsix_on_msi),
+		shell_yes_no(vdev->msix.is_vmsix_on_msi_programmed));
 	if (hole_size != 0UL) {
-		shell_item_line("      msix-hole:gpa:0x%016lx hpa:0x%016lx size:0x%016lx",
+		shell_item_line("     msix-hole:gpa:0x%016lx hpa:0x%016lx size:0x%016lx",
 			hole_gpa, hole_hpa, hole_size);
 	}
 }
@@ -415,6 +418,23 @@ static const struct arm_smmu_stream_config *shell_find_stream_config(
 	}
 
 	return found;
+}
+
+static const char *shell_pcistat_stream_state(const struct arm_smmu_stream_config *stream, uint16_t vm_id)
+{
+	const char *state;
+
+	if (stream == NULL) {
+		state = "missing";
+	} else if (!stream->assigned) {
+		state = "free";
+	} else if (stream->owner_vmid == vm_id) {
+		state = "owned";
+	} else {
+		state = "wrong-vm";
+	}
+
+	return state;
 }
 
 static void shell_pcistat_host(void)
@@ -479,9 +499,9 @@ static void shell_pcistat_vm(uint16_t vm_id,
 			shell_yes_no(dev_config->pdev != NULL),
 			shell_yes_no(vdev != NULL),
 			dev_config->pbdf.value,
-			(stream != NULL) ? shell_yes_no(stream->assigned) : "N");
+			shell_pcistat_stream_state(stream, vm_id));
 		if (stream != NULL) {
-			shell_item_line("      owner:vm%hu ipa:%u root:0x%016lx",
+			shell_item_line("     owner:vm%hu ipa:%u root:0x%016lx",
 				stream->owner_vmid, stream->ipa_width, stream->root_table_hpa);
 		}
 		if (vdev != NULL) {

@@ -44,10 +44,33 @@
 #include "vpci_internal.h"
 
 /*
- * arm64 vPCI flow:
- *   guest ECAM/CFG -> vpci_core -> {vpci_pt, vpci_msi, vpci_rc, vpci_sriov}
- *   init_vpci(vm) -> SMMUv3 domain -> vdev init -> stream/Stage-2 checks -> CFG handlers
- *   MSI/MSI-X programming -> vPCI state -> ITS/LPI remap -> virtual LPI injection
+ * arm64 vPCI framework
+ *
+ *              +---------------- guest VM ----------------+
+ *              |                                          |
+ *              | ECAM/PIO cfg access   BAR MMIO/PIO       |
+ *              | MSI/MSI-X programming  DMA by device     |
+ *              +---------+-------------+------+-----------+
+ *                        |                    |
+ *                        v                    v
+ * +------------------ vpci_core ------------------+
+ * | per-VM vPCI state, vBDF lookup, cfg dispatch  |
+ * | vdev lifecycle, passthrough ownership checks  |
+ * +-----+--------------+-------------+------------+
+ *       |              |             |
+ *       v              v             v
+ *   vpci_pt        vpci_msi      vpci_rc/vpci_sriov
+ *   BAR/CFG        ITS/LPI       root-port and SR-IOV
+ *   mapping        remap         emulation helpers
+ *
+ * Passthrough principle:
+ *   - Config space is virtual first. Only explicitly permitted fields reach
+ *     the physical function.
+ *   - CPU MMIO reaches a device only after the BAR is mapped in VM Stage-2.
+ *   - DMA reaches guest memory only after the physical Requester ID stream is
+ *     moved to the VM SMMUv3 domain.
+ *   - MSI/MSI-X guest messages are treated as routing requests and rewritten
+ *     through the interrupt remap path before being programmed to hardware.
  */
 
 static int32_t vpci_init_vdevs(struct acrn_vm *vm);
@@ -55,6 +78,8 @@ static int32_t vpci_read_cfg(struct acrn_vpci *vpci, union pci_bdf bdf, uint32_t
 static int32_t vpci_write_cfg(struct acrn_vpci *vpci, union pci_bdf bdf, uint32_t offset, uint32_t bytes, uint32_t val);
 static struct pci_vdev *find_available_vdev(struct acrn_vpci *vpci, union pci_bdf bdf);
 static int32_t verify_vpci_pt_iommu_domains(const struct acrn_vm *vm);
+static void vpci_release_vdevs(struct acrn_vm *vm, bool restore_parent);
+static void vpci_cleanup_vm_resources(struct acrn_vm *vm, bool restore_parent);
 
 static uint32_t vpci_pt_stream_id(const struct pci_vdev *vdev)
 {
@@ -247,6 +272,13 @@ int32_t init_vpci(struct acrn_vm *vm)
 	struct pci_mmcfg_region *pci_mmcfg;
 	int32_t ret = 0;
 
+	spinlock_init(&vm->vpci.lock);
+
+	/*
+	 * The IOMMU domain is created before any guest-visible PCI config
+	 * handler is registered. A passthrough device is exposed only after its
+	 * DMA stream can be bound to the same translation root used by the VM.
+	 */
 	vm->iommu = create_iommu_domain(vm->vm_id, hva2hpa(vm->root_stg2ptp), 48U);
 	if (vm->iommu == NULL) {
 		LOG_ERR("vm%u failed to create iommu domain", vm->vm_id);
@@ -292,7 +324,9 @@ int32_t init_vpci(struct acrn_vm *vm)
 			vpci_pio_cfgdata_read, vpci_pio_cfgdata_write);
 #endif
 
-		spinlock_init(&vm->vpci.lock);
+	} else {
+		LOG_ERR("vm%u failed to initialize vpci: %d", vm->vm_id, ret);
+		vpci_cleanup_vm_resources(vm, false);
 	}
 
 	return ret;
@@ -304,6 +338,11 @@ int32_t init_vpci(struct acrn_vm *vm)
  */
 void deinit_vpci(struct acrn_vm *vm)
 {
+	vpci_cleanup_vm_resources(vm, true);
+}
+
+static void vpci_release_vdevs(struct acrn_vm *vm, bool restore_parent)
+{
 	struct pci_vdev *vdev, *parent_vdev;
 	uint32_t i;
 
@@ -311,24 +350,31 @@ void deinit_vpci(struct acrn_vm *vm)
 		vdev = (struct pci_vdev *) &(vm->vpci.pci_vdevs[i]);
 
 		/* Only deinit the VM's own devices */
-		if (vdev->user == vdev) {
+		if ((vdev->user == vdev) && (vdev->vdev_ops != NULL)) {
 			parent_vdev = vdev->parent_user;
 
 			vdev->vdev_ops->deinit_vdev(vdev);
 
-			if (parent_vdev != NULL) {
+			if (restore_parent && (parent_vdev != NULL) && (parent_vdev->vpci != NULL) &&
+				(parent_vdev->vdev_ops != NULL)) {
 				spinlock_obtain(&parent_vdev->vpci->lock);
 				parent_vdev->vdev_ops->init_vdev(parent_vdev);
 				spinlock_release(&parent_vdev->vpci->lock);
 			}
 		}
 	}
+}
 
+static void vpci_cleanup_vm_resources(struct acrn_vm *vm, bool restore_parent)
+{
+	struct iommu_domain *iommu = vm->iommu;
+
+	vpci_release_vdevs(vm, restore_parent);
 	ptdev_release_all_entries(vm);
 	(void)memset(&vm->vpci, 0U, sizeof(struct acrn_vpci));
 
-	/* Free iommu */
-	destroy_iommu_domain(vm->iommu);
+	destroy_iommu_domain(iommu);
+	vm->iommu = NULL;
 }
 
 /**
@@ -336,27 +382,39 @@ void deinit_vpci(struct acrn_vm *vm)
  * @pre vdev->vpci != NULL
  * @pre vpci2vm(vdev->vpci)->iommu != NULL
  */
-static void assign_vdev_pt_iommu_domain(struct pci_vdev *vdev)
+static int32_t assign_vdev_pt_iommu_domain(struct pci_vdev *vdev)
 {
 	int32_t ret;
 	uint32_t stream_id;
 	struct acrn_vm *vm = vpci2vm(vdev->vpci);
 
 	if (vm->iommu == NULL) {
-		panic("missing iommu domain for vm%u ptdev %02x:%02x.%x",
+		LOG_ERR("vm%u ptdev %02x:%02x.%x missing iommu domain",
 			vm->vm_id, vdev->pdev->bdf.bits.b, vdev->pdev->bdf.bits.d,
 			vdev->pdev->bdf.bits.f);
+		return -ENODEV;
 	}
 
 	stream_id = vpci_pt_stream_id(vdev);
+	/*
+	 * On this arm64 platform the stream ID follows the physical requester
+	 * BDF. Moving the stream into vm->iommu makes device DMA observe the
+	 * VM's Stage-2 translation instead of host ownership.
+	 */
 	ret = move_pt_device(NULL, vm->iommu, (uint8_t)vdev->pdev->bdf.bits.b,
 		(uint8_t)(vdev->pdev->bdf.value & 0xFFU));
 	if (ret != 0) {
-		panic("failed to assign iommu device!");
+		LOG_ERR("vm%u ptdev %02x:%02x.%x failed to assign iommu stream 0x%x: %d",
+			vm->vm_id, vdev->pdev->bdf.bits.b, vdev->pdev->bdf.bits.d,
+			vdev->pdev->bdf.bits.f, stream_id, ret);
+	} else if (!arm_smmu_stream_assigned_to(stream_id, vm->vm_id)) {
+		LOG_ERR("vm%u ptdev %02x:%02x.%x iommu stream 0x%x not assigned",
+			vm->vm_id, vdev->pdev->bdf.bits.b, vdev->pdev->bdf.bits.d,
+			vdev->pdev->bdf.bits.f, stream_id);
+		ret = -ENODEV;
 	}
-	if (!arm_smmu_stream_assigned_to(stream_id, vm->vm_id)) {
-		panic("iommu stream 0x%x is not assigned to vm%u", stream_id, vm->vm_id);
-	}
+
+	return ret;
 }
 
 /**
@@ -364,23 +422,27 @@ static void assign_vdev_pt_iommu_domain(struct pci_vdev *vdev)
  * @pre vdev->vpci != NULL
  * @pre vpci2vm(vdev->vpci)->iommu != NULL
  */
-static void remove_vdev_pt_iommu_domain(const struct pci_vdev *vdev)
+static int32_t remove_vdev_pt_iommu_domain(const struct pci_vdev *vdev)
 {
 	int32_t ret;
 	const struct acrn_vm *vm = vpci2vm(vdev->vpci);
 
+	if (vm->iommu == NULL) {
+		LOG_ERR("vm%u ptdev %02x:%02x.%x missing iommu domain on unassign",
+			vm->vm_id, vdev->pdev->bdf.bits.b, vdev->pdev->bdf.bits.d,
+			vdev->pdev->bdf.bits.f);
+		return -ENODEV;
+	}
+
 	ret = move_pt_device(vm->iommu, NULL, (uint8_t)vdev->pdev->bdf.bits.b,
 		(uint8_t)(vdev->pdev->bdf.value & 0xFFU));
 	if (ret != 0) {
-		/*
-		 *TODO
-		 * panic needs to be removed here
-		 * Currently unassign_pt_device can fail for multiple reasons
-		 * Once all the reasons and methods to avoid them can be made sure
-		 * panic here is not necessary.
-		 */
-		panic("failed to unassign iommu device!");
+		LOG_ERR("vm%u ptdev %02x:%02x.%x failed to unassign iommu stream 0x%x: %d",
+			vm->vm_id, vdev->pdev->bdf.bits.b, vdev->pdev->bdf.bits.d,
+			vdev->pdev->bdf.bits.f, vpci_pt_stream_id(vdev), ret);
 	}
+
+	return ret;
 }
 
 static int32_t verify_vpci_pt_iommu_domains(const struct acrn_vm *vm)
@@ -462,13 +524,13 @@ static void vpci_init_pt_dev(struct pci_vdev *vdev)
 	init_vsriov(vdev);
 	init_vdev_pt(vdev, false);
 
-	assign_vdev_pt_iommu_domain(vdev);
+	(void)assign_vdev_pt_iommu_domain(vdev);
 }
 
 static void vpci_deinit_pt_dev(struct pci_vdev *vdev)
 {
 	deinit_vdev_pt(vdev);
-	remove_vdev_pt_iommu_domain(vdev);
+	(void)remove_vdev_pt_iommu_domain(vdev);
 	deinit_vmsix_pt(vdev);
 	deinit_vmsi(vdev);
 
@@ -808,6 +870,20 @@ struct pci_vdev *vpci_init_vdev(struct acrn_vpci *vpci, struct acrn_vm_pci_dev_c
 			ASSERT(dev_config->pdev != NULL, "pci ptdev is not present on platform!");
 		}
 		vdev->vdev_ops->init_vdev(vdev);
+		/*
+		 * init_vdev() may populate config and BAR state before the DMA
+		 * isolation check is complete. Roll it back immediately if the
+		 * stream is not owned by the target VM.
+		 */
+		if ((dev_config->emu_type == PCI_DEV_TYPE_PTDEV) &&
+			((vdev->pdev == NULL) ||
+			!arm_smmu_stream_assigned_to(vpci_pt_stream_id(vdev), vpci2vm(vpci)->vm_id))) {
+			LOG_ERR("vm%u ptdev %02x:%02x.%x failed to bind iommu stream",
+				vpci2vm(vpci)->vm_id, dev_config->pbdf.bits.b,
+				dev_config->pbdf.bits.d, dev_config->pbdf.bits.f);
+			vpci_deinit_vdev(vdev);
+			vdev = NULL;
+		}
 	}
 	return vdev;
 }
@@ -847,10 +923,11 @@ static int32_t vpci_init_vdevs(struct acrn_vm *vm)
 		if ((!is_postlaunched_vm(vm)) || (vm_config->pci_devs[idx].vbdf.value != UNASSIGNED_VBDF)) {
 			vdev = vpci_init_vdev(vpci, &vm_config->pci_devs[idx], NULL);
 			if (vdev == NULL) {
-				LOG_ERR("%s: failed to initialize vpci, increase max_pci_dev_num in scenario!\n", __func__);
+				LOG_ERR("%s: failed to initialize vdev %hu", __func__, idx);
+				ret = -ENODEV;
 				break;
 			}
-			ret = check_pt_dev_pio_bars(&vpci->pci_vdevs[idx]);
+			ret = check_pt_dev_pio_bars(vdev);
 			if (ret != 0) {
 				break;
 			}
@@ -925,13 +1002,14 @@ int32_t vpci_assign_pcidev(struct acrn_vm *tgt_vm, struct acrn_pcidev *pcidev)
 				vdev->parent_user = vdev_in_service_vm;
 				vdev_in_service_vm->user = vdev;
 			} else {
-				vdev->vdev_ops->deinit_vdev(vdev);
+				vpci_deinit_vdev(vdev);
 				vdev_in_service_vm->vdev_ops->init_vdev(vdev_in_service_vm);
 			}
 		} else {
 			LOG_FTL("%s, failed to initialize pci device %x:%x.%x for vm [%d]\n", __func__,
 				pcidev->phys_bdf >> 8U, (pcidev->phys_bdf >> 3U) & 0x1fU, pcidev->phys_bdf & 0x7U,
 				tgt_vm->vm_id);
+			vdev_in_service_vm->vdev_ops->init_vdev(vdev_in_service_vm);
 			ret = -EFAULT;
 		}
 		spinlock_release(&tgt_vm->vpci.lock);

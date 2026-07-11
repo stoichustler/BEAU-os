@@ -39,6 +39,23 @@
 #include <pgtable.h>
 #include "vpci_internal.h"
 
+/*
+ * MSI/MSI-X remap model
+ *
+ * Guest driver view:
+ *   write virtual MSI address/data or MSI-X table entry
+ *
+ * Hypervisor action:
+ *   1. keep the guest-programmed value in vPCI shadow state;
+ *   2. allocate/update an interrupt-remap entry for the VM event;
+ *   3. rewrite the physical MSI message with the remapped address/data;
+ *   4. program only the remapped message into the physical device.
+ *
+ * This keeps guest routing values out of the physical device. The device can
+ * raise an interrupt, but the final target is selected by the remap entry and
+ * delivered as a virtual interrupt to the owning VM.
+ */
+
 static inline uint32_t vmsi_mask_offset(const struct pci_vdev *vdev)
 {
 	return vdev->msi.is_64bit ? PCIR_MSI_MASK : (PCIR_MSI_MASK - 4U);
@@ -218,6 +235,11 @@ static void remap_vmsi(const struct pci_vdev *vdev)
 	msgctrl = pci_vdev_read_vcfg(vdev, capoff + PCIR_MSI_CTRL, 2U);
 	vector_count = vmsi_vector_count_from_ctrl(msgctrl);
 
+	/*
+	 * MSI vector count and message data are programmed as a set. Rebuild
+	 * the whole mapping whenever the guest changes the MSI capability so no
+	 * stale vector remains routed to the physical function.
+	 */
 	if (vdev->msi.vector_count != 0U) {
 		ptirq_remove_msi_remapping(vm, pbdf.value, vdev->msi.vector_count);
 		((struct pci_vdev *)vdev)->msi.vector_count = 0U;
@@ -303,6 +325,11 @@ void write_vmsi_cap_reg(struct pci_vdev *vdev, uint32_t offset, uint32_t bytes, 
 
 		disable_vmsi_remap(vdev);
 
+		/*
+		 * Keep architectural read-only MSI fields virtualized, then
+		 * rebuild the physical remap only if the resulting virtual state
+		 * is enabled and unmasked.
+		 */
 		old = pci_vdev_read_vcfg(vdev, offset, bytes);
 		pci_vdev_write_vcfg(vdev, offset, bytes, (old & ro_mask) | (val & ~ro_mask));
 
@@ -459,6 +486,11 @@ uint32_t rw_vmsix_table(struct pci_vdev *vdev, struct io_request *io_req)
 					(void)memcpy_s(&mmio->value, (size_t)mmio->size,
 						(void *)entry + entry_offset, (size_t)mmio->size);
 				} else {
+					/*
+					 * MSI-X table writes update the shadow table only. The
+					 * physical table is programmed later with the remapped
+					 * message, never with the raw guest value.
+					 */
 					(void)memcpy_s((void *)entry + entry_offset, (size_t)mmio->size,
 						&mmio->value, (size_t)mmio->size);
 				}

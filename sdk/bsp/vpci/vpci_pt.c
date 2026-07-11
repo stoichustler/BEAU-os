@@ -37,6 +37,28 @@
 #include <logmsg.h>
 #include "vpci_internal.h"
 
+/*
+ * Passthrough BAR model
+ *
+ * guest cfg BAR write
+ *      |
+ *      v
+ *  vbar state update
+ *      |
+ *      +--> memory BAR: map/unmap HPA -> GPA in VM Stage-2
+ *      |
+ *      +--> I/O BAR: allow/deny the guest PIO range
+ *      |
+ *      +--> MSI-X table BAR:
+ *             map the usable BAR pages, but remove the table page from
+ *             Stage-2 and trap it. Guest table writes update the shadow
+ *             table first, then the remapped message is programmed to the
+ *             physical table.
+ *
+ * The BAR path controls CPU-originated access only. Device-originated DMA is
+ * isolated separately by the SMMUv3 stream assignment in vpci_core.
+ */
+
 /**
  * @pre vdev != NULL
  */
@@ -242,6 +264,11 @@ void vdev_pt_map_msix(struct pci_vdev *vdev, bool hold_lock)
 		addr_hi = addr_lo + (msix->table_count * MSIX_TABLE_ENTRY_SIZE);
 		addr_lo = round_page_down(addr_lo);
 		addr_hi = round_page_up(addr_hi);
+		/*
+		 * The MSI-X table is a control surface, not plain device
+		 * memory. Trap the table page so guest writes can be
+		 * translated into safe interrupt-remap programming.
+		 */
 		register_mmio_emulation_handler(vm, pt_vmsix_handle_table_mmio_access,
 				addr_lo, addr_hi, vdev, hold_lock);
 		arm64_stage2_unmap(vm, addr_lo, addr_hi - addr_lo);
@@ -287,6 +314,10 @@ static void vdev_pt_map_mem_vbar(struct pci_vdev *vdev, uint32_t idx)
 			vbar->size, true);
 	}
 
+	/*
+	 * MSI-X table trapping is layered on top of the BAR mapping. The BAR
+	 * remains visible, while the table subrange is carved out for emulation.
+	 */
 	if (has_msix_cap(vdev) && (idx == vdev->msix.table_bar)) {
 		vdev_pt_map_msix(vdev, true);
 	}
@@ -750,14 +781,19 @@ void init_vdev_pt(struct pci_vdev *vdev, bool is_pf_vdev)
  *
  * @pre vdev != NULL
  */
-void deinit_vdev_pt(struct pci_vdev *vdev) {
+void deinit_vdev_pt(struct pci_vdev *vdev)
+{
+	uint32_t bar_idx;
 
-	/* Check if the vdev is an unassigned SR-IOV VF device */
-	if ((vdev->phyfun != NULL) && (vdev->phyfun->vpci == vdev->vpci)) {
-		uint32_t bar_idx;
+	for (bar_idx = 0U; bar_idx < vdev->nr_bars; bar_idx++) {
+		struct pci_vbar *vbar = &vdev->vbars[bar_idx];
 
-		/* Remove VF MMIO from guest stage-2 after the VF physical device has gone. */
-		for (bar_idx = 0U; bar_idx < vdev->nr_bars; bar_idx++) {
+		if (vbar->is_mem64hi || is_pci_reserved_bar(vbar) || (vbar->size == 0UL)) {
+			continue;
+		}
+		if (is_pci_io_bar(vbar)) {
+			vdev_pt_deny_io_vbar(vdev, bar_idx);
+		} else {
 			vdev_pt_unmap_mem_vbar(vdev, bar_idx);
 		}
 	}
