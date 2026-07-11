@@ -63,6 +63,11 @@ def parse_args():
     parser.add_argument("--cross-prefix", default=getenv("BEAU_CROSS_COMPILE", "aarch64-none-elf-"))
     parser.add_argument("--build", action="store_true")
     parser.add_argument(
+        "--no-pcie-test",
+        action="store_true",
+        help="do not attach the default QEMU PCIe passthrough test endpoint",
+    )
+    parser.add_argument(
         "--repack-initramfs",
         action="store_true",
         help="refresh the default shared Linux initramfs before building",
@@ -139,7 +144,7 @@ def main():
     qemu_cmd = [
         args.qemu,
         "-machine",
-        "virt,virtualization=on,gic-version=3,its=on",
+        "virt,virtualization=on,gic-version=3,its=on,iommu=smmuv3",
         "-cpu",
         "cortex-a57",
         "-smp",
@@ -149,6 +154,8 @@ def main():
         "-nographic",
         "-serial",
         "mon:stdio",
+        "-net",
+        "none",
         "-kernel",
         str(args.kernel),
         "-device",
@@ -157,8 +164,10 @@ def main():
         f"loader,file={args.linux_vm3_image},addr={LINUX_VM3_IMAGE_STAGE_ADDR},force-raw=on",
         "-device",
         f"loader,file={args.linux_initramfs},addr={LINUX_INITRAMFS_STAGE_ADDR},force-raw=on",
-        *args.extra,
     ]
+    if not args.no_pcie_test:
+        qemu_cmd.extend(["-device", "edu,addr=0x1"])
+    qemu_cmd.extend(args.extra)
 
     if args.dry_run:
         # print_image_plan(args)

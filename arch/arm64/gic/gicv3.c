@@ -406,7 +406,6 @@ static int32_t gic_v3_cpu_init(struct beau_gic_v3_softc *sc __unused)
 static gic_v3_initseq_t gic_v3_primary_init[] = {
 	gic_v3_redist_find_all,
 	gic_v3_dist_init,
-	gic_v3_its_init,
 	NULL
 };
 
@@ -454,18 +453,23 @@ void arm64_gicv3_init_early(void)
 	sc->gic_initialized = true;
 }
 
+void arm64_gicv3_init_its(void)
+{
+	(void)gic_v3_its_init(&gic_v3_sc);
+}
+
 void arm64_gicv3_log_boot_info(void)
 {
 	const struct beau_gic_v3_softc *sc = &gic_v3_sc;
 
-	LOG_INF("GICv3: GICR       [0x%016lx-0x%016lx] (0x%08lx)",
+	LOG_INF("GICv3:  GICR      [0x%016lx-0x%016lx] (0x%08lx)",
 		sc->gic_redist, gic_range_end(sc->gic_redist, sc->gic_redist_size),
 		sc->gic_redist_size);
-	LOG_INF("GICv3: GICD       [0x%016lx-0x%016lx] (0x%08lx)",
+	LOG_INF("GICv3:  GICD      [0x%016lx-0x%016lx] (0x%08lx)",
 		sc->gic_dist, gic_range_end(sc->gic_dist, sc->gic_dist_size),
 		sc->gic_dist_size);
 	if (sc->gic_its_size != 0UL) {
-		LOG_INF("GICv3: ITS        [0x%016lx-0x%016lx] (0x%08lx)",
+		LOG_INF("GICv3:  ITS       [0x%016lx-0x%016lx] (0x%08lx)",
 			sc->gic_its, gic_range_end(sc->gic_its, sc->gic_its_size),
 			sc->gic_its_size);
 	}

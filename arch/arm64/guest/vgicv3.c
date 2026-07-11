@@ -1266,7 +1266,7 @@ void arm64_vgicv3_init_vm(struct acrn_vm *vm, uint64_t cpu_affinity)
 			desc->pirq = 0xffffU;
 			desc->priority = GIC_PRIORITY_DEFAULT;
 			desc->target_vcpu = (uint8_t)idx;
-			desc->enabled = true;
+			desc->enabled = false;
 			desc->level = false;
 			desc->group1 = true;
 			desc->groupmod = false;
@@ -3527,8 +3527,17 @@ static bool vgicr_mmio_write(struct arm64_vgicv3 *vgic, struct acrn_vcpu *target
 	switch (frame->offset) {
 	case VGICR_CTLR:
 		if (vgic->its_enabled) {
+			bool was_enabled = ((vgic->gicr_ctlr[frame->pcpu_id] &
+				VGICR_CTLR_ENABLE_LPIS) != 0U);
+			bool now_enabled = (((uint32_t)mmio->value &
+				VGICR_CTLR_ENABLE_LPIS) != 0U);
+
 			vgic->gicr_ctlr[frame->pcpu_id] =
 				(uint32_t)mmio->value & VGICR_CTLR_ENABLE_LPIS;
+			if (!was_enabled && now_enabled && (target_vcpu != NULL)) {
+				(void)arm64_vgicv3_its_invall_vcpu_locked(target_vcpu->vm,
+					vgic, target_vcpu->vcpu_id);
+			}
 			flush = (target_vcpu != NULL);
 		}
 		break;
@@ -3564,8 +3573,19 @@ static bool vgicr_mmio_write(struct arm64_vgicv3 *vgic, struct acrn_vcpu *target
 		}
 		break;
 	case VGICR_INVLPIR:
+		if (vgic->its_enabled && (target_vcpu != NULL)) {
+			flush = arm64_vgicv3_its_inv_lpi_locked(target_vcpu->vm, vgic,
+				target_vcpu->vcpu_id, (uint32_t)mmio->value);
+		}
+		break;
 	case VGICR_INVLPIR + 4U:
+		break;
 	case VGICR_INVALLR:
+		if (vgic->its_enabled && (target_vcpu != NULL)) {
+			flush = arm64_vgicv3_its_invall_vcpu_locked(target_vcpu->vm,
+				vgic, target_vcpu->vcpu_id);
+		}
+		break;
 	case VGICR_INVALLR + 4U:
 		break;
 	case VGICR_SGI_BASE ... (VGICR_SGI_END - 1U):

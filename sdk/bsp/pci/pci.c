@@ -73,16 +73,24 @@ static struct pci_mmcfg_region phys_pci_mmcfg = {
 	.end_bus = DEFAULT_PCI_MMCFG_END_BUS,
 };
 
-#ifdef CONFIG_ACPI_PARSE_ENABLED
 void set_mmcfg_region(struct pci_mmcfg_region *region)
 {
 	phys_pci_mmcfg = *region;
 }
-#endif
 
 struct pci_mmcfg_region *get_mmcfg_region(void)
 {
 	return &phys_pci_mmcfg;
+}
+
+uint32_t get_pci_pdev_num(void)
+{
+	return num_pci_pdev;
+}
+
+const struct pci_pdev *get_pci_pdev(uint32_t idx)
+{
+	return (idx < num_pci_pdev) ? &pci_pdevs[idx] : NULL;
 }
 
 #if defined(HV_DEBUG)
@@ -164,9 +172,9 @@ static const struct pci_cfg_ops pci_pio_cfg_ops = {
  * @pre offset < 0x1000U
  * @pre phys_pci_mmcfg.address 4K-byte alignment
  */
-static inline uint32_t mmcfg_off_to_address(union pci_bdf bdf, uint32_t offset)
+static inline uint64_t mmcfg_off_to_address(union pci_bdf bdf, uint32_t offset)
 {
-	return (uint32_t)phys_pci_mmcfg.address + (((uint32_t)bdf.value << 12U) | offset);
+	return phys_pci_mmcfg.address + (((uint64_t)bdf.value << 12U) | offset);
 }
 
 /*
@@ -177,7 +185,7 @@ static inline uint32_t mmcfg_off_to_address(union pci_bdf bdf, uint32_t offset)
  */
 static uint32_t pci_mmcfg_read_cfg(union pci_bdf bdf, uint32_t offset, uint32_t bytes)
 {
-	uint32_t addr = mmcfg_off_to_address(bdf, offset);
+	uint64_t addr = mmcfg_off_to_address(bdf, offset);
 	void *hva = hpa2hva(addr);
 
 	ASSERT(pci_is_valid_access(offset, bytes), "the offset should be aligned with 2/4 byte\n");
@@ -193,7 +201,7 @@ static uint32_t pci_mmcfg_read_cfg(union pci_bdf bdf, uint32_t offset, uint32_t 
  */
 static void pci_mmcfg_write_cfg(union pci_bdf bdf, uint32_t offset, uint32_t bytes, uint32_t val)
 {
-	uint32_t addr = mmcfg_off_to_address(bdf, offset);
+	uint64_t addr = mmcfg_off_to_address(bdf, offset);
 	void *hva = hpa2hva(addr);
 
 	ASSERT(pci_is_valid_access(offset, bytes), "the offset should be aligned with 2/4 byte\n");

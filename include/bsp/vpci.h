@@ -58,6 +58,7 @@ struct pci_msi {
 	bool      is_64bit;
 	uint32_t  capoff;
 	uint32_t  caplen;
+	uint32_t  vector_count;
 };
 
 /* MSI-X capability structure */

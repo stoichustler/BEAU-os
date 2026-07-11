@@ -285,7 +285,7 @@ void launch_vcpu(struct acrn_vcpu *vcpu)
 
 	if (vcpu_boot_log_enabled(vcpu)) {
 		kick_us = ticks_to_us(cpu_ticks() - kick_tsc);
-		LOG_INF("VM%u: kick vcpu%hu on pcpu%hu at 0x%016lx +%6luus",
+		LOG_INF("VM%u: kick vcpu%hu on pcpu%hu   0x%016lx +%6luus",
 			vcpu->vm->vm_id, vcpu->vcpu_id, pcpuid_from_vcpu(vcpu),
 			arch_vcpu_get_entry(vcpu), kick_us);
 	}

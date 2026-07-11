@@ -67,6 +67,7 @@ bool arm64_register_irq_domain(const char *name, uint32_t irq_num);
 uint32_t arm64_domain_get_acrn_irq(const char *name, uint32_t src_id);
 bool arm64_is_valid_acrn_irq(uint32_t irq);
 void arm64_gicv3_init_early(void);
+void arm64_gicv3_init_its(void);
 void arm64_gicv3_log_boot_info(void);
 uint64_t arm64_gicv3_redist_base(uint16_t pcpu_id);
 void arm64_gicv3_init(uint16_t pcpu_id);
@@ -87,6 +88,10 @@ int32_t arm64_gicv3_its_alloc_msix(uint32_t dev_id, uint32_t vector,
 	uint32_t *lpi, struct arm64_gicv3_msi_msg *msg);
 void arm64_gicv3_its_release_msix(uint32_t dev_id, uint32_t lpi);
 int32_t arm64_gicv3_its_map_msi(uint32_t lpi, struct arm64_gicv3_msi_msg *msg);
+int32_t arm64_gicv3_its_map_lpi_event(uint32_t dev_id, uint32_t event_id,
+	uint32_t lpi, struct arm64_gicv3_msi_msg *msg);
+int32_t arm64_gicv3_its_unmap_lpi_event(uint32_t dev_id, uint32_t event_id,
+	uint32_t lpi);
 void arm64_gicv3_set_local_irq_active(uint16_t pcpu_id, uint32_t intid);
 void arm64_gicv3_clear_local_irq_active(uint16_t pcpu_id, uint32_t intid);
 void arm64_gicv3_get_local_irq_state(uint16_t pcpu_id, uint32_t intid,

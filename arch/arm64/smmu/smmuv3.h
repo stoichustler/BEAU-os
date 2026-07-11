@@ -21,12 +21,6 @@ struct iommu_domain;
  */
 #define ARM_SMMU_MAX_SW_STREAMS		64U
 
-struct arm_smmu_stream_config {
-	uint32_t stream_id;
-	uint16_t owner_vmid;
-	bool assigned;
-};
-
 struct iommu_domain *arm_smmu_create_domain(uint16_t vm_id,
 	uint64_t root_table_hpa, uint32_t ipa_width);
 void arm_smmu_destroy_domain(struct iommu_domain *domain);

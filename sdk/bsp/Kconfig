@@ -169,6 +169,5 @@ source "sdk/bsp/arm64/Kconfig"
 source "sdk/bsp/boot/Kconfig"
 source "sdk/bsp/pci/Kconfig"
 source "sdk/bsp/virtio/Kconfig"
-source "sdk/bsp/vpci/Kconfig"
 
 endmenu

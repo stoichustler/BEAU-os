@@ -15,6 +15,7 @@
 #include <pgtable.h>
 #include <sprintf.h>
 #include <asm/platform.h>
+#include <asm/vtd.h>
 #include <arm64_platform_dts.h>
 
 #define ARM64_FDT_PHANDLE_GIC		1U
@@ -54,6 +55,13 @@ void arm64_platform_init(uint64_t fdt_paddr)
 void arm64_platform_init_post_console(void)
 {
 	arm64_parse_vm_config_from_dts(get_host_fdt());
+}
+
+void arm64_platform_init_smmu(void)
+{
+	if (beau_config.smmu_size != 0UL) {
+		arm_smmu_probe(beau_config.smmu_base, beau_config.smmu_size);
+	}
 }
 
 const struct arm64_mem_region *arm64_get_platform_mmio_regions(uint32_t *count)

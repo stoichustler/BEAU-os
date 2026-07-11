@@ -13,17 +13,27 @@
 #include <spinlock.h>
 #include <util.h>
 #include <vm.h>
+#include <acrn_hv_defs.h>
 #include <asm/mmu.h>
+#include <asm/pgtable.h>
 #include <asm/vtd.h>
 #include <asm/irq.h>
+#include <asm/guest/stage2.h>
 #include <asm/guest/vgicv3.h>
 #include "smmuv3.h"
 
 #define ARM_SMMU_MAX_DOMAINS	CONFIG_MAX_VM_NUM
 #define ARM_SMMU_PCI_STREAM(bus, devfun)	((((uint32_t)(bus)) << 8U) | (uint32_t)(devfun))
+#define ARM_SMMU_PCI_MSI_COMPAT_STREAM	0U
+#define ARM64_PTDEV_MSI_COMPAT_DEVID	0U
+#define ARM64_PTDEV_MSI_MAX_ALIASES	1U
+#define ARM64_PTDEV_MSI_DOORBELL_IOVA_BASE	0x0ff00000UL
+#define ARM64_PTDEV_MSI_DOORBELL_IOVA(vm_id) \
+	(ARM64_PTDEV_MSI_DOORBELL_IOVA_BASE + ((uint64_t)(vm_id) * PAGE_SIZE))
 #define ARM_SMMU_IDR0_ST_LVL_SHIFT	27U
 #define ARM_SMMU_IDR0_ST_LVL_MASK	(3U << ARM_SMMU_IDR0_ST_LVL_SHIFT)
 #define ARM_SMMU_IDR0_ST_LVL_2LVL	1U
+#define ARM_SMMU_IDR0_S2P		(1U << 0U)
 #define ARM_SMMU_IDR1_CMDQS_SHIFT	21U
 #define ARM_SMMU_IDR1_CMDQS_MASK	(0x1fU << ARM_SMMU_IDR1_CMDQS_SHIFT)
 #define ARM_SMMU_IDR1_EVTQS_SHIFT	16U
@@ -75,6 +85,41 @@
 #define ARM_SMMU_POLL_RETRIES		1000U
 #define ARM_SMMU_POLL_DELAY_US		1U
 #define ARM_SMMU_INIT_UNDISCOVERED	(-ENODEV)
+#define ARM_SMMU_Q_PTR_MASK		((ARM_SMMU_QUEUE_ENTRIES << 1U) - 1U)
+#define ARM_SMMU_Q_ERR_MASK		(0x7fU << 24U)
+#define ARM_SMMU_STE_0_V		(1UL << 0U)
+#define ARM_SMMU_STE_0_CFG_SHIFT	1U
+#define ARM_SMMU_STE_0_CFG_ABORT	0UL
+#define ARM_SMMU_STE_0_CFG_BYPASS	4UL
+#define ARM_SMMU_STE_0_CFG_S2_TRANS	6UL
+#define ARM_SMMU_STE_1_SHCFG_SHIFT	44U
+#define ARM_SMMU_STE_1_SHCFG_INCOMING	1UL
+#define ARM_SMMU_STE_2_VTCR_SHIFT	32U
+#define ARM_SMMU_STE_2_S2AA64		(1UL << 51U)
+#define ARM_SMMU_STE_2_S2PTW		(1UL << 54U)
+#define ARM_SMMU_STE_2_S2R		(1UL << 58U)
+#define ARM_SMMU_STE_3_S2TTB_MASK	0x000ffffffffffff0UL
+#define ARM_SMMU_VTCR_S2T0SZ_SHIFT	0U
+#define ARM_SMMU_VTCR_S2SL0_SHIFT	6U
+#define ARM_SMMU_VTCR_S2IR0_SHIFT	8U
+#define ARM_SMMU_VTCR_S2OR0_SHIFT	10U
+#define ARM_SMMU_VTCR_S2SH0_SHIFT	12U
+#define ARM_SMMU_VTCR_S2TG_SHIFT	14U
+#define ARM_SMMU_VTCR_S2PS_SHIFT	16U
+#define ARM_SMMU_CMDQ_OP_CFGI_STE	0x03UL
+#define ARM_SMMU_CMDQ_OP_TLBI_S2_IPA	0x2aUL
+#define ARM_SMMU_CMDQ_OP_CMD_SYNC	0x46UL
+#define ARM_SMMU_CMDQ_0_OP_SHIFT	0U
+#define ARM_SMMU_CMDQ_CFGI_0_SID_SHIFT	32U
+#define ARM_SMMU_CMDQ_TLBI_0_VMID_SHIFT	32U
+#define ARM_SMMU_CMDQ_TLBI_1_IPA_MASK	0x000fffffffff000UL
+#define ARM_SMMU_CMDQ_CFGI_1_LEAF	(1UL << 0U)
+#define ARM_SMMU_CMDQ_SYNC_0_CS_SHIFT	12U
+#define ARM_SMMU_CMDQ_SYNC_0_CS_SEV	2UL
+#define ARM_SMMU_CMDQ_SYNC_0_MSH_SHIFT	22U
+#define ARM_SMMU_CMDQ_SYNC_0_MSH_ISH	3UL
+#define ARM_SMMU_CMDQ_SYNC_0_ATTR_SHIFT	24U
+#define ARM_SMMU_CMDQ_SYNC_0_ATTR_OIWB	0xfUL
 
 /*
  * BEAU ARM64 passthrough model, first stage.
@@ -89,11 +134,9 @@
  * reach, or miss memory the guest owns. Therefore an IOMMU domain stores the
  * VM's stage-2 root HPA and never creates an independent DMA map here.
  *
- * Hardware command queue programming is intentionally not faked. Until a real
- * SMMUv3 instance and stream table are registered by platform code, stream
- * assignment returns -ENODEV. Failing closed is the only safe default for DMA
- * isolation: bypass would make MMIO filtering meaningless because DMA can still
- * touch RAM directly.
+ * Hardware command queue programming is required for stream assignment. A
+ * passthrough stream is admitted only after its STE has been written with the
+ * VM stage-2 root and synchronized through CMDQ.
  */
 struct iommu_domain {
 	uint16_t vm_id;
@@ -109,27 +152,34 @@ struct arm_smmu_stream_state {
 	bool used;
 };
 
-struct arm64_pt_msix_state {
+struct arm64_pt_msi_state {
 	bool used;
 	uint16_t phys_bdf;
 	uint16_t entry_nr;
+	uint32_t dev_id;
+	uint32_t event_id;
 	uint32_t lpi;
+	uint32_t alias_dev_ids[ARM64_PTDEV_MSI_MAX_ALIASES];
+	uint32_t alias_count;
 };
 
 static spinlock_t arm_smmu_lock = { .head = 0U, .tail = 0U };
-static spinlock_t arm64_pt_msix_lock = { .head = 0U, .tail = 0U };
+static spinlock_t arm64_pt_msi_lock = { .head = 0U, .tail = 0U };
 static struct iommu_domain arm_smmu_domains[ARM_SMMU_MAX_DOMAINS];
 static struct arm_smmu_stream_state arm_smmu_streams[ARM_SMMU_MAX_SW_STREAMS];
-static struct arm64_pt_msix_state arm64_pt_msix_states[CONFIG_MAX_PT_IRQ_ENTRIES];
+static struct arm64_pt_msi_state arm64_pt_msi_states[CONFIG_MAX_PT_IRQ_ENTRIES];
+static bool arm64_pt_msi_doorbell_mapped[CONFIG_MAX_VM_NUM];
+static uint64_t arm64_pt_msi_doorbell_hpa[CONFIG_MAX_VM_NUM];
 static struct arm_smmu_hw_info arm_smmu_hw;
 static bool arm_smmu_hw_ready;
-static bool arm_smmu_assignment_ready;
+static bool arm_smmu_assignment_hw_ready;
 static uint64_t arm_smmu_strtab[1U << ARM_SMMU_STRTAB_LOG2_MAX][ARM_SMMU_STE_DWORDS]
 	__aligned(PAGE_SIZE);
 static uint64_t arm_smmu_cmdq[ARM_SMMU_QUEUE_ENTRIES][ARM_SMMU_CMD_DWORDS]
 	__aligned(PAGE_SIZE);
 static uint64_t arm_smmu_evtq[ARM_SMMU_QUEUE_ENTRIES][ARM_SMMU_EVT_DWORDS]
 	__aligned(PAGE_SIZE);
+static uint32_t arm_smmu_cmdq_prod;
 
 static inline void *arm_smmu_reg(uint64_t base, uint32_t off)
 {
@@ -139,6 +189,245 @@ static inline void *arm_smmu_reg(uint64_t base, uint32_t off)
 static uint32_t arm_smmu_min_u32(uint32_t a, uint32_t b)
 {
 	return (a < b) ? a : b;
+}
+
+static uint32_t arm_smmu_cmdq_next(uint32_t prod)
+{
+	return (prod + 1U) & ARM_SMMU_Q_PTR_MASK;
+}
+
+static uint32_t arm_smmu_cmdq_index(uint32_t prod)
+{
+	return prod & (ARM_SMMU_QUEUE_ENTRIES - 1U);
+}
+
+static bool arm_smmu_stream_in_strtab(uint32_t stream_id)
+{
+	return arm_smmu_hw.ready &&
+		(stream_id < (1U << arm_smmu_hw.strtab_log2_entries));
+}
+
+static uint16_t arm_smmu_domain_vmid(const struct iommu_domain *domain)
+{
+	return (uint16_t)(domain->vm_id + 1U);
+}
+
+static uint16_t arm_smmu_vm_vmid(uint16_t vm_id)
+{
+	return (uint16_t)(vm_id + 1U);
+}
+
+static bool arm_smmu_s2_supported_locked(void)
+{
+	return (arm_smmu_hw.ready && ((arm_smmu_hw.idr0 & ARM_SMMU_IDR0_S2P) != 0U));
+}
+
+static bool arm_smmu_s2_supported(void)
+{
+	bool supported;
+	uint64_t flags;
+
+	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);
+	supported = arm_smmu_s2_supported_locked();
+	spinlock_irqrestore_release(&arm_smmu_lock, flags);
+
+	return supported;
+}
+
+static uint64_t arm_smmu_ste_vtcr(uint32_t ipa_width)
+{
+	uint64_t vtcr = 0UL;
+	uint64_t t0sz = 64UL - (uint64_t)ipa_width;
+
+	vtcr |= t0sz << ARM_SMMU_VTCR_S2T0SZ_SHIFT;
+	vtcr |= (VTCR_SL0_LVL0 >> 6U) << ARM_SMMU_VTCR_S2SL0_SHIFT;
+	vtcr |= (VTCR_IRGN0_WBWA >> 8U) << ARM_SMMU_VTCR_S2IR0_SHIFT;
+	vtcr |= (VTCR_ORGN0_WBWA >> 10U) << ARM_SMMU_VTCR_S2OR0_SHIFT;
+	vtcr |= (VTCR_SH0_INNER >> 12U) << ARM_SMMU_VTCR_S2SH0_SHIFT;
+	vtcr |= (VTCR_TG0_4K >> 14U) << ARM_SMMU_VTCR_S2TG_SHIFT;
+	vtcr |= (VTCR_PS_48BIT >> 16U) << ARM_SMMU_VTCR_S2PS_SHIFT;
+
+	return vtcr;
+}
+
+static int32_t arm_smmu_cmdq_issue_locked(uint64_t cmd0, uint64_t cmd1)
+{
+	uint32_t prod = arm_smmu_cmdq_prod;
+	uint32_t next = arm_smmu_cmdq_next(prod);
+	uint32_t cons = mmio_read32(arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CMDQ_CONS));
+	uint32_t idx;
+
+	if ((cons & ARM_SMMU_Q_ERR_MASK) != 0U) {
+		LOG_ERR("SMMUv3: CMDQ error cons=0x%x", cons);
+		return -EIO;
+	}
+	if (next == (cons & ARM_SMMU_Q_PTR_MASK)) {
+		return -EBUSY;
+	}
+
+	idx = arm_smmu_cmdq_index(prod);
+	arm_smmu_cmdq[idx][0] = cmd0;
+	arm_smmu_cmdq[idx][1] = cmd1;
+	flush_cache_range(arm_smmu_cmdq[idx], sizeof(arm_smmu_cmdq[idx]));
+
+	arm_smmu_cmdq_prod = next;
+	mmio_write32(next, arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CMDQ_PROD));
+
+	return 0;
+}
+
+static int32_t arm_smmu_cmdq_wait_locked(uint32_t target)
+{
+	uint32_t retry;
+
+	for (retry = 0U; retry < ARM_SMMU_POLL_RETRIES; retry++) {
+		uint32_t cons = mmio_read32(arm_smmu_reg(arm_smmu_hw.base,
+			ARM_SMMU_CMDQ_CONS));
+
+		if ((cons & ARM_SMMU_Q_ERR_MASK) != 0U) {
+			LOG_ERR("SMMUv3: CMDQ error cons=0x%x", cons);
+			return -EIO;
+		}
+		if ((cons & ARM_SMMU_Q_PTR_MASK) == target) {
+			return 0;
+		}
+		udelay(ARM_SMMU_POLL_DELAY_US);
+	}
+
+	return -ETIMEDOUT;
+}
+
+static int32_t arm_smmu_cmdq_sync_locked(void)
+{
+	uint64_t cmd0 = 0UL;
+	int32_t ret;
+
+	cmd0 |= ARM_SMMU_CMDQ_OP_CMD_SYNC << ARM_SMMU_CMDQ_0_OP_SHIFT;
+	cmd0 |= ARM_SMMU_CMDQ_SYNC_0_CS_SEV << ARM_SMMU_CMDQ_SYNC_0_CS_SHIFT;
+	cmd0 |= ARM_SMMU_CMDQ_SYNC_0_MSH_ISH << ARM_SMMU_CMDQ_SYNC_0_MSH_SHIFT;
+	cmd0 |= ARM_SMMU_CMDQ_SYNC_0_ATTR_OIWB << ARM_SMMU_CMDQ_SYNC_0_ATTR_SHIFT;
+
+	ret = arm_smmu_cmdq_issue_locked(cmd0, 0UL);
+	if (ret == 0) {
+		ret = arm_smmu_cmdq_wait_locked(arm_smmu_cmdq_prod);
+	}
+
+	return ret;
+}
+
+static int32_t arm_smmu_sync_ste_locked(uint32_t stream_id)
+{
+	uint64_t cmd0 = 0UL;
+	uint64_t cmd1 = ARM_SMMU_CMDQ_CFGI_1_LEAF;
+	int32_t ret;
+
+	cmd0 |= ARM_SMMU_CMDQ_OP_CFGI_STE << ARM_SMMU_CMDQ_0_OP_SHIFT;
+	cmd0 |= (uint64_t)stream_id << ARM_SMMU_CMDQ_CFGI_0_SID_SHIFT;
+
+	ret = arm_smmu_cmdq_issue_locked(cmd0, cmd1);
+	if (ret == 0) {
+		ret = arm_smmu_cmdq_sync_locked();
+	}
+
+	return ret;
+}
+
+static int32_t arm_smmu_tlbi_ipa_locked(uint16_t vm_id, uint64_t iova)
+{
+	uint64_t cmd0 = 0UL;
+	uint64_t cmd1;
+	int32_t ret;
+
+	if (!arm_smmu_assignment_hw_ready) {
+		return -ENODEV;
+	}
+
+	cmd0 |= ARM_SMMU_CMDQ_OP_TLBI_S2_IPA << ARM_SMMU_CMDQ_0_OP_SHIFT;
+	cmd0 |= (uint64_t)arm_smmu_vm_vmid(vm_id) << ARM_SMMU_CMDQ_TLBI_0_VMID_SHIFT;
+	cmd1 = iova & ARM_SMMU_CMDQ_TLBI_1_IPA_MASK;
+
+	ret = arm_smmu_cmdq_issue_locked(cmd0, cmd1);
+	if (ret == 0) {
+		ret = arm_smmu_cmdq_sync_locked();
+	}
+
+	return ret;
+}
+
+static int32_t arm_smmu_flush_vm_iotlb(uint16_t vm_id, uint64_t iova)
+{
+	uint64_t flags;
+	int32_t ret;
+
+	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);
+	ret = arm_smmu_tlbi_ipa_locked(vm_id, iova);
+	spinlock_irqrestore_release(&arm_smmu_lock, flags);
+
+	return ret;
+}
+
+static void arm_smmu_write_abort_ste_locked(uint32_t stream_id)
+{
+	uint64_t *ste = arm_smmu_strtab[stream_id];
+
+	ste[0] = ARM_SMMU_STE_0_V |
+		(ARM_SMMU_STE_0_CFG_ABORT << ARM_SMMU_STE_0_CFG_SHIFT);
+	ste[1] = ARM_SMMU_STE_1_SHCFG_INCOMING << ARM_SMMU_STE_1_SHCFG_SHIFT;
+	ste[2] = 0UL;
+	ste[3] = 0UL;
+	ste[4] = 0UL;
+	ste[5] = 0UL;
+	ste[6] = 0UL;
+	ste[7] = 0UL;
+	flush_cache_range(ste, ARM_SMMU_STE_SIZE);
+}
+
+static int32_t arm_smmu_write_bypass_ste_locked(uint32_t stream_id)
+{
+	uint64_t *ste = arm_smmu_strtab[stream_id];
+
+	ste[0] = ARM_SMMU_STE_0_V |
+		(ARM_SMMU_STE_0_CFG_BYPASS << ARM_SMMU_STE_0_CFG_SHIFT);
+	ste[1] = ARM_SMMU_STE_1_SHCFG_INCOMING << ARM_SMMU_STE_1_SHCFG_SHIFT;
+	ste[2] = 0UL;
+	ste[3] = 0UL;
+	ste[4] = 0UL;
+	ste[5] = 0UL;
+	ste[6] = 0UL;
+	ste[7] = 0UL;
+	flush_cache_range(ste, ARM_SMMU_STE_SIZE);
+
+	return arm_smmu_sync_ste_locked(stream_id);
+}
+
+static int32_t arm_smmu_write_s2_ste_locked(const struct iommu_domain *domain,
+	uint32_t stream_id)
+{
+	uint64_t *ste = arm_smmu_strtab[stream_id];
+	uint64_t vtcr = arm_smmu_ste_vtcr(domain->ipa_width);
+	int32_t ret;
+
+	ste[1] = ARM_SMMU_STE_1_SHCFG_INCOMING << ARM_SMMU_STE_1_SHCFG_SHIFT;
+	ste[2] = (uint64_t)arm_smmu_domain_vmid(domain) |
+		(vtcr << ARM_SMMU_STE_2_VTCR_SHIFT) |
+		ARM_SMMU_STE_2_S2AA64 | ARM_SMMU_STE_2_S2PTW | ARM_SMMU_STE_2_S2R;
+	ste[3] = domain->root_table_hpa & ARM_SMMU_STE_3_S2TTB_MASK;
+	ste[4] = 0UL;
+	ste[5] = 0UL;
+	ste[6] = 0UL;
+	ste[7] = 0UL;
+	flush_cache_range(&ste[1], ARM_SMMU_STE_SIZE - sizeof(uint64_t));
+
+	ret = arm_smmu_sync_ste_locked(stream_id);
+	if (ret != 0) {
+		return ret;
+	}
+
+	ste[0] = ARM_SMMU_STE_0_V |
+		(ARM_SMMU_STE_0_CFG_S2_TRANS << ARM_SMMU_STE_0_CFG_SHIFT);
+	flush_cache_range(&ste[0], sizeof(ste[0]));
+
+	return arm_smmu_sync_ste_locked(stream_id);
 }
 
 static uint32_t arm_smmu_oas_bits(uint32_t idr5)
@@ -249,9 +538,9 @@ static void arm_smmu_zero_abort_tables(uint32_t strtab_log2)
 	 *       -> clean to PoC
 	 *       -> SMMU table walker reads physical memory
 	 *
-	 * A zero linear STE is an abort entry for this bring-up stage. That is
-	 * intentional: a described StreamID becomes a hardware fault until a later
-	 * VM-domain stage replaces only that STE with stage-2 translation data.
+	 * A zero linear STE is an abort entry during initialization. That is
+	 * intentional: a described StreamID faults until assignment replaces only
+	 * that STE with stage-2 translation data.
 	 */
 	flush_cache_range(arm_smmu_strtab, strtab_entries * ARM_SMMU_STE_SIZE);
 	flush_cache_range(arm_smmu_cmdq, sizeof(arm_smmu_cmdq));
@@ -273,13 +562,10 @@ static int32_t arm_smmu_hw_enable_abort_locked(void)
 		return ARM_SMMU_INIT_UNDISCOVERED;
 	}
 	sid_bits = arm_smmu_hw.idr1 & ARM_SMMU_IDR1_SIDSIZE_MASK;
-	if (((arm_smmu_hw.idr0 & ARM_SMMU_IDR0_ST_LVL_MASK) >>
-			ARM_SMMU_IDR0_ST_LVL_SHIFT) == ARM_SMMU_IDR0_ST_LVL_2LVL) {
-		LOG_WRN("SMMUv3 2-level stream table supported; using linear abort table subset");
-	}
+
 	if ((sid_bits > 31U) ||
 		(arm_smmu_cmdq_log2_entries(arm_smmu_hw.idr1) < ARM_SMMU_QUEUE_LOG2_ENTRIES)) {
-		LOG_ERR("SMMUv3 queue/SID capability too small idr1=0x%x", arm_smmu_hw.idr1);
+		LOG_ERR("SMMUv3: queue/SID capability too small idr1=0x%x", arm_smmu_hw.idr1);
 		return -ENODEV;
 	}
 	strtab_log2 = arm_smmu_strtab_log2_entries(sid_bits);
@@ -318,6 +604,7 @@ static int32_t arm_smmu_hw_enable_abort_locked(void)
 	mmio_write64((cmdq_pa & ARM_SMMU_Q_BASE_ADDR_MASK) | ARM_SMMU_Q_BASE_RWA |
 		ARM_SMMU_QUEUE_LOG2_ENTRIES,
 		arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CMDQ_BASE));
+	arm_smmu_cmdq_prod = 0U;
 	mmio_write32(0U, arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CMDQ_PROD));
 	mmio_write32(0U, arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CMDQ_CONS));
 	if (arm_smmu_evtq_log2_entries(arm_smmu_hw.idr1) >= ARM_SMMU_QUEUE_LOG2_ENTRIES) {
@@ -357,7 +644,7 @@ static int32_t arm_smmu_hw_enable_abort_locked(void)
 	arm_smmu_hw.evtq_enabled = false;
 	arm_smmu_hw.ready = true;
 	arm_smmu_hw_ready = true;
-	arm_smmu_assignment_ready = false;
+	arm_smmu_assignment_hw_ready = true;
 
 	return 0;
 }
@@ -398,16 +685,13 @@ void arm_smmu_probe(uint64_t base, uint64_t size)
 	arm_smmu_hw.ready = false;
 	arm_smmu_hw.init_status = ARM_SMMU_INIT_UNDISCOVERED;
 	arm_smmu_hw_ready = false;
-	arm_smmu_assignment_ready = false;
+	arm_smmu_assignment_hw_ready = false;
 	ret = arm_smmu_hw_enable_abort_locked();
 	arm_smmu_hw.init_status = ret;
 	spinlock_irqrestore_release(&arm_smmu_lock, flags);
 
-	if (ret == 0) {
-		LOG_INF("SMMUv3 ready at 0x%lx: abort-default streams=%u sid_bits=%u",
-			base, 1U << arm_smmu_hw.strtab_log2_entries, arm_smmu_hw.sid_bits);
-	} else {
-		LOG_ERR("SMMUv3 discovered at 0x%lx but abort-default init failed: %d",
+	if (ret != 0) {
+		LOG_ERR("SMMUv3: discovered at 0x%lx but abort-default init failed: %d",
 			base, ret);
 	}
 }
@@ -424,6 +708,55 @@ void arm_smmu_get_hw_info(struct arm_smmu_hw_info *info)
 	*info = arm_smmu_hw;
 	info->ready = arm_smmu_hw_ready;
 	spinlock_irqrestore_release(&arm_smmu_lock, flags);
+}
+
+bool arm_smmu_assignment_ready(void)
+{
+	bool ready;
+	uint64_t flags;
+
+	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);
+	ready = arm_smmu_assignment_hw_ready;
+	spinlock_irqrestore_release(&arm_smmu_lock, flags);
+
+	return ready;
+}
+
+uint32_t arm_smmu_get_stream_configs(struct arm_smmu_stream_config *configs,
+	uint32_t max_configs)
+{
+	uint64_t flags;
+	uint32_t copied = 0U;
+	uint32_t i;
+
+	if ((configs == NULL) || (max_configs == 0U)) {
+		return 0U;
+	}
+
+	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);
+	for (i = 0U; (i < ARRAY_SIZE(arm_smmu_streams)) && (copied < max_configs); i++) {
+		const struct arm_smmu_stream_state *stream = &arm_smmu_streams[i];
+
+		if (!stream->used) {
+			continue;
+		}
+
+		configs[copied].stream_id = stream->stream_id;
+		configs[copied].assigned = stream->domain != NULL;
+		if (stream->domain != NULL) {
+			configs[copied].owner_vmid = stream->domain->vm_id;
+			configs[copied].ipa_width = stream->domain->ipa_width;
+			configs[copied].root_table_hpa = stream->domain->root_table_hpa;
+		} else {
+			configs[copied].owner_vmid = ACRN_INVALID_VMID;
+			configs[copied].ipa_width = 0U;
+			configs[copied].root_table_hpa = 0UL;
+		}
+		copied++;
+	}
+	spinlock_irqrestore_release(&arm_smmu_lock, flags);
+
+	return copied;
 }
 
 bool arm_smmu_ready(void)
@@ -453,6 +786,23 @@ static struct arm_smmu_stream_state *arm_smmu_find_stream(uint32_t stream_id)
 	return NULL;
 }
 
+bool arm_smmu_stream_assigned_to(uint32_t stream_id, uint16_t vm_id)
+{
+	const struct arm_smmu_stream_state *stream;
+	bool assigned = false;
+	uint64_t flags;
+
+	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);
+	stream = arm_smmu_find_stream(stream_id);
+	if ((stream != NULL) && (stream->domain != NULL) &&
+		(stream->domain->vm_id == vm_id)) {
+		assigned = true;
+	}
+	spinlock_irqrestore_release(&arm_smmu_lock, flags);
+
+	return assigned;
+}
+
 static struct arm_smmu_stream_state *arm_smmu_alloc_stream(uint32_t stream_id)
 {
 	uint32_t i;
@@ -476,6 +826,9 @@ struct iommu_domain *arm_smmu_create_domain(uint16_t vm_id,
 	uint64_t flags;
 
 	if ((vm_id >= ARM_SMMU_MAX_DOMAINS) || (root_table_hpa == 0UL)) {
+		return NULL;
+	}
+	if ((ipa_width < 32U) || (ipa_width > 48U)) {
 		return NULL;
 	}
 
@@ -509,6 +862,11 @@ void arm_smmu_destroy_domain(struct iommu_domain *domain)
 	for (i = 0U; i < ARRAY_SIZE(arm_smmu_streams); i++) {
 		if (arm_smmu_streams[i].used &&
 			(arm_smmu_streams[i].domain == domain)) {
+			if (arm_smmu_assignment_hw_ready &&
+				arm_smmu_stream_in_strtab(arm_smmu_streams[i].stream_id)) {
+				arm_smmu_write_abort_ste_locked(arm_smmu_streams[i].stream_id);
+				(void)arm_smmu_sync_ste_locked(arm_smmu_streams[i].stream_id);
+			}
 			arm_smmu_streams[i].domain = NULL;
 			arm_smmu_streams[i].used = false;
 		}
@@ -542,25 +900,52 @@ int32_t arm_smmu_assign_stream(struct iommu_domain *domain, uint32_t stream_id)
 		ret = -ENOMEM;
 	} else if ((stream->domain != NULL) && (stream->domain != domain)) {
 		ret = -EBUSY;
-	} else if (!arm_smmu_assignment_ready) {
-		/*
-		 * Do not remember the assignment on -ENODEV. A later platform
-		 * SMMU VM-domain stage can retry from a clean state. Abort-default
-		 * hardware readiness is not enough: the target STE must be replaced
-		 * with a VM stage-2 descriptor and synchronized before DMA is safe.
-		 */
+	} else if (!arm_smmu_assignment_hw_ready || !arm_smmu_stream_in_strtab(stream_id)) {
 		stream->used = false;
 		ret = -ENODEV;
+	} else if (stream->domain == domain) {
+		ret = 0;
+	} else if (!arm_smmu_s2_supported_locked()) {
+		ret = arm_smmu_write_bypass_ste_locked(stream_id);
+		if (ret == 0) {
+			int32_t compat_ret;
+
+			stream->domain = domain;
+			domain->hw_bound = true;
+			/*
+			 * Some platforms tag PCI MSI doorbell writes with the host bridge
+			 * stream instead of the endpoint RID. When stage-2 translation is
+			 * unavailable, the assigned endpoint is already bypassed for
+			 * compatibility; mirror that only for the MSI compatibility stream
+			 * so the doorbell write is not dropped by the abort-default table.
+			 */
+			if ((stream_id != ARM_SMMU_PCI_MSI_COMPAT_STREAM) &&
+				arm_smmu_stream_in_strtab(ARM_SMMU_PCI_MSI_COMPAT_STREAM)) {
+				compat_ret = arm_smmu_write_bypass_ste_locked(
+					ARM_SMMU_PCI_MSI_COMPAT_STREAM);
+				if (compat_ret != 0) {
+					LOG_ERR("SMMUv3: stream 0x%x bypass for PCI MSI failed: %d",
+						ARM_SMMU_PCI_MSI_COMPAT_STREAM, compat_ret);
+				}
+			}
+		} else if (stream->domain == NULL) {
+			stream->used = false;
+		}
 	} else {
-		stream->domain = domain;
-		domain->hw_bound = true;
-		/* Future hook: write STE.S2VMID/S2TTB and issue CMD_SYNC. */
+		ret = arm_smmu_write_s2_ste_locked(domain, stream_id);
+		if (ret == 0) {
+			stream->domain = domain;
+			domain->hw_bound = true;
+		} else if (stream->domain == NULL) {
+			stream->used = false;
+		}
 	}
 	spinlock_irqrestore_release(&arm_smmu_lock, flags);
 
-	if (ret == -ENODEV) {
-		LOG_ERR("SMMUv3 assignment not ready: reject stream 0x%x for vm%u",
-			stream_id, domain->vm_id);
+	/* ERROR message: -NODEV */
+	if (ret) {
+		LOG_ERR("SMMUv3: assignment rejected (%d): stream 0x%x for vm%u",
+			ret, stream_id, domain->vm_id);
 	}
 
 	return ret;
@@ -583,17 +968,25 @@ int32_t arm_smmu_unassign_stream(struct iommu_domain *domain, uint32_t stream_id
 		ret = -ENODEV;
 	} else if (stream->domain != domain) {
 		ret = -EPERM;
-	} else if (!arm_smmu_assignment_ready) {
+	} else if (!arm_smmu_assignment_hw_ready || !arm_smmu_stream_in_strtab(stream_id)) {
 		ret = -ENODEV;
 	} else {
-		/*
-		 * Hardware sequence for the full driver:
-		 *   1. Replace the STE with ABORT, not BYPASS.
-		 *   2. Invalidate cached STE/context entries.
-		 *   3. CMD_SYNC before ownership state is released.
-		 */
-		stream->domain = NULL;
-		stream->used = false;
+		arm_smmu_write_abort_ste_locked(stream_id);
+		ret = arm_smmu_sync_ste_locked(stream_id);
+		if (ret == 0) {
+			uint32_t i;
+
+			stream->domain = NULL;
+			stream->used = false;
+			domain->hw_bound = false;
+			for (i = 0U; i < ARRAY_SIZE(arm_smmu_streams); i++) {
+				if (arm_smmu_streams[i].used &&
+					(arm_smmu_streams[i].domain == domain)) {
+					domain->hw_bound = true;
+					break;
+				}
+			}
+		}
 	}
 	spinlock_irqrestore_release(&arm_smmu_lock, flags);
 
@@ -636,10 +1029,9 @@ int32_t move_pt_device(struct iommu_domain *src, struct iommu_domain *dst,
 bool is_pi_capable(__unused const struct acrn_vm *vm)
 {
 	/*
-	 * Posted interrupts are an x86 VT-d/APIC optimization. ARM64 delivers
-	 * physical pass-through IRQs through the host GIC/ITS and then injects a
-	 * virtual IRQ/LPI into vGIC, so the common ptdev layer must use its
-	 * softirq path.
+	 * ARM64 passthrough IRQs are handled through the host GIC/ITS and then
+	 * injected as virtual IRQs/LPIs into vGIC, so the common ptdev layer uses
+	 * its softirq path here.
 	 */
 	return false;
 }
@@ -654,101 +1046,265 @@ static uint32_t arm64_ptdev_event_id(uint16_t entry_nr)
 	return (uint32_t)entry_nr;
 }
 
-static struct arm64_pt_msix_state *arm64_pt_find_msix_state(uint16_t phys_bdf,
+static int32_t arm64_ptdev_map_msi_doorbell(struct acrn_vm *vm,
+	struct arm64_gicv3_msi_msg *msg)
+{
+	uint16_t vm_id;
+	uint64_t host_base;
+	uint64_t iova_base;
+	uint64_t iova;
+	uint64_t offset;
+
+	if ((vm == NULL) || (msg == NULL)) {
+		return -EINVAL;
+	}
+	vm_id = vm->vm_id;
+	if (vm_id >= CONFIG_MAX_VM_NUM) {
+		return -EINVAL;
+	}
+
+	host_base = msg->addr & PAGE_MASK;
+	offset = msg->addr & (PAGE_SIZE - 1UL);
+	iova_base = ARM64_PTDEV_MSI_DOORBELL_IOVA(vm_id);
+	iova = iova_base + offset;
+
+	if (!arm_smmu_s2_supported()) {
+		return 0;
+	}
+
+	/*
+	 * The current SMMUv3 model reuses the VM stage-2 root for device DMA.
+	 * A physical MSI write therefore needs a guest-IOVA that translates to
+	 * the host ITS TRANSLATER page. Use an unadvertised per-VM doorbell IPA
+	 * instead of mapping the guest vITS page, so normal vITS MMIO still traps.
+	 */
+	if (!arm64_pt_msi_doorbell_mapped[vm_id]) {
+		int32_t ret;
+
+		arm64_stage2_map_device(vm, host_base, iova_base, PAGE_SIZE, true);
+		ret = arm_smmu_flush_vm_iotlb(vm_id, iova_base);
+		if (ret != 0) {
+			LOG_WRN("vm%u ptdev MSI doorbell iotlb flush failed: %d", vm_id, ret);
+			return ret;
+		}
+		arm64_pt_msi_doorbell_hpa[vm_id] = host_base;
+		arm64_pt_msi_doorbell_mapped[vm_id] = true;
+	} else if (arm64_pt_msi_doorbell_hpa[vm_id] != host_base) {
+		LOG_ERR("vm%u ptdev MSI doorbell hpa mismatch old=0x%lx new=0x%lx",
+			vm_id, arm64_pt_msi_doorbell_hpa[vm_id], host_base);
+		return -EINVAL;
+	}
+
+	msg->addr = iova;
+	return 0;
+}
+
+static struct arm64_pt_msi_state *arm64_pt_find_msi_state(uint16_t phys_bdf,
 	uint16_t entry_nr)
 {
 	uint32_t i;
 
-	for (i = 0U; i < ARRAY_SIZE(arm64_pt_msix_states); i++) {
-		if (arm64_pt_msix_states[i].used &&
-			(arm64_pt_msix_states[i].phys_bdf == phys_bdf) &&
-			(arm64_pt_msix_states[i].entry_nr == entry_nr)) {
-			return &arm64_pt_msix_states[i];
+	for (i = 0U; i < ARRAY_SIZE(arm64_pt_msi_states); i++) {
+		if (arm64_pt_msi_states[i].used &&
+			(arm64_pt_msi_states[i].phys_bdf == phys_bdf) &&
+			(arm64_pt_msi_states[i].entry_nr == entry_nr)) {
+			return &arm64_pt_msi_states[i];
 		}
 	}
 
 	return NULL;
 }
 
-static int32_t arm64_pt_record_msix_state(uint16_t phys_bdf, uint16_t entry_nr,
-	uint32_t lpi)
+static int32_t arm64_pt_record_msi_state(uint16_t phys_bdf, uint16_t entry_nr,
+	uint32_t dev_id, uint32_t event_id, uint32_t lpi, const uint32_t *alias_dev_ids,
+	uint32_t alias_count)
 {
 	uint32_t i;
 	uint64_t flags;
 	int32_t ret = -ENOMEM;
 
-	spinlock_irqsave_obtain(&arm64_pt_msix_lock, &flags);
-	if (arm64_pt_find_msix_state(phys_bdf, entry_nr) != NULL) {
+	if (alias_count > ARM64_PTDEV_MSI_MAX_ALIASES) {
+		return -EINVAL;
+	}
+
+	spinlock_irqsave_obtain(&arm64_pt_msi_lock, &flags);
+	if (arm64_pt_find_msi_state(phys_bdf, entry_nr) != NULL) {
 		ret = -EBUSY;
 	} else {
-		for (i = 0U; i < ARRAY_SIZE(arm64_pt_msix_states); i++) {
-			if (!arm64_pt_msix_states[i].used) {
-				arm64_pt_msix_states[i].used = true;
-				arm64_pt_msix_states[i].phys_bdf = phys_bdf;
-				arm64_pt_msix_states[i].entry_nr = entry_nr;
-				arm64_pt_msix_states[i].lpi = lpi;
+		for (i = 0U; i < ARRAY_SIZE(arm64_pt_msi_states); i++) {
+			if (!arm64_pt_msi_states[i].used) {
+				uint32_t alias_idx;
+
+				arm64_pt_msi_states[i].used = true;
+				arm64_pt_msi_states[i].phys_bdf = phys_bdf;
+				arm64_pt_msi_states[i].entry_nr = entry_nr;
+				arm64_pt_msi_states[i].dev_id = dev_id;
+				arm64_pt_msi_states[i].event_id = event_id;
+				arm64_pt_msi_states[i].lpi = lpi;
+				arm64_pt_msi_states[i].alias_count = alias_count;
+				for (alias_idx = 0U; alias_idx < alias_count; alias_idx++) {
+					arm64_pt_msi_states[i].alias_dev_ids[alias_idx] =
+						alias_dev_ids[alias_idx];
+				}
 				ret = 0;
 				break;
 			}
 		}
 	}
-	spinlock_irqrestore_release(&arm64_pt_msix_lock, flags);
+	spinlock_irqrestore_release(&arm64_pt_msi_lock, flags);
 
 	return ret;
 }
 
-static uint32_t arm64_pt_take_msix_lpi(uint16_t phys_bdf, uint16_t entry_nr)
+static bool arm64_pt_take_msi_state(uint16_t phys_bdf, uint16_t entry_nr,
+	struct arm64_pt_msi_state *out_state)
 {
-	struct arm64_pt_msix_state *state;
-	uint32_t lpi = IRQ_INVALID;
+	struct arm64_pt_msi_state *state;
 	uint64_t flags;
+	bool found = false;
 
-	spinlock_irqsave_obtain(&arm64_pt_msix_lock, &flags);
-	state = arm64_pt_find_msix_state(phys_bdf, entry_nr);
+	spinlock_irqsave_obtain(&arm64_pt_msi_lock, &flags);
+	state = arm64_pt_find_msi_state(phys_bdf, entry_nr);
 	if (state != NULL) {
-		lpi = state->lpi;
+		if (out_state != NULL) {
+			*out_state = *state;
+		}
 		(void)memset(state, 0U, sizeof(*state));
+		found = true;
 	}
-	spinlock_irqrestore_release(&arm64_pt_msix_lock, flags);
+	spinlock_irqrestore_release(&arm64_pt_msi_lock, flags);
 
-	return lpi;
+	return found;
 }
 
-static uint32_t arm64_pt_peek_msix_lpi(uint16_t phys_bdf, uint16_t entry_nr)
+static uint32_t arm64_pt_peek_msi_lpi(uint16_t phys_bdf, uint16_t entry_nr)
 {
-	struct arm64_pt_msix_state *state;
+	struct arm64_pt_msi_state *state;
 	uint32_t lpi = IRQ_INVALID;
 	uint64_t flags;
 
-	spinlock_irqsave_obtain(&arm64_pt_msix_lock, &flags);
-	state = arm64_pt_find_msix_state(phys_bdf, entry_nr);
+	spinlock_irqsave_obtain(&arm64_pt_msi_lock, &flags);
+	state = arm64_pt_find_msi_state(phys_bdf, entry_nr);
 	if (state != NULL) {
 		lpi = state->lpi;
 	}
-	spinlock_irqrestore_release(&arm64_pt_msix_lock, flags);
+	spinlock_irqrestore_release(&arm64_pt_msi_lock, flags);
 
 	return lpi;
 }
 
-static void arm64_ptdev_release_msix(const struct ptirq_remapping_info *entry)
+static struct ptirq_remapping_info *arm64_pt_find_msi_entry_by_phys(
+	const struct acrn_vm *vm, uint16_t phys_bdf, uint16_t entry_nr)
+{
+	struct ptirq_remapping_info *entry;
+	DEFINE_MSI_SID(phys_sid, phys_bdf, entry_nr);
+
+	entry = find_ptirq_entry(PTDEV_INTR_MSI, &phys_sid, NULL);
+	if ((entry != NULL) && (entry->vm != vm)) {
+		entry = NULL;
+	}
+
+	return entry;
+}
+
+static void arm64_ptdev_release_msi_vector(const struct ptirq_remapping_info *entry)
 {
 	uint16_t phys_bdf = entry->phys_sid.msi_id.bdf;
 	uint16_t entry_nr = entry->phys_sid.msi_id.entry_nr;
-	uint32_t lpi = arm64_pt_take_msix_lpi(phys_bdf, entry_nr);
+	struct arm64_pt_msi_state state = {};
+	uint32_t i;
 
-	if (lpi != IRQ_INVALID) {
-		arm64_gicv3_its_release_msix(arm64_ptdev_device_id(phys_bdf), lpi);
+	if (arm64_pt_take_msi_state(phys_bdf, entry_nr, &state)) {
+		for (i = 0U; i < state.alias_count; i++) {
+			(void)arm64_gicv3_its_unmap_lpi_event(state.alias_dev_ids[i],
+				state.event_id, state.lpi);
+		}
+		arm64_gicv3_its_release_msix(state.dev_id, state.lpi);
 	}
 }
 
-int32_t ptirq_prepare_msix_remap(struct acrn_vm *vm, uint16_t virt_bdf,
+static bool arm64_pt_msi_alias_busy(uint32_t alias_dev_id, uint32_t event_id)
+{
+	uint64_t flags;
+	uint32_t i;
+	uint32_t alias_idx;
+	bool busy = false;
+
+	spinlock_irqsave_obtain(&arm64_pt_msi_lock, &flags);
+	for (i = 0U; i < ARRAY_SIZE(arm64_pt_msi_states); i++) {
+		if (!arm64_pt_msi_states[i].used ||
+			(arm64_pt_msi_states[i].event_id != event_id)) {
+			continue;
+		}
+		for (alias_idx = 0U; alias_idx < arm64_pt_msi_states[i].alias_count;
+			alias_idx++) {
+			if (arm64_pt_msi_states[i].alias_dev_ids[alias_idx] == alias_dev_id) {
+				busy = true;
+				break;
+			}
+		}
+		if (busy) {
+			break;
+		}
+	}
+	spinlock_irqrestore_release(&arm64_pt_msi_lock, flags);
+
+	return busy;
+}
+
+static uint32_t arm64_ptdev_map_msi_aliases(struct acrn_vm *vm, uint32_t dev_id,
+	uint32_t event_id, uint32_t lpi, uint32_t *alias_dev_ids, uint32_t max_aliases)
+{
+	uint32_t alias_count = 0U;
+
+	if ((alias_dev_ids == NULL) || (max_aliases == 0U)) {
+		return 0U;
+	}
+
+	if (!arm_smmu_s2_supported() && (dev_id != ARM64_PTDEV_MSI_COMPAT_DEVID)) {
+		int32_t ret;
+
+		if (arm64_pt_msi_alias_busy(ARM64_PTDEV_MSI_COMPAT_DEVID, event_id)) {
+			return 0U;
+		}
+
+		ret = arm64_gicv3_its_map_lpi_event(ARM64_PTDEV_MSI_COMPAT_DEVID,
+			event_id, lpi, NULL);
+
+		if (ret == 0) {
+			alias_dev_ids[alias_count] = ARM64_PTDEV_MSI_COMPAT_DEVID;
+			alias_count++;
+		} else if (ret != -EBUSY) {
+			LOG_WRN("vm%u ptdev msi alias devid 0x%x event %u failed ret:%d",
+				vm->vm_id, ARM64_PTDEV_MSI_COMPAT_DEVID, event_id, ret);
+		}
+	}
+
+	return alias_count;
+}
+
+static void arm64_ptdev_unmap_msi_aliases(uint32_t event_id, uint32_t lpi,
+	const uint32_t *alias_dev_ids, uint32_t alias_count)
+{
+	uint32_t i;
+
+	for (i = 0U; i < alias_count; i++) {
+		(void)arm64_gicv3_its_unmap_lpi_event(alias_dev_ids[i], event_id, lpi);
+	}
+}
+
+int32_t ptirq_prepare_msi_remap(struct acrn_vm *vm, uint16_t virt_bdf,
 	uint16_t phys_bdf, uint16_t entry_nr, struct msi_info *info,
 	__unused uint16_t irte_idx)
 {
 	struct ptirq_remapping_info *entry;
 	struct arm64_gicv3_msi_msg msg;
-	uint32_t lpi = arm64_pt_peek_msix_lpi(phys_bdf, entry_nr);
+	uint32_t dev_id = arm64_ptdev_device_id(phys_bdf);
+	uint32_t event_id = arm64_ptdev_event_id(entry_nr);
+	uint32_t lpi = arm64_pt_peek_msi_lpi(phys_bdf, entry_nr);
 	uint32_t acrn_irq;
+	uint32_t alias_dev_ids[ARM64_PTDEV_MSI_MAX_ALIASES] = { 0U };
+	uint32_t alias_count = 0U;
 	int32_t ret;
 	bool new_lpi = false;
 	DEFINE_MSI_SID(phys_sid, phys_bdf, entry_nr);
@@ -766,15 +1322,20 @@ int32_t ptirq_prepare_msix_remap(struct acrn_vm *vm, uint16_t virt_bdf,
 	 * MSI identity for later virtual delivery.
 	 */
 	if (lpi == IRQ_INVALID) {
-		ret = arm64_gicv3_its_alloc_msix(arm64_ptdev_device_id(phys_bdf),
-			arm64_ptdev_event_id(entry_nr), &lpi, &msg);
+		ret = arm64_gicv3_its_alloc_msix(dev_id, event_id, &lpi, &msg);
 		if (ret != 0) {
+			LOG_WRN("vm%u ptdev msi alloc failed p:%04x v:%04x entry:%u ret:%d",
+				vm->vm_id, phys_bdf, virt_bdf, entry_nr, ret);
 			return ret;
 		}
 		new_lpi = true;
+		alias_count = arm64_ptdev_map_msi_aliases(vm, dev_id, event_id, lpi,
+			alias_dev_ids, ARRAY_SIZE(alias_dev_ids));
 	} else {
 		ret = arm64_gicv3_its_map_msi(lpi, &msg);
 		if (ret != 0) {
+			LOG_WRN("vm%u ptdev msi map failed p:%04x v:%04x entry:%u lpi:%u ret:%d",
+				vm->vm_id, phys_bdf, virt_bdf, entry_nr, lpi, ret);
 			return ret;
 		}
 	}
@@ -787,14 +1348,26 @@ int32_t ptirq_prepare_msix_remap(struct acrn_vm *vm, uint16_t virt_bdf,
 	 */
 	acrn_irq = arm64_domain_get_acrn_irq(ARM64_IRQD_GIC_LPI,
 		lpi - ARM64_GIC_FIRST_LPI);
-	if (!arm64_is_valid_acrn_irq(acrn_irq)) {
+	if (acrn_irq == IRQ_INVALID) {
 		ret = -ENODEV;
+		LOG_WRN("vm%u ptdev msi lpi domain invalid p:%04x v:%04x lpi:%u",
+			vm->vm_id, phys_bdf, virt_bdf, lpi);
+		goto fail_release_lpi;
+	}
+
+	ret = arm64_ptdev_map_msi_doorbell(vm, &msg);
+	if (ret != 0) {
+		LOG_WRN("vm%u ptdev msi doorbell map failed p:%04x v:%04x lpi:%u ret:%d",
+			vm->vm_id, phys_bdf, virt_bdf, lpi, ret);
 		goto fail_release_lpi;
 	}
 
 	if (new_lpi) {
-		ret = arm64_pt_record_msix_state(phys_bdf, entry_nr, lpi);
+		ret = arm64_pt_record_msi_state(phys_bdf, entry_nr, dev_id, event_id, lpi,
+			alias_dev_ids, alias_count);
 		if (ret != 0) {
+			LOG_WRN("vm%u ptdev msi record failed p:%04x v:%04x entry:%u lpi:%u ret:%d",
+				vm->vm_id, phys_bdf, virt_bdf, entry_nr, lpi, ret);
 			goto fail_release_lpi;
 		}
 	}
@@ -812,18 +1385,23 @@ int32_t ptirq_prepare_msix_remap(struct acrn_vm *vm, uint16_t virt_bdf,
 		entry->vmsi = *info;
 		entry->pmsi.addr.full = msg.addr;
 		entry->pmsi.data.full = msg.data;
-		entry->release_cb = arm64_ptdev_release_msix;
+		entry->release_cb = arm64_ptdev_release_msi_vector;
 		*info = entry->pmsi;
 
 		if (!is_entry_active(entry)) {
 			ret = ptirq_activate_entry(entry, acrn_irq);
+			if (ret >= 0) {
+				ret = 0;
+			}
 		}
 	}
 	spinlock_release(&ptdev_lock);
 
 	if (ret != 0) {
+		LOG_WRN("vm%u ptdev msi entry activate failed p:%04x v:%04x entry:%u lpi:%u irq:%u ret:%d",
+			vm->vm_id, phys_bdf, virt_bdf, entry_nr, lpi, acrn_irq, ret);
 		if (new_lpi) {
-			(void)arm64_pt_take_msix_lpi(phys_bdf, entry_nr);
+			(void)arm64_pt_take_msi_state(phys_bdf, entry_nr, NULL);
 		}
 		goto fail_release_lpi;
 	}
@@ -832,23 +1410,30 @@ int32_t ptirq_prepare_msix_remap(struct acrn_vm *vm, uint16_t virt_bdf,
 
 fail_release_lpi:
 	if (new_lpi) {
-		arm64_gicv3_its_release_msix(arm64_ptdev_device_id(phys_bdf), lpi);
+		arm64_ptdev_unmap_msi_aliases(event_id, lpi, alias_dev_ids, alias_count);
+		arm64_gicv3_its_release_msix(dev_id, lpi);
 	}
 	return ret;
 }
 
-void ptirq_remove_msix_remapping(const struct acrn_vm *vm, uint16_t phys_bdf,
+int32_t ptirq_prepare_msix_remap(struct acrn_vm *vm, uint16_t virt_bdf,
+	uint16_t phys_bdf, uint16_t entry_nr, struct msi_info *info,
+	uint16_t irte_idx)
+{
+	return ptirq_prepare_msi_remap(vm, virt_bdf, phys_bdf, entry_nr, info, irte_idx);
+}
+
+void ptirq_remove_msi_remapping(const struct acrn_vm *vm, uint16_t phys_bdf,
 	uint32_t vector_count)
 {
 	uint32_t i;
 
 	for (i = 0U; i < vector_count; i++) {
 		struct ptirq_remapping_info *entry;
-		DEFINE_MSI_SID(phys_sid, phys_bdf, (uint16_t)i);
 
 		spinlock_obtain(&ptdev_lock);
-		entry = find_ptirq_entry(PTDEV_INTR_MSI, &phys_sid, NULL);
-		if ((entry != NULL) && (entry->vm == vm)) {
+		entry = arm64_pt_find_msi_entry_by_phys(vm, phys_bdf, (uint16_t)i);
+		if (entry != NULL) {
 			if (entry->release_cb != NULL) {
 				entry->release_cb(entry);
 			}
@@ -857,6 +1442,12 @@ void ptirq_remove_msix_remapping(const struct acrn_vm *vm, uint16_t phys_bdf,
 		}
 		spinlock_release(&ptdev_lock);
 	}
+}
+
+void ptirq_remove_msix_remapping(const struct acrn_vm *vm, uint16_t phys_bdf,
+	uint32_t vector_count)
+{
+	ptirq_remove_msi_remapping(vm, phys_bdf, vector_count);
 }
 
 int32_t ptirq_add_intx_remapping(struct acrn_vm *vm,
@@ -885,7 +1476,7 @@ int32_t ptirq_add_intx_remapping(struct acrn_vm *vm,
 	 * not safe to assign because they may be shared with EL2-owned devices.
 	 */
 	acrn_irq = arm64_domain_get_acrn_irq(ARM64_IRQD_GIC, phys_gsi);
-	if (!arm64_is_valid_acrn_irq(acrn_irq)) {
+	if (acrn_irq == IRQ_INVALID) {
 		return -ENODEV;
 	}
 
@@ -940,7 +1531,7 @@ void ptirq_softirq(uint16_t pcpu_id)
 		if (entry->intr_type == PTDEV_INTR_MSI) {
 			ret = arm64_vgicv3_inject_msi(entry->vm,
 				arm64_ptdev_device_id(entry->virt_sid.msi_id.bdf),
-				arm64_ptdev_event_id(entry->virt_sid.msi_id.entry_nr));
+				(uint32_t)entry->vmsi.data.full);
 		} else if (entry->intr_type == PTDEV_INTR_INTX) {
 			ret = arm64_vgicv3_inject_irq(vcpu_from_vid(entry->vm, 0U),
 				entry->virt_sid.intx_id.gsi, true);

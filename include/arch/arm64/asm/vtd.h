@@ -15,6 +15,35 @@ struct iommu_domain;
 
 #define INVALID_IRTE_ID		0xffffU
 #define ARM_SMMU_STREAM_ID_INVALID	0xffffffffU
+#define INVALID_DRHD_INDEX		0xffffffffU
+#define DRHD_FLAG_INCLUDE_PCI_ALL_MASK	1U
+#define DEVFUN(dev, fun)		((((dev) & 0x1FU) << 3U) | ((fun) & 0x7U))
+
+enum acpi_dmar_scope_type {
+	ACPI_DMAR_SCOPE_TYPE_ENDPOINT = 1U,
+	ACPI_DMAR_SCOPE_TYPE_BRIDGE = 2U,
+};
+
+struct dmar_dev_scope {
+	enum acpi_dmar_scope_type type;
+	uint8_t id;
+	uint8_t bus;
+	uint8_t devfun;
+};
+
+struct dmar_drhd {
+	uint32_t dev_cnt;
+	uint16_t segment;
+	uint8_t flags;
+	bool ignore;
+	uint64_t reg_base_addr;
+	struct dmar_dev_scope *devices;
+};
+
+struct dmar_info {
+	uint32_t drhd_count;
+	struct dmar_drhd *drhd_units;
+};
 
 struct arm_smmu_hw_info {
 	uint64_t base;
@@ -41,10 +70,16 @@ struct arm_smmu_hw_info {
 	bool ready;
 };
 
+struct arm_smmu_stream_config {
+	uint32_t stream_id;
+	uint16_t owner_vmid;
+	uint32_t ipa_width;
+	uint64_t root_table_hpa;
+	bool assigned;
+};
+
 /*
- * The common vPCI/ptdev code was originally wired to x86 VT-d names. ARM64
- * keeps this header as a small compatibility layer, but the implementation is
- * backed by SMMUv3 concepts:
+ * ARM64 PCI passthrough is backed by SMMUv3 concepts:
  *
  *   PCI RID / platform StreamID
  *             |
@@ -65,16 +100,25 @@ int32_t move_pt_device(struct iommu_domain *src, struct iommu_domain *dst,
 	uint8_t bus, uint8_t devfun);
 void arm_smmu_probe(uint64_t base, uint64_t size);
 void arm_smmu_get_hw_info(struct arm_smmu_hw_info *info);
+bool arm_smmu_assignment_ready(void);
+uint32_t arm_smmu_get_stream_configs(struct arm_smmu_stream_config *configs,
+	uint32_t max_configs);
+bool arm_smmu_stream_assigned_to(uint32_t stream_id, uint16_t vm_id);
 int32_t arm_smmu_assign_stream(struct iommu_domain *domain, uint32_t stream_id);
 int32_t arm_smmu_unassign_stream(struct iommu_domain *domain, uint32_t stream_id);
 bool arm_smmu_domain_valid(const struct iommu_domain *domain);
 bool arm_smmu_ready(void);
 
 bool is_pi_capable(const struct acrn_vm *vm);
+int32_t ptirq_prepare_msi_remap(struct acrn_vm *vm, uint16_t virt_bdf,
+	uint16_t phys_bdf, uint16_t entry_nr, struct msi_info *info,
+	uint16_t irte_idx);
 int32_t ptirq_prepare_msix_remap(struct acrn_vm *vm, uint16_t virt_bdf,
 	uint16_t phys_bdf, uint16_t entry_nr, struct msi_info *info,
 	uint16_t irte_idx);
 void ptirq_remove_msix_remapping(const struct acrn_vm *vm, uint16_t phys_bdf,
+	uint32_t vector_count);
+void ptirq_remove_msi_remapping(const struct acrn_vm *vm, uint16_t phys_bdf,
 	uint32_t vector_count);
 int32_t ptirq_add_intx_remapping(struct acrn_vm *vm, uint32_t virt_gsi,
 	uint32_t phys_gsi, bool pic_pin);

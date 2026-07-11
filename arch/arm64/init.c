@@ -11,10 +11,12 @@
 #include <mmu.h>
 #include <timer.h>
 #include <vm_wdt.h>
+#include <ptdev.h>
 #include <console.h>
 #include <shell.h>
 #include <serial.h>
 #include <boot.h>
+#include <bsp/pci.h>
 #include <fdt_api.h>
 #include <barrier.h>
 #include <asm/platform.h>
@@ -123,6 +125,12 @@ static void init_debug_post(uint16_t pcpu_id)
 	}
 }
 
+static void arm64_init_pci(void)
+{
+	pci_switch_to_mmio_cfg_ops();
+	init_pci_pdev_list();
+}
+
 void init_primary_pcpu(uint64_t mpidr, uint64_t fdt_paddr)
 {
 	uint16_t pcpu_id = BSP_CPU_ID;
@@ -193,19 +201,23 @@ static void init_pcpu_comm_post(void)
 	if (pcpu_id == BSP_CPU_ID) {
 		print_hv_banner();
 		arm64_gicv3_log_boot_info();
+		arm64_gicv3_init_its();
+		arm64_platform_init_smmu();
+		arm64_init_pci();
 	}
 
 	init_interrupt(pcpu_id);
 	init_smp_call();
 	timer_init();
+	ptdev_init();
 
 	init_sched(pcpu_id);
 
 	init_debug_post(pcpu_id);
 
 	pcpu_set_current_state(pcpu_id, PCPU_STATE_RUNNING);
-	LOG_INF("MP:    cpu%hu is running", pcpu_id);
-	LOG_INF("GICv3: cpu%hu redistributor at 0x%016lx",
+	LOG_INF("MP:     cpu%hu is running", pcpu_id);
+	LOG_INF("GICv3:  cpu%hu redistributor 0x%016lx",
 		pcpu_id, arm64_gicv3_redist_base(pcpu_id));
 
 	if (pcpu_id == BSP_CPU_ID) {

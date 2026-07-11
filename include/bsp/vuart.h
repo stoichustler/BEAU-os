@@ -109,7 +109,6 @@ struct acrn_vuart {
 	bool escaping; /**< Whether in escaping sequence, only for console vuarts. */
 	struct acrn_vuart *target_vu; /**< Pointer to target vuart */
 	struct acrn_vm *vm; /**< Pointer to the VM that owns the virtual UART device. */
-	struct pci_vdev *vdev; /**< Pointer to the PCI device, only for a PCI vuart. */
 	const struct vuart_backend_ops *backend_ops; /**< Backend-specific vUART operations. */
 	spinlock_t lock; /**< The spinlock to protect simultaneous access of all elements. */
 };
@@ -117,8 +116,6 @@ struct acrn_vuart {
 void init_legacy_vuarts(struct acrn_vm *vm, const struct vuart_config *vu_config);
 void deinit_legacy_vuarts(struct acrn_vm *vm);
 void init_console_vuart(struct acrn_vm *vm, uint32_t irq);
-void init_pci_vuart(struct pci_vdev *vdev);
-void deinit_pci_vuart(struct pci_vdev *vdev);
 
 void vuart_putchar(struct acrn_vuart *vu, char ch);
 bool vuart_try_putchar(struct acrn_vuart *vu, char ch);

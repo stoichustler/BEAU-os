@@ -19,8 +19,9 @@ for mixed RTOS and Linux guests.
 │ BEAU Hypervisor · ARM64 EL2  │
 ├──────────────┬───────────────┤
 │ VM0 Zephyr   │ service VM    │
-│ VM1 LK/Linux │ prelaunch VM  │
+│ VM1 RT-Thread│ prelaunch VM  │
 │ VM2 Linux    │ prelaunch VM  │
+│ VM3 Linux    │ prelaunch VM  │
 └──────────────┴───────────────┘
 ```
 

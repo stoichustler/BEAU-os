@@ -28,13 +28,9 @@
  */
 
 #include <types.h>
-#include <bsp/pci.h>
 #include <serial.h>
 #include <console.h>
 #include <bsp/vuart.h>
-#ifdef CONFIG_VMCS9900
-#include <bsp/vmcs9900.h>
-#endif
 #include <vm.h>
 #include <logmsg.h>
 
@@ -320,12 +316,6 @@ void vuart_toggle_intr(const struct acrn_vuart *vu)
 
 	intr_reason = vuart_intr_reason(vu);
 
-#ifdef CONFIG_VMCS9900
-	if ((vu->vdev != NULL) && (intr_reason != IIR_NOPEND)) {
-		/* FIXME: Toggle is for level trigger interrupt, for edge trigger need refine the logic later. */
-		trigger_vmcs9900_msix(vu->vdev);
-	} else
-#endif
 	if (intr_reason != IIR_NOPEND) {
 		vuart_trigger_level_intr(vu, true);
 	} else {
@@ -876,10 +866,9 @@ bool is_vuart_intx(const struct acrn_vm *vm, uint32_t intx_gsi)
  * and can exchange data between the hypervisor and a VM or between two VMs. It sets up the necessary configurations and
  * resources required for the vUARTs to function correctly. This function is usually called during VM creation.
  *
- * A VM can have several vUARTs (including legacy and PCI vUARTs). The first vUART is used for the VM console, and the
- * rest are used for communication between VMs. Every legacy vUART device defined in the vUART configuration list is
- * initialized and configured. It will also register port I/O handlers for every vUART device and set up the connection
- * between vUARTs for communication.
+ * The first vUART is used for the VM console, and the rest are used for communication between VMs. Every legacy vUART
+ * device defined in the vUART configuration list is initialized and configured. It will also register port I/O handlers
+ * for every vUART device and set up the connection between vUARTs for communication.
  *
  * @param[inout] vm Pointer to the VM that owns the vUART devices.
  * @param[in] vu_config Pointer to the vUART configuration structure list that contains the configuration information.
@@ -962,79 +951,6 @@ void deinit_legacy_vuarts(struct acrn_vm *vm)
 	}
 }
 
-/**
- * @brief Initialize a PCI virtual UART device.
- *
- * This function initializes a PCI-based virtual UART (vUART) in hypervisor. A MCS9900 controller is emulated as a PCI
- * device, and the vUART device is a part of the MCS9900 controller. This function is usually called during the VM
- * creation and after the MCS9900 controller device is initialized.
- *
- * A VM can have several vUARTs (including legacy and PCI vUARTs). The first vUART is used for the VM console, and the
- * rest are used for communication between VMs. The PCI vUARTs are only used for communication between VMs for now. It
- * will initialize the vUART associated with the given PCI device and set up the connection between vUARTs for
- * communication.
- *
- * @param[inout] vdev Pointer to the PCI device that owns the vUART.
- *
- * @return None
- *
- * @pre vdev != NULL
- *
- * @post N/A
- */
-#ifdef CONFIG_VMCS9900
-void init_pci_vuart(struct pci_vdev *vdev)
-{
-	struct acrn_vuart *vu = vdev->priv_data;
-	struct acrn_vm_pci_dev_config *pci_cfg = vdev->pci_dev_config;
-	uint16_t idx = pci_cfg->vuart_idx;
-	struct acrn_vm *vm = container_of(vdev->vpci, struct acrn_vm, vpci);
-	struct acrn_vm_config *vm_cfg = get_vm_config(vm->vm_id);
-
-	setup_vuart(vm, idx);
-	vu->vdev = vdev;
-	vm_cfg->vuart[idx].type = VUART_PCI;
-	vm_cfg->vuart[idx].t_vuart.vm_id = pci_cfg->t_vuart.vm_id;
-	vm_cfg->vuart[idx].t_vuart.vuart_id = pci_cfg->t_vuart.vuart_id;
-
-	vu->active = true;
-	vu->escaping = false;
-	if (pci_cfg->vuart_idx != 0U) {
-		vuart_setup_connection(vm, &vm_cfg->vuart[idx], idx);
-	}
-
-}
-
-/**
- * @brief Deinitialize a PCI virtual UART device.
- *
- * This function deinitializes a PCI virtual UART (vUART) in hypervisor. It cleans up the resources and configurations
- * that were set up for the vUART during initialization. This function should be called when the vUART is no longer
- * needed, such as when a VM is being destroyed.
- *
- * The function will deinitialize the vUART associated with the given PCI device. It will set the active flag to false
- * and remove the connection between vUARTs for communication.
- *
- * @param[inout] vdev Pointer to the PCI device that owns the vUART.
- *
- * @return None
- *
- * @pre vdev != NULL
- *
- * @post N/A
- */
-void deinit_pci_vuart(struct pci_vdev *vdev)
-{
-	struct acrn_vuart *vu = vdev->priv_data;
-
-	vu->active = false;
-	vu->escaping = false;
-	if (vu->target_vu != NULL) {
-		vuart_deinit_connection(vu);
-	}
-}
-
-#endif
 /**
  * @}
  */

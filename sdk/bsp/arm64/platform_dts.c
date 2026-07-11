@@ -12,6 +12,8 @@
 #include <libfdt.h>
 #include <logmsg.h>
 #include <rtl.h>
+#include <bsp/pci.h>
+#include <platform_acpi_info.h>
 #include <passthrough.h>
 #include <asm/irq.h>
 #include <asm/platform.h>
@@ -37,7 +39,8 @@ static void arm64_dts_panic(const char *op, int32_t ret)
 static void dts_set_storage(const struct arm64_platform_dts_vm_storage *storage)
 {
 	if ((storage == NULL) || (storage->vm_configs == NULL) ||
-		(storage->memory_regions == NULL) || (storage->boot_options == NULL) ||
+		(storage->memory_regions == NULL) || (storage->pci_devs == NULL) ||
+		(storage->boot_options == NULL) ||
 		(storage->boot_option_count == NULL) || (storage->vm_config_count == 0U) ||
 		(storage->boot_option_capacity == 0U)) {
 		panic("invalid arm64 platform dts storage");
@@ -307,6 +310,44 @@ static void dts_parse_mmio_ranges(const void *fdt, int32_t platform)
 			&dts_mmio_regions[dts_mmio_region_count].size);
 		dts_mmio_region_count++;
 	}
+}
+
+static void dts_parse_pcie_host(const void *fdt, int32_t soc)
+{
+	struct pci_mmcfg_region region = {
+		.address = DEFAULT_PCI_MMCFG_BASE,
+		.start_bus = DEFAULT_PCI_MMCFG_START_BUS,
+		.end_bus = DEFAULT_PCI_MMCFG_END_BUS,
+	};
+	const fdt32_t *bus_range;
+	int32_t len;
+	int32_t pcie;
+	uint64_t ecam_base;
+	uint64_t ecam_size;
+
+	pcie = dts_child_compatible(fdt, soc, "pci-host-ecam-generic");
+	if (pcie < 0) {
+		return;
+	}
+
+	dts_reg_by_index(fdt, pcie, 0U, &ecam_base, &ecam_size);
+	region.address = ecam_base;
+
+	bus_range = fdt_getprop(fdt, pcie, "bus-range", &len);
+	if (bus_range != NULL) {
+		if (len < (int32_t)(2U * sizeof(fdt32_t))) {
+			arm64_dts_panic("pcie bus-range", -EINVAL);
+		}
+		region.start_bus = (uint8_t)fdt32_to_cpu(bus_range[0]);
+		region.end_bus = (uint8_t)fdt32_to_cpu(bus_range[1]);
+	} else if (ecam_size >= 0x100000UL) {
+		uint64_t buses = ecam_size >> 20U;
+
+		region.start_bus = 0U;
+		region.end_bus = (buses > 256UL) ? 0xffU : (uint8_t)(buses - 1UL);
+	}
+
+	set_mmcfg_region(&region);
 }
 
 static uint32_t dts_stream_id_from_iommus(const void *fdt, int32_t node)
@@ -591,6 +632,7 @@ void arm64_platform_dts_parse_board(const void *fdt,
 	if (soc < 0) {
 		arm64_dts_panic("/soc", soc);
 	}
+	dts_parse_pcie_host(fdt, soc);
 
 	gic = dts_child_compatible(fdt, soc, "arm,gic-v3");
 	if (gic < 0) {
@@ -620,11 +662,8 @@ void arm64_platform_dts_parse_board(const void *fdt,
 
 	smmu = dts_child_compatible(fdt, soc, "arm,smmu-v3");
 	if (smmu >= 0) {
-		uint64_t smmu_base;
-		uint64_t smmu_size;
-
-		dts_reg_by_index(fdt, smmu, 0U, &smmu_base, &smmu_size);
-		arm_smmu_probe(smmu_base, smmu_size);
+		dts_reg_by_index(fdt, smmu, 0U, &beau_config.smmu_base,
+			&beau_config.smmu_size);
 	}
 
 	uart = dts_child_compatible(fdt, soc, "arm,pl011");
@@ -827,6 +866,108 @@ static void dts_parse_sched(const void *fdt, int32_t vm_node,
 			dts_u32_prop(fdt, sched, "cbs-period-us", 0U);
 		vm_config->sched_params.cbs_budget_us =
 			dts_u32_prop(fdt, sched, "cbs-budget-us", 0U);
+	}
+}
+
+static void dts_parse_pci_vbar_base(const void *fdt, int32_t node,
+	struct acrn_vm_pci_dev_config *dev_config)
+{
+	const fdt32_t *prop;
+	int32_t len;
+	uint32_t entries;
+	uint32_t idx;
+
+	prop = fdt_getprop(fdt, node, "beau,vbar-base", &len);
+	if (prop == NULL) {
+		return;
+	}
+	if ((len <= 0) || ((len % (int32_t)(2U * sizeof(fdt32_t))) != 0)) {
+		arm64_dts_panic("beau,vbar-base", -EINVAL);
+	}
+
+	entries = (uint32_t)len / (2U * (uint32_t)sizeof(fdt32_t));
+	if (entries > PCI_BAR_COUNT) {
+		arm64_dts_panic("too many beau,vbar-base entries", -EINVAL);
+	}
+
+	for (idx = 0U; idx < entries; idx++) {
+		dev_config->vbar_base[idx] =
+			((uint64_t)fdt32_to_cpu(prop[idx * 2U]) << 32U) |
+			(uint64_t)fdt32_to_cpu(prop[(idx * 2U) + 1U]);
+	}
+}
+
+static void dts_parse_pci_pbar_base(const void *fdt, int32_t node,
+	struct acrn_vm_pci_dev_config *dev_config)
+{
+	const fdt32_t *prop;
+	int32_t len;
+	uint32_t entries;
+	uint32_t idx;
+
+	prop = fdt_getprop(fdt, node, "beau,pbar-base", &len);
+	if (prop == NULL) {
+		return;
+	}
+	if ((len <= 0) || ((len % (int32_t)(2U * sizeof(fdt32_t))) != 0)) {
+		arm64_dts_panic("beau,pbar-base", -EINVAL);
+	}
+
+	entries = (uint32_t)len / (2U * (uint32_t)sizeof(fdt32_t));
+	if (entries > PCI_BAR_COUNT) {
+		arm64_dts_panic("too many beau,pbar-base entries", -EINVAL);
+	}
+
+	for (idx = 0U; idx < entries; idx++) {
+		dev_config->pbar_base[idx] =
+			((uint64_t)fdt32_to_cpu(prop[idx * 2U]) << 32U) |
+			(uint64_t)fdt32_to_cpu(prop[(idx * 2U) + 1U]);
+	}
+}
+
+static void dts_parse_pci_devices(const void *fdt, int32_t vm_node, uint16_t vm_id,
+	struct acrn_vm_config *vm_config)
+{
+	int32_t pci_devices;
+	int32_t node;
+
+	vm_config->pci_devs = dts_storage->pci_devs[vm_id];
+	vm_config->pci_dev_num = 0U;
+
+	pci_devices = dts_child_by_unit_name(fdt, vm_node, "pci-devices");
+	if (pci_devices < 0) {
+		return;
+	}
+
+	fdt_for_each_subnode(node, fdt, pci_devices) {
+		struct acrn_vm_pci_dev_config *dev_config;
+		uint32_t pbdf;
+		uint32_t vbdf;
+
+		if (!dts_has_compatible(fdt, node, "beau,passthrough-pci-device")) {
+			continue;
+		}
+		if (vm_config->pci_dev_num >= CONFIG_MAX_PCI_DEV_NUM) {
+			arm64_dts_panic("too many pci-devices", -EINVAL);
+		}
+
+		pbdf = dts_u32_prop(fdt, node, "beau,pbdf", UINT32_MAX);
+		if (pbdf > 0xffffU) {
+			arm64_dts_panic("beau,pbdf", -EINVAL);
+		}
+		vbdf = dts_u32_prop(fdt, node, "beau,vbdf", pbdf);
+		if (vbdf > 0xffffU) {
+			arm64_dts_panic("beau,vbdf", -EINVAL);
+		}
+
+		dev_config = &vm_config->pci_devs[vm_config->pci_dev_num];
+		(void)memset(dev_config, 0U, sizeof(*dev_config));
+		dev_config->emu_type = PCI_DEV_TYPE_PTDEV;
+		dev_config->pbdf.value = (uint16_t)pbdf;
+		dev_config->vbdf.value = (uint16_t)vbdf;
+		dts_parse_pci_pbar_base(fdt, node, dev_config);
+		dts_parse_pci_vbar_base(fdt, node, dev_config);
+		vm_config->pci_dev_num++;
 	}
 }
 
@@ -1067,6 +1208,7 @@ static void dts_parse_vm_node(const void *fdt, int32_t generic, int32_t vm_node,
 	vm_config->memory.region_num = 1U;
 	vm_config->memory.host_regions = &dts_storage->memory_regions[vm_id];
 
+	dts_parse_pci_devices(fdt, vm_node, vm_id, vm_config);
 	dts_parse_sched(fdt, vm_node, vm_config);
 	dts_parse_os(fdt, vm_node, vm_config, ops);
 	dts_parse_arch(fdt, generic, vm_id, vm_config);
@@ -1275,6 +1417,9 @@ void arm64_platform_dts_parse_vms(const void *fdt,
 		dts_storage->vm_config_count * sizeof(dts_storage->vm_configs[0]));
 	(void)memset(dts_storage->memory_regions, 0U,
 		dts_storage->vm_config_count * sizeof(dts_storage->memory_regions[0]));
+	(void)memset(dts_storage->pci_devs, 0U,
+		dts_storage->vm_config_count * CONFIG_MAX_PCI_DEV_NUM *
+		sizeof(dts_storage->pci_devs[0][0]));
 	(void)memset(dts_storage->boot_options, 0U,
 		dts_storage->boot_option_capacity * sizeof(dts_storage->boot_options[0]));
 	*dts_storage->boot_option_count = 0U;

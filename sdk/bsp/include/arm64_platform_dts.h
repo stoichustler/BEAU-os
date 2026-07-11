@@ -20,6 +20,7 @@ struct arm64_platform_dts_ops {
 struct arm64_platform_dts_vm_storage {
 	struct acrn_vm_config *vm_configs;
 	struct vm_hpa_regions *memory_regions;
+	struct acrn_vm_pci_dev_config (*pci_devs)[CONFIG_MAX_PCI_DEV_NUM];
 	uint16_t vm_config_count;
 	uint16_t service_vm_id;
 	struct bare_boot_option *boot_options;

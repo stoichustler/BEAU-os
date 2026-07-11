@@ -20,8 +20,6 @@
 #include <logmsg.h>
 #include <asm/ioapic.h>
 #include <bsp/mmio_dev.h>
-#include <bsp/ivshmem.h>
-#include <bsp/vmcs9900.h>
 #include <asm/rtcm.h>
 #include <irq.h>
 #include <ticks.h>
@@ -45,16 +43,6 @@ struct emul_dev_ops {
 };
 
 static struct emul_dev_ops emul_dev_ops_tbl[] = {
-#ifdef CONFIG_IVSHMEM_ENABLED
-	{(IVSHMEM_VENDOR_ID | (IVSHMEM_DEVICE_ID << 16U)), create_ivshmem_vdev , destroy_ivshmem_vdev},
-#else
-	{(IVSHMEM_VENDOR_ID | (IVSHMEM_DEVICE_ID << 16U)), NULL, NULL},
-#endif
-#ifdef CONFIG_VMCS9900
-	{(MCS9900_VENDOR | (MCS9900_DEV << 16U)), create_vmcs9900_vdev, destroy_vmcs9900_vdev},
-#else
-	{(MCS9900_VENDOR | (MCS9900_DEV << 16U)), NULL, NULL},
-#endif
 	{(VRP_VENDOR | (VRP_DEVICE << 16U)), create_vrp, destroy_vrp},
 };
 

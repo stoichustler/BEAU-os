@@ -13,11 +13,14 @@
 #include <pgtable.h>
 #include <per_cpu.h>
 #include <bsp/vfdt.h>
+#include <bsp/vpci.h>
 #include <logmsg.h>
+#include <acrn_hv_defs.h>
 #include <bsp/io_req.h>
 #include <asm/sysreg.h>
 #include <asm/guest/vcpu_priv.h>
 #include <asm/guest/vgicv3.h>
+#include <asm/guest/stage2.h>
 #include <asm/guest/vpl011.h>
 #include <virtio_console.h>
 #include <virtio_proxy.h>
@@ -162,6 +165,11 @@ static bool arm64_vm_uses_virtio_proxy(const struct acrn_vm_config *vm_config)
 		(vm_config->arch.guest_virtio_proxy_num != 0U);
 }
 
+static bool arm64_vm_uses_vpci(const struct acrn_vm_config *vm_config)
+{
+	return (vm_config->pci_devs != NULL) && (vm_config->pci_dev_num != 0U);
+}
+
 static void arm64_vm_log_boot_vdevs(const struct acrn_vm *vm,
 	const struct acrn_vm_config *vm_config)
 {
@@ -269,6 +277,55 @@ static void init_stage2_identity_map(struct acrn_vm *vm)
 	 */
 }
 
+static uint64_t arm64_stage2_map_prot(uint32_t flags)
+{
+	uint64_t prot = PAGE_S2_AF | PAGE_S2_SH_INNER | PAGE_S2_XN;
+
+	prot |= ((flags & ARM64_STAGE2_MAP_DEVICE) != 0U) ?
+		PAGE_S2_MEMATTR_DEVICE : PAGE_S2_MEMATTR_NORMAL;
+	if ((flags & ARM64_STAGE2_MAP_READ) != 0U) {
+		prot |= PAGE_S2_S2AP_READ;
+	}
+	if ((flags & ARM64_STAGE2_MAP_WRITE) != 0U) {
+		prot |= PAGE_S2_S2AP_WRITE;
+	}
+
+	return prot | PAGE_BLOCK_DESC;
+}
+
+void arm64_stage2_map(struct acrn_vm *vm, uint64_t hpa, uint64_t ipa,
+	uint64_t size, uint32_t flags)
+{
+	uint64_t prot;
+
+	if ((vm == NULL) || (vm->root_stg2ptp == NULL) || (size == 0UL)) {
+		return;
+	}
+	if (((flags & (ARM64_STAGE2_MAP_DEVICE | ARM64_STAGE2_MAP_NORMAL)) == 0U) ||
+		((flags & (ARM64_STAGE2_MAP_DEVICE | ARM64_STAGE2_MAP_NORMAL)) ==
+			(ARM64_STAGE2_MAP_DEVICE | ARM64_STAGE2_MAP_NORMAL))) {
+		panic("invalid arm64 stage-2 map flags 0x%x", flags);
+	}
+
+	prot = arm64_stage2_map_prot(flags);
+	spinlock_obtain(&vm->stg2pt_lock);
+	pgtable_add_map((uint64_t *)vm->root_stg2ptp, hpa, ipa, size, prot,
+		&vm->stg2_pgtable);
+	spinlock_release(&vm->stg2pt_lock);
+}
+
+void arm64_stage2_unmap(struct acrn_vm *vm, uint64_t ipa, uint64_t size)
+{
+	if ((vm == NULL) || (vm->root_stg2ptp == NULL) || (size == 0UL)) {
+		return;
+	}
+
+	spinlock_obtain(&vm->stg2pt_lock);
+	pgtable_modify_or_del_map((uint64_t *)vm->root_stg2ptp, ipa, size, 0UL, 0UL,
+		&vm->stg2_pgtable, MR_DEL);
+	spinlock_release(&vm->stg2pt_lock);
+}
+
 static void register_arm64_vio_mmio(struct acrn_vm *vm)
 {
 	const struct arch_vm_config *arch_config = &get_vm_config(vm->vm_id)->arch;
@@ -365,6 +422,9 @@ int32_t arch_init_vm(struct acrn_vm *vm, struct acrn_vm_config *vm_config)
 	if (arm64_vm_uses_virtio_proxy(vm_config)) {
 		virtio_proxy_init_vm(vm);
 	}
+	if (arm64_vm_uses_vpci(vm_config) && (init_vpci(vm) != 0)) {
+		panic("failed to initialize arm64 vPCI for vm%u", vm->vm_id);
+	}
 	register_arm64_vio_mmio(vm);
 	arm64_vm_log_boot_vdevs(vm, vm_config);
 
@@ -378,6 +438,9 @@ int32_t arch_init_vm(struct acrn_vm *vm, struct acrn_vm_config *vm_config)
 
 int32_t arch_deinit_vm(struct acrn_vm *vm)
 {
+	if (arm64_vm_uses_vpci(get_vm_config(vm->vm_id))) {
+		deinit_vpci(vm);
+	}
 	virtio_proxy_release_vm(vm);
 	return 0;
 }

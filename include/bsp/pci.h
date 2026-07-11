@@ -157,8 +157,16 @@
 #define PCIR_MSI_DATA         0x8U
 #define PCIR_MSI_DATA_64BIT   0xCU
 #define PCIR_MSI_MASK         0x10U
+#define PCIR_MSI_PENDING      0x14U
+#define PCIM_MSICTRL_MMC_SHIFT  1U
 #define PCIM_MSICTRL_MMC_MASK 0x000EU
+#define PCIM_MSICTRL_MME_SHIFT  4U
 #define PCIM_MSICTRL_MME_MASK 0x0070U
+#define PCIM_MSICTRL_PVMC     0x0100U
+#define MSI_CAPLEN_32         0x0AU
+#define MSI_CAPLEN_64         0x0EU
+#define MSI_CAPLEN_32_PVM     0x14U
+#define MSI_CAPLEN_64_PVM     0x18U
 
 /* PCI device class */
 #define PCIC_BRIDGE           0x06U
@@ -358,10 +366,10 @@ static inline uint64_t get_pci_mmcfg_size(struct pci_mmcfg_region *pci_mmcfg)
 	return 0x100000UL * (pci_mmcfg->end_bus - pci_mmcfg->start_bus + 1U);
 }
 
-#ifdef CONFIG_ACPI_PARSE_ENABLED
 void set_mmcfg_region(struct pci_mmcfg_region *region);
-#endif
 struct pci_mmcfg_region *get_mmcfg_region(void);
+uint32_t get_pci_pdev_num(void);
+const struct pci_pdev *get_pci_pdev(uint32_t idx);
 
 struct pci_pdev *pci_init_pdev(union pci_bdf pbdf, uint32_t drhd_index);
 uint32_t pci_pdev_read_cfg(union pci_bdf bdf, uint32_t offset, uint32_t bytes);

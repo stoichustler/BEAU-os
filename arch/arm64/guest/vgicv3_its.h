@@ -20,6 +20,10 @@ int32_t arm64_vgicv3_its_mmio_access(struct acrn_vcpu *vcpu,
 	struct arm64_vgicv3 *vgic, struct acrn_mmio_request *mmio);
 bool arm64_vgicv3_its_mmio_access64(struct acrn_vcpu *vcpu,
 	struct arm64_vgicv3 *vgic, struct acrn_mmio_request *mmio, int32_t *status);
+bool arm64_vgicv3_its_inv_lpi_locked(struct acrn_vm *vm,
+	struct arm64_vgicv3 *vgic, uint16_t vcpu_id, uint32_t lpi);
+bool arm64_vgicv3_its_invall_vcpu_locked(struct acrn_vm *vm,
+	struct arm64_vgicv3 *vgic, uint16_t vcpu_id);
 
 int32_t arm64_vgicv3_inject_irq_locked(struct arm64_vgicv3 *vgic,
 	struct acrn_vcpu *target_vcpu, uint32_t virq, bool level);

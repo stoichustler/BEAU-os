@@ -7,6 +7,12 @@ SRCS += $(filter-out $(FILE_PATH)/ns16550.c $(FILE_PATH)/pl011.c,$(wildcard $(FI
 SRCS += $(FILE_PATH)/pl011.c
 SRCS += $(wildcard $(FILE_PATH)/arm64/*.c)
 SRCS += $(wildcard $(FILE_PATH)/virtio/*.c)
+SRCS += $(wildcard $(FILE_PATH)/pci/*.c)
+SRCS += $(FILE_PATH)/vpci/vpci_core.c
+SRCS += $(FILE_PATH)/vpci/vpci_pt.c
+SRCS += $(FILE_PATH)/vpci/vpci_msi.c
+SRCS += $(FILE_PATH)/vpci/vpci_rc.c
+SRCS += $(FILE_PATH)/vpci/vpci_sriov.c
 OBJS += $(patsubst %.c,$(HV_OBJDIR)/%.o,$(SRCS))
 
 .PHONY: default

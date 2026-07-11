@@ -5,6 +5,8 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 ARCHIVE=${1:-"$ROOT/sdk/image/linux/Initramfs.cpio.gz"}
+EDU_TEST_SRC="$ROOT/sdk/image/linux/tools/beau-edu-test.c"
+EDU_TEST_CC=${EDU_TEST_CC:-aarch64-linux-gnu-gcc}
 case "$ARCHIVE" in
 /*) ;;
 *) ARCHIVE="$ROOT/$ARCHIVE" ;;
@@ -26,9 +28,9 @@ fetch_url()
 	out=$2
 
 	if command -v curl >/dev/null 2>&1; then
-		curl -fsSL "$url" -o "$out"
+		curl -fL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 1 "$url" -o "$out"
 	elif command -v wget >/dev/null 2>&1; then
-		wget -q -O "$out" "$url"
+		wget -T 120 -O "$out" "$url"
 	else
 		echo "curl or wget is required to fetch $url" >&2
 		return 1
@@ -163,6 +165,15 @@ chmod 0755 "$WORKDIR/init"
 mkdir -p "$WORKDIR/var/beau"
 chmod 0755 "$WORKDIR/var" "$WORKDIR/var/beau"
 install_alpine_apk i2c-tools community
+install_alpine_apk hwdata-pci main
+install_alpine_apk pciutils-libs main
+install_alpine_apk pciutils main
+mkdir -p "$WORKDIR/usr/local/bin"
+if ! command -v "$EDU_TEST_CC" >/dev/null 2>&1; then
+	echo "$EDU_TEST_CC is required to build beau-edu-test" >&2
+	exit 1
+fi
+"$EDU_TEST_CC" -Os -static -s -Wall -Wextra -o "$WORKDIR/usr/local/bin/beau-edu-test" "$EDU_TEST_SRC"
 rm -rf "$WORKDIR/tmp"
 (cd "$WORKDIR" && find . -print0 | cpio --null -o --quiet -H newc -R 0:0 | gzip -9 > "$ARCHIVE.tmp")
 mv "$ARCHIVE.tmp" "$ARCHIVE"

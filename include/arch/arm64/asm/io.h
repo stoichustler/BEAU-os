@@ -11,6 +11,7 @@
 #include <barrier.h>
 
 #define HAS_ARCH_MMIO
+#define IO_SPACE_BITMASK	0xffffU
 
 static inline void writeb(uint8_t val, volatile void *addr)
 {

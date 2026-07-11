@@ -6,11 +6,6 @@
 
 menu "Virtio"
 
-config IVSHMEM_ENABLED
-	bool "Enable IVSHMEM support"
-	default n
-	help
-	  Compile inter-VM shared memory support. The default static ARM64
-	  scenario does not expose IVSHMEM devices.
+comment "No configurable virtio options"
 
 endmenu

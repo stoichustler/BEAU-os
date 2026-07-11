@@ -121,6 +121,7 @@ struct acrn_vm_pci_dev_config {
 	uint16_t vuart_idx;
 	uint16_t vrp_sec_bus;			/* use virtual root port's secondary bus as unique identification */
 	uint8_t vrp_max_payload;		/* vrp's dev cap's max payload */
+	uint64_t pbar_base[PCI_BAR_COUNT];		/* optional physical BAR base for static platforms */
 	uint64_t vbar_base[PCI_BAR_COUNT];		/* vbar base address of PCI device, which is power-on default value */
 	struct pci_pdev *pdev;				/* the physical PCI device if it's a PT device */
 	const struct pci_vdev_ops *vdev_ops;		/* operations for PCI CFG read/write */

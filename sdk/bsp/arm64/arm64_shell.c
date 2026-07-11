@@ -25,6 +25,8 @@
 #include <acrn_hv_defs.h>
 #include <virtio_console.h>
 #include <virtio_proxy.h>
+#include <bsp/pci.h>
+#include <bsp/vpci.h>
 #include <bsp/vuart.h>
 #include <debug/symbol.h>
 #include <asm/mmu.h>
@@ -50,6 +52,9 @@
 #define SHELL_CMD_SMMUSTAT		"smmustat"
 #define SHELL_CMD_SMMUSTAT_PARAM	NULL
 #define SHELL_CMD_SMMUSTAT_HELP		"list ARM SMMUv3 discovery state"
+#define SHELL_CMD_PCISTAT		"pcistat"
+#define SHELL_CMD_PCISTAT_PARAM		"[vm id]"
+#define SHELL_CMD_PCISTAT_HELP		"list PCI passthrough and SMMU stream state"
 #define SHELL_CMD_RESET			"reset"
 #define SHELL_CMD_RESET_PARAM		"<vm id>"
 #define SHELL_CMD_RESET_HELP		"reset a non-service VM by id"
@@ -61,12 +66,14 @@
 #define DUMPSTAT_REG_KEY_FMT		"%5s:0x%016lx"
 #define DUMPSTAT_REGS_PER_LINE_MAX	4U
 #define VMSTAT_CPU_WAIT_WARN_US		20000UL
+#define PCISTAT_MAX_STREAMS		64U
 
 static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv);
 static int32_t shell_dumpstat(int32_t argc, char **argv);
 static int32_t shell_vmstat(int32_t argc, __unused char **argv);
 static int32_t shell_virtiostat(int32_t argc, char **argv);
 static int32_t shell_smmustat(int32_t argc, __unused char **argv);
+static int32_t shell_pcistat(int32_t argc, char **argv);
 static int32_t shell_reset_vm(int32_t argc, char **argv);
 static int32_t shell_reboot(__unused int32_t argc, __unused char **argv);
 static const char *shell_yes_no(bool value);
@@ -101,6 +108,12 @@ struct shell_cmd arch_shell_cmds[] = {
 		.cmd_param	= SHELL_CMD_SMMUSTAT_PARAM,
 		.help_str	= SHELL_CMD_SMMUSTAT_HELP,
 		.fcn		= shell_smmustat,
+	},
+	{
+		.str		= SHELL_CMD_PCISTAT,
+		.cmd_param	= SHELL_CMD_PCISTAT_PARAM,
+		.help_str	= SHELL_CMD_PCISTAT_HELP,
+		.fcn		= shell_pcistat,
 	},
 	{
 		.str		= SHELL_CMD_RESET,
@@ -238,6 +251,9 @@ static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv)
 static int32_t shell_smmustat(int32_t argc, __unused char **argv)
 {
 	struct arm_smmu_hw_info info;
+	struct arm_smmu_stream_config streams[PCISTAT_MAX_STREAMS];
+	uint32_t stream_count;
+	uint32_t idx;
 
 	if (argc > 1) {
 		shell_puts("usage: smmustat\r\n");
@@ -246,6 +262,7 @@ static int32_t shell_smmustat(int32_t argc, __unused char **argv)
 
 	(void)memset(&info, 0U, sizeof(info));
 	arm_smmu_get_hw_info(&info);
+	stream_count = arm_smmu_get_stream_configs(streams, ARRAY_SIZE(streams));
 
 	shell_puts("\r\nsmmustat:\r\n");
 	shell_item_begin("smmu");
@@ -260,8 +277,9 @@ static int32_t shell_smmustat(int32_t argc, __unused char **argv)
 	}
 
 	shell_item_line("mmio:base:0x%016lx size:0x%016lx", info.base, info.size);
-	shell_item_line("caps:sid.bits:%u oas.bits:%u streams:%u",
-		info.sid_bits, info.oas_bits, 1U << info.strtab_log2_entries);
+	shell_item_line("caps:sid.bits:%u oas.bits:%u streams:%u s2p:%s",
+		info.sid_bits, info.oas_bits, 1U << info.strtab_log2_entries,
+		shell_yes_no((info.idr0 & 0x1U) != 0U));
 	shell_item_line("strtab:0x%016lx cmdq:0x%016lx evtq:0x%016lx",
 		info.strtab_base, info.cmdq_base, info.evtq_base);
 	shell_item_line("queue.entries:cmd:%u evt:%u cmdq.en:%s evtq.en:%s",
@@ -270,9 +288,244 @@ static int32_t shell_smmustat(int32_t argc, __unused char **argv)
 	shell_item_line("idr0:0x%08x idr1:0x%08x idr5:0x%08x",
 		info.idr0, info.idr1, info.idr5);
 	shell_item_line("iidr:0x%08x aidr:0x%08x", info.iidr, info.aidr);
-	shell_item_line("ready.scope:abort-default only");
-	shell_item_line("assignment:disabled until VM domain STE programming");
+	shell_item_line("ready.scope:abort-default + vm-stage2 STE");
+	shell_item_line("assignment:%s streams:%u",
+		shell_yes_no(arm_smmu_assignment_ready()), stream_count);
+	for (idx = 0U; idx < stream_count; idx++) {
+		shell_item_line("stream[0x%04x] vm%hu ipa:%u root:0x%016lx assigned:%s",
+			streams[idx].stream_id, streams[idx].owner_vmid,
+			streams[idx].ipa_width, streams[idx].root_table_hpa,
+			shell_yes_no(streams[idx].assigned));
+	}
 	shell_item_end();
+
+	return 0;
+}
+
+static void shell_format_bdf(char *buf, size_t size, union pci_bdf bdf)
+{
+	snprintf(buf, size, "%02x:%02x.%x", bdf.bits.b, bdf.bits.d, bdf.bits.f);
+}
+
+static uint32_t shell_pci_vcfg_read(const struct pci_vdev *vdev, uint32_t offset,
+	uint32_t bytes)
+{
+	uint32_t val = 0U;
+	uint32_t idx;
+
+	if ((vdev == NULL) || (bytes == 0U) || (bytes > 4U) ||
+		((offset + bytes) > PCIE_CONFIG_SPACE_SIZE)) {
+		return 0U;
+	}
+
+	for (idx = 0U; idx < bytes; idx++) {
+		val |= (uint32_t)vdev->cfgdata.data_8[offset + idx] << (idx * 8U);
+	}
+
+	return val;
+}
+
+static void shell_pcistat_print_bars(const struct pci_vdev *vdev)
+{
+	uint32_t bar_idx;
+
+	for (bar_idx = 0U; bar_idx < vdev->nr_bars; bar_idx++) {
+		const struct pci_vbar *vbar = &vdev->vbars[bar_idx];
+		const char *type;
+
+		if (vbar->is_mem64hi || (vbar->size == 0UL)) {
+			continue;
+		}
+		type = ((vbar->bar_type.io_space.indicator == 1U) && !vbar->is_mem64hi) ?
+			"io" : "mem";
+		shell_item_line("      bar%u:%s gpa:0x%016lx hpa:0x%016lx size:0x%016lx",
+			bar_idx, type, vbar->base_gpa, vbar->base_hpa, vbar->size);
+	}
+}
+
+static void shell_pcistat_print_msi(const struct pci_vdev *vdev)
+{
+	uint32_t ctrl;
+	uint32_t mask = 0U;
+	bool pvm;
+
+	if (vdev->msi.capoff == 0U) {
+		return;
+	}
+
+	ctrl = shell_pci_vcfg_read(vdev, vdev->msi.capoff + PCIR_MSI_CTRL, 2U);
+	pvm = ((ctrl & PCIM_MSICTRL_PVMC) != 0U);
+	if (pvm) {
+		uint32_t mask_offset = vdev->msi.is_64bit ? PCIR_MSI_MASK : (PCIR_MSI_MASK - 4U);
+
+		mask = shell_pci_vcfg_read(vdev, vdev->msi.capoff + mask_offset, 4U);
+	}
+
+	shell_item_line("      msi:cap:0x%02x len:%u 64:%s pvm:%s enabled:%s ctrl:0x%04x mask:0x%08x",
+		vdev->msi.capoff, vdev->msi.caplen, shell_yes_no(vdev->msi.is_64bit),
+		shell_yes_no(pvm), shell_yes_no((ctrl & PCIM_MSICTRL_MSI_ENABLE) != 0U),
+		ctrl, mask);
+}
+
+static void shell_pcistat_print_msix(const struct pci_vdev *vdev)
+{
+	uint32_t ctrl;
+	uint64_t hole_gpa = 0UL;
+	uint64_t hole_hpa = 0UL;
+	uint64_t hole_size = 0UL;
+
+	if (vdev->msix.capoff == 0U) {
+		return;
+	}
+
+	ctrl = shell_pci_vcfg_read(vdev, vdev->msix.capoff + PCIR_MSIX_CTRL, 2U);
+	if ((vdev->msix.mmio_gpa != 0UL) && (vdev->msix.table_count != 0U)) {
+		uint64_t table_gpa = vdev->msix.mmio_gpa + vdev->msix.table_offset;
+		uint64_t table_hpa = vdev->msix.mmio_hpa + vdev->msix.table_offset;
+		uint64_t table_size = (uint64_t)vdev->msix.table_count * MSIX_TABLE_ENTRY_SIZE;
+
+		hole_gpa = table_gpa & PAGE_MASK;
+		hole_hpa = table_hpa & PAGE_MASK;
+		hole_size = ((table_gpa + table_size + PAGE_SIZE - 1UL) & PAGE_MASK) - hole_gpa;
+	}
+
+	shell_item_line("      msix:cap:0x%02x len:%u table:bar%u off:0x%08x count:%u enabled:%s masked:%s",
+		vdev->msix.capoff, vdev->msix.caplen, vdev->msix.table_bar,
+		vdev->msix.table_offset, vdev->msix.table_count,
+		shell_yes_no((ctrl & PCIM_MSIXCTRL_MSIX_ENABLE) != 0U),
+		shell_yes_no((ctrl & PCIM_MSIXCTRL_FUNCTION_MASK) != 0U));
+	if (hole_size != 0UL) {
+		shell_item_line("      msix-hole:gpa:0x%016lx hpa:0x%016lx size:0x%016lx",
+			hole_gpa, hole_hpa, hole_size);
+	}
+}
+
+static const struct arm_smmu_stream_config *shell_find_stream_config(
+	const struct arm_smmu_stream_config *streams, uint32_t stream_count,
+	uint32_t stream_id)
+{
+	const struct arm_smmu_stream_config *found = NULL;
+	uint32_t idx;
+
+	for (idx = 0U; idx < stream_count; idx++) {
+		if (streams[idx].stream_id == stream_id) {
+			found = &streams[idx];
+			break;
+		}
+	}
+
+	return found;
+}
+
+static void shell_pcistat_host(void)
+{
+	struct pci_mmcfg_region *mmcfg = get_mmcfg_region();
+	uint32_t pdev_count = get_pci_pdev_num();
+	uint32_t idx;
+
+	shell_item_begin("host-pci");
+	shell_item_line("ecam:0x%016lx bus:%u-%u pdevs:%u",
+		mmcfg->address, mmcfg->start_bus, mmcfg->end_bus, pdev_count);
+	for (idx = 0U; idx < pdev_count; idx++) {
+		const struct pci_pdev *pdev = get_pci_pdev(idx);
+		char bdf[16U];
+
+		if (pdev == NULL) {
+			continue;
+		}
+		shell_format_bdf(bdf, sizeof(bdf), pdev->bdf);
+		shell_item_line("[%02u] %s class:%02x:%02x hdr:0x%02x bars:%u drhd:%u",
+			idx, bdf, pdev->base_class, pdev->sub_class, pdev->hdr_type,
+			pdev->nr_bars, pdev->drhd_index);
+	}
+	shell_item_end();
+}
+
+static void shell_pcistat_vm(uint16_t vm_id,
+	const struct arm_smmu_stream_config *streams, uint32_t stream_count)
+{
+	struct acrn_vm_config *vm_config = get_vm_config(vm_id);
+	struct acrn_vm *vm = get_vm_from_vmid(vm_id);
+	uint16_t idx;
+
+	if ((vm_config->pci_devs == NULL) || (vm_config->pci_dev_num == 0U)) {
+		shell_item_begin("vm%hu pci", vm_id);
+		shell_item_line("devices:none");
+		shell_item_end();
+		return;
+	}
+
+	shell_item_begin("vm%hu pci:%s", vm_id, vm_config->name);
+	shell_item_line("state:%s configured:%hu vpci:%s",
+		is_poweroff_vm(vm) ? "poweroff" : "created",
+		vm_config->pci_dev_num,
+		(vm->vpci.pci_mmcfg.address != 0UL) ? "Y" : "N");
+	for (idx = 0U; idx < vm_config->pci_dev_num; idx++) {
+		const struct acrn_vm_pci_dev_config *dev_config = &vm_config->pci_devs[idx];
+		const struct arm_smmu_stream_config *stream;
+		struct pci_vdev *vdev = NULL;
+		char pbdf[16U];
+		char vbdf[16U];
+
+		if (!is_poweroff_vm(vm) && (vm->vpci.pci_mmcfg.address != 0UL)) {
+			vdev = pci_find_vdev(&vm->vpci, dev_config->vbdf);
+		}
+		stream = shell_find_stream_config(streams, stream_count,
+			(uint32_t)dev_config->pbdf.value);
+		shell_format_bdf(pbdf, sizeof(pbdf), dev_config->pbdf);
+		shell_format_bdf(vbdf, sizeof(vbdf), dev_config->vbdf);
+		shell_item_line("[%02hu] p:%s v:%s pdev:%s vdev:%s stream:0x%04x smmu:%s",
+			idx, pbdf, vbdf,
+			shell_yes_no(dev_config->pdev != NULL),
+			shell_yes_no(vdev != NULL),
+			dev_config->pbdf.value,
+			(stream != NULL) ? shell_yes_no(stream->assigned) : "N");
+		if (stream != NULL) {
+			shell_item_line("      owner:vm%hu ipa:%u root:0x%016lx",
+				stream->owner_vmid, stream->ipa_width, stream->root_table_hpa);
+		}
+		if (vdev != NULL) {
+			shell_pcistat_print_bars(vdev);
+			shell_pcistat_print_msi(vdev);
+			shell_pcistat_print_msix(vdev);
+		}
+	}
+	shell_item_end();
+}
+
+static int32_t shell_pcistat(int32_t argc, char **argv)
+{
+	struct arm_smmu_stream_config streams[PCISTAT_MAX_STREAMS];
+	uint32_t stream_count;
+	int64_t param;
+	uint16_t vm_id;
+
+	if (argc > 2) {
+		shell_puts("usage: pcistat [vm id]\r\n");
+		return -EINVAL;
+	}
+
+	stream_count = arm_smmu_get_stream_configs(streams, ARRAY_SIZE(streams));
+	shell_puts("\r\npcistat:\r\n");
+	shell_pcistat_host();
+
+	if (argc == 2) {
+		param = strtol_deci(argv[1]);
+		if ((param < 0) || (param >= CONFIG_MAX_VM_NUM)) {
+			shell_puts("invalid vm id\r\n");
+			return -EINVAL;
+		}
+		shell_pcistat_vm((uint16_t)param, streams, stream_count);
+		return 0;
+	}
+
+	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
+		struct acrn_vm_config *vm_config = get_vm_config(vm_id);
+
+		if ((vm_config->pci_devs != NULL) && (vm_config->pci_dev_num != 0U)) {
+			shell_pcistat_vm(vm_id, streams, stream_count);
+		}
+	}
 
 	return 0;
 }

@@ -119,7 +119,7 @@ bool start_pcpus(uint64_t mask)
 
 		/* Check to see if expected CPU is actually up */
 		if (!is_pcpu_active(i)) {
-			LOG_FTL("MP:    cpu%hu up failed", i);
+			LOG_FTL("MP:     cpu%hu up failed", i);
 			pcpu_set_current_state(i, PCPU_STATE_DEAD);
 		}
 
@@ -144,7 +144,7 @@ bool wait_pcpus_running(uint64_t mask)
 		}
 
 		if (per_cpu(boot_state, i) != PCPU_STATE_RUNNING) {
-			LOG_FTL("MP:    cpu%hu run failed", i);
+			LOG_FTL("MP:     cpu%hu run failed", i);
 			pcpu_set_current_state(i, PCPU_STATE_DEAD);
 		}
 

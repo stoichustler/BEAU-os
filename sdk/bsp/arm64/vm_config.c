@@ -34,6 +34,8 @@ struct acrn_vm_config vm_configs[CONFIG_MAX_VM_NUM];
 struct acrn_vm_config *const service_vm_config = &vm_configs[0];
 
 static struct vm_hpa_regions arm64_vm_memory_regions[CONFIG_MAX_VM_NUM];
+static struct acrn_vm_pci_dev_config
+	arm64_vm_pci_devs[CONFIG_MAX_VM_NUM][CONFIG_MAX_PCI_DEV_NUM];
 
 struct bare_boot_option bare_boot_options[MAX_MODULE_NUM];
 uint16_t n_bare_boot_options;
@@ -141,6 +143,7 @@ void arm64_parse_vm_config_from_dts(const void *fdt)
 	struct arm64_platform_dts_vm_storage storage = {
 		.vm_configs = vm_configs,
 		.memory_regions = arm64_vm_memory_regions,
+		.pci_devs = arm64_vm_pci_devs,
 		.vm_config_count = ARRAY_SIZE(vm_configs),
 		.service_vm_id = 0U,
 		.boot_options = bare_boot_options,

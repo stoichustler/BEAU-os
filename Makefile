@@ -84,7 +84,6 @@ KCONFIG_BOOL_VARS := \
 	CONFIG_GUEST_KERNEL_ELF \
 	CONFIG_GUEST_KERNEL_RAWIMAGE \
 	CONFIG_HAS_HSM \
-	CONFIG_IVSHMEM_ENABLED \
 	CONFIG_IRQSTAT_LATENCY \
 	CONFIG_LAUNCH_VMS_FROM_BSP \
 	CONFIG_MULTIBOOT2 \
@@ -104,8 +103,7 @@ KCONFIG_BOOL_VARS := \
 	CONFIG_STATIC_ARM64_PLATFORM \
 	CONFIG_STATIC_QEMU_PLATFORM \
 	CONFIG_STATIC_RK356X_PLATFORM \
-	CONFIG_STATIC_VFDT \
-	CONFIG_VMCS9900
+	CONFIG_STATIC_VFDT
 $(foreach v,$(KCONFIG_BOOL_VARS),$(eval $(call normalize_kconfig_bool,$(v))))
 KCONFIG_RELEASE_ASSIGNMENT = $(if $(filter command line,$(origin RELEASE)),'RELEASE=$(KCONFIG_RELEASE_VALUE)')
 KCONFIG_CLI_ASSIGNMENTS = $(foreach v,$(filter CONFIG_%,$(.VARIABLES)),$(if $(filter command line override,$(origin $(v))),'$(patsubst CONFIG_%,%,$(v))=$($(v))')) $(KCONFIG_RELEASE_ASSIGNMENT)
@@ -348,6 +346,12 @@ BSP_LIB_SRCS := $(filter-out sdk/bsp/ns16550.c sdk/bsp/pl011.c,$(wildcard sdk/bs
 BSP_LIB_SRCS += sdk/bsp/pl011.c
 BSP_LIB_SRCS += $(wildcard sdk/bsp/arm64/*.c)
 BSP_LIB_SRCS += $(wildcard sdk/bsp/virtio/*.c)
+BSP_LIB_SRCS += $(wildcard sdk/bsp/pci/*.c)
+BSP_LIB_SRCS += sdk/bsp/vpci/vpci_core.c
+BSP_LIB_SRCS += sdk/bsp/vpci/vpci_pt.c
+BSP_LIB_SRCS += sdk/bsp/vpci/vpci_msi.c
+BSP_LIB_SRCS += sdk/bsp/vpci/vpci_rc.c
+BSP_LIB_SRCS += sdk/bsp/vpci/vpci_sriov.c
 
 ifeq ($(ARCH),arm64)
 COMMON_C_SRCS += arch/arm64/guest/hypercall.c
