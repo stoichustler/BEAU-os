@@ -28,12 +28,6 @@ enum thread_priority {
 	PRIO_MAX
 };
 
-/* 
- * For now, we just have several parameters for all the schedulers. So we
- * put them together here for simplicity. TODO When this structure grows big
- * enough, we need to replace it with a union of parameters of different
- * schedulers.
- */
 struct sched_params {
 	uint32_t prio;		/* The priority of a thread */
 

@@ -12,8 +12,7 @@
 #include <asm/guest/virq.h>
 #include <asm/guest/vgicv3.h>
 
-/*
- * 2026-06-30, virtual-IRQ principle:
+/* [20260630] virtual-IRQ principle:
  *
  * ARM64 vIRQ is the bridge between common/device code and the architecture
  * interrupt model. Guest GIC INTIDs are delegated to VGICv3 so descriptor,

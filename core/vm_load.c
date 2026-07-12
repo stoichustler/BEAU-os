@@ -25,9 +25,6 @@
  * active GPA-to-HPA contract.
  */
 
-/**
- * @pre sw_module != NULL
- */
 void load_sw_module(struct acrn_vm *vm, struct sw_module_info *sw_module)
 {
 	/*
@@ -40,9 +37,6 @@ void load_sw_module(struct acrn_vm *vm, struct sw_module_info *sw_module)
 	}
 }
 
-/**
- * @pre vm != NULL
- */
 int32_t prepare_os_image(struct acrn_vm *vm)
 {
 	int32_t ret = -EINVAL;

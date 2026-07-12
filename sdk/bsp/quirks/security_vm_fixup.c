@@ -16,8 +16,7 @@
 #include <quirks/smbios.h>
 #include <boot.h>
 
-/*
- * 2026-06-30, Security VM firmware-table fixup design:
+/* [20260630] Security VM firmware-table fixup design:
  *
  * A pre-launched Security VM can receive selected host security inventory
  * instead of a fully synthetic firmware view. This file keeps that policy

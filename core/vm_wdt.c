@@ -23,8 +23,7 @@
 #include <vm_wdt.h>
 #include <virtio_proxy.h>
 
-/*
- * 2026-07-10, VM watchdog service principle:
+/* [20260712] VM watchdog diagnosis model
  *
  * The watchdog is a BEAU OS service that correlates several liveness signals
  * instead of treating a missing guest heartbeat as the only failure mode.
@@ -49,8 +48,11 @@
  *      +-- console backlog   -> console stuck
  *      +-- proxy pending age -> virtio stuck
  *
- * Ownership rule: guests own the kick source, core/vm_wdt.c owns diagnosis and
- * reporting, and device-specific modules own the counters used as evidence.
+ * Key rule:
+ *   - guest OS code owns only the periodic kick source;
+ *   - core/vm_wdt.c owns correlation, state transitions, and reporting;
+ *   - device modules own evidence counters, so watchdog output remains a
+ *     diagnosis instead of a destructive recovery action.
  */
 
 #define VM_WDT_IRQ_STORM_PER_SEC	10000UL

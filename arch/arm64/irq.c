@@ -18,8 +18,7 @@ static struct arm64_irq_data irq_data[NR_IRQS];
 #define MAX_IRQ_DOMAIN_NUM		3U
 #define MAX_IRQ_DOMAIN_NAME_SIZE	32U
 
-/*
- * 2026-06-30, ARM64 IRQ-domain principle:
+/* [20260630] ARM64 IRQ-domain principle:
  *
  * Common IRQ code owns one flat ACRN IRQ namespace and uses it to index
  * irq_desc_array[]. ARM64 hardware reports source-local numbers instead:

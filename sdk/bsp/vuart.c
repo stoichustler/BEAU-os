@@ -48,8 +48,7 @@
  * the device that are commonly used in this file.
  */
 
-/*
- * 2026-07-10, vUART service principle:
+/* [20260712] vUART byte-service boundary
  *
  * vUART is the byte FIFO and interrupt service used by guest console backends.
  * The frontend device model owns register semantics, while this common layer
@@ -74,9 +73,11 @@
  *          v
  *   console/vsh backend drains bytes
  *
- * FIFO ownership is protected by the vUART lock. Backend callbacks are optional
- * so PL011, virtio-console, and future console transports can share the same
- * byte queues without duplicating UART service state.
+ * Key rule:
+ *   - frontend models own register or virtqueue semantics;
+ *   - this layer owns FIFO storage, locking, and UART interrupt reasons;
+ *   - optional backend callbacks keep vPL011 and virtio-console on one byte path
+ *     without duplicating console state.
  */
 
 #define init_vuart_lock(vu)	spinlock_init(&((vu)->lock))
@@ -290,7 +291,6 @@ static struct acrn_vuart *find_vuart_by_port(struct acrn_vm *vm, uint16_t offset
 	uint8_t i;
 	struct acrn_vuart *vu, *ret_vu = NULL;
 
-	/* TODO: support pci vuart find */
 	for (i = 0U; i < MAX_VUART_NUM_PER_VM; i++) {
 		vu = &vm->vuart[i];
 		if ((vu->active) && (vu->port_base == (offset & ~0x7U))) {
@@ -825,27 +825,6 @@ static void vuart_deinit_connection(struct acrn_vuart *vu)
 	vu->target_vu = NULL;
 }
 
-/**
- * @brief Check if any of the vUARTs in the given VM uses the specified INTx interrupt.
- *
- * This function checks whether the INTx interrupt is already used by vUART. It's usually used when the hypervisor
- * tries to add a new INTx remapping.
- *
- * It will check all the vUARTs in the VM to see if any of them uses the specified INTx interrupt. If any of the vUARTs
- * is active and using the specified INTx interrupt, the function will return true. Otherwise, it will return false.
- *
- * @param[in] vm Pointer to the VM.
- * @param[in] intx_gsi The INTx interrupt number to check against the vUART configurations.
- *
- * @return A boolean value indicating if any of the vUARTs in the VM uses the specified INTx interrupt.
- *
- * @retval true If any of the vUARTs in the VM uses the specified INTx interrupt.
- * @retval false If none of the vUARTs in the VM uses the specified INTx interrupt.
- *
- * @pre vm != NULL
- *
- * @post N/A
- */
 bool is_vuart_intx(const struct acrn_vm *vm, uint32_t intx_gsi)
 {
 	uint8_t i;

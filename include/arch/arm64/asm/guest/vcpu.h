@@ -384,8 +384,7 @@ struct arm64_vcpu_vtimer_diag {
 	uint64_t wfi_trap;
 	uint64_t wfi_irq_masked;
 	uint64_t wfi_pending_irq;
-	/*
-	 * 2026-06-27, vtimer attribution:
+	/* [20260627] vtimer attribution:
 	 *
 	 *   host CNTV PPI27 -> running vCPU -> VM/vCPU vmstat counter
 	 *
@@ -458,8 +457,7 @@ struct acrn_vcpu_arch {
 	struct arm64_vgicv3_vcpu_ctx vgic;
 	struct arm64_vcpu_trap_info trap;
 	struct arm64_vcpu_debug_info debug;
-	/*
-	 * 2026-07-08, bounded IRQ forward progress:
+	/* [20260708] bounded IRQ forward progress:
 	 *
 	 *   pending guest IRQ -> short same-vCPU return window
 	 *                     -> budget expires -> scheduler fairness resumes

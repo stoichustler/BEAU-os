@@ -455,8 +455,7 @@ static void dts_parse_passthrough_device(const void *fdt, int32_t node)
 	bool writable = fdt_getprop(fdt, node, "beau,writable", NULL) != NULL;
 	int32_t ret;
 
-	/*
-	 * 2026-07-09, ARM64 passthrough policy parse:
+	/* [20260709] ARM64 passthrough policy parse:
 	 *
 	 *   platform.dts -> StreamID owner policy -> BSP passthrough ledger
 	 *                         |
@@ -697,8 +696,7 @@ static uint64_t dts_parse_cpu_affinity(const void *fdt, int32_t node,
 	uint64_t affinity = 0UL;
 	uint32_t pcpu_id;
 
-	/*
-	 * 2026-07-08, preserve the authored pCPU order from DTS:
+	/* [20260708] preserve the authored pCPU order from DTS:
 	 *
 	 *   cpu-affinity = <1 6>
 	 *        -> order[0] = 1 -> vcpu0
@@ -1124,8 +1122,7 @@ static void dts_parse_arch(const void *fdt, int32_t generic, uint16_t vm_id,
 				dts_string_prop(fdt, virtio_proxy, "beau,tag", "beau"));
 		proxy_config->throughput = dts_parse_virtio_proxy_throughput(fdt,
 			virtio_proxy);
-		/*
-		 * 2026-07-08, virtio-proxy access policy:
+		/* [20260708] virtio-proxy access policy:
 		 *
 		 *   frontend VM request -> BEAU virtio_proxy -> backend VM protocol service
 		 *
@@ -1359,8 +1356,7 @@ static void dts_parse_hypervisor_sched(const void *fdt)
 	int32_t hypervisor;
 	int32_t sched;
 
-	/*
-	 * 2026-07-10, scheduler policy comes only from platform.dts:
+	/* [20260710] scheduler policy comes only from platform.dts:
 	 *
 	 *   /hypervisor/sched
 	 *       +-- exclusive-cpupool: pcpus + policy
@@ -1395,8 +1391,7 @@ void arm64_platform_dts_parse_vms(const void *fdt,
 	int32_t vm_node;
 	uint32_t service_vm_id;
 
-	/*
-	 * 2026-07-07, ARM64 platform-DTS principle:
+	/* [20260707] ARM64 platform-DTS principle:
 	 *
 	 * Platform policy is parsed once into the long-standing BEAU tables. VM
 	 * creation and boot loaders stay table-driven, so DTS ownership ends before

@@ -17,8 +17,7 @@
 #include <trace.h>
 #include <virtio_proxy.h>
 
-/*
- * 2026-06-30, hypercall principle:
+/* [20260630] hypercall principle:
  *
  * ARM64 guests use HVC for two ABIs in this bring-up tree:
  * - PSCI, identified by the standard PSCI function IDs.

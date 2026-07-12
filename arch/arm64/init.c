@@ -25,8 +25,7 @@
 #include <asm/security.h>
 #endif
 
-/*
- * 2026-06-30, ARM64 host boot principle:
+/* [20260630] ARM64 host boot principle:
  *
  * Assembly entry performs only the EL2 state that must exist before C code can
  * run: exception masking, SP_EL2 selection, vector-base installation, BSS
@@ -77,8 +76,7 @@ static void arm64_wait_vm_launch(uint16_t pcpu_id)
 	cpu_read_memory_barrier();
 }
 
-/*
- * 2026-06-30, ARM64 BSP stack handoff principle:
+/* [20260630] ARM64 BSP stack handoff principle:
  *
  * The boot CPU enters C on the temporary _boot_stack_end stack. After EL2
  * stage-1 mappings and per-pCPU identity are ready, common pCPU setup should

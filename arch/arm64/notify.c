@@ -12,8 +12,7 @@
 #include <asm/irq.h>
 #include <asm/trap.h>
 
-/*
- * 2026-06-30, SMP kick principle:
+/* [20260630] SMP kick principle:
  *
  * Common scheduler and vCPU code express remote work as state bits: pending
  * vCPU requests, NEED_RESCHEDULE, or other per-pCPU flags. ARM64's job here is

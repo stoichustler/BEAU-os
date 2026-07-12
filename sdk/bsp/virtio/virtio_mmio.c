@@ -12,8 +12,7 @@
 #include <rtl.h>
 #include <virtio_mmio.h>
 
-/*
- * 2026-07-10, virtio-mmio virtualization principle:
+/* [20260712] virtio-mmio transport boundary
  *
  * This file is the common virtio-mmio transport layer. It owns the guest-visible
  * MMIO register block, queue address capture, used-ring IRQ status, and helpers
@@ -37,9 +36,10 @@
  *                                             - add used-ring entries
  *                                             - raise used IRQ
  *
- * Ownership rule: the guest owns vring memory, EL2 owns the transport shadow
- * and interrupt status, and each backend owns how descriptor payloads are
- * interpreted.
+ * Key rule:
+ *   - guest OS owns vring memory but not the trusted queue shadow;
+ *   - this layer owns register state, descriptor bounds checks, and IRQ status;
+ *   - device backends own payload semantics only after descriptors validate.
  */
 
 #define VIRTIO_MMIO_MAGIC_VALUE		0x000U

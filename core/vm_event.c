@@ -11,8 +11,7 @@
 #include <vm_event.h>
 #include <sbuf.h>
 
-/*
- * 2026-07-10, VM event service principle:
+/* [20260712] VM event transport boundary
  *
  * VM events are one-way notifications from BEAU core to the service-side event
  * consumer through a shared sbuf. This file owns only the transport binding and
@@ -34,9 +33,11 @@
  *     - append one fixed-size record
  *     - fire HSM notification
  *
- * The shared page is not trusted just because it is mapped by a service VM.
- * sbuf_put() validates the element size against the caller-provided record
- * size before updating producer indexes.
+ * Key rule:
+ *   - producers own event meaning and fixed record contents;
+ *   - this file owns binding a VM to one shared event buffer;
+ *   - sbuf validation protects the producer from corrupt shared metadata before
+ *     HSM notification is raised.
  */
 
 int32_t init_vm_event(struct acrn_vm *vm, uint64_t *hva)

@@ -22,8 +22,7 @@ static uint32_t acrn_hsm_notification_vector = HYPERVISOR_CALLBACK_HSM_VECTOR;
 #define MMIO_DEFAULT_VALUE_SIZE_4	(0xFFFFFFFFUL)
 #define MMIO_DEFAULT_VALUE_SIZE_8	(0xFFFFFFFFFFFFFFFFUL)
 
-/*
- * 2026-07-10, IO-request virtualization principle:
+/* [20260710] IO-request virtualization principle:
  *
  * ARM64 device MMIO starts as a stage-2 data abort. vcpu_exit.c decodes the
  * abort into vcpu->req, then this layer either completes it in EL2 through a

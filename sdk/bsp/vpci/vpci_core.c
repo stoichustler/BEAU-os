@@ -43,8 +43,7 @@
 #include <atomic.h>
 #include "vpci_internal.h"
 
-/*
- * arm64 vPCI framework
+/* [20260712] arm64 vPCI framework
  *
  *              +---------------- guest VM ----------------+
  *              |                                          |
@@ -960,7 +959,6 @@ int32_t vpci_assign_pcidev(struct acrn_vm *tgt_vm, struct acrn_pcidev *pcidev)
 			(vdev_in_service_vm->pdev != NULL) &&
 			!is_host_bridge(vdev_in_service_vm->pdev) && !is_bridge(vdev_in_service_vm->pdev)) {
 
-		/* ToDo: Each PT device must support one type reset */
 		if (!vdev_in_service_vm->pdev->has_pm_reset && !vdev_in_service_vm->pdev->has_flr &&
 				!vdev_in_service_vm->pdev->has_af_flr) {
 			LOG_FTL("%s %x:%x.%x not support flr or not support pm reset\n",
@@ -1111,7 +1109,6 @@ uint32_t vpci_add_capability(struct pci_vdev *vdev, uint8_t *capdata, uint8_t ca
 		capoff = vdev->free_capoff;
 	}
 
-	/* Check if we have enough space */
 	if (((uint16_t)capoff + reallen) <= PCI_CONFIG_SPACE_SIZE) {
 		/* Set the previous capability pointer */
 		if ((sts & PCIM_STATUS_CAPPRESENT) == 0U) {

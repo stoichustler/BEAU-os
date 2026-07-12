@@ -11,8 +11,7 @@
 
 #ifdef CONFIG_ACRNTRACE_ENABLED
 
-/*
- * 2026-07-10, trace service principle:
+/* [20260710] trace service principle:
  *
  * The trace path is a low-overhead producer for fixed-size diagnostic records.
  * Each pCPU writes only to its own ACRN_TRACE sbuf, avoiding a global trace lock

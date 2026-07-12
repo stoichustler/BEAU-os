@@ -39,8 +39,7 @@
 #include <asm/sysreg.h>
 #include <asm/guest/vgicv3.h>
 
-/*
- * 2026-06-30, timer virtualization coverage:
+/* [20260630] timer virtualization coverage:
  *
  * BEAU deliberately keeps the two EL1 timer views separate:
  *
@@ -84,7 +83,7 @@
  * The field gctx->timer_virq is kept only as a debug/compatibility hint for
  * older dump paths. The timer delivery model itself does not depend on it.
  *
- * 2026-06-27, Linux watchdog one-kick timeout closure:
+ * [20260627] Linux watchdog one-kick timeout closure:
  *
  * The guest watchdog kick is a Linux timer-driven HVC. If the guest virtual
  * timer stops making EL1 forward progress, the first boot-time kick may be the
@@ -395,8 +394,7 @@ bool arm64_vtimer_sample_current(struct acrn_vcpu *vcpu)
 	uint64_t cval = read_cntv_cval_el0();
 	uint64_t now = read_cntvct_el0();
 
-	/*
-	 * 2026-06-27, timer level:
+	/* [20260627] timer level:
 	 *
 	 *   guest CNTV_CTL/CVAL + CNTVCT -> PPI27 level
 	 *   EL2 private live IMASK       -> host comparator suppression only
@@ -751,8 +749,7 @@ static void cntv_timer_arm(struct acrn_vcpu *vcpu)
 	}
 	now = cpu_ticks();
 	if ((int64_t)(deadline - now) <= 0L) {
-		/*
-		 * 2026-06-27, offline CNTV catch-up:
+		/* [20260627] offline CNTV catch-up:
 		 *
 		 *   vCPU unload -> saved CNTV deadline is already due
 		 *        -> arm local backup timer for the next tick
@@ -786,8 +783,7 @@ static int32_t vtimer_inject_current(struct acrn_vcpu *vcpu, uint32_t virq,
 	 */
 	if (virq == ARM64_GIC_PPI_VIRTUAL_TIMER) {
 		cntv_timer_disarm(vcpu);
-		/*
-		 * 2026-06-27, vtimer/vGIC level-line model:
+		/* [20260627] vtimer/vGIC level-line model:
 		 *
 		 *   live CNTV high     -> sync current PPI27 line
 		 *   offline deadline   -> queue PPI27 pending/event request

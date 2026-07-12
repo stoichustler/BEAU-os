@@ -34,7 +34,7 @@
  * before touching guest RAM. The module source pointers remain host addresses;
  * load addresses are guest GPAs used later by copy_to_gpa().
  *
- * 2026-07-10, guest OS boot-service framework:
+ * [20260710] guest OS boot-service framework:
  *
  *   platform/DTS-authored vm_config
  *          |
@@ -79,9 +79,6 @@ static void init_vm_acpi_info(struct acrn_vm *vm, const struct abi_module *mod)
 	vm->sw.acpi_info.size = ACPI_MODULE_SIZE;
 }
 
-/* TODO: For statically built FDT, the logic is almost the same as ACPI.
- * merge them into "hardware description mechanism" flow.
- */
 static void init_vm_fdt_info(struct acrn_vm *vm, const struct abi_module *mod)
 {
 	vm->sw.fdt_info.src_addr = mod->start;
@@ -144,9 +141,6 @@ static void init_vm_bootargs_info(struct acrn_vm *vm, const struct acrn_boot_inf
 
 	if (vm_config->load_order == SERVICE_VM) {
 		if (strncat_s((char *)vm->sw.bootargs_info.src_addr, MAX_BOOTARGS_SIZE, " ", 1U) == 0) {
-/* TODO: For now the seed module is used only in x86.
- * we may need a cleanup later.
- */
 #ifdef ARCH_VBOOT_SEED_SUPPORT
 			char seed_args[MAX_SEED_ARG_SIZE] = "";
 

@@ -15,8 +15,7 @@
 #include <virtio_mmio.h>
 #include <virtio_console.h>
 
-/*
- * virtio-console runtime framework:
+/* [20260712] virtio-console runtime framework
  *
  * virtio_console is a built-in BEAU console transport for each Linux VM. It is
  * not a virtio-proxy device and does not forward requests to a VM backend by
@@ -58,6 +57,12 @@
  *
  * Direction naming follows virtio-console convention from the device view:
  * RX queue carries BEAU-to-guest input, TX queue carries guest-to-BEAU output.
+ *
+ * Key rule:
+ *   - Linux owns virtqueue memory and queue notifications;
+ *   - BEAU owns the MMIO transport shadow and per-VM console vUART bridge;
+ *   - descriptors are copied and bounded before bytes enter the shared console
+ *     ring, preventing stale or oversized chains from blocking the shell.
  */
 
 #define VIRTIO_CONSOLE_QUEUE_RX		0U

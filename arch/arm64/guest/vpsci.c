@@ -15,8 +15,7 @@
 #include <asm/psci.h>
 #include <asm/guest/vm_reset.h>
 
-/*
- * 2026-07-10, PSCI virtualization principle:
+/* [20260710] PSCI virtualization principle:
  *
  * PSCI calls are guest power-management requests delivered through the same
  * HVC/SMC exit path as other synchronous guest exits. BEAU handles only the

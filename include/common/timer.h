@@ -77,13 +77,6 @@ void initialize_timer(struct hv_timer *timer,
  */
 bool timer_expired(const struct hv_timer *timer, uint64_t now, uint64_t *delta);
 
-/**
- * @brief Check if a timer is active (in the timer list) or not.
- *
- * @param[in] timer Pointer to timer.
- *
- * @retval true if the timer is in timer list, false otherwise.
- */
 bool timer_is_started(const struct hv_timer *timer);
 
 /**

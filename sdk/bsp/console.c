@@ -24,8 +24,7 @@
 #include <asm/guest/vm.h>
 #include "shell_priv.h"
 
-/*
- * 2026-06-30, console ownership principle:
+/* [20260712] console ownership and replay model
  *
  * The host has one physical serial stream, but BEAU must multiplex three
  * roles on top of it: the hypervisor shell, the selected VM console, and
@@ -33,13 +32,6 @@
  *
  *   ACRN_INVALID_VMID  -> BEAU shell owns host input/output
  *   VM id             -> that VM owns host input; its TX ring drains to host
- *
- * Guest TX does not write directly to the serial driver. vPL011/vUART pushes
- * bytes into a per-VM receive FIFO. vsh binds the host vuart to one VM console
- * at a time; unbound VMs keep buffering output until that vuart is bound again,
- * which prevents one noisy guest from stealing the BEAU shell.
- *
- * 2026-07-10, console service data flow:
  *
  *   physical UART
  *      |
@@ -61,9 +53,13 @@
  *      +-- bound by vsh   -> drain to host UART with VM prefix
  *      +-- not selected   -> keep recent output for later replay
  *
- * The service invariant is single host-input owner, many guest-output
- * producers. Backpressure and drop-oldest buffering protect the shell from
- * being blocked by a noisy or stalled guest console.
+ * RTOS VMs use vPL011/vUART, Linux VMs use virtio-console, and both converge
+ * at the same per-VM console ring before vsh prints data to the host UART.
+ *
+ * Key rule:
+ *   - only one endpoint owns host input at a time;
+ *   - many VM output producers may buffer concurrently without serial access;
+ *   - backpressure and drop-oldest replay protect the shell from noisy guests.
  */
 struct hv_timer console_timer;
 
@@ -388,8 +384,7 @@ bool console_vm_vuart_bind(uint16_t vmid)
 	if (vmid < CONFIG_VM_CONSOLE_RINGBUF_VM_NUM) {
 		rb = &vm_console_ringbufs[vmid];
 		spinlock_irqsave_obtain(&rb->lock, &rflags);
-		/*
-		 * 2026-07-01, console-vuart binding principle:
+		/* [20260701] console-vuart binding principle:
 		 *
 		 *   vPL011 TX -> per-VM receive FIFO -> optional host vuart binding
 		 *
@@ -1166,8 +1161,7 @@ static void console_vm_ring_drain_internal(uint16_t vmid)
 		if (console_vm_ring_drain_begin(rb)) {
 			bool tx_space_released;
 
-			/*
-			 * 2026-07-01, vuart live-drain pacing:
+			/* [20260701] vuart live-drain pacing:
 			 *
 			 * Guest TX can be much faster than the physical serial backend.
 			 * Keep each bound-vuart pass small, and shrink it again when

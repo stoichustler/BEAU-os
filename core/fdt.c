@@ -35,10 +35,6 @@ static void fdt_read_reg_property(const struct fdt_property *reg_prop,
 			| fdt32_to_cpu(*size_raw_lo));
 }
 
-/**
- * @pre addr_out != NULL
- * @pre size_out != NULL
- */
 int fdt_get_phys_mem_region(const void *fdt, uint64_t *addr_out, uint64_t *size_out)
 {
 	int ret = 0;
@@ -47,11 +43,6 @@ int fdt_get_phys_mem_region(const void *fdt, uint64_t *addr_out, uint64_t *size_
 
 	mem_off = fdt_path_offset(fdt, "/memory");
 	if (mem_off > 0) {
-		/*
-		 * TODO: For now this API has two assumptions:
-		 * 1, address and cell sizes are 2 (64bit)
-		 * 2, there is only 1 memory node
-		 */
 		reg_prop = fdt_get_property(fdt, mem_off, "reg", &len);
 		/* minimal 16 bytes for 64bit addr + size */
 		if ((reg_prop != NULL) && (len >= 16)) {
@@ -75,10 +66,8 @@ int fdt_get_rsvd_mem_regions(const void *fdt, struct mem_region *out_regions, in
 	int node, nr_region = 0, ret = 0, mem_off, i, len;
 	const struct fdt_property *reg_prop;
 
-	/* Check dt struct rsvd memory */
 	mem_off = fdt_path_offset(fdt, "/reserved-memory");
 	if (mem_off > 0) {
-		/* TODO: Check address and size cells. Both of them need to be 2 (64bit) */
 		fdt_for_each_subnode(node, fdt, mem_off) {
 			reg_prop = fdt_get_property(fdt, node, "reg", &len);
 			if ((reg_prop != NULL) && (len >= 16)) {

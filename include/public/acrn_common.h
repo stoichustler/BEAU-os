@@ -68,7 +68,6 @@
 #define GUEST_FLAG_STATELESS			(1UL << 14U)	/* Whether the VM is stateless (can be forcefully shutdown with no data loss) */
 #define GUEST_FLAG_NO_FW			(1UL << 15U)	/* Whether this VM does not need external ACPI/FDT modules */
 
-/* TODO: We may need to get this addr from guest ACPI instead of hardcode here */
 #define VIRTUAL_SLEEP_CTL_ADDR		0x400U /* Pre-launched VM uses ACPI reduced HW mode and sleep control register */
 #define VIRTUAL_PM1A_CNT_ADDR		0x404U
 #define	VIRTUAL_PM1A_SCI_EN		0x0001

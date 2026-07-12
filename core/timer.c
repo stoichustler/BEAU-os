@@ -77,7 +77,6 @@ bool timer_is_started(const struct hv_timer *timer)
 
 static void run_timer(const struct hv_timer *timer)
 {
-	/* deadline = 0 means stop timer, we should skip */
 	if ((timer->func != NULL) && (timer->timeout != 0UL)) {
 		timer->func(timer->priv_data);
 	}

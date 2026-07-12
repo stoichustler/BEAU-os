@@ -14,8 +14,7 @@
 
 #include <asm/trap.h>
 
-/*
- * 2026-07-10, EL2 trap routing principle:
+/* [20260710] EL2 trap routing principle:
  *
  * This file owns host-origin EL2 traps and the physical IRQ handoff into the
  * common IRQ core. Guest-origin exits use the vector path in vcpu_exit.c so

@@ -14,8 +14,7 @@
 #include <ticks.h>
 #endif
 
-/*
- * 2026-07-10, common IRQ service principle:
+/* [20260712] common IRQ service boundary
  *
  * core/irq.c owns the architecture-neutral IRQ descriptor table. Architecture
  * code maps physical interrupt IDs into these common IRQ numbers; drivers and
@@ -38,9 +37,12 @@
  *          v
  *   handler -> optional softirq
  *
- * The common layer does not EOI physical hardware. Architecture dispatch owns
- * acknowledge/EOI ordering so device handlers run between those hardware
- * boundary operations.
+ * Key rule:
+ *   - architecture dispatch owns physical acknowledge and EOI ordering;
+ *   - this layer owns common descriptors, counters, latency samples, and action
+ *     callbacks;
+ *   - handlers may defer work to softirq when guest delivery or device service
+ *     must not run in the hard IRQ boundary.
  */
 
 static spinlock_t irq_alloc_spinlock = { .head = 0U, .tail = 0U, };
@@ -154,10 +156,6 @@ uint32_t reserve_irq_num(uint32_t irq)
 	return alloc_irq_num(irq, true);
 }
 
-/*
- * @pre: irq is not in irq_static_mappings
- * free irq num allocated via alloc_irq_num()
- */
 static void free_irq_num(uint32_t irq)
 {
 	uint64_t rflags;
@@ -291,7 +289,6 @@ static void do_irq_common(const uint32_t irq, bool handle_softirq)
 		desc = &irq_desc_array[irq];
 		count_irq(irq);
 
-		/* XXX irq_alloc_bitmap is used lockless here */
 		if (bitmap_test((uint16_t)(irq & 0x3FU), irq_alloc_bitmap + (irq >> 6U))) {
 #if CONFIG_IRQSTAT_LATENCY
 			uint64_t start_ticks = cpu_ticks();

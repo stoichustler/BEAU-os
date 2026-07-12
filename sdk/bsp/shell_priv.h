@@ -75,7 +75,7 @@ struct shell {
 #define SHELL_CMD_VCPU_LIST_PARAM	NULL
 #define SHELL_CMD_VCPU_LIST_HELP	"list all vcpus in all vms"
 
-#define SHELL_CMD_THREAD_LIST		"threads"
+#define SHELL_CMD_THREAD_LIST		"ps"
 #define SHELL_CMD_THREAD_LIST_PARAM	NULL
 #define SHELL_CMD_THREAD_LIST_HELP	"list scheduler threads and state"
 

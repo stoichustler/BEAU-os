@@ -206,8 +206,7 @@ static void shell_print_vm_stage2_maps(const struct acrn_vm *vm)
 		arch_config->guest_uart_size);
 }
 
-/*
- * 2026-06-30, mmap monitor:
+/* [20260630] mmap monitor:
  *
  * mmap is the quick ownership map for ARM64 address translation. It prints the
  * EL2 stage-1 host view first, then each VM's stage-2 view. RAM rows are leaf
@@ -236,8 +235,7 @@ static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv)
 	return 0;
 }
 
-/*
- * 2026-07-09, SMMU monitor:
+/* [20260709] SMMU monitor:
  *
  * smmustat is deliberately diagnostic-only. Probe can put the hardware into an
  * abort-default state, but DMA assignment remains disabled until a later stage
@@ -1027,8 +1025,7 @@ static const struct cpu_regs *shell_dumpstat_get_regs(struct acrn_vcpu *vcpu,
 	return snapshot->captured ? &snapshot->regs : &vcpu->arch.regs;
 }
 
-/*
- * 2026-06-30, dumpstat monitor:
+/* [20260630] dumpstat monitor:
  *
  * dumpstat is a per-vCPU deep snapshot. If the target vCPU is current on a
  * remote pCPU, an IPI samples live EL2 timer and vGIC state; otherwise the
@@ -1277,8 +1274,7 @@ static const char *shell_vcpu_state_to_str(enum vcpu_state state)
 	return str;
 }
 
-/*
- * 2026-06-30, vmstat monitor:
+/* [20260630] vmstat monitor:
  *
  * vmstat is the broad health summary before using dumpstat. It keeps one VM
  * visible at a time: configured resources, runtime state, watchdog and console
@@ -1326,8 +1322,7 @@ static void shell_print_vm_affinity(const struct acrn_vm_config *vm_config,
 		return;
 	}
 
-	/*
-	 * 2026-07-11, vCPU affinity display:
+	/* [20260711] vCPU affinity display:
 	 * cpu_affinity is a bitmap and loses DTS order. Runtime vCPU objects keep
 	 * the real vCPU->pCPU binding, so print that order to make vCPU0 placement
 	 * explicit in vmstat.
@@ -1559,6 +1554,7 @@ static void shell_vmstat_append_flag(char *flags, size_t flags_len, const char *
 static void shell_vmstat_vcpu_diag(const struct acrn_vcpu *vcpu,
 	const struct thread_object *current, const struct sched_latency_stats *latency,
 	const struct sched_rtds_stats *rtds, bool has_rtds,
+	const struct sched_cbs_stats *cbs, bool has_cbs,
 	char *flags, size_t flags_len)
 {
 	uint64_t now = cpu_ticks();
@@ -1577,19 +1573,18 @@ static void shell_vmstat_vcpu_diag(const struct acrn_vcpu *vcpu,
 	 *   usually means another vCPU/thread is occupying that pCPU or the shared
 	 *   core is overloaded.
 	 *
-	 * rtds-depleted:
-	 *   The vCPU runs under RTDS, is not currently executing, and its
-	 *   current-period budget is already zero. RTDS gives each vCPU a fixed
-	 *   budget every period; once that budget is spent, a non-current vCPU must
-	 *   wait for replenishment unless spare CPU time is available through
-	 *   work-conserving slack. A current vCPU with zero budget is probably using
-	 *   that slack, so it is not flagged here.
+	 * rtds-depleted / cbs-depleted:
+	 *   The vCPU runs under a budget scheduler, is not currently executing, and
+	 *   its current budget is already zero. A non-current vCPU must wait for
+	 *   replenishment unless spare CPU time is available through work-conserving
+	 *   slack. A current vCPU with zero budget is probably using that slack, so
+	 *   it is not flagged here.
 	 *
-	 * rtds-overrun:
-	 *   The vCPU is already in cpu-wait and the RTDS replenishment/deadline
-	 *   boundary is also due. This combines "wanted CPU for a while" with "the
-	 *   current RTDS period should have rolled", which is a stronger signal that
-	 *   the shared core is behind schedule.
+	 * rtds-overrun / cbs-overrun:
+	 *   The vCPU is already in cpu-wait and the replenishment/deadline boundary
+	 *   is also due. This combines "wanted CPU for a while" with "the current
+	 *   budget window should have rolled", which is a stronger signal that the
+	 *   shared core is behind schedule.
 	 */
 	if ((vcpu->thread_obj.status == THREAD_STS_RUNNABLE) &&
 		(current != &vcpu->thread_obj) &&
@@ -1605,6 +1600,14 @@ static void shell_vmstat_vcpu_diag(const struct acrn_vcpu *vcpu,
 	}
 	if (has_rtds && cpu_wait && (rtds->deadline_ticks <= now)) {
 		shell_vmstat_append_flag(flags, flags_len, "rtds-overrun");
+	}
+	if (has_cbs && (current != &vcpu->thread_obj) &&
+		(vcpu->thread_obj.status == THREAD_STS_RUNNABLE) &&
+		(cbs->remaining_ticks == 0UL)) {
+		shell_vmstat_append_flag(flags, flags_len, "cbs-depleted");
+	}
+	if (has_cbs && cpu_wait && (cbs->deadline_ticks <= now)) {
+		shell_vmstat_append_flag(flags, flags_len, "cbs-overrun");
 	}
 	if (flags[0] == '\0') {
 		(void)snprintf(flags, flags_len, "ok");
@@ -1687,20 +1690,24 @@ static void shell_vmstat_vcpus(const struct acrn_vm *vm)
 		struct sched_latency_stats latency = { 0U };
 		struct sched_bvt_stats bvt = { 0U };
 		struct sched_rtds_stats rtds = { 0U };
+		struct sched_cbs_stats cbs = { 0U };
 		struct thread_object *current;
 		char diag[96U];
 		bool has_bvt;
 		bool has_rtds;
+		bool has_cbs;
 
 		current = sched_get_current(vcpu->thread_obj.pcpu_id);
 		sched_get_latency(&vcpu->thread_obj, &latency);
 		has_bvt = sched_get_bvt_stats(&vcpu->thread_obj, &bvt);
 		has_rtds = sched_get_rtds_stats(&vcpu->thread_obj, &rtds);
+		has_cbs = sched_get_cbs_stats(&vcpu->thread_obj, &cbs);
 		shell_vmstat_vcpu_diag(vcpu, current, &latency, &rtds, has_rtds,
+			&cbs, has_cbs,
 			diag, sizeof(diag));
 		shell_item_line("%-9s  %-4hu  %-5s  %-7s  %-8s  %-3s  0x%016lx  %s",
 			vcpu->thread_obj.name, vcpu->thread_obj.pcpu_id,
-			has_rtds ? "rtds" : (has_bvt ? "bvt" : "-"),
+			has_rtds ? "rtds" : (has_cbs ? "cbs" : (has_bvt ? "bvt" : "-")),
 			shell_vcpu_state_to_str(vcpu->state),
 			thread_state_to_str(vcpu->thread_obj.status),
 			shell_yes_no(current == &vcpu->thread_obj),
@@ -1719,6 +1726,16 @@ static void shell_vmstat_vcpus(const struct acrn_vm *vm)
 				ticks_to_us(rtds.remaining_ticks),
 				(rtds.deadline_ticks > now) ?
 					ticks_to_us(rtds.deadline_ticks - now) : 0UL);
+		}
+		if (has_cbs) {
+			uint64_t now = cpu_ticks();
+
+			/* CBS fields expose the reservation server window and budget. */
+			shell_item_line("      cbs:period-us:%lu budget-us:%lu remain-us:%lu deadline-in-us:%lu",
+				ticks_to_us(cbs.period_ticks), ticks_to_us(cbs.budget_ticks),
+				ticks_to_us(cbs.remaining_ticks),
+				(cbs.deadline_ticks > now) ?
+					ticks_to_us(cbs.deadline_ticks - now) : 0UL);
 		}
 		shell_vmstat_vcpu_timer(vcpu);
 	}

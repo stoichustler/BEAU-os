@@ -167,7 +167,6 @@ void serial_init(bool early_boot)
 					uint32_t bar_hi = pci_pdev_read_cfg(uart.bdf, pci_bar_offset(1), 4U);
 					uint64_t addr = (bar0 & PCI_BASE_ADDRESS_MEM_MASK)|(((uint64_t)bar_hi) << 32U);
 					if (bar_hi != 0U) {
-						/* TODO: need a generic I/O mapping function */
 						early_pgtable_map_uart(addr);
 					}
 					uart.mmio_base_vaddr = hpa2hva_early(addr);

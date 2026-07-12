@@ -22,6 +22,60 @@
 #include <asm/guest/vgicv3.h>
 #include "smmuv3.h"
 
+/* [20260712] SMMUv3 reference and implementation scope
+ *
+ * Reference document used for terminology:
+ *   Arm System Memory Management Unit Architecture Specification,
+ *   document IHI 0070C.a, covering SMMU architecture versions 3.0, 3.1
+ *   and 3.2. Issue C.a is an amendments/clarifications issue; it does not
+ *   imply that this driver implements every optional 3.2 feature.
+ *
+ * Implemented framework in this file:
+ *
+ *             PCIe endpoint / platform master
+ *                         |
+ *                         | StreamID / Requester ID
+ *                         v
+ *              +-----------------------+
+ *              | SMMUv3 stream table   |
+ *              | SID -> STE            |
+ *              +----+------------+-----+
+ *                   |            |
+ *                   |            +--> ABORT: default for unassigned streams
+ *                   |
+ *                   +--> S2_TRANS: use VM stage-2 root
+ *                         |
+ *                         v
+ *                    IPA/IOVA -> PA
+ *                         |
+ *                         v
+ *                    guest-owned memory
+ *
+ * Control-plane flow:
+ *
+ *   arm_smmu_probe()
+ *       -> read ID registers
+ *       -> install zero/abort stream table
+ *       -> enable CMDQ + SMMU
+ *
+ *   arm_smmu_assign_stream(domain, sid)
+ *       -> build STE from VM root stage-2 table
+ *       -> clean STE to PoC
+ *       -> CFGI_STE + CMD_SYNC through CMDQ
+ *       -> software owner becomes VM
+ *
+ *   arm_smmu_unassign_stream(domain, sid)
+ *       -> replace STE with ABORT
+ *       -> CFGI_STE + CMD_SYNC
+ *       -> software owner returns to host/free
+ *
+ * Out of scope for this minimal EL2 passthrough path:
+ *   stage-1 context descriptors, two-level stream tables, ATS/PRI, nested
+ *   translation, and event queue decoding. EVTQ storage is allocated for the
+ *   architectural shape, but this driver intentionally keeps EVTQ disabled
+ *   until the platform exposes the required register window and IRQ policy.
+ */
+
 #define ARM_SMMU_MAX_DOMAINS	CONFIG_MAX_VM_NUM
 #define ARM_SMMU_PCI_STREAM(bus, devfun)	((((uint32_t)(bus)) << 8U) | (uint32_t)(devfun))
 #define ARM_SMMU_PCI_MSI_COMPAT_STREAM	0U
@@ -121,8 +175,7 @@
 #define ARM_SMMU_CMDQ_SYNC_0_ATTR_SHIFT	24U
 #define ARM_SMMU_CMDQ_SYNC_0_ATTR_OIWB	0xfUL
 
-/*
- * BEAU ARM64 passthrough model, first stage.
+/* [20260712] BEAU ARM64 passthrough model, first stage.
  *
  * SMMUv3 driver uses the VM P2M/stage-2 table as the SMMU stage-2 table.
  * This file follows that model at the framework boundary:
@@ -239,6 +292,13 @@ static uint64_t arm_smmu_ste_vtcr(uint32_t ipa_width)
 	uint64_t vtcr = 0UL;
 	uint64_t t0sz = 64UL - (uint64_t)ipa_width;
 
+	/*
+	 * The STE carries a stage-2 translation control field for device DMA.
+	 * It is the SMMU-side description of the same IPA space that the CPU
+	 * sees through the VM stage-2 table: input address size, starting level,
+	 * cacheability, shareability, granule size, and output PA size must match
+	 * the stage-2 tables rooted at S2TTB.
+	 */
 	vtcr |= t0sz << ARM_SMMU_VTCR_S2T0SZ_SHIFT;
 	vtcr |= (VTCR_SL0_LVL0 >> 6U) << ARM_SMMU_VTCR_S2SL0_SHIFT;
 	vtcr |= (VTCR_IRGN0_WBWA >> 8U) << ARM_SMMU_VTCR_S2IR0_SHIFT;
@@ -268,6 +328,11 @@ static int32_t arm_smmu_cmdq_issue_locked(uint64_t cmd0, uint64_t cmd1)
 	idx = arm_smmu_cmdq_index(prod);
 	arm_smmu_cmdq[idx][0] = cmd0;
 	arm_smmu_cmdq[idx][1] = cmd1;
+	/*
+	 * CMDQ entries live in normal cacheable memory owned by EL2. Clean the
+	 * entry before ringing PROD so the SMMU command fetch observes the final
+	 * command words rather than a stale cache line.
+	 */
 	flush_cache_range(arm_smmu_cmdq[idx], sizeof(arm_smmu_cmdq[idx]));
 
 	arm_smmu_cmdq_prod = next;
@@ -302,6 +367,12 @@ static int32_t arm_smmu_cmdq_sync_locked(void)
 	uint64_t cmd0 = 0UL;
 	int32_t ret;
 
+	/*
+	 * CMD_SYNC is the ordering point for prior command queue operations.
+	 * Use it after STE invalidation and TLB invalidation so subsequent code
+	 * does not publish software ownership before hardware has consumed the
+	 * required SMMU-side state changes.
+	 */
 	cmd0 |= ARM_SMMU_CMDQ_OP_CMD_SYNC << ARM_SMMU_CMDQ_0_OP_SHIFT;
 	cmd0 |= ARM_SMMU_CMDQ_SYNC_0_CS_SEV << ARM_SMMU_CMDQ_SYNC_0_CS_SHIFT;
 	cmd0 |= ARM_SMMU_CMDQ_SYNC_0_MSH_ISH << ARM_SMMU_CMDQ_SYNC_0_MSH_SHIFT;
@@ -370,6 +441,11 @@ static void arm_smmu_write_abort_ste_locked(uint32_t stream_id)
 {
 	uint64_t *ste = arm_smmu_strtab[stream_id];
 
+	/*
+	 * ABORT is the safe default STE state. A valid abort STE makes the SMMU
+	 * terminate transactions for this StreamID instead of letting unknown
+	 * DMA bypass translation.
+	 */
 	ste[0] = ARM_SMMU_STE_0_V |
 		(ARM_SMMU_STE_0_CFG_ABORT << ARM_SMMU_STE_0_CFG_SHIFT);
 	ste[1] = ARM_SMMU_STE_1_SHCFG_INCOMING << ARM_SMMU_STE_1_SHCFG_SHIFT;
@@ -407,6 +483,15 @@ static int32_t arm_smmu_write_s2_ste_locked(const struct iommu_domain *domain,
 	uint64_t vtcr = arm_smmu_ste_vtcr(domain->ipa_width);
 	int32_t ret;
 
+	/*
+	 * Publish a stage-2 STE in two phases:
+	 *
+	 *   1. write non-word0 translation state: VMID, VTCR, S2TTB;
+	 *   2. clean/sync it, then set word0 valid + S2_TRANS and sync again.
+	 *
+	 * This prevents hardware table walks from observing a valid STE whose
+	 * stage-2 root or control fields are still stale.
+	 */
 	ste[1] = ARM_SMMU_STE_1_SHCFG_INCOMING << ARM_SMMU_STE_1_SHCFG_SHIFT;
 	ste[2] = (uint64_t)arm_smmu_domain_vmid(domain) |
 		(vtcr << ARM_SMMU_STE_2_VTCR_SHIFT) |
@@ -532,7 +617,7 @@ static void arm_smmu_zero_abort_tables(uint32_t strtab_log2)
 	(void)memset(arm_smmu_evtq, 0U, sizeof(arm_smmu_evtq));
 
 	/*
-	 * 2026-07-09, SMMUv3 table ownership:
+	 * SMMUv3 table ownership:
 	 *
 	 *   EL2 writes STE/CD/CMDQ/EVTQ in normal cacheable RAM
 	 *       -> clean to PoC
@@ -577,7 +662,7 @@ static int32_t arm_smmu_hw_enable_abort_locked(void)
 	strtab_cfg = ARM_SMMU_STRTAB_BASE_CFG_FMT_LINEAR | strtab_log2;
 
 	/*
-	 * 2026-07-09, abort-default enable sequence:
+	 * Abort-default enable sequence:
 	 *
 	 *   zero STE table  -> STRTAB_BASE
 	 *   zero CMDQ       -> CMDQ_BASE
@@ -659,8 +744,7 @@ void arm_smmu_probe(uint64_t base, uint64_t size)
 		return;
 	}
 
-	/*
-	 * 2026-07-09, SMMU discovery and abort-default programming:
+	/* [20260709] SMMU discovery and abort-default programming:
 	 *
 	 *   platform.dts -> MMIO ID registers -> zero STEs -> SMMUEN
 	 *                                           |
@@ -890,6 +974,20 @@ int32_t arm_smmu_assign_stream(struct iommu_domain *domain, uint32_t stream_id)
 	 * A stream can have exactly one active owner. This is the software
 	 * equivalent of "device already assigned" guard and prevents a
 	 * device from DMAing with two VMIDs over its lifetime.
+	 *
+	 * Assignment state machine:
+	 *
+	 *   FREE/ABORT STE
+	 *        |
+	 *        v
+	 *   S2 STE programmed and synced
+	 *        |
+	 *        v
+	 *   software stream->domain points to the VM
+	 *
+	 * The software owner is updated only after the STE path succeeds, so
+	 * higher layers cannot expose a device as assigned while DMA isolation
+	 * is still missing.
 	 */
 	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);
 	stream = arm_smmu_find_stream(stream_id);
@@ -942,7 +1040,6 @@ int32_t arm_smmu_assign_stream(struct iommu_domain *domain, uint32_t stream_id)
 	}
 	spinlock_irqrestore_release(&arm_smmu_lock, flags);
 
-	/* ERROR message: -NODEV */
 	if (ret) {
 		LOG_ERR("SMMUv3: assignment rejected (%d): stream 0x%x for vm%u",
 			ret, stream_id, domain->vm_id);
@@ -1264,6 +1361,15 @@ static uint32_t arm64_ptdev_map_msi_aliases(struct acrn_vm *vm, uint32_t dev_id,
 	if (!arm_smmu_s2_supported() && (dev_id != ARM64_PTDEV_MSI_COMPAT_DEVID)) {
 		int32_t ret;
 
+		/*
+		 * Compatibility note:
+		 *
+		 * Some emulated or simple platforms do not provide SMMU stage-2
+		 * translation for the MSI doorbell path. In that mode, the endpoint
+		 * may emit MSI writes through a fixed compatibility DeviceID. Mirror
+		 * the ITS mapping for that DeviceID only; normal DMA isolation still
+		 * depends on each endpoint StreamID assignment.
+		 */
 		if (arm64_pt_msi_alias_busy(ARM64_PTDEV_MSI_COMPAT_DEVID, event_id)) {
 			return 0U;
 		}
@@ -1320,6 +1426,11 @@ int32_t ptirq_prepare_msi_remap(struct acrn_vm *vm, uint16_t virt_bdf,
 	 * (DeviceID, EventID) into a guest-visible LPI. This function rewrites
 	 * the physical MSI message to target the host ITS and stores the guest
 	 * MSI identity for later virtual delivery.
+	 *
+	 * Boundary with SMMUv3:
+	 *   - SMMU validates/translates the MSI write address.
+	 *   - ITS consumes DeviceID/EventID and produces an LPI.
+	 *   - vGIC injection delivers the virtual interrupt to the VM.
 	 */
 	if (lpi == IRQ_INVALID) {
 		ret = arm64_gicv3_its_alloc_msix(dev_id, event_id, &lpi, &msg);

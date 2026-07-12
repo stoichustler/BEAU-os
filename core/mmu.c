@@ -93,9 +93,6 @@ struct page *alloc_page(struct page_pool *pool)
 	return page;
 }
 
-/*
- *@pre: ((page - pool->start_page) >> 6U) < pool->bitmap_size
- */
 void free_page(struct page_pool *pool, struct page *page)
 {
 	uint64_t idx, bit;
@@ -160,31 +157,6 @@ static void try_to_free_pgtable_page(const struct pgtable *table,
 	}
 }
 
-/*
- * Split a large page table into next level page table.
- *
- * Large mappings are used when alignment and attributes allow one descriptor to
- * cover a wide range. A later modify/delete may touch only part of that range.
- * The walker then replaces the large leaf with a child table whose entries
- * reproduce the original mapping at smaller granularity:
- *
- *   before:
- *      PGTL2 leaf -> PA base, covers 1GB
- *
- *   split:
- *      PGTL2 table pointer
- *             |
- *             v
- *      +----------+----------+----------+
- *      | PGTL1[0] | PGTL1[1] | ...      |
- *      | same PA  | same PA  |          |
- *      +----------+----------+----------+
- *
- * After the split, the caller can change or delete only the requested
- * subrange, while the rest of the original large mapping remains equivalent.
- *
- * @pre: level could only PGT_LVL2 or PGT_LVL1
- */
 static void split_large_page(uint64_t *pte, enum _page_table_level level,
 		__unused uint64_t vaddr, const struct pgtable *table)
 {
@@ -209,8 +181,6 @@ static void split_large_page(uint64_t *pte, enum _page_table_level level,
 	}
 
 	table->set_pgentry(pte, hva2hpa((void *)pbase), 0, level, 0, table);
-
-	/* TODO: flush the TLB */
 }
 
 static inline void local_modify_or_del_pte(uint64_t *pte,
@@ -246,11 +216,6 @@ static void modify_or_del_pgtl0(uint64_t *pgtl1e, uint64_t vaddr_start, uint64_t
 		uint64_t *pgtl0e = pgtl0_page + index;
 
 		if (!table->pgentry_present(*pgtl0e)) {
-			/*FIXME: For x86, need to suppress warning message for low memory (< 1MBytes),
-			 * as service VM will update MTTR attributes for this region by default
-			 * whether it is present or not. if add the WA in the function update_ept_mem_type(),
-			 * then no need to suppress the warning here.
-			 */
 			if (type == MR_MODIFY) {
 				LOG_WRN("%s, vaddr: 0x%lx pgtl0e is not present.\n", __func__, vaddr);
 			}
@@ -360,15 +325,9 @@ static void modify_or_del_pgtl2(const uint64_t *pgtl3e, uint64_t vaddr_start, ui
 	}
 }
 
-/**
- * @brief Modify or delete the mappings associated with the specified address range.
+/* [20260712] page-table modify/delete ordering
  *
- * This function modifies the properties of an existing mapping or deletes it entirely from the page table. The input
- * address range is specified by [vaddr_base, vaddr_base + size). It is used when changing the access permissions of a
- * memory region or when freeing a previously mapped region. This operation is critical for dynamic memory management,
- * allowing the system to adapt to changes in memory usage patterns or to reclaim resources.
- *
- * Modify/delete principle:
+ * Range update flow:
  *
  *   target range
  *        |
@@ -387,57 +346,11 @@ static void modify_or_del_pgtl2(const uint64_t *pgtl3e, uint64_t vaddr_start, ui
  *        +-- type == MR_DEL:
  *                sanitize leaf entry and free now-empty child tables
  *
- * The sanitized entry is architecture-defined. On ARM64 it is zero by default;
- * on x86 it can point at a safe sanitized page.
- *
- * For error case behaviors:
- * - If the 'type' is MR_MODIFY and any page referenced by the PML4E in the specified address range is not present, the
- * function asserts that the operation is invalid.
- * For normal case behaviors(when the error case conditions are not satisfied):
- * - If any page referenced by the PDPTE/PDE/PTE in the specified address range is not present, there is no change to
- * the corresponding mapping and it continues the operation.
- * - If any PDPTE/PDE in the specified address range maps a large page and the large page address exceeds the specified
- * address range, the function splits the large page into next level page to allow for the modification or deletion of
- * the mappings and the execute right will be recovered by the callback function table->recover_exe_right() when a 2MB
- * page is split to 4KB pages.
- * - If the 'type' is MR_MODIFY, the function modifies the properties of the existing mapping to match the specified
- * properties.
- * - If the 'type' is MR_DEL, the function will set corresponding page table entries to point to the sanitized page.
- *
- * @param[inout] pgtl3_page A pointer to the specified PGT_LVL3 table.
- * @param[in] vaddr_base The specified input address determining the start of the input address range whose mapping
- *                       information is to be updated.
- *                       For hypervisor's MMU, it is the host virtual address.
- *                       For each VM's stage 2 translation, it is the guest physical address.
- * @param[in] size The size of the specified input address range whose mapping information is to be updated.
- * @param[in] prot_set Bit positions representing the specified properties which need to be set.
- *                     Bits specified by prot_clr are cleared before each bit specified by prot_set is set to 1.
- * @param[in] prot_clr Bit positions representing the specified properties which need to be cleared.
- *                     Bits specified by prot_clr are cleared before each bit specified by prot_set is set to 1.
- * @param[in] table A pointer to the struct pgtable containing the information of the specified memory operations.
- * @param[in] type The type of operation to perform (MR_MODIFY or MR_DEL).
- *
- * @return None
- *
- * @pre pgtl3_page != NULL
- * @pre table != NULL
- * @pre (type == MR_MODIFY) || (type == MR_DEL)
- * @pre For x86 architecture, the following conditions shall be met if "type == MR_MODIFY".
- *      - (prot_set & ~(PAGE_RW | PAGE_USER | PAGE_PWT | PAGE_PCD | PAGE_ACCESSED | PAGE_DIRTY | PAGE_PSE | PAGE_GLOBAL
- *      | PAGE_PAT_LARGE | PAGE_NX) == 0)
- *      - (prot_clr & ~(PAGE_RW | PAGE_USER | PAGE_PWT | PAGE_PCD | PAGE_ACCESSED | PAGE_DIRTY | PAGE_PSE | PAGE_GLOBAL
- *      | PAGE_PAT_LARGE | PAGE_NX) == 0)
- * @pre For the VM stage 2 mappings, the following conditions shall be met if "type == MR_MODIFY".
- *      - (prot_set & ~(EPT_RD | EPT_WR | EPT_EXE | EPT_MT_MASK) == 0)
- *      - (prot_set & EPT_MT_MASK) == EPT_UNCACHED || (prot_set & EPT_MT_MASK) == EPT_WC ||
- *        (prot_set & EPT_MT_MASK) == EPT_WT || (prot_set & EPT_MT_MASK) == EPT_WP || (prot_set & EPT_MT_MASK) == EPT_WB
- *      - (prot_clr & ~(EPT_RD | EPT_WR | EPT_EXE | EPT_MT_MASK) == 0)
- *      - (prot_clr & EPT_MT_MASK) == EPT_UNCACHED || (prot_clr & EPT_MT_MASK) == EPT_WC ||
- *        (prot_clr & EPT_MT_MASK) == EPT_WT || (prot_clr & EPT_MT_MASK) == EPT_WP || (prot_clr & EPT_MT_MASK) == EPT_WB
- *
- * @post N/A
- *
- * @remark N/A
+ * Key rule:
+ *   - callers own range validation and architecture permission encodings;
+ *   - this path owns split-before-change ordering and child-table cleanup;
+ *   - missing top-level entries are invalid for modify, while lower missing
+ *     entries are skipped so sparse mappings can be updated safely.
  */
 void pgtable_modify_or_del_map(uint64_t *pgtl3_page, uint64_t vaddr_base, uint64_t size,
 		uint64_t prot_set, uint64_t prot_clr, const struct pgtable *table, uint32_t type)
@@ -590,13 +503,9 @@ static void add_pgtl2(const uint64_t *pgtl3e, uint64_t paddr_start, uint64_t vad
 	}
 }
 
-/**
- * @brief Add new page table mappings.
+/* [20260712] page-table add-map publication
  *
- * This function maps a virtual address range specified by [vaddr_base, vaddr_base + size) to a physical address range
- * starting from 'paddr_base'.
- *
- * Add-map principle:
+ * Add-map flow:
  *
  *   pgtable_add_map()
  *          |
@@ -613,40 +522,11 @@ static void add_pgtl2(const uint64_t *pgtl3e, uint64_t paddr_start, uint64_t vad
  * address. Passing identical paddr/vaddr bases therefore builds an identity
  * map; passing different bases builds an offset map.
  *
- * - If any subrange within [vaddr_base, vaddr_base + size) is already mapped, there is no change to the corresponding
- * mapping and it continues the operation.
- * - When a new 1GB or 2MB mapping is established, the callback function table->tweak_exe_right() is invoked to tweak
- * the execution bit.
- * - When a new page table referenced by a new PGTL2E/PGTL1E is created, all entries in the page table are initialized to
- * point to the sanitized page by default.
- * - Finally, the new mappings are established and initialized according to the specified address range and properties.
- *
- * @param[inout] pgtl3_page A pointer to the specified level 3 table hierarchy.
- * @param[in] paddr_base The specified physical address determining the start of the physical memory region.
- *                       It is the host physical address.
- * @param[in] vaddr_base The specified input address determining the start of the input address space.
- *                       For hypervisor's MMU, it is the host virtual address.
- *                       For each VM's stage 2 translation, it is the guest physical address.
- * @param[in] size The size of the specified input address space.
- * @param[in] prot Bit positions representing the specified properties which need to be set.
- * @param[in] table A pointer to the struct pgtable containing the information of the specified memory operations.
- *
- * @return None
- *
- * @pre pgtl3_page != NULL
- * @pre Any subrange within [vaddr_base, vaddr_base + size) shall already be unmapped.
- * @pre For x86 hypervisor mapping, the following condition shall be met.
- *      - prot & ~(PAGE_PRESENT| PAGE_RW | PAGE_USER | PAGE_PWT | PAGE_PCD | PAGE_ACCESSED | PAGE_DIRTY | PAGE_PSE |
- *      PAGE_GLOBAL | PAGE_PAT_LARGE | PAGE_NX) == 0
- * @pre For VM x86 EPT mapping, the following conditions shall be met.
- *      - prot & ~(EPT_RD | EPT_WR | EPT_EXE | EPT_MT_MASK | EPT_IGNORE_PAT) == 0
- *      - (prot & EPT_MT_MASK) == EPT_UNCACHED || (prot & EPT_MT_MASK) == EPT_WC || (prot & EPT_MT_MASK) == EPT_WT ||
- *        (prot & EPT_MT_MASK) == EPT_WP || (prot & EPT_MT_MASK) == EPT_WB
- * @pre table != NULL
- *
- * @post N/A
- *
- * @remark N/A
+ * Key rule:
+ *   - callers own overlap validation and architecture permission encodings;
+ *   - this path owns child-table allocation and increasing-address publication;
+ *   - large leaves are used only when address alignment, range size, and the
+ *     architecture table callbacks all allow the mapping to stay coarse.
  */
 void pgtable_add_map(uint64_t *pgtl3_page, uint64_t paddr_base, uint64_t vaddr_base,
 		uint64_t size, uint64_t prot, const struct pgtable *table)
@@ -676,65 +556,12 @@ void pgtable_add_map(uint64_t *pgtl3_page, uint64_t paddr_base, uint64_t vaddr_b
 	}
 }
 
-/**
- * @brief Create a new root page table.
- *
- * This function initializes and returns a new root page table. It is typically used during the setup of a new execution
- * context, such as initializing a hypervisor level 3 table or creating a virtual machine. The root page table is essential
- * for defining the virtual memory layout for the context.
- *
- * It creates a new root page table and every entries in the page table are initialized to point to the sanitized page.
- * Finally, the function returns the root page table pointer.
- *
- * @param[in] table A pointer to the struct pgtable containing the information of the specified memory operations.
- *
- * @return A pointer to the newly created root page table.
- *
- * @pre table != NULL
- *
- * @post N/A
- */
 void *pgtable_create_root(const struct pgtable *table)
 {
 	uint64_t *page = (uint64_t *)alloc_page(table->pool);
 	return page;
 }
 
-/**
- * @brief Look for the paging-structure entry that contains the mapping information for the specified input address.
- *
- * This function looks for the paging-structure entry that contains the mapping information for the specified input
- * address of the translation process. It is used to search the page table hierarchy for the entry corresponding to the
- * given virtual address. The function traverses the page table hierarchy from the page level 3 down to the appropriate page
- * table level, returning the entry if found.
- *
- * - If specified address is mapped in the page table hierarchy, it will return a pointer to the page table entry that
- * maps the specified address.
- * - If the specified address is not mapped in the page table hierarchy, it will return NULL.
- *
- * @param[in] pgtl3_page A pointer to the specified page level 3 table hierarchy.
- * @param[in] addr The specified input address whose mapping information is to be searched.
- *                 For hypervisor's MMU, it is the host virtual address.
- *                 For each VM's stage 2 tanslation, it is the guest physical address.
- * @param[out] pg_size A pointer to the size of the page controlled by the returned paging-structure entry.
- * @param[in] table A pointer to the struct pgtable which provides the page pool and callback functions to be used when
- *                  creating the new page.
- *
- * @return A pointer to the paging-structure entry that maps the specified input address.
- *
- * @retval non-NULL There is a paging-structure entry that contains the mapping information for the specified input
- *                  address.
- * @retval NULL There is no paging-structure entry that contains the mapping information for the specified input
- *              address.
- *
- * @pre pgtl3_page != NULL
- * @pre pg_size != NULL
- * @pre table != NULL
- *
- * @post N/A
- *
- * @remark N/A
- */
 const uint64_t *pgtable_lookup_entry(uint64_t *pgtl3_page, uint64_t addr, uint64_t *pg_size, const struct pgtable *table)
 {
 	const uint64_t *pret = NULL;

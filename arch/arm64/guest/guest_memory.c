@@ -11,8 +11,7 @@
 #include <guest_memory.h>
 #include <errno.h>
 
-/*
- * 2026-06-30, guest-memory principle:
+/* [20260630] guest-memory principle:
  *
  * Raw-image loading and guest-copy helpers use the same platform RAM window
  * that stage-2 maps in arch/arm64/guest/vm.c:

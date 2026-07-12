@@ -26,8 +26,7 @@
 #include <asm/guest/vgicv3.h>
 #endif
 
-/*
- * 2026-07-10, BEAU shell service principle:
+/* [20260710] BEAU shell service principle:
  *
  * The shell is the interactive OS-service front end for BEAU diagnostics and
  * VM console switching. It runs as a low-priority scheduler thread on the BSP
@@ -1010,8 +1009,7 @@ bool shell_async_puts_raw(const char *string_ptr)
 
 	spinlock_irqsave_obtain(&shell_tx_lock, &rflags);
 	if (shell_input_active) {
-		/*
-		 * 2026-07-08, shell/log interleave principle:
+		/* [20260708] shell/log interleave principle:
 		 *
 		 * System logs may arrive while the shell prompt is already visible.
 		 * Treat the prompt and any partially typed command as an editable row:
@@ -1265,8 +1263,7 @@ static bool pcpu_is_shared_by_vcpus(uint16_t pcpu_id)
 	return false;
 }
 
-/*
- * 2026-06-30, vcpus monitor:
+/* [20260630] vcpus monitor:
  *
  * This command reports vCPU scheduler ownership, not guest CPU topology.
  * It answers which pCPU owns each vCPU thread, whether that pCPU is shared by
@@ -1343,8 +1340,7 @@ static const char *thread_state_str(enum thread_object_state state)
 	return str;
 }
 
-/*
- * 2026-06-30, threads monitor:
+/* [20260630] threads monitor:
  *
  * This is the scheduler-wide inventory behind the VM-centric commands. It
  * includes idle, shell, helper, and vCPU threads so a stuck VM can be compared
@@ -1373,7 +1369,7 @@ static int32_t shell_list_threads(__unused int32_t argc, __unused char **argv)
 			thread->name,
 			thread->pcpu_id,
 			thread_state_str(thread->status),
-			(current == thread) ? "yes" : "no",
+			(current == thread) ? "Y" : "N",
 			(uint64_t)thread->thread_entry);
 		shell_puts(temp_str);
 	}
@@ -1439,8 +1435,7 @@ static const struct shell_schedstat_thread_sample *shell_schedstat_find_thread_s
 	return NULL;
 }
 
-/*
- * 2026-06-30, schedstat monitor:
+/* [20260630] schedstat monitor:
  *
  * schedstat combines absolute scheduler counters with a two-sample runtime
  * delta. The pCPU table shows whether ticks, reschedules, and switches are
@@ -1518,8 +1513,7 @@ static void shell_schedstat_print_cpu_usage(const struct list_head *head, uint64
 	struct list_head *pos;
 	char temp_str[MAX_STR_SIZE];
 
-	/*
-	 * 2026-06-30 scheduler stats:
+	/* [20260630] scheduler stats:
 	 *   schedule() accumulates per-thread running ticks.
 	 *   schedstat keeps the last shell snapshot and prints deltas.
 	 *
@@ -1908,8 +1902,7 @@ static void shell_print_guest_irqstat(void)
 }
 #endif
 
-/*
- * 2026-06-30, irqstat monitor:
+/* [20260630] irqstat monitor:
  *
  * irqstat prints two layers of interrupt accounting:
  *

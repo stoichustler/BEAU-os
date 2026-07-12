@@ -365,18 +365,8 @@ bool is_hv_owned_pdev(union pci_bdf pbdf)
 	return ret;
 }
 
-/*
- * quantity of uint64_t to encode a bitmap of all bus values
- * TODO: PCI_BUSMAX is a good candidate to move to
- * generated platform files.
- */
 #define BUSES_BITMAP_LEN        ((PCI_BUSMAX + 1U) >> 6U)
 
-/*
- * must be >= total Endpoints in all DRDH devscope
- * TODO: BDF_MAPPING_NUM is a good candidate to move to
- * generated platform files.
- */
 #define BDF_MAPPING_NUM			32U
 
 struct pci_bdf_to_drhd_index_mapping {
@@ -502,13 +492,6 @@ static void pci_add_bdf_from_drhd(union pci_bdf bdf, struct pci_bdf_mapping_grou
 }
 
 
-/*
- * @brief: Setup bdfs_from_drhds data structure as the DMAR tables are walked searching
- * for PCI device scopes. bdfs_from_drhds is used later in scan_pci_hierarchy
- * to map the right DRHD unit to the PCI device.
- * TODO: bdfs_from_drhds is a good candidate to be part of generated platform
- * info.
- */
 static void pci_parse_iommu_devscopes(struct pci_bdf_mapping_group *const bdfs_from_drhds,
 						uint32_t *drhd_idx_pci_all)
 {
@@ -599,10 +582,6 @@ static void init_all_dev_config(void)
 			config_pci_bridge(pdev);
 		}
 
-		/*
-		 * FIXME: Mask the SR-IOV capability instead drop the device
-		 * when supporting PCIe extended capabilities whitelist.
-		 */
 		if (pdev->sriov.capoff != 0U) {
 			cnt = pci_pdev_read_cfg(pdev->bdf,
 				pdev->sriov.capoff + PCIR_SRIOV_TOTAL_VFS, 2U);
@@ -640,7 +619,6 @@ void init_pci_pdev_list(void)
 
 	pci_parse_iommu_devscopes(&bdfs_from_drhds, &drhd_idx_pci_all);
 
-	/* TODO: iterate over list of PCI Host Bridges found in ACPI namespace */
 	for (bus = 0U; bus <= PCI_BUSMAX; bus++) {
 		was_visited = bitmap_test((bus & 0x3FU), &buses_visited[bus >> 6U]);
 		if (!was_visited) {

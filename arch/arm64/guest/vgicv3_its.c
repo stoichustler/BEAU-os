@@ -19,8 +19,7 @@
 
 #include "vgicv3_its.h"
 
-/*
- * 2026-06-30, ITS virtualization principle:
+/* [20260630] ITS virtualization principle:
  *
  * vITS model:
  *

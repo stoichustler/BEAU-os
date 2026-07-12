@@ -52,8 +52,7 @@
 
 #include "vgicv3_its.h"
 
-/*
- * 2026-06-30, interrupt virtualization coverage:
+/* [20260630] interrupt virtualization coverage:
  *
  * vGICv3 virtualization principle:
  *
@@ -641,8 +640,7 @@ static bool vgic_is_vtimer_irq(__unused const struct acrn_vcpu *vcpu, uint32_t v
 
 static bool vgic_irq_configurable(uint32_t virq)
 {
-	/*
-	 * 2026-06-27, vGIC/vtimer invariant:
+	/* [20260627] vGIC/vtimer invariant:
 	 *
 	 *   guest GICR_ICFGR write
 	 *          |
@@ -869,8 +867,7 @@ static void vgicv3_write_lrs(const struct arm64_vgicv3_vcpu_ctx *ctx)
 
 static uint64_t vgicv3_control_hcr(uint64_t hcr)
 {
-	/*
-	 * 2026-06-30, vGICv3 CPU-interface boundary:
+	/* [20260630] vGICv3 CPU-interface boundary:
 	 *
 	 *   EL1 IAR/EOIR/PMR/IGRPEN -> ICV view backed by ICH_VMCR/AP/LRs
 	 *   EL1 SGI sysreg          -> sysreg trap -> software SGI inject
@@ -926,8 +923,7 @@ static void vgicv3_requeue_lr(struct acrn_vcpu *vcpu, const struct arm64_vgic_ir
 		return;
 	}
 
-	/*
-	 * 2026-06-27, pending restore:
+	/* [20260627] pending restore:
 	 *
 	 *   LR disappeared without EOI
 	 *          |
@@ -1791,8 +1787,7 @@ static void vgicv3_sync_vcpu(struct acrn_vcpu *vcpu, bool is_current)
 				lr_pending && !lr_active) {
 				bool line_asserted = arm64_vtimer_sample_current(vcpu);
 
-				/*
-				 * 2026-06-26, vtimer/vGIC sync:
+				/* [20260626] vtimer/vGIC sync:
 				 *
 				 *   CNTV level high -> pending-only PPI27 LR -> wait for EOI
 				 *

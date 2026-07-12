@@ -19,22 +19,12 @@ struct sched_iorr_data {
 	int64_t  left_cycles;
 };
 
-/*
- * @pre obj != NULL
- * @pre obj->data != NULL
- */
 bool is_inqueue(struct thread_object *obj)
 {
 	struct sched_iorr_data *data = (struct sched_iorr_data *)obj->data;
 	return !list_empty(&data->list);
 }
 
-/*
- * @pre obj != NULL
- * @pre obj->data != NULL
- * @pre obj->sched_ctl != NULL
- * @pre obj->sched_ctl->priv != NULL
- */
 void runqueue_add_head(struct thread_object *obj)
 {
 	struct sched_iorr_control *iorr_ctl = (struct sched_iorr_control *)obj->sched_ctl->priv;
@@ -45,12 +35,6 @@ void runqueue_add_head(struct thread_object *obj)
 	}
 }
 
-/*
- * @pre obj != NULL
- * @pre obj->data != NULL
- * @pre obj->sched_ctl != NULL
- * @pre obj->sched_ctl->priv != NULL
- */
 void runqueue_add_tail(struct thread_object *obj)
 {
 	struct sched_iorr_control *iorr_ctl = (struct sched_iorr_control *)obj->sched_ctl->priv;
@@ -61,10 +45,6 @@ void runqueue_add_tail(struct thread_object *obj)
 	}
 }
 
-/*
- * @pre obj != NULL
- * @pre obj->data != NULL
- */
 void runqueue_remove(struct thread_object *obj)
 {
 	struct sched_iorr_data *data = (struct sched_iorr_data *)obj->data;
@@ -125,9 +105,6 @@ static void sched_iorr_del_timer(struct sched_control *ctl)
 	del_timer(&iorr_ctl->tick_timer);
 }
 
-/*
- * @pre ctl->pcpu_id == get_pcpu_id()
- */
 int sched_iorr_init(struct sched_control *ctl)
 {
 	struct sched_iorr_control *iorr_ctl = &per_cpu(sched_iorr_ctl, ctl->pcpu_id);

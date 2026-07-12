@@ -25,8 +25,7 @@
 #include <virtio_console.h>
 #include <virtio_proxy.h>
 
-/*
- * 2026-06-30, VM/stage-2 principle:
+/* [20260630] VM/stage-2 principle:
  *
  * VM memory virtualization is intentionally split from host MMU setup:
  * host stage-1 maps the hypervisor world, while each VM owns a stage-2 root
@@ -39,7 +38,7 @@
  *   VM config RAM window -> stage-2 identity map -> EL1 normal memory
  *   VM config device IPA -> no stage-2 leaf map  -> data abort -> vio MMIO
  *
- * 2026-07-10, ARM64 VM initialization framework:
+ * [20260710] ARM64 VM initialization framework:
  *
  *   common create_vm()
  *          |
@@ -451,8 +450,7 @@ int32_t arch_reset_vm(struct acrn_vm *vm)
 	struct acrn_vcpu *vcpu = NULL;
 	struct acrn_vm_config *vm_config = get_vm_config(vm->vm_id);
 
-	/*
-	 * 2026-07-08, ARM64 VM warm-reset boundary:
+	/* [20260708] ARM64 VM warm-reset boundary:
 	 *
 	 * A VM reset must clear both per-vCPU execution state and per-VM device
 	 * state. Otherwise the new boot may inherit stale pending interrupts,

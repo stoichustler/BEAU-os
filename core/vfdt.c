@@ -11,6 +11,25 @@
 #include <bsp/vfdt.h>
 #include <fdt_api.h>
 
+/* [20260712] Service VM vFDT publication
+ *
+ * host FDT
+ *    |
+ *    v
+ * copy into service VM FDT buffer
+ *    |
+ *    +--> reserve hypervisor memory
+ *    +--> reserve pre-launched VM memory
+ *    +--> apply architecture and platform fixups
+ *    |
+ *    v
+ * publish vm->sw.fdt_info as boot input
+ *
+ * Key rule:
+ *   - common code owns memory reservations shared by every platform;
+ *   - architecture/BSP code owns visible device topology and address layout;
+ *   - boot code consumes fdt_info only after all reservations and fixups finish.
+ */
 void init_vm_vfdt_common(struct acrn_vm *vm)
 {
 	struct acrn_vm_config *vm_config = get_vm_config(vm->vm_id);
@@ -38,9 +57,6 @@ void init_service_vm_vfdt(struct acrn_vm *vm)
 	/* Reserve hypervisor mem range */
 	fdt_add_rsvd_node(fdt, get_hv_image_base(), get_hv_image_size());
 
-	/* Remove hv owned devices */
-	/* TODO: to be implemented */
-
 	/* Reserve pre-launched VM mem range */
 	for (vm_id = 0; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
 		vm_config = get_vm_config(vm_id);
@@ -52,9 +68,6 @@ void init_service_vm_vfdt(struct acrn_vm *vm)
 			}
 		}
 	}
-
-	/* Remove pre-launch owned devices */
-	/* TODO: to be implemented */
 
 	arch_init_service_vm_vfdt(vm);
 

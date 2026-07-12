@@ -28,8 +28,7 @@
 #include <asm/guest/vm_reset.h>
 #include <asm/guest/vgicv3.h>
 
-/*
- * 2026-06-30, vCPU exit principle:
+/* [20260630] vCPU exit principle:
  *
  * Guest exits are entered from the EL2 vector table. Assembly saves the live
  * CPU state into a temporary struct cpu_regs frame on the vCPU thread stack;
@@ -44,7 +43,7 @@
  *   physical IRQ at EL2  -> dispatch IRQ/softirq -> maybe schedule
  *                         -> poll/update vtimer -> process vCPU requests
  *
- * 2026-07-10, synchronous exit demux:
+ * [20260710] synchronous exit demux:
  *
  *   ESR_EL2.EC
  *      |
@@ -388,8 +387,7 @@ static bool vcpu_irq_forward_progress_budget_available(struct acrn_vcpu *vcpu)
 	return true;
 }
 
-/*
- * 2026-07-08, bounded guest IRQ progress window:
+/* [20260708] bounded guest IRQ progress window:
  *
  *   physical IRQ exit
  *        -> refresh current CNTV/vGIC state

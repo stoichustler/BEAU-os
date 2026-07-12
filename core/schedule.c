@@ -156,8 +156,7 @@ static struct acrn_scheduler *select_dts_pcpu_scheduler(uint16_t pcpu_id)
 	const struct sched_cpupool_config *pool = sched_get_pcpu_pool_config(pcpu_id);
 	struct acrn_scheduler *scheduler;
 
-	/*
-	 * 2026-07-10, DTS scheduler ownership:
+	/* [20260710] DTS scheduler ownership:
 	 *
 	 *   /hypervisor/sched
 	 *       +-- exclusive-cpupool: pcpus + policy
@@ -251,9 +250,6 @@ static struct acrn_scheduler *get_scheduler(uint16_t pcpu_id)
 	return ctl->scheduler;
 }
 
-/**
- * @pre obj != NULL
- */
 uint16_t sched_get_pcpuid(const struct thread_object *obj)
 {
 	return obj->pcpu_id;
@@ -720,6 +716,5 @@ void run_idle_thread(void)
 
 	run_thread(idle);
 
-	/* Control should not come here */
 	cpu_dead();
 }

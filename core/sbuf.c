@@ -16,8 +16,7 @@
 #include <per_cpu.h>
 #include <vm_event.h>
 
-/*
- * 2026-07-10, shared-buffer service principle:
+/* [20260712] shared-buffer publication model
  *
  * sbuf is the common ring transport used by BEAU OS services for logs, traces,
  * VM events, and asynchronous IO notifications. The buffer memory can be
@@ -36,9 +35,11 @@
  *          v
  *   service-side reader consumes records
  *
- * The ring intentionally stores at most ele_num - 1 records so head == tail can
- * mean empty. OVERWRITE_EN changes overflow policy only; it does not remove the
- * need for an external lock around concurrent producers.
+ * Key rule:
+ *   - caller owns producer-side serialization around concurrent writers;
+ *   - sbuf owns metadata validation, bounded copy, and tail publication order;
+ *   - ele_num - 1 capacity keeps head == tail as the empty state even when
+ *     OVERWRITE_EN changes overflow handling.
  */
 
 uint32_t sbuf_next_ptr(uint32_t pos_arg,

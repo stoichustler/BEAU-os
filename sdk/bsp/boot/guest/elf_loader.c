@@ -94,10 +94,6 @@ static void *do_load_elf64(struct acrn_vm *vm)
 		p_prg_tbl_head64 = (struct elf64_prog_entry *)(p_elf_img + p_elf_header64->e_phoff);
 		/* Prepare program entries */
 		for (i = 0U; i < p_elf_header64->e_phnum; i++) {
-			/**
-			 * We now only support PT_LOAD type. It needs to copy from file to ram
-			 * TODO: More program types may be needed here
-			 */
 			if (p_prg_tbl_head64->p_type == PT_LOAD) {
 				/**
 				 * copy_to_gpa will check whether the gpa is in EPT, and print message
@@ -160,10 +156,6 @@ static void *do_load_elf32(struct acrn_vm *vm)
 		p_prg_tbl_head32 = (struct elf32_prog_entry *)(p_elf_img + p_elf_header32->e_phoff);
 		/* Copy program entries */
 		for (i = 0U; i < p_elf_header32->e_phnum; i++) {
-			/**
-			 * We now only support PT_LOAD type. It needs to copy from file to ram
-			 * TODO: More program types may be needed here
-			 */
 			if (p_prg_tbl_head32->p_type == PT_LOAD) {
 				/**
 				 * copy_to_gpa will check whether the gpa is in EPT, and print message

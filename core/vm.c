@@ -31,8 +31,7 @@ static struct acrn_vm vm_array[CONFIG_MAX_VM_NUM] __aligned(PAGE_SIZE);
 
 static struct acrn_vm *service_vm_ptr = NULL;
 
-/*
- * 2026-07-10, common VM lifecycle principle:
+/* [20260710] common VM lifecycle principle:
  *
  * core/vm.c owns the VM state machine and static launch policy. Architecture
  * code owns the EL2 virtualization payload attached to that VM: stage-2 tables,
@@ -90,17 +89,11 @@ uint16_t get_vmid_by_name(const char *name)
 	return (vm_id < CONFIG_MAX_VM_NUM) ? (vm_id) : (ACRN_INVALID_VMID);
 }
 
-/**
- * @pre vm != NULL
- */
 bool is_poweroff_vm(const struct acrn_vm *vm)
 {
 	return (vm->state == VM_POWERED_OFF);
 }
 
-/**
- * @pre vm != NULL
- */
 bool is_created_vm(const struct acrn_vm *vm)
 {
 	return (vm->state == VM_CREATED);
@@ -111,19 +104,11 @@ bool is_service_vm(const struct acrn_vm *vm)
 	return (vm != NULL)  && (get_vm_config(vm->vm_id)->load_order == SERVICE_VM);
 }
 
-/**
- * @pre vm != NULL
- * @pre vm->vmid < CONFIG_MAX_VM_NUM
- */
 bool is_postlaunched_vm(const struct acrn_vm *vm)
 {
 	return (get_vm_config(vm->vm_id)->load_order == POST_LAUNCHED_VM);
 }
 
-/**
- * @pre vm != NULL
- * @pre vm->vmid < CONFIG_MAX_VM_NUM
- */
 bool is_prelaunched_vm(const struct acrn_vm *vm)
 {
 	struct acrn_vm_config *vm_config;
@@ -132,9 +117,6 @@ bool is_prelaunched_vm(const struct acrn_vm *vm)
 	return (vm_config->load_order == PRE_LAUNCHED_VM);
 }
 
-/**
- * @pre vm != NULL && vm_config != NULL && vm->vmid < CONFIG_MAX_VM_NUM
- */
 bool is_rt_vm(const struct acrn_vm *vm)
 {
 	struct acrn_vm_config *vm_config = get_vm_config(vm->vm_id);
@@ -142,12 +124,6 @@ bool is_rt_vm(const struct acrn_vm *vm)
 	return ((vm_config->guest_flags & GUEST_FLAG_RT) != 0U);
 }
 
-/**
- * @pre vm != NULL && vm_config != NULL && vm->vmid < CONFIG_MAX_VM_NUM
- *
- * Stateful VM refers to VM that has its own state (such as internal file cache),
- * and will experience state loss (file system corruption) if force powered down.
- */
 bool is_stateful_vm(const struct acrn_vm *vm)
 {
 	struct acrn_vm_config *vm_config = get_vm_config(vm->vm_id);
@@ -156,9 +132,6 @@ bool is_stateful_vm(const struct acrn_vm *vm)
 	return ((vm_config->guest_flags & GUEST_FLAG_STATELESS) == 0U);
 }
 
-/**
- * @pre vm != NULL && vm_config != NULL && vm->vmid < CONFIG_MAX_VM_NUM
- */
 bool is_static_configured_vm(const struct acrn_vm *vm)
 {
 	struct acrn_vm_config *vm_config = get_vm_config(vm->vm_id);
@@ -184,9 +157,6 @@ struct acrn_vm *get_highest_severity_vm(bool runtime)
 	return get_vm_from_vmid(highest_vm_id);
 }
 
-/**
- * @pre vm != NULL
- */
 void poweroff_if_rt_vm(struct acrn_vm *vm)
 {
 	if (is_rt_vm(vm) && !is_paused_vm(vm) && !is_poweroff_vm(vm)) {
@@ -210,31 +180,19 @@ bool has_rt_vm(void)
 	return (vm_id != CONFIG_MAX_VM_NUM);
 }
 
-/*
- * @pre vm != NULL
- */
 void get_vm_lock(struct acrn_vm *vm)
 {
 	spinlock_obtain(&vm->vm_state_lock);
 }
-/*
- * @pre vm != NULL
- */
 void put_vm_lock(struct acrn_vm *vm)
 {
 	spinlock_release(&vm->vm_state_lock);
 }
-/**
- * @pre vm != NULL
- */
 bool is_paused_vm(const struct acrn_vm *vm)
 {
 	return (vm->state == VM_PAUSED);
 }
 
-/**
- * @pre vm_config != NULL
- */
 static inline uint16_t get_configured_bsp_pcpu_id(const struct acrn_vm_config *vm_config)
 {
 	return (vm_config->cpu_affinity_num != 0U) ?
@@ -278,8 +236,7 @@ static int32_t create_vm_vcpus(struct acrn_vm *vm, uint64_t pcpu_bitmap,
 	uint16_t idx;
 	int32_t status = 0;
 
-	/*
-	 * 2026-07-08, DTS-authored cpu-affinity is an ordered vCPU map:
+	/* [20260708] DTS-authored cpu-affinity is an ordered vCPU map:
 	 *
 	 *   cpu-affinity = <1 6>;
 	 *          |
@@ -346,12 +303,6 @@ static void log_started_vms(struct acrn_vm *const start_vms[],
 	}
 }
 
-/**
- * return a pointer to the virtual machine structure associated with
- * this VM ID
- *
- * @pre vm_id < CONFIG_MAX_VM_NUM
- */
 struct acrn_vm *get_vm_from_vmid(uint16_t vm_id)
 {
 	return &vm_array[vm_id];
@@ -373,7 +324,6 @@ bool is_ready_for_system_shutdown(void)
 
 	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
 		vm = get_vm_from_vmid(vm_id);
-		/* TODO: Update code to cover hybrid mode */
 		if (!is_poweroff_vm(vm) && is_stateful_vm(vm)) {
 			ret = false;
 			break;
@@ -383,10 +333,6 @@ bool is_ready_for_system_shutdown(void)
 	return ret;
 }
 
-/**
- * @pre vm_config != NULL
- * @Application constraint: The validity of vm_config->cpu_affinity should be guaranteed before run-time.
- */
 /*
  * Static VM creation-to-run flow:
  *
@@ -510,8 +456,7 @@ void launch_vms(uint16_t pcpu_id)
 		}
 	}
 
-	/*
-	 * 2026-07-08, two-phase static VM start:
+	/* [20260708] two-phase static VM start:
 	 *
 	 *   create/prepare all VM images
 	 *        -> start VM BSPs on remote pCPUs
@@ -529,10 +474,6 @@ void launch_vms(uint16_t pcpu_id)
 #endif
 }
 
-/**
- * @pre vm != NULL
- * @pre vm->state == VM_CREATED
- */
 void start_vm(struct acrn_vm *vm)
 {
 	struct acrn_vcpu *vcpu = vcpu_from_vid(vm, BSP_CPU_ID);
@@ -543,9 +484,6 @@ void start_vm(struct acrn_vm *vm)
 	vm->state = VM_RUNNING;
 }
 
-/**
- * @pre vm != NULL
- */
 void pause_vm(struct acrn_vm *vm)
 {
 	uint16_t i;
@@ -568,7 +506,6 @@ int32_t destroy_vm(struct acrn_vm *vm)
 	struct acrn_vm_config *vm_config = NULL;
 	struct acrn_vcpu *vcpu = NULL;
 
-	/* Only allow shutdown paused vm */
 	vm->state = VM_POWERED_OFF;
 	vm_wdt_reset(vm);
 
@@ -576,15 +513,12 @@ int32_t destroy_vm(struct acrn_vm *vm)
 		sbuf_reset();
 	}
 
-	/* TODO: Same as create_vm, we have several common module initialization
-	 * logic inside arch_deinit_vm. */
 	ret = arch_deinit_vm(vm);
 
 	foreach_vcpu(i, vm, vcpu) {
 		destroy_vcpu(vcpu);
 	}
 
-	/* after guest_flags not used, then clear it */
 	vm_config = get_vm_config(vm->vm_id);
 	vm_config->guest_flags &= ~DM_OWNED_GUEST_FLAG_MASK;
 	if (!is_static_configured_vm(vm)) {
@@ -594,22 +528,16 @@ int32_t destroy_vm(struct acrn_vm *vm)
 	return ret;
 }
 
-/**
- * @pre vm_id < CONFIG_MAX_VM_NUM && vm_config != NULL && rtn_vm != NULL
- * @pre vm->state == VM_POWERED_OFF
- */
 int32_t create_vm(uint16_t vm_id, uint64_t pcpu_bitmap, struct acrn_vm_config *vm_config, struct acrn_vm **rtn_vm)
 {
 	int32_t status = 0;
 	struct acrn_vm *vm = NULL;
 
-	/* Allocate memory for virtual machine */
 	vm = &vm_array[vm_id];
 	vm->vm_id = vm_id;
 	vm->hw.created_vcpus = 0U;
 
 	if (vm_config->name[0] == '\0') {
-		/* if VM name is not configured, specify with VM ID */
 		snprintf(vm_config->name, 16, "BEAU vm-%d", vm_id);
 	}
 
@@ -621,7 +549,6 @@ int32_t create_vm(uint16_t vm_id, uint64_t pcpu_bitmap, struct acrn_vm_config *v
 
 	if ((vm_config->load_order == POST_LAUNCHED_VM)
 			&& ((vm_config->guest_flags & GUEST_FLAG_IO_COMPLETION_POLLING) != 0U)) {
-		/* enable IO completion polling mode per its guest flags in vm_config. */
 		vm->sw.is_polling_ioreq = true;
 	}
 
@@ -629,17 +556,9 @@ int32_t create_vm(uint16_t vm_id, uint64_t pcpu_bitmap, struct acrn_vm_config *v
 	spinlock_init(&vm->emul_mmio_lock);
 	vm->nr_emul_mmio_regions = 0U;
 
-	/* TODO: Some logic inside arch_init_vm can also be moved to common but
-	 * we didn't come up with abstraction good enough to capture dependencies. Leave those
-	 * inside arch for now.
-	 */
 	status = arch_init_vm(vm, vm_config);
 
 	if (status == 0) {
-		/* We have assumptions:
-		 *   1) vcpus used by Service VM has been offlined by DM before User VM re-use it.
-		 *   2) pcpu_bitmap passed sanitization is OK for vcpu creating.
-		 */
 		vm->hw.cpu_affinity = pcpu_bitmap;
 		status = create_vm_vcpus(vm, pcpu_bitmap, vm_config);
 	}
@@ -654,12 +573,6 @@ int32_t create_vm(uint16_t vm_id, uint64_t pcpu_bitmap, struct acrn_vm_config *v
 	return status;
 }
 
-/**
- * "Warm" reset a VM.
- * To "Cold" reset a VM, simply destroy and re-create.
- *
- * @pre vm->state == VM_PAUSED
- */
 int32_t reset_vm(struct acrn_vm *vm)
 {
 	int32_t ret = -1;

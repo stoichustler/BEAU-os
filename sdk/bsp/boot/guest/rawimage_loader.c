@@ -16,8 +16,7 @@
 #include <mmu.h>
 #endif
 
-/*
- * 2026-07-10, raw-image loader service principle:
+/* [20260710] raw-image loader service principle:
  *
  * The raw-image loader is the BSP service that turns boot metadata into bytes
  * inside a VM RAM window. It does not create stage-2 mappings and does not
@@ -145,7 +144,6 @@ static int32_t load_rawimage(struct acrn_vm *vm)
 	 * but this loader still reasons in guest GPAs.
 	 */
 
-	/* TODO: GPA 0 load support */
 	kernel_load_gpa = vm_config->os_config.kernel_load_addr;
 #if defined(CONFIG_ARM64)
 	ram_start = vm_config->arch.guest_ram_start;
@@ -182,9 +180,6 @@ static int32_t load_rawimage(struct acrn_vm *vm)
 		ramdisk_info->load_addr = (void *)ramdisk_load_gpa;
 	}
 
-	/* TODO: For simplicity assume there are enough space just before kernel load address
-	 * Fix this after implementing find_space_from_vm_vfdt API
-	 */
 	if (vm->sw.fdt_info.src_addr != NULL) {
 #if defined(CONFIG_ARM64)
 		uint64_t fdt_load_gpa = arm64_rawimage_fdt_load_gpa(vm, kernel_load_gpa,

@@ -36,9 +36,6 @@
 #define BZIMG_CMDLINE_GPA(load_params_gpa)	((load_params_gpa) + MEM_1K + MEM_4K)
 #define BZIMG_EFIMMAP_GPA(load_params_gpa)	((load_params_gpa) + MEM_1K + MEM_4K + MEM_2K)
 
-/* TODO:
- * The value is referenced from Linux boot protocal for old kernels,
- * but this should be configurable for different OS. */
 #define DEFAULT_RAMDISK_GPA_MAX		0x37ffffffUL
 
 #define PRE_VM_MAX_RAM_ADDR_BELOW_4GB		(VIRT_ACPI_DATA_ADDR - 1UL)
@@ -153,7 +150,6 @@ static void *get_bzimage_kernel_load_addr(struct acrn_vm *vm)
 		mods_start = service_vm_hpa2gpa(mods_start);
 		mods_end = service_vm_hpa2gpa(mods_end);
 
-		/* TODO: support load kernel when modules are beyond 4GB space. */
 		if (mods_end < MEM_4G) {
 			kernel_load_gpa = find_space_from_ve820(vm, kernel_size, MEM_1M, mods_start);
 

@@ -115,8 +115,7 @@ struct acrn_vm_pci_dev_config {
 	uint32_t emu_type;				/* the type how the device is emulated. */
 	union pci_bdf vbdf;				/* virtual BDF of PCI device */
 	union pci_bdf pbdf;				/* physical BDF of PCI device */
-	char shm_region_name[32];			/* TODO: combine pbdf and shm_region_name into a union member */
-	/* TODO: All device specific attributions need move to other place */
+	char shm_region_name[32];
 	struct target_vuart t_vuart;
 	uint16_t vuart_idx;
 	uint16_t vrp_sec_bus;			/* use virtual root port's secondary bus as unique identification */

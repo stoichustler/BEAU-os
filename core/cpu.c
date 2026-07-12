@@ -13,9 +13,6 @@
 
 static volatile uint64_t pcpu_active_bitmap = 0UL;
 
-/*
- * @post return <= MAX_PCPU_NUM
- */
 uint16_t get_pcpu_nums(void)
 {
 	return arch_get_pcpu_num();
@@ -69,25 +66,13 @@ uint64_t get_active_pcpu_bitmap(void)
 
 void pcpu_set_current_state(uint16_t pcpu_id, enum pcpu_boot_state state)
 {
-	/* Check if state is initializing */
 	if (state == PCPU_STATE_INITIALIZING) {
-
-		/* Save this CPU's logical ID to arch specific per-cpu reg */
 		set_current_pcpu_id(pcpu_id);
 	}
 
-	/* Set state for the specified CPU */
 	per_cpu(boot_state, pcpu_id) = state;
 }
 
-/**
- * @brief Start all cpus if the bit is set in mask except itself
- *
- * @param[in] mask bits mask of cpus which should be started
- *
- * @return true if all cpus set in mask are started
- * @return false if there are any cpus set in mask aren't started
- */
 bool start_pcpus(uint64_t mask)
 {
 	uint16_t i;
@@ -162,14 +147,6 @@ void cpu_dead(void)
 	arch_cpu_dead();
 }
 
-/* XXX: BEAU OS 2026
- *
- * _________ __________ _____   ___ ___     ________   ________
- * \_____   \\_   ____//  _  \ /   |   \    \_____  \ /  _____/
- *  |   |  _/ |   ___)/  /_\  \\   |   /     /   |   \\____  \
- *  |______ \ |_____ \\___|___ \\_____/      \_____  //____  /
- *         \/       \/        \/                   \/      \/ (2026)
- */
 void print_hv_banner(void)
 {
 	LOG_INF("BEAU OS (HYPERVISOR) v%s [%s] %s (%s)", BEAU_OS_VERSION,

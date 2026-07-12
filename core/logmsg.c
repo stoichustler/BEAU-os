@@ -13,8 +13,7 @@
 #include <console.h>
 #include <npk_log.h>
 
-/*
- * 2026-07-10, log service principle:
+/* [20260710] log service principle:
  *
  * do_logmsg() is the common fanout point for BEAU OS diagnostics. It formats
  * one plain log line, then sends that same line to the enabled sinks: memory
@@ -102,7 +101,7 @@ void format_log_timestamp(char *buffer, size_t size, uint64_t timestamp_us)
 		return;
 	}
 
-	/* 2026-07-08 Zephyr RTOS like timestamp format
+	/* [20260708] Zephyr RTOS like timestamp format
 	 *
 	 * Timestamp decomposition: split the unbounded seconds counter from the sub-second
 	 * remainder first. The bounded remainders keep every later operation small and

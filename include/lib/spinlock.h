@@ -13,8 +13,7 @@
 #include <cpu.h>
 #include <asm/lib/spinlock.h>
 
-/*
- * 2026-06-30, common spinlock principle:
+/* [20260630] common spinlock principle:
  *
  * spinlock_t is the architecture ticket-lock object exposed to shared code.
  * Callers use it for short critical sections that may be reached by multiple

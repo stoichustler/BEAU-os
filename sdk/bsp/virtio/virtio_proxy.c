@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: BSD-3-Clause
  *
- * 2026-07-10, virtio-proxy transport principle:
+ * [20260710] virtio-proxy transport principle:
  *
  * This file owns the EL2 transport boundary between a VM3 virtio frontend and a
  * VM2 backend. It intentionally does not understand FUSE, RNG, block, or I2C
@@ -379,8 +379,7 @@ static void virtio_proxy_build_config(struct virtio_proxy_dev *dev,
 	(void)memset(dev->config, 0U, sizeof(dev->config));
 	dev->config_size = 0U;
 
-	/*
-	 * 2026-07-08, virtio-proxy config principle:
+	/* [20260708] virtio-proxy config principle:
 	 *
 	 * DTS chooses which frontend driver the guest will bind by selecting a
 	 * virtio device id. Config space is then just bytes carried by the
@@ -566,8 +565,7 @@ static void virtio_proxy_notify_queue(struct virtio_mmio_dev *mmio,
 		return;
 	}
 
-	/*
-	 * 2026-07-08, transport-only failure mode:
+	/* [20260708] transport-only failure mode:
 	 *
 	 * No protocol backend means no owner can safely consume avail entries or
 	 * produce used entries. Leave the vring untouched; a later backend can

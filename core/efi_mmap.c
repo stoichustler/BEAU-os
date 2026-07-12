@@ -30,9 +30,6 @@ static void sort_efi_mmap_entries(void)
 	}
 }
 
-/**
- * @pre (uefi_info->memmap_size / uefi_info->memdesc_size) <= MAX_EFI_MMAP_ENTRIES
- */
 void init_efi_mmap_entries(struct efi_info *uefi_info)
 {
 	void *efi_memmap = (void *)((uint64_t)uefi_info->memmap | ((uint64_t)uefi_info->memmap_hi << 32U));

@@ -17,8 +17,7 @@
 #define PTIRQ_ENTRY_HASHBITS	9U
 #define PTIRQ_ENTRY_HASHSIZE	(1U << PTIRQ_ENTRY_HASHBITS)
 
-/*
- * Pass-through IRQ remapping model
+/* [20260712] Pass-through IRQ remapping model
  *
  * A ptirq_remapping_info is the common software join point between the host
  * interrupt source and the interrupt identity visible to a VM:
@@ -43,6 +42,11 @@
  * Two hash tables keep both directions cheap:
  * - phys_sid_htable: physical-source lookup from the host IRQ path, vm == NULL.
  * - virt_sid_htable: virtual-source lookup inside one VM for control paths.
+ *
+ * Key rule:
+ *   - hard IRQ context owns only acknowledgement and softirq queuing;
+ *   - softirq context owns virtual delivery ordering and delay policy;
+ *   - entries must be deactivated before VM/device ownership is released.
  */
 #define PTIRQ_BITMAP_ARRAY_SIZE	INT_DIV_ROUNDUP(CONFIG_MAX_PT_IRQ_ENTRIES, 64U)
 struct ptirq_remapping_info ptirq_entries[CONFIG_MAX_PT_IRQ_ENTRIES];
@@ -125,12 +129,9 @@ static void ptirq_enqueue_softirq(struct ptirq_remapping_info *entry)
 {
 	uint64_t rflags;
 
-	/* enqueue request in order, SOFTIRQ_PTDEV will pickup */
 	local_irq_save(&rflags);
 
-	/* avoid adding recursively */
 	list_del(&entry->softirq_node);
-	/* TODO: assert if entry already in list */
 	list_add_tail(&entry->softirq_node, &get_cpu_var(softirq_dev_entry_list));
 	local_irq_restore(rflags);
 	fire_softirq(SOFTIRQ_PTDEV);

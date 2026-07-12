@@ -14,8 +14,7 @@ typedef struct _arch_spinlock {
 	uint64_t tail;
 } arch_spinlock_t;
 
-/*
- * 2026-06-30, ARM64 ticket-lock principle:
+/* [20260630] ARM64 ticket-lock principle:
  *
  * head is the next ticket to hand out; tail is the ticket currently allowed to
  * enter. Each caller atomically increments head and keeps the previous value as

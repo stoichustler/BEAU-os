@@ -35,7 +35,7 @@ static int nr_rsvd_regions;
  * This file owns only the EL2 stage-1 map. Guest memory isolation is built in
  * arch/arm64/guest/vm.c so the two regimes stay independently auditable.
  *
- * 2026-06-30 ARM64 MMU principle:
+ * [20260630] ARM64 MMU principle:
  *
  * Software issues virtual addresses. The MMU first looks for a cached
  * translation in the TLB; on a miss, its table-walk unit reads translation

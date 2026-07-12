@@ -47,8 +47,7 @@ void init_acrn_boot_info(uint32_t *registers)
 {
 	int32_t ret;
 
-	/*
-	 * 2026-06-30, boot-info normalization principle:
+	/* [20260630] boot-info normalization principle:
 	 *
 	 * The BSP reaches this point before VM creation, while bootloader records
 	 * are still available through the raw entry registers. Convert that

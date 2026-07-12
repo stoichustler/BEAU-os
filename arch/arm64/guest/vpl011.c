@@ -44,8 +44,7 @@
 static const uint8_t pl011_pid[] = { 0x11U, 0x10U, 0x14U, 0x00U, 0x0dU, 0xf0U, 0x05U, 0xb1U };
 static const uint8_t pl011_cid[] = { 0x0dU, 0xf0U, 0x05U, 0xb1U };
 
-/*
- * 2026-06-30, vPL011 principle:
+/* [20260630] vPL011 principle:
  *
  * vPL011 is the ARM64 guest console device. Stage-2 deliberately leaves the
  * UART IPA unmapped, data-abort MMIO reaches this file, and the common console
@@ -84,8 +83,7 @@ static void vpl011_refresh_rx_state(struct acrn_vuart *console, struct arm64_vpl
 {
 	uint32_t rx_count = vuart_rx_numchars(console);
 
-	/*
-	 * 2026-07-11, vPL011 state-cache principle:
+	/* [20260711] vPL011 state-cache principle:
 	 *
 	 * Linux polls FR/RIS/MIS heavily. Keep those registers as cached state and
 	 * update them only when the RX source changes, instead of recomputing FIFO

@@ -5,7 +5,7 @@
  *
  * Partitioned Constant Bandwidth Server scheduler for BEAU.
  *
- * 2026-07-11, CBS framework on BEAU:
+ * [20260711] CBS framework on BEAU:
  *
  *   platform.dts
  *   shared-cpupool {

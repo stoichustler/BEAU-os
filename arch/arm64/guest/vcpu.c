@@ -20,8 +20,7 @@
 #include <asm/guest/virq.h>
 #include <asm/guest/vgicv3.h>
 
-/*
- * 2026-06-30, vCPU scheduling coverage:
+/* [20260630] vCPU scheduling coverage:
  *
  * vCPU virtualization principle:
  *
@@ -384,8 +383,7 @@ void load_vcpu(__unused struct acrn_vcpu *vcpu)
 	write_vttbr_el2(gctx->vttbr_el2);
 	flush_stage2_tlb_local();
 	write_vmpidr_el2(vcpu_get_vmpidr(vcpu));
-	/*
-	 * 2026-06-26, vCPU/vtimer principle:
+	/* [20260626] vCPU/vtimer principle:
 	 *
 	 *   CNTVCT_EL0 read  -> hardware CNTVCT = CNTPCT - CNTVOFF_EL2
 	 *   CNTV timer regs  -> live CNTV saved/restored on vCPU switch

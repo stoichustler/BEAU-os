@@ -681,13 +681,12 @@ void vdev_pt_hide_sriov_cap(struct pci_vdev *vdev)
 	LOG_INF("hide sriov cap for %02x:%02x.%x", vdev->pdev->bdf.bits.b, vdev->pdev->bdf.bits.d, vdev->pdev->bdf.bits.f);
 }
 
-/* TODO:
- * The OpRegion is not 4KB aligned, while under some platforms,
- * it will take up to 16KB. In this case, OpRegion overlay 5 pages.
- * So set GPU_OPREGION_SIZE to 0x5000U(20KB) here.
+/* [20260712] GPU OpRegion passthrough boundary
  *
- * The solution that pass-thru OpRegion has potential security issue.
- * Will take the copy + emulation solution to expose host OpRegion to guest later.
+ * The OpRegion can cross a 4 KB boundary on some platforms, so the mapping
+ * covers the configured 20 KB window. This is a passthrough compatibility path:
+ * the guest sees host OpRegion contents through stage-2 device mapping, so do
+ * not use it for devices that require copy-and-emulate isolation.
  */
 void passthru_gpu_opregion(struct pci_vdev *vdev)
 {

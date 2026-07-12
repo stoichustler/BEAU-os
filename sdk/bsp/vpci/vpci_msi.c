@@ -39,8 +39,7 @@
 #include <pgtable.h>
 #include "vpci_internal.h"
 
-/*
- * MSI/MSI-X remap model
+/* [20260712] vPCI MSI/MSI-X remap model
  *
  * Guest driver view:
  *   write virtual MSI address/data or MSI-X table entry
@@ -54,6 +53,12 @@
  * This keeps guest routing values out of the physical device. The device can
  * raise an interrupt, but the final target is selected by the remap entry and
  * delivered as a virtual interrupt to the owning VM.
+ *
+ * Key rule:
+ *   - guest drivers own only the virtual capability/table values;
+ *   - vPCI owns the shadow state and decides when a remap is complete;
+ *   - physical devices are programmed only with host-routable messages after
+ *     interrupt remap succeeds.
  */
 
 static inline uint32_t vmsi_mask_offset(const struct pci_vdev *vdev)
@@ -696,7 +701,6 @@ void write_vmsix_cap_reg_on_msi(struct pci_vdev *vdev, uint32_t offset, uint32_t
 	uint16_t msi_msgctrl;
 
 	old_msgctrl = (uint16_t)pci_vdev_read_vcfg(vdev, vdev->msix.capoff + PCIR_MSIX_CTRL, 2U);
-	/* Write to vdev */
 	pci_vdev_write_vcfg(vdev, offset, bytes, val);
 	msgctrl = (uint16_t)pci_vdev_read_vcfg(vdev, vdev->msix.capoff + PCIR_MSIX_CTRL, 2U);
 

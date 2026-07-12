@@ -136,10 +136,6 @@ struct sched_bvt_data {
 static void runqueue_add(struct thread_object *obj);
 static void runqueue_remove(struct thread_object *obj);
 
-/*
- * @pre obj != NULL
- * @pre obj->data != NULL
- */
 static bool is_inqueue(struct thread_object *obj)
 {
 	struct sched_bvt_data *data = (struct sched_bvt_data *)obj->data;
@@ -213,9 +209,6 @@ static void bvt_update_warp_after_charge(struct sched_bvt_data *data,
 	}
 }
 
-/*
- * @pre bvt_ctl != NULL
- */
 static void update_svt(struct sched_bvt_control *bvt_ctl)
 {
 	struct sched_bvt_data *obj_data;
@@ -228,12 +221,6 @@ static void update_svt(struct sched_bvt_control *bvt_ctl)
 	}
 }
 
-/*
- * @pre obj != NULL
- * @pre obj->data != NULL
- * @pre obj->sched_ctl != NULL
- * @pre obj->sched_ctl->priv != NULL
- */
 static void runqueue_add(struct thread_object *obj)
 {
 	struct sched_bvt_control *bvt_ctl =
@@ -265,25 +252,12 @@ static void runqueue_add(struct thread_object *obj)
 	}
 }
 
-/*
- * @pre obj != NULL
- * @pre obj->data != NULL
- */
 static void runqueue_remove(struct thread_object *obj)
 {
 	struct sched_bvt_data *data = (struct sched_bvt_data *)obj->data;
 
 	list_del_init(&data->list);
 }
-
-/*
- * @brief Get the SVT (scheduler virtual time) which indicates the
- * minimum AVT of any runnable threads.
- * @pre obj != NULL
- * @pre obj->data != NULL
- * @pre obj->sched_ctl != NULL
- * @pre obj->sched_ctl->priv != NULL
- */
 
 static int64_t get_svt(struct thread_object *obj)
 {
@@ -317,9 +291,6 @@ static void sched_tick_handler(void *param)
 	release_schedule_lock(pcpu_id, rflags);
 }
 
-/*
- *@pre: ctl->pcpu_id == get_pcpu_id()
- */
 static int sched_bvt_init(struct sched_control *ctl)
 {
 	struct sched_bvt_control *bvt_ctl = &per_cpu(sched_bvt_ctl, ctl->pcpu_id);

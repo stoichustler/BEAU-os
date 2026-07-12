@@ -7,8 +7,7 @@
 #include <types.h>
 #include <asm/psci.h>
 
-/*
- * 2026-06-30, ARM64 host PSCI principle:
+/* [20260630] ARM64 host PSCI principle:
  *
  * This file is the BEAU host-side PSCI conduit. It is used when EL2 needs the
  * platform firmware to power on a physical CPU or reset/power off the machine.

@@ -36,8 +36,6 @@ struct per_cpu_region {
 	uint64_t spurious;
 	struct acrn_vcpu *ever_run_vcpu;
 	struct per_cpu_timers cpu_timers;
-	/*TODO: we only need sched_ctl as configured,
-	  not neccessarily to have them all */
 	struct sched_control sched_ctl;
 	struct sched_noop_control sched_noop_ctl;
 	struct sched_iorr_control sched_iorr_ctl;
