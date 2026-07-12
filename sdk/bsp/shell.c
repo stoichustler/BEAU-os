@@ -1848,7 +1848,7 @@ static void shell_print_guest_irqstat(void)
 		ARRAY_SIZE(shell_irqstat_vgic_stats));
 	shell_puts("\r\nguest virq:\r\n");
 	if (count == 0U) {
-		shell_puts("(no guest-visible virtual IRQ activity)\r\n");
+		shell_puts("(no enabled guest-visible virtual IRQ activity)\r\n");
 		return;
 	}
 

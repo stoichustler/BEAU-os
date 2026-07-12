@@ -309,6 +309,33 @@ static void vgic_irqstat_export_latency(
 }
 #endif
 
+static bool vgic_irqstat_enabled(const struct vgic_irqstat_entry *entry)
+{
+	const struct acrn_vm *vm;
+	const struct arm64_vgicv3 *vgic;
+	bool enabled = false;
+
+	if ((entry->vm_id >= CONFIG_MAX_VM_NUM) ||
+		(entry->vcpu_id >= ARM64_VGIC_MAX_VCPUS)) {
+		return false;
+	}
+
+	vm = get_vm_from_vmid(entry->vm_id);
+	vgic = &vm->arch_vm.vgic;
+	if (is_poweroff_vm(vm) || !vgic->initialized ||
+		(entry->vcpu_id >= vgic->vcpu_count)) {
+		return false;
+	}
+
+	if (entry->virq < ARM64_VGIC_IRQ_NUM) {
+		enabled = vgic->irq[entry->vcpu_id][entry->virq].enabled;
+	} else if (vgic->its_enabled && vgic_irq_is_lpi(entry->virq)) {
+		enabled = vgic->lpi[entry->vcpu_id][vgic_lpi_index(entry->virq)].enabled;
+	}
+
+	return enabled;
+}
+
 static struct vgic_irqstat_entry *vgic_irqstat_find_locked(uint16_t vm_id,
 	uint16_t vcpu_id, uint32_t virq, bool create)
 {
@@ -462,6 +489,9 @@ uint16_t arm64_vgicv3_get_irq_stats(struct arm64_vgic_irq_stats *stats, uint16_t
 		struct arm64_vgic_irq_stats *dst = &stats[copied];
 
 		if (!src->valid) {
+			continue;
+		}
+		if (!vgic_irqstat_enabled(src)) {
 			continue;
 		}
 
