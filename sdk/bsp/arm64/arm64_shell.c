@@ -36,6 +36,7 @@
 #include <asm/guest/vcpu.h>
 #include <asm/guest/vmpu.h>
 #include <asm/guest/vgicv3.h>
+#include <asm/guest/vipc.h>
 #include <asm/sysreg.h>
 #include <asm/vtd.h>
 #include "../shell_priv.h"
@@ -52,6 +53,9 @@
 #define SHELL_CMD_CACHESTAT		"cachestat"
 #define SHELL_CMD_CACHESTAT_PARAM	NULL
 #define SHELL_CMD_CACHESTAT_HELP	"list arm64 host cache and LLC domains"
+#define SHELL_CMD_IPCSTAT		"ipcstat"
+#define SHELL_CMD_IPCSTAT_PARAM		NULL
+#define SHELL_CMD_IPCSTAT_HELP		"list static VM IPC channels"
 #define SHELL_CMD_VIRTIOSTAT		"virtiostat"
 #define SHELL_CMD_VIRTIOSTAT_PARAM	NULL
 #define SHELL_CMD_VIRTIOSTAT_HELP	"list active virtio-proxy devices"
@@ -78,6 +82,7 @@ static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv);
 static int32_t shell_dumpstat(int32_t argc, char **argv);
 static int32_t shell_vmstat(int32_t argc, __unused char **argv);
 static int32_t shell_cachestat(int32_t argc, __unused char **argv);
+static int32_t shell_ipcstat(int32_t argc, __unused char **argv);
 static int32_t shell_virtiostat(int32_t argc, char **argv);
 static int32_t shell_smmustat(int32_t argc, __unused char **argv);
 static int32_t shell_pcistat(int32_t argc, char **argv);
@@ -109,6 +114,12 @@ struct shell_cmd arch_shell_cmds[] = {
 		.cmd_param	= SHELL_CMD_CACHESTAT_PARAM,
 		.help_str	= SHELL_CMD_CACHESTAT_HELP,
 		.fcn		= shell_cachestat,
+	},
+	{
+		.str		= SHELL_CMD_IPCSTAT,
+		.cmd_param	= SHELL_CMD_IPCSTAT_PARAM,
+		.help_str	= SHELL_CMD_IPCSTAT_HELP,
+		.fcn		= shell_ipcstat,
 	},
 	{
 		.str		= SHELL_CMD_VIRTIOSTAT,
@@ -1437,7 +1448,7 @@ static int32_t shell_cachestat(int32_t argc, __unused char **argv)
 		shell_item_line("cache:none");
 	} else {
 		shell_item_line("cache leaves:");
-		shell_item_line("level  type     line  sets   ways   sizeKB   shared-pcpu-mask");
+		shell_item_line("level  type     line  sets   ways   sizeKB  shared-pcpu-mask");
 		shell_item_line("─────  ───────  ────  ─────  ─────  ──────  ────────────────");
 		for (idx = 0U; idx < info.leaf_count; idx++) {
 			const struct arm64_cache_leaf *leaf = &info.leaves[idx];
@@ -1461,6 +1472,69 @@ static int32_t shell_cachestat(int32_t argc, __unused char **argv)
 		shell_cachestat_print_vm_affinity(vm_id, vm_config, vm);
 	}
 	shell_item_end();
+	return 0;
+}
+
+static uint64_t shell_ipcstat_age_ms(uint64_t now, uint64_t tick)
+{
+	return tick == 0UL ? UINT64_MAX : ticks_to_ms(now - tick);
+}
+
+static void shell_ipcstat_print_dir(const struct arm64_vipc_channel_stats *stats,
+	uint32_t dir, uint64_t now)
+{
+	uint16_t src = dir == ACRN_IPC_DIR_EP0_TO_EP1 ?
+		stats->endpoint_vmid[0] : stats->endpoint_vmid[1];
+	uint16_t dst = dir == ACRN_IPC_DIR_EP0_TO_EP1 ?
+		stats->endpoint_vmid[1] : stats->endpoint_vmid[0];
+	uint64_t age_ms = shell_ipcstat_age_ms(now, stats->last_notify_tick[dir]);
+
+	if (age_ms == UINT64_MAX) {
+		shell_item_line("dir:vm%hu->vm%hu notify:%lu ack:%lu wake:%lu irq:%lu/%lu last:-",
+			src, dst, stats->notify_count[dir], stats->ack_count[dir],
+			stats->wake_count[dir], stats->irq_count[dir],
+			stats->irq_fail_count[dir]);
+	} else {
+		shell_item_line("dir:vm%hu->vm%hu notify:%lu ack:%lu wake:%lu irq:%lu/%lu last:%lums",
+			src, dst, stats->notify_count[dir], stats->ack_count[dir],
+			stats->wake_count[dir], stats->irq_count[dir],
+			stats->irq_fail_count[dir], age_ms);
+	}
+}
+
+static int32_t shell_ipcstat(int32_t argc, __unused char **argv)
+{
+	struct arm64_vipc_channel_stats stats[ARM64_VIPC_MAX_STATIC_CHANNELS];
+	uint32_t count;
+	uint32_t idx;
+	uint64_t now;
+
+	if (argc != 1) {
+		return -EINVAL;
+	}
+
+	count = arm64_vipc_get_stats(stats, ARRAY_SIZE(stats));
+	now = cpu_ticks();
+
+	shell_item_begin("ipcstat");
+	if (count == 0U) {
+		shell_item_line("channels:none");
+		shell_item_end();
+		return 0;
+	}
+
+	for (idx = 0U; idx < count; idx++) {
+		shell_item_line("ch%u ep0:vm%hu ep1:vm%hu gpa:0x%016lx ring:%u count:%u mapped:0x%08x virq:%u bad:%lu",
+			stats[idx].channel_id, stats[idx].endpoint_vmid[0],
+			stats[idx].endpoint_vmid[1], stats[idx].gpa_base,
+			stats[idx].ring_size, stats[idx].ring_count,
+			stats[idx].mapped_mask, stats[idx].notify_virq,
+			stats[idx].bad_hcall_count);
+		shell_ipcstat_print_dir(&stats[idx], ACRN_IPC_DIR_EP0_TO_EP1, now);
+		shell_ipcstat_print_dir(&stats[idx], ACRN_IPC_DIR_EP1_TO_EP0, now);
+	}
+	shell_item_end();
+
 	return 0;
 }
 

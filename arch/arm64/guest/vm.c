@@ -22,6 +22,7 @@
 #include <asm/guest/vgicv3.h>
 #include <asm/guest/stage2.h>
 #include <asm/guest/vpl011.h>
+#include <asm/guest/vipc.h>
 #include <virtio_console.h>
 #include <virtio_proxy.h>
 
@@ -413,6 +414,7 @@ int32_t arch_init_vm(struct acrn_vm *vm, struct acrn_vm_config *vm_config)
 	 */
 	init_stage2_identity_map(vm);
 	arm64_vgicv3_init_vm(vm, vm_config->cpu_affinity);
+	arm64_vipc_init_vm(vm);
 	if (arm64_vm_uses_virtio_console(vm_config)) {
 		virtio_console_init_vm(vm);
 	} else {

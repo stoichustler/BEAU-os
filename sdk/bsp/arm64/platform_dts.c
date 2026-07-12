@@ -18,6 +18,7 @@
 #include <asm/irq.h>
 #include <asm/platform.h>
 #include <asm/sve.h>
+#include <asm/guest/vipc.h>
 #include <asm/vtd.h>
 #include <arm64_platform_dts.h>
 #include <virtio_proxy.h>
@@ -162,6 +163,27 @@ static uint32_t dts_u32_prop(const void *fdt, int32_t node, const char *name,
 	}
 
 	return fdt32_to_cpu(prop[0]);
+}
+
+static uint64_t dts_u64_prop(const void *fdt, int32_t node, const char *name,
+	uint64_t default_value)
+{
+	const fdt32_t *prop;
+	int32_t len;
+
+	prop = fdt_getprop(fdt, node, name, &len);
+	if (prop == NULL) {
+		return default_value;
+	}
+	if (len == (int32_t)sizeof(fdt32_t)) {
+		return fdt32_to_cpu(prop[0]);
+	}
+	if (len >= (int32_t)(2U * sizeof(fdt32_t))) {
+		return dts_read_cells(prop, 2);
+	}
+
+	arm64_dts_panic(name, -EINVAL);
+	return default_value;
 }
 
 static uint64_t dts_addr_prop(const void *fdt, int32_t node, const char *name,
@@ -501,6 +523,56 @@ static void dts_parse_passthrough_policy(const void *fdt, int32_t platform)
 	}
 }
 
+static void dts_parse_ipc_channel(const void *fdt, int32_t node)
+{
+	struct arm64_vipc_channel_config config;
+	const fdt32_t *endpoints;
+	uint64_t channel_id;
+	uint64_t ignored_size;
+	int32_t len;
+	int32_t ret;
+
+	(void)memset(&config, 0U, sizeof(config));
+	dts_reg_by_index(fdt, node, 0U, &channel_id, &ignored_size);
+	if (channel_id > UINT32_MAX) {
+		arm64_dts_panic("ipc channel id", -EINVAL);
+	}
+	config.channel_id = (uint32_t)channel_id;
+
+	endpoints = fdt_getprop(fdt, node, "endpoint-vms", &len);
+	if ((endpoints == NULL) || (len < (int32_t)(2U * sizeof(fdt32_t)))) {
+		arm64_dts_panic("ipc endpoint-vms", -EINVAL);
+	}
+	config.endpoint_vmid[0] = (uint16_t)fdt32_to_cpu(endpoints[0]);
+	config.endpoint_vmid[1] = (uint16_t)fdt32_to_cpu(endpoints[1]);
+	config.gpa_base = dts_u64_prop(fdt, node, "gpa-base", 0UL);
+	config.ring_size = dts_u32_prop(fdt, node, "ring-size",
+		ARM64_VIPC_RING_SIZE_DEFAULT);
+	config.notify_virq = dts_u32_prop(fdt, node, "notify-virq", 0U);
+
+	ret = arm64_vipc_register_channel(&config);
+	if (ret != 0) {
+		arm64_dts_panic("ipc channel", ret);
+	}
+}
+
+static void dts_parse_ipc_channels(const void *fdt, int32_t platform)
+{
+	int32_t channels;
+	int32_t node;
+
+	channels = dts_child_by_unit_name(fdt, platform, "ipc-channels");
+	if (channels < 0) {
+		return;
+	}
+
+	fdt_for_each_subnode(node, fdt, channels) {
+		if (dts_has_compatible(fdt, node, "beau,ipc-channel")) {
+			dts_parse_ipc_channel(fdt, node);
+		}
+	}
+}
+
 void arm64_platform_dts_parse_info(const void *fdt, struct arm64_platform_dts_info *info)
 {
 	int32_t platform;
@@ -536,6 +608,7 @@ void arm64_platform_dts_parse_info(const void *fdt, struct arm64_platform_dts_in
 		"current-speed", info->uart_baud);
 	dts_parse_mmio_ranges(fdt, platform);
 	dts_parse_passthrough_policy(fdt, platform);
+	dts_parse_ipc_channels(fdt, platform);
 }
 
 const struct arm64_mem_region *arm64_platform_dts_mmio_regions(uint32_t *count)

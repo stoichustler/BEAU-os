@@ -65,10 +65,10 @@ static void unexpected_trap_handler(const struct intr_excp_ctx *ctx, uint64_t tr
 		break;
 	}
 
-	printf("unexpected <%-4s> esr:0x%lx elr:0x%lx far:0x%lx\r\n",
+	LOG_FTL("unexpected <%-4s> esr:0x%lx elr:0x%lx far:0x%lx\r\n",
 		exception, ctx->regs.esr, ctx->regs.elr, ctx->regs.far);
-	printf("──────────────── [end here] ────────────────\r\n");
-	printf("method: auto reboot\r\n");
+	LOG_FTL("──────────────── [end here] ────────────────\r\n");
+	LOG_FTL("method: auto reboot\r\n");
 	reset_host(false);
 }
 

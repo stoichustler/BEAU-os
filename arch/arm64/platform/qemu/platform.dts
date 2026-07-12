@@ -58,6 +58,19 @@
 				beau,writable;
 			};
 		};
+
+		ipc-channels {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			channel@0 {
+				compatible = "beau,ipc-channel";
+				reg = <0>;
+				endpoint-vms = <0 2>;
+				gpa-base = <0x0 0x0b000000>;
+				ring-size = <0x00010000>;
+			};
+		};
 	};
 
 	memory@40000000 {

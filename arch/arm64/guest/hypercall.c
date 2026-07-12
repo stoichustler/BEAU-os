@@ -16,6 +16,7 @@
 #include <logmsg.h>
 #include <trace.h>
 #include <virtio_proxy.h>
+#include <asm/guest/vipc.h>
 
 /* [20260630] hypercall principle:
  *
@@ -92,6 +93,13 @@ static int32_t hcall_arm64_virtio_proxy_backend(struct acrn_vcpu *vcpu,
 	return virtio_proxy_backend_hcall(vcpu, param1);
 }
 
+static int32_t hcall_arm64_ipc(struct acrn_vcpu *vcpu,
+	__unused struct acrn_vm *target_vm, uint64_t param1,
+	__unused uint64_t param2)
+{
+	return arm64_vipc_hcall(vcpu, param1);
+}
+
 static int32_t hcall_arm64_not_supported(__unused struct acrn_vcpu *vcpu,
 	__unused struct acrn_vm *target_vm, __unused uint64_t param1,
 	__unused uint64_t param2)
@@ -142,6 +150,10 @@ static const struct arm64_hc_dispatch arm64_hc_dispatch_table[] = {
 	},
 	[HC_IDX(HC_VIRTIO_PROXY_BACKEND)] = {
 		.handler = hcall_arm64_virtio_proxy_backend,
+		.permission_flags = GUEST_FLAG_STATIC_VM,
+	},
+	[HC_IDX(HC_IPC)] = {
+		.handler = hcall_arm64_ipc,
 		.permission_flags = GUEST_FLAG_STATIC_VM,
 	},
 };

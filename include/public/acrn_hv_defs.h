@@ -82,6 +82,56 @@
 #define HC_GET_HW_INFO              BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x03UL)
 #define HC_VM_WDT_KICK              BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x04UL)
 #define HC_VIRTIO_PROXY_BACKEND     BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x05UL)
+#define HC_IPC                      BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x06UL)
+
+/* BEAU static VM IPC */
+#define ACRN_IPC_ABI_VERSION        1U
+#define ACRN_IPC_OP_QUERY           0U
+#define ACRN_IPC_OP_NOTIFY          1U
+#define ACRN_IPC_OP_ACK             2U
+#define ACRN_IPC_STATUS_OK          0U
+#define ACRN_IPC_STATUS_BAD_PARAM   1U
+#define ACRN_IPC_STATUS_NO_CHANNEL  2U
+#define ACRN_IPC_RING_MAGIC         0x42495043U
+#define ACRN_IPC_CHANNEL_ANY        0xffffffffU
+#define ACRN_IPC_RING_COUNT         2U
+#define ACRN_IPC_DIR_EP0_TO_EP1     0U
+#define ACRN_IPC_DIR_EP1_TO_EP0     1U
+#define ACRN_IPC_FLAG_NOTIFY_IRQ    (1U << 0U)
+
+struct acrn_ipc_ioc {
+	uint32_t op;
+	uint32_t status;
+	uint32_t abi_version;
+	uint32_t ioc_size;
+	uint32_t channel_id;
+	uint16_t peer_vmid;
+	uint16_t flags;
+	uint64_t gpa_base;
+	uint32_t ring_size;
+	uint32_t ring_count;
+	uint32_t notify_count;
+	uint32_t ack_count;
+	uint32_t reserved;
+} __aligned(8);
+
+struct acrn_ipc_ring_header {
+	uint32_t magic;
+	uint32_t version;
+	uint32_t header_size;
+	uint32_t ring_size;
+	uint16_t owner_vmid;
+	uint16_t peer_vmid;
+	uint16_t direction;
+	uint16_t flags;
+	uint32_t elem_size;
+	uint32_t elem_count;
+	uint64_t prod __aligned(64);
+	uint64_t cons __aligned(64);
+	uint64_t notify_count;
+	uint64_t drop_count;
+	uint64_t bytes;
+} __aligned(64);
 
 /* Trusty */
 #define HC_ID_TRUSTY_BASE           0x70UL
