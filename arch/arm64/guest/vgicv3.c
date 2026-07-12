@@ -2421,6 +2421,55 @@ int32_t arm64_vgicv3_inject_msi(struct acrn_vm *vm, uint32_t device_id, uint32_t
 	return ret;
 }
 
+bool arm64_vgicv3_get_its_stats(struct acrn_vm *vm, struct arm64_vits_stats *stats)
+{
+	struct arm64_vgicv3 *vgic;
+	struct arm64_vits *its;
+	uint64_t flags;
+	uint32_t dev_idx;
+	uint32_t evt_idx;
+	bool available = false;
+
+	if ((vm == NULL) || (stats == NULL)) {
+		return false;
+	}
+
+	(void)memset(stats, 0U, sizeof(*stats));
+	vgic = &vm->arch_vm.vgic;
+	if (!vgic->initialized || !vgic->its_enabled) {
+		return false;
+	}
+
+	spinlock_irqsave_obtain(&vgic->lock, &flags);
+	its = &vgic->its;
+	*stats = its->stats;
+	stats->cbaser = its->cbaser;
+	stats->cwriter = its->cwriter;
+	stats->creadr = its->creadr;
+	stats->ctlr_enabled = ((its->ctlr & ARM64_VITS_CTLR_ENABLE) != 0U);
+	stats->cbaser_valid = ((its->cbaser & ARM64_VITS_CBASER_VALID) != 0UL);
+	for (dev_idx = 0U; dev_idx < ARM64_VGIC_ITS_COLLECTION_NUM; dev_idx++) {
+		if (its->collection[dev_idx].valid) {
+			stats->collections++;
+		}
+	}
+	for (dev_idx = 0U; dev_idx < ARM64_VGIC_ITS_DEVICE_NUM; dev_idx++) {
+		if (!its->device[dev_idx].valid) {
+			continue;
+		}
+		stats->devices++;
+		for (evt_idx = 0U; evt_idx < ARM64_VGIC_ITS_EVENT_NUM; evt_idx++) {
+			if (its->event[dev_idx][evt_idx].valid) {
+				stats->events++;
+			}
+		}
+	}
+	available = true;
+	spinlock_irqrestore_release(&vgic->lock, flags);
+
+	return available;
+}
+
 int32_t arm64_vgicv3_clear_irq(struct acrn_vcpu *vcpu, uint32_t virq)
 {
 	struct arm64_vgic_irq *desc = vgic_irq_desc(vcpu, virq);

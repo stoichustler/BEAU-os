@@ -17,10 +17,24 @@
 /*
  * vMPU keeps VM-visible CPU extensions behind one policy boundary:
  *
- *   platform DTS -> arch_vm_config.guest_feature_mask
- *        -> vMPU policy
- *            -> guest extension module
- *                -> ID filtering, trap gating, context save/restore
+ *   platform DTS
+ *        |
+ *        v
+ *   arch_vm_config.guest_feature_mask + guest_sve_vl_bits
+ *        |
+ *        v
+ *   vMPU policy
+ *        |
+ *        +--> reject unsupported host capability
+ *        +--> reject product policy mismatch
+ *        +--> reject VL larger than host maximum
+ *        |
+ *        v
+ *   guest extension module
+ *        |
+ *        +--> ID register filtering
+ *        +--> trap gating
+ *        +--> context save/restore
  *
  * Stage-2 still owns memory isolation. vMPU owns feature authorization so RTOS
  * VMs can run with a small deterministic CPU surface while Linux VMs can opt in
@@ -80,6 +94,25 @@ void arm64_vm_mpu_get_sve_status(const struct acrn_vm *vm,
 		return;
 	}
 
+	/*
+	 * SVE policy decision tree:
+	 *
+	 *   VM did not request SVE
+	 *        -> disabled
+	 *
+	 *   VM requested SVE but is not Linux
+	 *        -> denied for deterministic RTOS guests
+	 *
+	 *   host lacks SVE or usable VL probe
+	 *        -> denied; vSVE will hide ID fields and keep traps enabled
+	 *
+	 *   requested VL > host VL
+	 *        -> denied; EL2 cannot safely provide a larger context than the CPU
+	 *           can execute
+	 *
+	 *   otherwise
+	 *        -> active; vSVE may expose SVE and load/save scalable state
+	 */
 	vm_config = get_vm_config(vm->vm_id);
 	vl_bits = vm_config->arch.guest_sve_vl_bits;
 	if (vl_bits == 0U) {
@@ -119,6 +152,10 @@ bool arm64_vm_mpu_feature_enabled(const struct acrn_vm *vm, uint64_t feature)
 		return false;
 	}
 	if (feature == ARM64_VM_FEATURE_SVE) {
+		/*
+		 * SVE needs policy richer than a raw feature bit: OS family and vector
+		 * length both affect determinism and context size.
+		 */
 		arm64_vm_mpu_get_sve_status(vm, &sve_status);
 		return sve_status.active;
 	}
@@ -158,6 +195,10 @@ void arm64_vcpu_mpu_init(struct acrn_vcpu *vcpu)
 		return;
 	}
 
+	/*
+	 * HCR_EL2.TID3 traps feature ID register reads so vMPU/vSVE can present
+	 * per-VM capabilities instead of leaking raw host CPU features.
+	 */
 	vcpu->arch.gctx.hcr_el2 |= HCR_TID3;
 	arm64_vcpu_vsve_init(vcpu);
 }

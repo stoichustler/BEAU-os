@@ -15,6 +15,27 @@ struct arm64_mpu_feature_desc {
 	bool (*host_supported)(void);
 };
 
+/* [20260712] BEAU MPU policy framework:
+ *
+ * "MPU" in this directory is a VM CPU-feature policy unit. It is not the Arm
+ * physical Memory Protection Unit and it does not replace stage-2 translation
+ * or SMMU DMA isolation.
+ *
+ * The host side owns capability discovery:
+ *
+ *   CPU ID registers / host probes
+ *            |
+ *            v
+ *   arm64_mpu_features[]
+ *            |
+ *            v
+ *   cached host feature mask
+ *
+ * The guest side later intersects this host mask with VM configuration and
+ * product policy. A feature becomes visible to EL1 only when both sides agree:
+ *
+ *   host supports feature  AND  VM config requests feature  AND  policy allows
+ */
 static const struct arm64_mpu_feature_desc arm64_mpu_features[] = {
 	{
 		.feature = ARM64_VM_FEATURE_SVE,
@@ -31,6 +52,11 @@ static uint64_t arm64_mpu_collect_host_features(void)
 	uint64_t features = 0UL;
 	uint32_t idx;
 
+	/*
+	 * Keep feature discovery table driven. Each optional CPU extension supplies
+	 * a small host probe; the common code builds one mask that vMPU can consume
+	 * without knowing each extension's register details.
+	 */
 	for (idx = 0U; idx < ARRAY_SIZE(arm64_mpu_features); idx++) {
 		const struct arm64_mpu_feature_desc *desc = &arm64_mpu_features[idx];
 

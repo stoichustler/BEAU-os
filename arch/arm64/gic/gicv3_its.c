@@ -80,6 +80,21 @@ static uint64_t beau_gicv3_its_collection_target;
 static uint32_t beau_gicv3_its_cmdq_writer;
 static uint32_t beau_gicv3_its_itt_entry_size = 16U;
 static bool beau_gicv3_its_ready;
+static uint32_t beau_gicv3_its_alloc_msi_ok;
+static uint32_t beau_gicv3_its_alloc_msi_fail;
+static uint32_t beau_gicv3_its_alloc_msix_ok;
+static uint32_t beau_gicv3_its_alloc_msix_fail;
+static uint32_t beau_gicv3_its_release_msi;
+static uint32_t beau_gicv3_its_release_msix;
+static uint32_t beau_gicv3_its_map_event_ok;
+static uint32_t beau_gicv3_its_map_event_fail;
+static uint32_t beau_gicv3_its_unmap_event_ok;
+static uint32_t beau_gicv3_its_unmap_event_fail;
+static uint32_t beau_gicv3_its_cmd_issued;
+static uint32_t beau_gicv3_its_cmd_errors;
+static uint32_t beau_gicv3_its_cmd_timeouts;
+static uint32_t beau_gicv3_its_cmd_stalls;
+static int32_t beau_gicv3_its_last_ret;
 
 struct beau_gicv3_its_irqsrc {
 	bool		used;
@@ -248,10 +263,19 @@ static int32_t beau_gicv3_its_issue_cmd(const uint64_t cmd[4])
 	flush_cache_range(beau_gicv3_its_cmdq[idx], sizeof(beau_gicv3_its_cmdq[idx]));
 
 	beau_gits_write_8(GITS_CWRITER, next);
+	beau_gicv3_its_cmd_issued++;
 	ret = beau_gicv3_its_wait_creadr(next);
 	if (ret == 0) {
 		beau_gicv3_its_cmdq_writer = next;
+	} else {
+		beau_gicv3_its_cmd_errors++;
+		if (ret == -ETIMEDOUT) {
+			beau_gicv3_its_cmd_timeouts++;
+		} else if (ret == -EIO) {
+			beau_gicv3_its_cmd_stalls++;
+		}
 	}
+	beau_gicv3_its_last_ret = ret;
 
 	return ret;
 }
@@ -665,6 +689,21 @@ void beau_gicv3_its_init(uint64_t base, uint64_t size)
 	beau_gicv3_its_cmdq_writer = 0U;
 	(void)memset(beau_gicv3_its_irqs, 0U, sizeof(beau_gicv3_its_irqs));
 	(void)memset(beau_gicv3_its_devs, 0U, sizeof(beau_gicv3_its_devs));
+	beau_gicv3_its_alloc_msi_ok = 0U;
+	beau_gicv3_its_alloc_msi_fail = 0U;
+	beau_gicv3_its_alloc_msix_ok = 0U;
+	beau_gicv3_its_alloc_msix_fail = 0U;
+	beau_gicv3_its_release_msi = 0U;
+	beau_gicv3_its_release_msix = 0U;
+	beau_gicv3_its_map_event_ok = 0U;
+	beau_gicv3_its_map_event_fail = 0U;
+	beau_gicv3_its_unmap_event_ok = 0U;
+	beau_gicv3_its_unmap_event_fail = 0U;
+	beau_gicv3_its_cmd_issued = 0U;
+	beau_gicv3_its_cmd_errors = 0U;
+	beau_gicv3_its_cmd_timeouts = 0U;
+	beau_gicv3_its_cmd_stalls = 0U;
+	beau_gicv3_its_last_ret = 0;
 
 	if ((base == 0UL) || (size == 0UL)) {
 		return;
@@ -705,6 +744,55 @@ void beau_gicv3_its_init(uint64_t base, uint64_t size)
 bool beau_gicv3_its_present(void)
 {
 	return beau_gicv3_its_ready;
+}
+
+void arm64_gicv3_its_get_stats(struct arm64_gicv3_its_stats *stats)
+{
+	uint64_t flags;
+	uint32_t i;
+
+	if (stats == NULL) {
+		return;
+	}
+
+	(void)memset(stats, 0U, sizeof(*stats));
+	spinlock_irqsave_obtain(&beau_gicv3_its_lock, &flags);
+	stats->base = beau_gicv3_its_base;
+	stats->size = beau_gicv3_its_size;
+	stats->typer = beau_gicv3_its_typer;
+	stats->target = beau_gicv3_its_collection_target;
+	stats->cmdq_writer = beau_gicv3_its_cmdq_writer;
+	stats->vector_capacity = BEAU_GICV3_ITS_MAX_VECTORS;
+	stats->alloc_msi_ok = beau_gicv3_its_alloc_msi_ok;
+	stats->alloc_msi_fail = beau_gicv3_its_alloc_msi_fail;
+	stats->alloc_msix_ok = beau_gicv3_its_alloc_msix_ok;
+	stats->alloc_msix_fail = beau_gicv3_its_alloc_msix_fail;
+	stats->release_msi = beau_gicv3_its_release_msi;
+	stats->release_msix = beau_gicv3_its_release_msix;
+	stats->map_event_ok = beau_gicv3_its_map_event_ok;
+	stats->map_event_fail = beau_gicv3_its_map_event_fail;
+	stats->unmap_event_ok = beau_gicv3_its_unmap_event_ok;
+	stats->unmap_event_fail = beau_gicv3_its_unmap_event_fail;
+	stats->cmd_issued = beau_gicv3_its_cmd_issued;
+	stats->cmd_errors = beau_gicv3_its_cmd_errors;
+	stats->cmd_timeouts = beau_gicv3_its_cmd_timeouts;
+	stats->cmd_stalls = beau_gicv3_its_cmd_stalls;
+	stats->last_ret = beau_gicv3_its_last_ret;
+	stats->ready = beau_gicv3_its_ready;
+	for (i = 0U; i < BEAU_GICV3_ITS_MAX_VECTORS; i++) {
+		if (beau_gicv3_its_irqs[i].used) {
+			stats->vectors_used++;
+			if (beau_gicv3_its_irqs[i].programmed) {
+				stats->vectors_programmed++;
+			}
+		}
+	}
+	for (i = 0U; i < BEAU_GICV3_ITS_MAX_DEVS; i++) {
+		if (beau_gicv3_its_devs[i].used) {
+			stats->devices_used++;
+		}
+	}
+	spinlock_irqrestore_release(&beau_gicv3_its_lock, flags);
 }
 
 static int32_t beau_gicv3_its_find_free_run(uint32_t count, uint32_t *first)
@@ -808,6 +896,7 @@ int32_t arm64_gicv3_its_alloc_msi(uint32_t dev_id, uint32_t count, uint32_t *fir
 	spinlock_irqsave_obtain(&beau_gicv3_its_lock, &flags);
 	ret = beau_gicv3_its_find_free_run(count, &first);
 	if (ret != 0) {
+		beau_gicv3_its_alloc_msi_fail++;
 		spinlock_irqrestore_release(&beau_gicv3_its_lock, flags);
 		return ret;
 	}
@@ -825,6 +914,7 @@ int32_t arm64_gicv3_its_alloc_msi(uint32_t dev_id, uint32_t count, uint32_t *fir
 			for (j = 0U; j <= i; j++) {
 				beau_gicv3_its_unprogram_irq(&beau_gicv3_its_irqs[first + j]);
 			}
+			beau_gicv3_its_alloc_msi_fail++;
 			spinlock_irqrestore_release(&beau_gicv3_its_lock, flags);
 			return ret;
 		}
@@ -834,6 +924,7 @@ int32_t arm64_gicv3_its_alloc_msi(uint32_t dev_id, uint32_t count, uint32_t *fir
 				for (j = 0U; j <= i; j++) {
 					beau_gicv3_its_unprogram_irq(&beau_gicv3_its_irqs[first + j]);
 				}
+				beau_gicv3_its_alloc_msi_fail++;
 				spinlock_irqrestore_release(&beau_gicv3_its_lock, flags);
 				return ret;
 			}
@@ -841,6 +932,7 @@ int32_t arm64_gicv3_its_alloc_msi(uint32_t dev_id, uint32_t count, uint32_t *fir
 	}
 
 	*first_lpi = GIC_FIRST_LPI + first;
+	beau_gicv3_its_alloc_msi_ok++;
 	spinlock_irqrestore_release(&beau_gicv3_its_lock, flags);
 
 	return 0;
@@ -861,6 +953,7 @@ void arm64_gicv3_its_release_msi(uint32_t dev_id, uint32_t first_lpi, uint32_t c
 
 		if ((irq != NULL) && !irq->msix && (irq->dev_id == dev_id)) {
 			beau_gicv3_its_unprogram_irq(irq);
+			beau_gicv3_its_release_msi++;
 		}
 	}
 	spinlock_irqrestore_release(&beau_gicv3_its_lock, flags);
@@ -883,12 +976,14 @@ int32_t arm64_gicv3_its_alloc_msix(uint32_t dev_id, uint32_t vector, uint32_t *l
 
 	spinlock_irqsave_obtain(&beau_gicv3_its_lock, &flags);
 	if (beau_gicv3_its_event_busy(dev_id, vector)) {
+		beau_gicv3_its_alloc_msix_fail++;
 		spinlock_irqrestore_release(&beau_gicv3_its_lock, flags);
 		return -EBUSY;
 	}
 
 	ret = beau_gicv3_its_find_free_run(1U, &first);
 	if (ret != 0) {
+		beau_gicv3_its_alloc_msix_fail++;
 		spinlock_irqrestore_release(&beau_gicv3_its_lock, flags);
 		return ret;
 	}
@@ -902,6 +997,7 @@ int32_t arm64_gicv3_its_alloc_msix(uint32_t dev_id, uint32_t vector, uint32_t *l
 	ret = beau_gicv3_its_program_irq(irq);
 	if (ret != 0) {
 		irq->used = false;
+		beau_gicv3_its_alloc_msix_fail++;
 		spinlock_irqrestore_release(&beau_gicv3_its_lock, flags);
 		return ret;
 	}
@@ -910,12 +1006,14 @@ int32_t arm64_gicv3_its_alloc_msix(uint32_t dev_id, uint32_t vector, uint32_t *l
 		ret = beau_gicv3_its_fill_msg(irq, msg);
 		if (ret != 0) {
 			beau_gicv3_its_unprogram_irq(irq);
+			beau_gicv3_its_alloc_msix_fail++;
 			spinlock_irqrestore_release(&beau_gicv3_its_lock, flags);
 			return ret;
 		}
 	}
 
 	*lpi = irq->lpi;
+	beau_gicv3_its_alloc_msix_ok++;
 	spinlock_irqrestore_release(&beau_gicv3_its_lock, flags);
 
 	return 0;
@@ -930,6 +1028,7 @@ void arm64_gicv3_its_release_msix(uint32_t dev_id, uint32_t lpi)
 	irq = beau_gicv3_its_find_irq(lpi);
 	if ((irq != NULL) && irq->msix && (irq->dev_id == dev_id)) {
 		beau_gicv3_its_unprogram_irq(irq);
+		beau_gicv3_its_release_msix++;
 	}
 	spinlock_irqrestore_release(&beau_gicv3_its_lock, flags);
 }
@@ -973,6 +1072,11 @@ int32_t arm64_gicv3_its_map_lpi_event(uint32_t dev_id, uint32_t event_id,
 			ret = beau_gicv3_its_fill_msg_event(event_id, msg);
 		}
 	}
+	if (ret == 0) {
+		beau_gicv3_its_map_event_ok++;
+	} else {
+		beau_gicv3_its_map_event_fail++;
+	}
 	spinlock_irqrestore_release(&beau_gicv3_its_lock, flags);
 
 	return ret;
@@ -997,6 +1101,11 @@ int32_t arm64_gicv3_its_unmap_lpi_event(uint32_t dev_id, uint32_t event_id,
 		ret = -EPERM;
 	} else {
 		ret = beau_gicv3_its_unmap_event(dev_id, event_id);
+	}
+	if (ret == 0) {
+		beau_gicv3_its_unmap_event_ok++;
+	} else {
+		beau_gicv3_its_unmap_event_fail++;
 	}
 	spinlock_irqrestore_release(&beau_gicv3_its_lock, flags);
 

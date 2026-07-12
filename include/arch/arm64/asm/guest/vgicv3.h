@@ -32,6 +32,8 @@
 #define ARM64_VGIC_ITS_COLLECTION_NUM	ARM64_VGIC_MAX_VCPUS
 #define ARM64_VGIC_ITS_BASER_NUM	8U
 #define ARM64_VGIC_IRQSTAT_MAX		256U
+#define ARM64_VITS_CTLR_ENABLE		(1U << 0U)
+#define ARM64_VITS_CBASER_VALID		(1UL << 63U)
 
 #define ARM64_VGIC_MAINTENANCE_INTID	ARM64_GIC_PPI_VGIC_MAINTENANCE
 
@@ -133,6 +135,39 @@ struct arm64_vits_event {
 	bool valid;
 };
 
+struct arm64_vits_stats {
+	uint64_t cbaser;
+	uint64_t cwriter;
+	uint64_t creadr;
+	uint64_t cmd_processed;
+	uint64_t cmd_invalid;
+	uint64_t cmd_unsupported;
+	uint64_t cmd_queue_errors;
+	uint64_t cmd_copy_fail;
+	uint64_t cmd_budget_exhausted;
+	uint64_t mmio_read;
+	uint64_t mmio_write;
+	uint64_t translater_write;
+	uint64_t inject_ok;
+	uint64_t inject_fail;
+	uint64_t inject_no_event;
+	uint64_t inject_bad_target;
+	uint64_t config_update_ok;
+	uint64_t config_update_fail;
+	uint32_t devices;
+	uint32_t events;
+	uint32_t collections;
+	uint32_t last_opcode;
+	uint32_t last_device;
+	uint32_t last_event;
+	uint32_t last_lpi;
+	uint16_t last_collection;
+	uint16_t last_target;
+	int32_t last_status;
+	bool cbaser_valid;
+	bool ctlr_enabled;
+};
+
 struct arm64_vits {
 	uint32_t ctlr;
 	uint64_t typer;
@@ -143,6 +178,7 @@ struct arm64_vits {
 	struct arm64_vits_collection collection[ARM64_VGIC_ITS_COLLECTION_NUM];
 	struct arm64_vits_device device[ARM64_VGIC_ITS_DEVICE_NUM];
 	struct arm64_vits_event event[ARM64_VGIC_ITS_DEVICE_NUM][ARM64_VGIC_ITS_EVENT_NUM];
+	struct arm64_vits_stats stats;
 };
 
 /*
@@ -197,6 +233,7 @@ void arm64_vgicv3_load_vcpu(struct acrn_vcpu *vcpu);
 void arm64_vgicv3_save_vcpu(struct acrn_vcpu *vcpu);
 int32_t arm64_vgicv3_inject_irq(struct acrn_vcpu *vcpu, uint32_t virq, bool level);
 int32_t arm64_vgicv3_inject_msi(struct acrn_vm *vm, uint32_t device_id, uint32_t event_id);
+bool arm64_vgicv3_get_its_stats(struct acrn_vm *vm, struct arm64_vits_stats *stats);
 int32_t arm64_vgicv3_clear_irq(struct acrn_vcpu *vcpu, uint32_t virq);
 int32_t arm64_vgicv3_deassert_irq(struct acrn_vcpu *vcpu, uint32_t virq);
 int32_t arm64_vgicv3_handle_cpuif_sysreg(struct acrn_vcpu *vcpu, uint32_t sysreg,

@@ -55,6 +55,34 @@ struct arm64_gicv3_msi_msg {
 	uint32_t data;
 };
 
+struct arm64_gicv3_its_stats {
+	uint64_t base;
+	uint64_t size;
+	uint64_t typer;
+	uint64_t target;
+	uint32_t cmdq_writer;
+	uint32_t vector_capacity;
+	uint32_t vectors_used;
+	uint32_t vectors_programmed;
+	uint32_t devices_used;
+	uint32_t alloc_msi_ok;
+	uint32_t alloc_msi_fail;
+	uint32_t alloc_msix_ok;
+	uint32_t alloc_msix_fail;
+	uint32_t release_msi;
+	uint32_t release_msix;
+	uint32_t map_event_ok;
+	uint32_t map_event_fail;
+	uint32_t unmap_event_ok;
+	uint32_t unmap_event_fail;
+	uint32_t cmd_issued;
+	uint32_t cmd_errors;
+	uint32_t cmd_timeouts;
+	uint32_t cmd_stalls;
+	int32_t last_ret;
+	bool ready;
+};
+
 struct intr_excp_ctx {
 	struct cpu_regs regs;
 };
@@ -92,6 +120,7 @@ int32_t arm64_gicv3_its_map_lpi_event(uint32_t dev_id, uint32_t event_id,
 	uint32_t lpi, struct arm64_gicv3_msi_msg *msg);
 int32_t arm64_gicv3_its_unmap_lpi_event(uint32_t dev_id, uint32_t event_id,
 	uint32_t lpi);
+void arm64_gicv3_its_get_stats(struct arm64_gicv3_its_stats *stats);
 void arm64_gicv3_set_local_irq_active(uint16_t pcpu_id, uint32_t intid);
 void arm64_gicv3_clear_local_irq_active(uint16_t pcpu_id, uint32_t intid);
 void arm64_gicv3_get_local_irq_state(uint16_t pcpu_id, uint32_t intid,

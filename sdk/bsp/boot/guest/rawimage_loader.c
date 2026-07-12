@@ -80,6 +80,35 @@ static void rawimage_log_load(uint16_t vm_id, const char *name, uint64_t base, u
 }
 
 #if defined(CONFIG_ARM64)
+#define ARM64_LINUX_IMAGE_ALIGN	MEM_2M
+
+static int32_t arm64_rawimage_check_linux_alignment(struct acrn_vm *vm,
+	const struct acrn_vm_config *vm_config, uint64_t kernel_load_gpa)
+{
+	uint64_t kernel_entry_gpa = vm_config->os_config.kernel_entry_addr;
+
+	if (vm_config->os_config.os_family != VM_OS_LINUX) {
+		return 0;
+	}
+
+	if (((kernel_load_gpa & (ARM64_LINUX_IMAGE_ALIGN - 1UL)) != 0UL) ||
+		((kernel_entry_gpa & (ARM64_LINUX_IMAGE_ALIGN - 1UL)) != 0UL)) {
+		LOG_ERR("vm-%u:%-9s arm64 Linux Image must be 2MiB aligned load:0x%016lx entry:0x%016lx",
+			vm->vm_id, vm_config->os_config.kernel_mod_tag, kernel_load_gpa,
+			kernel_entry_gpa);
+		return -EINVAL;
+	}
+
+	if (kernel_entry_gpa != kernel_load_gpa) {
+		LOG_ERR("vm-%u:%-9s arm64 Linux raw Image entry must match load address load:0x%016lx entry:0x%016lx",
+			vm->vm_id, vm_config->os_config.kernel_mod_tag, kernel_load_gpa,
+			kernel_entry_gpa);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static uint64_t arm64_rawimage_fdt_load_gpa(struct acrn_vm *vm, uint64_t kernel_load_gpa,
 	uint32_t kernel_size, uint64_t ramdisk_load_gpa, uint32_t ramdisk_size)
 {
@@ -160,6 +189,13 @@ static int32_t load_rawimage(struct acrn_vm *vm)
 			(uint64_t)sw_kernel->kernel_size);
 		return -EFAULT;
 	}
+
+#if defined(CONFIG_ARM64)
+	ret = arm64_rawimage_check_linux_alignment(vm, vm_config, kernel_load_gpa);
+	if (ret != 0) {
+		return ret;
+	}
+#endif
 
 	if (ramdisk_size > 0U) {
 		ramdisk_load_gpa = vm_config->os_config.kernel_ramdisk_addr;

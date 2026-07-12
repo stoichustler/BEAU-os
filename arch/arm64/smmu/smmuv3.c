@@ -69,11 +69,24 @@
  *       -> CFGI_STE + CMD_SYNC
  *       -> software owner returns to host/free
  *
+ * EVTQ fault handling:
+ *
+ *   SMMU fault event
+ *       |
+ *       v
+ *   poll EVTQ from shell / diagnostics path
+ *       |
+ *       v
+ *   decode event id + StreamID + input address
+ *       |
+ *       +--> mark stream quarantined for diagnostics
+ *       |
+ *       v
+ *   replace STE with ABORT and sync CMDQ
+ *
  * Out of scope for this minimal EL2 passthrough path:
  *   stage-1 context descriptors, two-level stream tables, ATS/PRI, nested
- *   translation, and event queue decoding. EVTQ storage is allocated for the
- *   architectural shape, but this driver intentionally keeps EVTQ disabled
- *   until the platform exposes the required register window and IRQ policy.
+ *   translation, stall-model recovery, and PRI replay.
  */
 
 #define ARM_SMMU_MAX_DOMAINS	CONFIG_MAX_VM_NUM
@@ -128,10 +141,16 @@
 #define ARM_SMMU_EVTQ_BASE		0x00a0U
 #define ARM_SMMU_EVTQ_PROD		0x00a8U
 #define ARM_SMMU_EVTQ_CONS		0x00acU
+#define ARM_SMMU_PAGE1_OFFSET		0x00010000U
+#define ARM_SMMU_PAGE1_EVTQ_SIZE	(ARM_SMMU_PAGE1_OFFSET + ARM_SMMU_EVTQ_CONS + \
+	sizeof(uint32_t))
 #define ARM_SMMU_QUEUE_LOG2_ENTRIES	4U
 #define ARM_SMMU_QUEUE_ENTRIES		(1U << ARM_SMMU_QUEUE_LOG2_ENTRIES)
 #define ARM_SMMU_CMD_DWORDS		2U
 #define ARM_SMMU_EVT_DWORDS		4U
+#define ARM_SMMU_EVT_0_ID_MASK		0xffUL
+#define ARM_SMMU_EVT_0_SID_SHIFT	32U
+#define ARM_SMMU_EVT_2_ADDR_MASK	UINT64_MAX
 #define ARM_SMMU_STE_DWORDS		8U
 #define ARM_SMMU_STE_SIZE		(ARM_SMMU_STE_DWORDS * sizeof(uint64_t))
 #define ARM_SMMU_STRTAB_LOG2_MIN	0U
@@ -202,7 +221,11 @@ struct iommu_domain {
 struct arm_smmu_stream_state {
 	uint32_t stream_id;
 	struct iommu_domain *domain;
+	uint32_t fault_count;
+	uint32_t last_fault_code;
+	uint64_t last_fault_iova;
 	bool used;
+	bool quarantined;
 };
 
 struct arm64_pt_msi_state {
@@ -234,9 +257,17 @@ static uint64_t arm_smmu_evtq[ARM_SMMU_QUEUE_ENTRIES][ARM_SMMU_EVT_DWORDS]
 	__aligned(PAGE_SIZE);
 static uint32_t arm_smmu_cmdq_prod;
 
+static struct arm_smmu_stream_state *arm_smmu_find_stream(uint32_t stream_id);
+static struct arm_smmu_stream_state *arm_smmu_alloc_stream(uint32_t stream_id);
+
 static inline void *arm_smmu_reg(uint64_t base, uint32_t off)
 {
 	return (void *)(base + off);
+}
+
+static inline void *arm_smmu_page1_reg(uint64_t base, uint32_t off)
+{
+	return (void *)(base + ARM_SMMU_PAGE1_OFFSET + off);
 }
 
 static uint32_t arm_smmu_min_u32(uint32_t a, uint32_t b)
@@ -244,14 +275,80 @@ static uint32_t arm_smmu_min_u32(uint32_t a, uint32_t b)
 	return (a < b) ? a : b;
 }
 
+static uint32_t arm_smmu_queue_next(uint32_t ptr)
+{
+	return (ptr + 1U) & ARM_SMMU_Q_PTR_MASK;
+}
+
 static uint32_t arm_smmu_cmdq_next(uint32_t prod)
 {
-	return (prod + 1U) & ARM_SMMU_Q_PTR_MASK;
+	return arm_smmu_queue_next(prod);
 }
 
 static uint32_t arm_smmu_cmdq_index(uint32_t prod)
 {
 	return prod & (ARM_SMMU_QUEUE_ENTRIES - 1U);
+}
+
+static uint32_t arm_smmu_evtq_index(uint32_t cons)
+{
+	return cons & (ARM_SMMU_QUEUE_ENTRIES - 1U);
+}
+
+static uint32_t arm_smmu_evt_code(const uint64_t evt[ARM_SMMU_EVT_DWORDS])
+{
+	return (uint32_t)(evt[0] & ARM_SMMU_EVT_0_ID_MASK);
+}
+
+static uint32_t arm_smmu_evt_sid(const uint64_t evt[ARM_SMMU_EVT_DWORDS])
+{
+	return (uint32_t)(evt[0] >> ARM_SMMU_EVT_0_SID_SHIFT);
+}
+
+static uint64_t arm_smmu_evt_iova(const uint64_t evt[ARM_SMMU_EVT_DWORDS])
+{
+	return evt[2] & ARM_SMMU_EVT_2_ADDR_MASK;
+}
+
+static void arm_smmu_record_cmdq_result_locked(int32_t ret, uint32_t cons)
+{
+	arm_smmu_hw.cmdq_cons = cons;
+	arm_smmu_hw.cmdq_last_cons = cons;
+	arm_smmu_hw.cmdq_last_ret = ret;
+
+	if (ret == -EIO) {
+		arm_smmu_hw.cmdq_errors++;
+	} else if (ret == -EBUSY) {
+		arm_smmu_hw.cmdq_full++;
+	} else if (ret == -ETIMEDOUT) {
+		arm_smmu_hw.cmdq_timeouts++;
+	}
+}
+
+static void arm_smmu_record_stream_result_locked(bool assign, int32_t ret)
+{
+	if (assign) {
+		if (ret == 0) {
+			arm_smmu_hw.assign_ok++;
+		} else {
+			arm_smmu_hw.assign_fail++;
+		}
+	} else {
+		if (ret == 0) {
+			arm_smmu_hw.unassign_ok++;
+		} else {
+			arm_smmu_hw.unassign_fail++;
+		}
+	}
+}
+
+static void arm_smmu_record_stream_result(bool assign, int32_t ret)
+{
+	uint64_t flags;
+
+	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);
+	arm_smmu_record_stream_result_locked(assign, ret);
+	spinlock_irqrestore_release(&arm_smmu_lock, flags);
 }
 
 static bool arm_smmu_stream_in_strtab(uint32_t stream_id)
@@ -317,11 +414,15 @@ static int32_t arm_smmu_cmdq_issue_locked(uint64_t cmd0, uint64_t cmd1)
 	uint32_t cons = mmio_read32(arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CMDQ_CONS));
 	uint32_t idx;
 
+	arm_smmu_hw.cmdq_prod = prod;
+	arm_smmu_hw.cmdq_cons = cons;
 	if ((cons & ARM_SMMU_Q_ERR_MASK) != 0U) {
+		arm_smmu_record_cmdq_result_locked(-EIO, cons);
 		LOG_ERR("SMMUv3: CMDQ error cons=0x%x", cons);
 		return -EIO;
 	}
 	if (next == (cons & ARM_SMMU_Q_PTR_MASK)) {
+		arm_smmu_record_cmdq_result_locked(-EBUSY, cons);
 		return -EBUSY;
 	}
 
@@ -336,6 +437,9 @@ static int32_t arm_smmu_cmdq_issue_locked(uint64_t cmd0, uint64_t cmd1)
 	flush_cache_range(arm_smmu_cmdq[idx], sizeof(arm_smmu_cmdq[idx]));
 
 	arm_smmu_cmdq_prod = next;
+	arm_smmu_hw.cmdq_prod = next;
+	arm_smmu_hw.cmdq_issued++;
+	arm_smmu_record_cmdq_result_locked(0, cons);
 	mmio_write32(next, arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CMDQ_PROD));
 
 	return 0;
@@ -343,22 +447,26 @@ static int32_t arm_smmu_cmdq_issue_locked(uint64_t cmd0, uint64_t cmd1)
 
 static int32_t arm_smmu_cmdq_wait_locked(uint32_t target)
 {
+	uint32_t cons = 0U;
 	uint32_t retry;
 
 	for (retry = 0U; retry < ARM_SMMU_POLL_RETRIES; retry++) {
-		uint32_t cons = mmio_read32(arm_smmu_reg(arm_smmu_hw.base,
-			ARM_SMMU_CMDQ_CONS));
+		cons = mmio_read32(arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CMDQ_CONS));
+		arm_smmu_hw.cmdq_cons = cons;
 
 		if ((cons & ARM_SMMU_Q_ERR_MASK) != 0U) {
+			arm_smmu_record_cmdq_result_locked(-EIO, cons);
 			LOG_ERR("SMMUv3: CMDQ error cons=0x%x", cons);
 			return -EIO;
 		}
 		if ((cons & ARM_SMMU_Q_PTR_MASK) == target) {
+			arm_smmu_record_cmdq_result_locked(0, cons);
 			return 0;
 		}
 		udelay(ARM_SMMU_POLL_DELAY_US);
 	}
 
+	arm_smmu_record_cmdq_result_locked(-ETIMEDOUT, cons);
 	return -ETIMEDOUT;
 }
 
@@ -381,6 +489,9 @@ static int32_t arm_smmu_cmdq_sync_locked(void)
 	ret = arm_smmu_cmdq_issue_locked(cmd0, 0UL);
 	if (ret == 0) {
 		ret = arm_smmu_cmdq_wait_locked(arm_smmu_cmdq_prod);
+	}
+	if (ret == 0) {
+		arm_smmu_hw.cmdq_syncs++;
 	}
 
 	return ret;
@@ -515,6 +626,65 @@ static int32_t arm_smmu_write_s2_ste_locked(const struct iommu_domain *domain,
 	return arm_smmu_sync_ste_locked(stream_id);
 }
 
+static void arm_smmu_clear_stream_fault_locked(struct arm_smmu_stream_state *stream)
+{
+	if (stream == NULL) {
+		return;
+	}
+
+	stream->fault_count = 0U;
+	stream->last_fault_code = 0U;
+	stream->last_fault_iova = 0UL;
+	stream->quarantined = false;
+}
+
+static void arm_smmu_quarantine_stream_locked(uint32_t stream_id,
+	uint32_t event_code, uint64_t iova)
+{
+	struct arm_smmu_stream_state *stream;
+
+	stream = arm_smmu_find_stream(stream_id);
+	if (stream == NULL) {
+		stream = arm_smmu_alloc_stream(stream_id);
+	}
+	if (stream == NULL) {
+		arm_smmu_hw.evtq_errors++;
+		return;
+	}
+
+	if (stream->fault_count != UINT32_MAX) {
+		stream->fault_count++;
+	}
+	stream->last_fault_code = event_code;
+	stream->last_fault_iova = iova;
+	stream->quarantined = true;
+	arm_smmu_hw.evtq_quarantined++;
+
+	/*
+	 * Fault containment:
+	 *
+	 *   EVTQ record identifies SID
+	 *       |
+	 *       v
+	 *   remember owner/fault data for shell diagnostics
+	 *       |
+	 *       v
+	 *   STE := ABORT
+	 *       |
+	 *       v
+	 *   CMDQ CFGI_STE + CMD_SYNC
+	 *
+	 * The software owner is kept so pcistat can show which VM owned the
+	 * device when DMA faulted. The hardware path is closed immediately.
+	 */
+	if (arm_smmu_stream_in_strtab(stream_id)) {
+		arm_smmu_write_abort_ste_locked(stream_id);
+		if (arm_smmu_sync_ste_locked(stream_id) != 0) {
+			arm_smmu_hw.evtq_errors++;
+		}
+	}
+}
+
 static uint32_t arm_smmu_oas_bits(uint32_t idr5)
 {
 	uint32_t bits;
@@ -552,6 +722,13 @@ static uint32_t arm_smmu_cmdq_log2_entries(uint32_t idr1)
 static uint32_t arm_smmu_evtq_log2_entries(uint32_t idr1)
 {
 	return (idr1 & ARM_SMMU_IDR1_EVTQS_MASK) >> ARM_SMMU_IDR1_EVTQS_SHIFT;
+}
+
+static bool arm_smmu_evtq_supported_locked(void)
+{
+	return (arm_smmu_evtq_log2_entries(arm_smmu_hw.idr1) >=
+		ARM_SMMU_QUEUE_LOG2_ENTRIES) &&
+		(arm_smmu_hw.size >= ARM_SMMU_PAGE1_EVTQ_SIZE);
 }
 
 static uint32_t arm_smmu_log2_roundup(uint32_t value)
@@ -641,6 +818,7 @@ static int32_t arm_smmu_hw_enable_abort_locked(void)
 	uint32_t strtab_log2;
 	uint32_t strtab_cfg;
 	uint32_t cr0;
+	bool evtq_supported;
 	int32_t ret;
 
 	if (!arm_smmu_hw.discovered) {
@@ -660,6 +838,7 @@ static int32_t arm_smmu_hw_enable_abort_locked(void)
 	cmdq_pa = hva2hpa(arm_smmu_cmdq);
 	evtq_pa = hva2hpa(arm_smmu_evtq);
 	strtab_cfg = ARM_SMMU_STRTAB_BASE_CFG_FMT_LINEAR | strtab_log2;
+	evtq_supported = arm_smmu_evtq_supported_locked();
 
 	/*
 	 * Abort-default enable sequence:
@@ -671,9 +850,10 @@ static int32_t arm_smmu_hw_enable_abort_locked(void)
 	 *
 	 * The order matters. If SMMUEN is set before the stream table points at
 	 * known abort entries, an endpoint could DMA through stale reset state.
-	 * EVTQ is intentionally left disabled in this stage because its doorbell
-	 * registers live in SMMUv3 page1 on many implementations; BEAU DTS must
-	 * describe that page before EL2 can program it safely.
+	 * EVTQ is enabled only when the advertised queue depth can hold the
+	 * fixed EL2 buffer and the MMIO window covers page1 producer/consumer
+	 * registers. Its IRQ line remains masked; diagnostics poll events and
+	 * quarantine the faulting stream.
 	 */
 	mmio_write32(0U, arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CR0));
 	ret = arm_smmu_wait_reg32(ARM_SMMU_CR0ACK, ARM_SMMU_CR0_SMMUEN |
@@ -690,12 +870,22 @@ static int32_t arm_smmu_hw_enable_abort_locked(void)
 		ARM_SMMU_QUEUE_LOG2_ENTRIES,
 		arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CMDQ_BASE));
 	arm_smmu_cmdq_prod = 0U;
+	arm_smmu_hw.cmdq_prod = 0U;
+	arm_smmu_hw.cmdq_cons = 0U;
+	arm_smmu_hw.cmdq_last_cons = 0U;
+	arm_smmu_hw.cmdq_last_ret = 0;
 	mmio_write32(0U, arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CMDQ_PROD));
 	mmio_write32(0U, arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CMDQ_CONS));
-	if (arm_smmu_evtq_log2_entries(arm_smmu_hw.idr1) >= ARM_SMMU_QUEUE_LOG2_ENTRIES) {
+	if (evtq_supported) {
 		mmio_write64((evtq_pa & ARM_SMMU_Q_BASE_ADDR_MASK) | ARM_SMMU_Q_BASE_RWA |
 			ARM_SMMU_QUEUE_LOG2_ENTRIES,
 			arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_EVTQ_BASE));
+		arm_smmu_hw.evtq_prod = 0U;
+		arm_smmu_hw.evtq_cons = 0U;
+		arm_smmu_hw.evtq_last_prod = 0U;
+		arm_smmu_hw.evtq_last_cons = 0U;
+		mmio_write32(0U, arm_smmu_page1_reg(arm_smmu_hw.base, ARM_SMMU_EVTQ_PROD));
+		mmio_write32(0U, arm_smmu_page1_reg(arm_smmu_hw.base, ARM_SMMU_EVTQ_CONS));
 	}
 
 	ret = arm_smmu_update_gbpa(ARM_SMMU_GBPA_ABORT, 0U);
@@ -709,6 +899,9 @@ static int32_t arm_smmu_hw_enable_abort_locked(void)
 	}
 
 	cr0 = ARM_SMMU_CR0_CMDQEN | ARM_SMMU_CR0_SMMUEN;
+	if (evtq_supported) {
+		cr0 |= ARM_SMMU_CR0_EVTQEN;
+	}
 	mmio_write32(cr0, arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CR0));
 	ret = arm_smmu_wait_reg32(ARM_SMMU_CR0ACK, cr0, cr0);
 	if (ret != 0) {
@@ -717,16 +910,15 @@ static int32_t arm_smmu_hw_enable_abort_locked(void)
 
 	arm_smmu_hw.strtab_base = strtab_pa;
 	arm_smmu_hw.cmdq_base = cmdq_pa;
-	arm_smmu_hw.evtq_base = evtq_pa;
+	arm_smmu_hw.evtq_base = evtq_supported ? evtq_pa : 0UL;
 	arm_smmu_hw.sid_bits = sid_bits;
 	arm_smmu_hw.oas_bits = arm_smmu_oas_bits(arm_smmu_hw.idr5);
 	arm_smmu_hw.strtab_log2_entries = strtab_log2;
 	arm_smmu_hw.cmdq_entries = ARM_SMMU_QUEUE_ENTRIES;
-	arm_smmu_hw.evtq_entries = (arm_smmu_evtq_log2_entries(arm_smmu_hw.idr1) >=
-		ARM_SMMU_QUEUE_LOG2_ENTRIES) ? ARM_SMMU_QUEUE_ENTRIES : 0U;
+	arm_smmu_hw.evtq_entries = evtq_supported ? ARM_SMMU_QUEUE_ENTRIES : 0U;
 	arm_smmu_hw.aborted = true;
 	arm_smmu_hw.cmdq_enabled = true;
-	arm_smmu_hw.evtq_enabled = false;
+	arm_smmu_hw.evtq_enabled = evtq_supported;
 	arm_smmu_hw.ready = true;
 	arm_smmu_hw_ready = true;
 	arm_smmu_assignment_hw_ready = true;
@@ -780,6 +972,81 @@ void arm_smmu_probe(uint64_t base, uint64_t size)
 	}
 }
 
+static void arm_smmu_poll_events_locked(void)
+{
+	uint32_t prod_raw;
+	uint32_t cons_raw;
+	uint32_t prod;
+	uint32_t cons;
+	uint32_t budget = 0U;
+
+	if (!arm_smmu_hw.ready || !arm_smmu_hw.evtq_enabled ||
+		(arm_smmu_hw.base == 0UL)) {
+		return;
+	}
+
+	prod_raw = mmio_read32(arm_smmu_page1_reg(arm_smmu_hw.base, ARM_SMMU_EVTQ_PROD));
+	cons_raw = mmio_read32(arm_smmu_page1_reg(arm_smmu_hw.base, ARM_SMMU_EVTQ_CONS));
+	prod = prod_raw & ARM_SMMU_Q_PTR_MASK;
+	cons = cons_raw & ARM_SMMU_Q_PTR_MASK;
+	arm_smmu_hw.evtq_prod = prod_raw;
+	arm_smmu_hw.evtq_cons = cons_raw;
+	arm_smmu_hw.evtq_last_prod = prod_raw;
+	arm_smmu_hw.evtq_last_cons = cons_raw;
+	arm_smmu_hw.evtq_polled++;
+
+	if (((prod_raw | cons_raw) & ARM_SMMU_Q_ERR_MASK) != 0U) {
+		arm_smmu_hw.evtq_errors++;
+	}
+
+	while ((cons != prod) && (budget < ARM_SMMU_QUEUE_ENTRIES)) {
+		uint64_t evt[ARM_SMMU_EVT_DWORDS];
+		uint32_t idx = arm_smmu_evtq_index(cons);
+		uint32_t i;
+
+		/*
+		 * EVTQ entries are written by the SMMU and consumed by EL2. The
+		 * available cache helper cleans+invalidates; after initialization
+		 * EL2 does not dirty EVTQ entries, so this is used here as the
+		 * local stale-line eviction point before reading the event words.
+		 */
+		flush_cache_range(arm_smmu_evtq[idx], sizeof(arm_smmu_evtq[idx]));
+		for (i = 0U; i < ARM_SMMU_EVT_DWORDS; i++) {
+			evt[i] = arm_smmu_evtq[idx][i];
+		}
+
+		arm_smmu_hw.evtq_last_word0 = evt[0];
+		arm_smmu_hw.evtq_last_word1 = evt[1];
+		arm_smmu_hw.evtq_last_word2 = evt[2];
+		arm_smmu_hw.evtq_last_word3 = evt[3];
+		arm_smmu_hw.evtq_events++;
+		arm_smmu_quarantine_stream_locked(arm_smmu_evt_sid(evt),
+			arm_smmu_evt_code(evt), arm_smmu_evt_iova(evt));
+
+		cons = arm_smmu_queue_next(cons);
+		arm_smmu_hw.evtq_cons = cons;
+		mmio_write32(cons, arm_smmu_page1_reg(arm_smmu_hw.base,
+			ARM_SMMU_EVTQ_CONS));
+		budget++;
+	}
+
+	if (cons != prod) {
+		arm_smmu_hw.evtq_overflow++;
+		arm_smmu_hw.evtq_cons = cons;
+		mmio_write32(cons, arm_smmu_page1_reg(arm_smmu_hw.base,
+			ARM_SMMU_EVTQ_CONS));
+	}
+}
+
+void arm_smmu_poll_events(void)
+{
+	uint64_t flags;
+
+	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);
+	arm_smmu_poll_events_locked();
+	spinlock_irqrestore_release(&arm_smmu_lock, flags);
+}
+
 void arm_smmu_get_hw_info(struct arm_smmu_hw_info *info)
 {
 	uint64_t flags;
@@ -791,6 +1058,17 @@ void arm_smmu_get_hw_info(struct arm_smmu_hw_info *info)
 	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);
 	*info = arm_smmu_hw;
 	info->ready = arm_smmu_hw_ready;
+	if (arm_smmu_hw.cmdq_enabled && (arm_smmu_hw.base != 0UL)) {
+		info->cmdq_prod = arm_smmu_cmdq_prod;
+		info->cmdq_cons = mmio_read32(arm_smmu_reg(arm_smmu_hw.base,
+			ARM_SMMU_CMDQ_CONS));
+	}
+	if (arm_smmu_hw.evtq_enabled && (arm_smmu_hw.base != 0UL)) {
+		info->evtq_prod = mmio_read32(arm_smmu_page1_reg(arm_smmu_hw.base,
+			ARM_SMMU_EVTQ_PROD));
+		info->evtq_cons = mmio_read32(arm_smmu_page1_reg(arm_smmu_hw.base,
+			ARM_SMMU_EVTQ_CONS));
+	}
 	spinlock_irqrestore_release(&arm_smmu_lock, flags);
 }
 
@@ -827,6 +1105,10 @@ uint32_t arm_smmu_get_stream_configs(struct arm_smmu_stream_config *configs,
 
 		configs[copied].stream_id = stream->stream_id;
 		configs[copied].assigned = stream->domain != NULL;
+		configs[copied].quarantined = stream->quarantined;
+		configs[copied].fault_count = stream->fault_count;
+		configs[copied].last_fault_code = stream->last_fault_code;
+		configs[copied].last_fault_iova = stream->last_fault_iova;
 		if (stream->domain != NULL) {
 			configs[copied].owner_vmid = stream->domain->vm_id;
 			configs[copied].ipa_width = stream->domain->ipa_width;
@@ -879,7 +1161,7 @@ bool arm_smmu_stream_assigned_to(uint32_t stream_id, uint16_t vm_id)
 	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);
 	stream = arm_smmu_find_stream(stream_id);
 	if ((stream != NULL) && (stream->domain != NULL) &&
-		(stream->domain->vm_id == vm_id)) {
+		(stream->domain->vm_id == vm_id) && !stream->quarantined) {
 		assigned = true;
 	}
 	spinlock_irqrestore_release(&arm_smmu_lock, flags);
@@ -896,6 +1178,7 @@ static struct arm_smmu_stream_state *arm_smmu_alloc_stream(uint32_t stream_id)
 			arm_smmu_streams[i].used = true;
 			arm_smmu_streams[i].stream_id = stream_id;
 			arm_smmu_streams[i].domain = NULL;
+			arm_smmu_clear_stream_fault_locked(&arm_smmu_streams[i]);
 			return &arm_smmu_streams[i];
 		}
 	}
@@ -952,6 +1235,7 @@ void arm_smmu_destroy_domain(struct iommu_domain *domain)
 				(void)arm_smmu_sync_ste_locked(arm_smmu_streams[i].stream_id);
 			}
 			arm_smmu_streams[i].domain = NULL;
+			arm_smmu_clear_stream_fault_locked(&arm_smmu_streams[i]);
 			arm_smmu_streams[i].used = false;
 		}
 	}
@@ -967,6 +1251,7 @@ int32_t arm_smmu_assign_stream(struct iommu_domain *domain, uint32_t stream_id)
 
 	if (!arm_smmu_domain_valid(domain) ||
 		(stream_id == ARM_SMMU_STREAM_ID_INVALID)) {
+		arm_smmu_record_stream_result(true, -EINVAL);
 		return -EINVAL;
 	}
 
@@ -998,6 +1283,8 @@ int32_t arm_smmu_assign_stream(struct iommu_domain *domain, uint32_t stream_id)
 		ret = -ENOMEM;
 	} else if ((stream->domain != NULL) && (stream->domain != domain)) {
 		ret = -EBUSY;
+	} else if (stream->quarantined) {
+		ret = -EIO;
 	} else if (!arm_smmu_assignment_hw_ready || !arm_smmu_stream_in_strtab(stream_id)) {
 		stream->used = false;
 		ret = -ENODEV;
@@ -1038,6 +1325,7 @@ int32_t arm_smmu_assign_stream(struct iommu_domain *domain, uint32_t stream_id)
 			stream->used = false;
 		}
 	}
+	arm_smmu_record_stream_result_locked(true, ret);
 	spinlock_irqrestore_release(&arm_smmu_lock, flags);
 
 	if (ret) {
@@ -1056,6 +1344,7 @@ int32_t arm_smmu_unassign_stream(struct iommu_domain *domain, uint32_t stream_id
 
 	if (!arm_smmu_domain_valid(domain) ||
 		(stream_id == ARM_SMMU_STREAM_ID_INVALID)) {
+		arm_smmu_record_stream_result(false, -EINVAL);
 		return -EINVAL;
 	}
 
@@ -1074,6 +1363,7 @@ int32_t arm_smmu_unassign_stream(struct iommu_domain *domain, uint32_t stream_id
 			uint32_t i;
 
 			stream->domain = NULL;
+			arm_smmu_clear_stream_fault_locked(stream);
 			stream->used = false;
 			domain->hw_bound = false;
 			for (i = 0U; i < ARRAY_SIZE(arm_smmu_streams); i++) {
@@ -1085,6 +1375,7 @@ int32_t arm_smmu_unassign_stream(struct iommu_domain *domain, uint32_t stream_id
 			}
 		}
 	}
+	arm_smmu_record_stream_result_locked(false, ret);
 	spinlock_irqrestore_release(&arm_smmu_lock, flags);
 
 	return ret;

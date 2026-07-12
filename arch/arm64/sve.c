@@ -11,6 +11,31 @@
 static bool host_vl_valid;
 static uint32_t host_vl_bits;
 
+/* [20260712] Host SVE framework:
+ *
+ * SVE is an AArch64 scalable SIMD extension. Software must not assume one fixed
+ * vector width: the architectural vector length is selected by control
+ * registers and is finally capped by the CPU implementation. SVE code can be
+ * vector-length agnostic when it uses predicate-controlled loops and runtime
+ * element counts instead of hard-coded lane counts.
+ *
+ * This file owns only the EL2 host primitives:
+ *
+ *   ID_AA64PFR0_EL1.SVE
+ *        |
+ *        v
+ *   host feature present?
+ *        |
+ *        v
+ *   temporary EL2 SVE enable -> request max ZCR_EL2.LEN -> CNTB
+ *        |
+ *        v
+ *   host maximum VL in bits
+ *
+ * Per-vCPU policy and guest-visible ID filtering stay in vMPU/vSVE. Keeping the
+ * split explicit prevents host capability probing from silently enabling SVE
+ * for a VM that did not opt in.
+ */
 bool arm64_sve_host_supported(void)
 {
 	return (read_id_aa64pfr0_el1() & ID_AA64PFR0_SVE_MASK) != 0UL;
@@ -20,6 +45,10 @@ uint64_t arm64_sve_zcr_len_from_bits(uint32_t vl_bits)
 {
 	uint32_t chunks = vl_bits / ARM64_SVE_VL_BITS_MIN;
 
+	/*
+	 * ZCR_ELx.LEN encodes VL in 128-bit chunks as LEN + 1. The helper accepts
+	 * a bit count because VM configuration is easier to read that way.
+	 */
 	if (chunks == 0U) {
 		chunks = 1U;
 	}
@@ -41,6 +70,19 @@ static uint32_t arm64_sve_read_live_vl_bits(void)
 	uint64_t old_zcr;
 	uint64_t bytes = 0UL;
 
+	/*
+	 * Probe flow:
+	 *
+	 *   save CPTR_EL2/ZCR_EL2
+	 *       -> clear CPTR_EL2.TZ so EL2 SVE instructions are usable
+	 *       -> request architectural maximum VL in ZCR_EL2
+	 *       -> CNTB returns the active vector length in bytes
+	 *       -> restore the original trap and VL controls
+	 *
+	 * The active VL may be lower than the requested value because hardware
+	 * exposes an implementation-specific maximum. The probe never leaves SVE
+	 * enabled for guests; vSVE enables it only during a vCPU load.
+	 */
 	old_cptr = read_cptr_el2();
 	old_zcr = read_zcr_el2();
 	write_cptr_el2(old_cptr & ~CPTR_EL2_TZ);
@@ -79,6 +121,18 @@ void arm64_sve_save_state(struct arm64_sve_state *state)
 		return;
 	}
 
+	/*
+	 * SVE context image:
+	 *
+	 *   Z0-Z31  : scalable vector registers
+	 *   P0-P15  : predicate registers used for per-lane activity masks
+	 *   FFR     : first-fault predicate state
+	 *   FPCR/FPSR and ZCR_EL1 complete the guest-visible FP/SVE state
+	 *
+	 * The buffers are sized for the configured maximum VL. The caller must
+	 * have already selected the vCPU's VL before saving, so STR Zn/Pn writes
+	 * the correct live amount of state for that vCPU.
+	 */
 	state->zcr_el1 = read_zcr_el1() & ZCR_ELx_LEN_MASK;
 	state->fpsr = read_fpsr();
 	state->fpcr = read_fpcr();
@@ -147,6 +201,15 @@ void arm64_sve_restore_state(const struct arm64_sve_state *state)
 		return;
 	}
 
+	/*
+	 * Restore order mirrors save:
+	 *
+	 *   FPCR/FPSR -> Z registers -> FFR -> P registers
+	 *
+	 * FFR is staged through P0 with RDFFR/WRFFR-style access, then P0 is
+	 * restored from the saved predicate bank. That keeps the guest's P0 value
+	 * intact while still restoring the first-fault state.
+	 */
 	write_fpcr(state->fpcr);
 	write_fpsr(state->fpsr);
 	asm volatile (

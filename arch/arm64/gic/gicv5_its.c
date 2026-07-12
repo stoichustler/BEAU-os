@@ -29,6 +29,7 @@
 #include <cpu.h>
 #include <errno.h>
 #include <logmsg.h>
+#include <rtl.h>
 #include <spinlock.h>
 #include <asm/irq.h>
 
@@ -61,6 +62,12 @@ struct beau_gicv5_its_irqsrc {
 static uint64_t beau_gicv5_its_base;
 static uint64_t beau_gicv5_its_size;
 static bool beau_gicv5_its_ready;
+static uint32_t beau_gicv5_its_alloc_msi_ok;
+static uint32_t beau_gicv5_its_alloc_msi_fail;
+static uint32_t beau_gicv5_its_alloc_msix_ok;
+static uint32_t beau_gicv5_its_alloc_msix_fail;
+static uint32_t beau_gicv5_its_release_msi;
+static uint32_t beau_gicv5_its_release_msix;
 static spinlock_t beau_gicv5_its_lock = { .head = 0U, .tail = 0U };
 static struct beau_gicv5_its_irqsrc beau_gicv5_its_irqs[BEAU_GICV5_ITS_MAX_VECTORS];
 
@@ -69,6 +76,12 @@ void beau_gicv5_its_init(uint64_t base, uint64_t size)
 	beau_gicv5_its_base = base;
 	beau_gicv5_its_size = size;
 	beau_gicv5_its_ready = false;
+	beau_gicv5_its_alloc_msi_ok = 0U;
+	beau_gicv5_its_alloc_msi_fail = 0U;
+	beau_gicv5_its_alloc_msix_ok = 0U;
+	beau_gicv5_its_alloc_msix_fail = 0U;
+	beau_gicv5_its_release_msi = 0U;
+	beau_gicv5_its_release_msix = 0U;
 
 	if ((base == 0UL) || (size == 0UL)) {
 		return;
@@ -174,6 +187,7 @@ int32_t arm64_gicv3_its_alloc_msi(uint32_t dev_id, uint32_t count, uint32_t *fir
 	spinlock_irqsave_obtain(&beau_gicv5_its_lock, &flags);
 	ret = beau_gicv5_its_find_free_run(count, &first);
 	if (ret != 0) {
+		beau_gicv5_its_alloc_msi_fail++;
 		spinlock_irqrestore_release(&beau_gicv5_its_lock, flags);
 		return ret;
 	}
@@ -192,6 +206,7 @@ int32_t arm64_gicv3_its_alloc_msi(uint32_t dev_id, uint32_t count, uint32_t *fir
 				for (j = 0U; j <= i; j++) {
 					beau_gicv5_its_irqs[first + j].used = false;
 				}
+				beau_gicv5_its_alloc_msi_fail++;
 				spinlock_irqrestore_release(&beau_gicv5_its_lock, flags);
 				return ret;
 			}
@@ -199,6 +214,7 @@ int32_t arm64_gicv3_its_alloc_msi(uint32_t dev_id, uint32_t count, uint32_t *fir
 	}
 
 	*first_lpi = BEAU_GICV5_FIRST_LPI + first;
+	beau_gicv5_its_alloc_msi_ok++;
 	spinlock_irqrestore_release(&beau_gicv5_its_lock, flags);
 
 	return 0;
@@ -219,6 +235,7 @@ void arm64_gicv3_its_release_msi(uint32_t dev_id, uint32_t first_lpi, uint32_t c
 
 		if ((irq != NULL) && !irq->msix && (irq->dev_id == dev_id)) {
 			irq->used = false;
+			beau_gicv5_its_release_msi++;
 		}
 	}
 	spinlock_irqrestore_release(&beau_gicv5_its_lock, flags);
@@ -241,12 +258,14 @@ int32_t arm64_gicv3_its_alloc_msix(uint32_t dev_id, uint32_t vector, uint32_t *l
 
 	spinlock_irqsave_obtain(&beau_gicv5_its_lock, &flags);
 	if (beau_gicv5_its_event_busy(dev_id, vector)) {
+		beau_gicv5_its_alloc_msix_fail++;
 		spinlock_irqrestore_release(&beau_gicv5_its_lock, flags);
 		return -EBUSY;
 	}
 
 	ret = beau_gicv5_its_find_free_run(1U, &first);
 	if (ret != 0) {
+		beau_gicv5_its_alloc_msix_fail++;
 		spinlock_irqrestore_release(&beau_gicv5_its_lock, flags);
 		return ret;
 	}
@@ -262,12 +281,14 @@ int32_t arm64_gicv3_its_alloc_msix(uint32_t dev_id, uint32_t vector, uint32_t *l
 		ret = beau_gicv5_its_fill_msg(irq, msg);
 		if (ret != 0) {
 			irq->used = false;
+			beau_gicv5_its_alloc_msix_fail++;
 			spinlock_irqrestore_release(&beau_gicv5_its_lock, flags);
 			return ret;
 		}
 	}
 
 	*lpi = irq->lpi;
+	beau_gicv5_its_alloc_msix_ok++;
 	spinlock_irqrestore_release(&beau_gicv5_its_lock, flags);
 
 	return 0;
@@ -282,6 +303,7 @@ void arm64_gicv3_its_release_msix(uint32_t dev_id, uint32_t lpi)
 	irq = beau_gicv5_its_find_irq(lpi);
 	if ((irq != NULL) && irq->msix && (irq->dev_id == dev_id)) {
 		irq->used = false;
+		beau_gicv5_its_release_msix++;
 	}
 	spinlock_irqrestore_release(&beau_gicv5_its_lock, flags);
 }
@@ -298,4 +320,34 @@ int32_t arm64_gicv3_its_map_msi(uint32_t lpi, struct arm64_gicv3_msi_msg *msg)
 	spinlock_irqrestore_release(&beau_gicv5_its_lock, flags);
 
 	return ret;
+}
+
+void arm64_gicv3_its_get_stats(struct arm64_gicv3_its_stats *stats)
+{
+	uint64_t flags;
+	uint32_t i;
+
+	if (stats == NULL) {
+		return;
+	}
+
+	(void)memset(stats, 0U, sizeof(*stats));
+	spinlock_irqsave_obtain(&beau_gicv5_its_lock, &flags);
+	stats->base = beau_gicv5_its_base;
+	stats->size = beau_gicv5_its_size;
+	stats->vector_capacity = BEAU_GICV5_ITS_MAX_VECTORS;
+	stats->alloc_msi_ok = beau_gicv5_its_alloc_msi_ok;
+	stats->alloc_msi_fail = beau_gicv5_its_alloc_msi_fail;
+	stats->alloc_msix_ok = beau_gicv5_its_alloc_msix_ok;
+	stats->alloc_msix_fail = beau_gicv5_its_alloc_msix_fail;
+	stats->release_msi = beau_gicv5_its_release_msi;
+	stats->release_msix = beau_gicv5_its_release_msix;
+	stats->ready = beau_gicv5_its_ready;
+	for (i = 0U; i < BEAU_GICV5_ITS_MAX_VECTORS; i++) {
+		if (beau_gicv5_its_irqs[i].used) {
+			stats->vectors_used++;
+		}
+	}
+	stats->vectors_programmed = stats->vectors_used;
+	spinlock_irqrestore_release(&beau_gicv5_its_lock, flags);
 }

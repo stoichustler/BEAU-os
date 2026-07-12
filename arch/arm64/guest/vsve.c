@@ -34,6 +34,31 @@
 #define SYSREG_ID_AA64MMFR4_EL1		ARM64_SYSREG_ENC(3UL, 0UL, 0UL, 7UL, 4UL)
 #define SYSREG_ZCR_EL1			ARM64_SYSREG_ENC(3UL, 0UL, 1UL, 2UL, 0UL)
 
+/* [20260712] vSVE framework:
+ *
+ * Guest SVE virtualization has three jobs:
+ *
+ *   1. expose truthful ID registers to EL1;
+ *   2. gate actual SVE execution with CPTR_EL2.TZ;
+ *   3. save/restore the scalable Z/P/FFR state on vCPU switches.
+ *
+ * Flow:
+ *
+ *   vMPU policy says SVE disabled
+ *        -> ID_AA64PFR0_EL1.SVE is hidden
+ *        -> ID_AA64ZFR0_EL1 reads as zero
+ *        -> CPTR_EL2.TZ remains set, SVE execution traps
+ *
+ *   vMPU policy says SVE enabled
+ *        -> guest sees SVE ID fields
+ *        -> vCPU load clears CPTR_EL2.TZ
+ *        -> ZCR_EL2 caps hardware VL to VM configured VL
+ *        -> guest ZCR_EL1 writes are clamped to that cap
+ *        -> vCPU unload saves Z0-Z31, P0-P15 and FFR
+ *
+ * This supports vector-length agnostic guest software while still giving EL2 a
+ * deterministic upper bound for context size and scheduling cost.
+ */
 static inline uint64_t read_id_aa64pfr1_el1(void)
 {
 	uint64_t val;
@@ -107,6 +132,12 @@ void arm64_vcpu_vsve_init(struct acrn_vcpu *vcpu)
 		return;
 	}
 
+	/*
+	 * Initialize the per-vCPU SVE context with the VM configured vector length.
+	 * A zero VM setting falls back to the platform default. The context is
+	 * valid even before the VM is allowed to execute SVE, so later policy
+	 * changes do not need to rebuild the save area.
+	 */
 	sve = &vcpu->arch.sve;
 	(void)memset(sve, 0U, sizeof(*sve));
 	vl_bits = arm64_vm_mpu_sve_vl_bits(vcpu->vm);
@@ -131,10 +162,21 @@ void arm64_vcpu_vsve_load(struct acrn_vcpu *vcpu)
 
 	cptr = read_cptr_el2();
 	if (!arm64_vcpu_mpu_sve_enabled(vcpu)) {
+		/*
+		 * CPTR_EL2.TZ forces SVE/FP-related access to trap instead of executing
+		 * with stale host or previous-guest state. Disabled RTOS VMs stay on
+		 * this path.
+		 */
 		write_cptr_el2(cptr | CPTR_EL2_TZ);
 		return;
 	}
 
+	/*
+	 * Load order:
+	 *
+	 *   allow EL2 SVE use -> set ZCR_EL2 VM maximum -> restore guest ZCR_EL1
+	 *   within that maximum -> restore scalable register state
+	 */
 	sve = &vcpu->arch.sve;
 	zcr_len = arm64_sve_zcr_len_from_bits(sve->vl_bits);
 	write_cptr_el2(cptr & ~CPTR_EL2_TZ);
@@ -155,6 +197,10 @@ void arm64_vcpu_vsve_unload(struct acrn_vcpu *vcpu)
 		arm64_sve_save_state(&vcpu->arch.sve.regs);
 	}
 
+	/*
+	 * Always re-enable SVE trapping on unload. The next vCPU must explicitly
+	 * pass vMPU policy before SVE instructions can run.
+	 */
 	cptr = read_cptr_el2();
 	write_cptr_el2(cptr | CPTR_EL2_TZ);
 }
@@ -182,6 +228,11 @@ static bool arm64_vsve_read_id_value(const struct acrn_vcpu *vcpu,
 	switch (sysreg) {
 	case SYSREG_ID_AA64PFR0_EL1:
 		val = read_id_aa64pfr0_el1();
+		/*
+		 * ID filtering is the architectural contract with the guest. If SVE is
+		 * not active for this VM, EL1 must not discover SVE even if the host
+		 * CPU supports it.
+		 */
 		if (!arm64_vcpu_mpu_sve_enabled(vcpu)) {
 			val &= ~ID_AA64PFR0_SVE_MASK;
 		}
@@ -244,6 +295,11 @@ static int32_t arm64_vsve_handle_zcr_el1(struct acrn_vcpu *vcpu, bool read,
 	if (read) {
 		*reg = sve->regs.zcr_el1;
 	} else {
+		/*
+		 * Guest ZCR_EL1 selects a VL at or below the VM maximum. Clamping keeps
+		 * guest software free to request a smaller VL while preventing it from
+		 * expanding the EL2 context beyond the configured bound.
+		 */
 		sve->regs.zcr_el1 = arm64_sve_clamp_zcr(*reg, sve->vl_bits);
 		write_zcr_el1(sve->regs.zcr_el1);
 	}

@@ -548,6 +548,35 @@ static inline uint64_t read_id_aa64pfr0_el1(void)
 	return val;
 }
 
+static inline uint64_t read_ctr_el0(void)
+{
+	uint64_t val;
+
+	asm volatile ("mrs %0, ctr_el0" : "=r" (val));
+	return val;
+}
+
+static inline uint64_t read_clidr_el1(void)
+{
+	uint64_t val;
+
+	asm volatile ("mrs %0, clidr_el1" : "=r" (val));
+	return val;
+}
+
+static inline void write_csselr_el1(uint64_t val)
+{
+	asm volatile ("msr csselr_el1, %0; isb" : : "r" (val) : "memory");
+}
+
+static inline uint64_t read_ccsidr_el1(void)
+{
+	uint64_t val;
+
+	asm volatile ("mrs %0, ccsidr_el1" : "=r" (val));
+	return val;
+}
+
 static inline uint64_t read_id_aa64zfr0_el1(void)
 {
 	uint64_t val;

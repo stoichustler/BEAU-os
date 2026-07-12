@@ -30,6 +30,8 @@
 #include <bsp/vuart.h>
 #include <debug/symbol.h>
 #include <asm/mmu.h>
+#include <asm/irq.h>
+#include <asm/cache.h>
 #include <asm/platform.h>
 #include <asm/guest/vcpu.h>
 #include <asm/guest/vmpu.h>
@@ -47,12 +49,15 @@
 #define SHELL_CMD_VMSTAT		"vmstat"
 #define SHELL_CMD_VMSTAT_PARAM		NULL
 #define SHELL_CMD_VMSTAT_HELP		"list arm64 vm state"
+#define SHELL_CMD_CACHESTAT		"cachestat"
+#define SHELL_CMD_CACHESTAT_PARAM	NULL
+#define SHELL_CMD_CACHESTAT_HELP	"list arm64 host cache and LLC domains"
 #define SHELL_CMD_VIRTIOSTAT		"virtiostat"
 #define SHELL_CMD_VIRTIOSTAT_PARAM	NULL
 #define SHELL_CMD_VIRTIOSTAT_HELP	"list active virtio-proxy devices"
 #define SHELL_CMD_SMMUSTAT		"smmustat"
 #define SHELL_CMD_SMMUSTAT_PARAM	NULL
-#define SHELL_CMD_SMMUSTAT_HELP		"list ARM SMMUv3 discovery state"
+#define SHELL_CMD_SMMUSTAT_HELP		"list ARM SMMUv3 and ITS passthrough state"
 #define SHELL_CMD_PCISTAT		"pcistat"
 #define SHELL_CMD_PCISTAT_PARAM		"[vm id]"
 #define SHELL_CMD_PCISTAT_HELP		"list PCI passthrough and SMMU stream state"
@@ -72,6 +77,7 @@
 static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv);
 static int32_t shell_dumpstat(int32_t argc, char **argv);
 static int32_t shell_vmstat(int32_t argc, __unused char **argv);
+static int32_t shell_cachestat(int32_t argc, __unused char **argv);
 static int32_t shell_virtiostat(int32_t argc, char **argv);
 static int32_t shell_smmustat(int32_t argc, __unused char **argv);
 static int32_t shell_pcistat(int32_t argc, char **argv);
@@ -97,6 +103,12 @@ struct shell_cmd arch_shell_cmds[] = {
 		.cmd_param	= SHELL_CMD_VMSTAT_PARAM,
 		.help_str	= SHELL_CMD_VMSTAT_HELP,
 		.fcn		= shell_vmstat,
+	},
+	{
+		.str		= SHELL_CMD_CACHESTAT,
+		.cmd_param	= SHELL_CMD_CACHESTAT_PARAM,
+		.help_str	= SHELL_CMD_CACHESTAT_HELP,
+		.fcn		= shell_cachestat,
 	},
 	{
 		.str		= SHELL_CMD_VIRTIOSTAT,
@@ -238,18 +250,22 @@ static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv)
 
 /* [20260709] SMMU monitor:
  *
- * smmustat is deliberately diagnostic-only. Probe can put the hardware into an
- * abort-default state, but DMA assignment remains disabled until a later stage
- * programs a VM-owned STE and synchronizes the command queue.
+ * smmustat is deliberately diagnostic-only. Probe puts the hardware into an
+ * abort-default state; PCI passthrough assignment then replaces a selected STE
+ * with a VM stage-2 descriptor and synchronizes the command queue.
  *
- *   zero STEs + SMMUEN -> abort-default ready -> shell snapshot
+ *   zero STEs + SMMUEN -> abort-default ready
  *                               |
  *                               v
- *                    VM assignment still disabled
+ *                    stream assignment -> VM stage-2 STE
+ *                               |
+ *                               v
+ *                    shell snapshot: SMMU + ITS + streams
  */
 static int32_t shell_smmustat(int32_t argc, __unused char **argv)
 {
 	struct arm_smmu_hw_info info;
+	struct arm64_gicv3_its_stats its;
 	struct arm_smmu_stream_config streams[PCISTAT_MAX_STREAMS];
 	uint32_t stream_count;
 	uint32_t idx;
@@ -260,7 +276,10 @@ static int32_t shell_smmustat(int32_t argc, __unused char **argv)
 	}
 
 	(void)memset(&info, 0U, sizeof(info));
+	(void)memset(&its, 0U, sizeof(its));
+	arm_smmu_poll_events();
 	arm_smmu_get_hw_info(&info);
+	arm64_gicv3_its_get_stats(&its);
 	stream_count = arm_smmu_get_stream_configs(streams, ARRAY_SIZE(streams));
 
 	shell_puts("\r\nsmmustat:\r\n");
@@ -284,17 +303,52 @@ static int32_t shell_smmustat(int32_t argc, __unused char **argv)
 	shell_item_line("queue.entries:cmd:%u evt:%u cmdq.en:%s evtq.en:%s",
 		info.cmdq_entries, info.evtq_entries, shell_yes_no(info.cmdq_enabled),
 		shell_yes_no(info.evtq_enabled));
+	shell_item_line("cmdq:prod:0x%08x cons:0x%08x last-cons:0x%08x last-ret:%d",
+		info.cmdq_prod, info.cmdq_cons, info.cmdq_last_cons, info.cmdq_last_ret);
+	shell_item_line("cmdq.ops:issued:%u sync:%u err:%u full:%u timeout:%u",
+		info.cmdq_issued, info.cmdq_syncs, info.cmdq_errors,
+		info.cmdq_full, info.cmdq_timeouts);
+	shell_item_line("evtq:prod:0x%08x cons:0x%08x last-prod:0x%08x last-cons:0x%08x",
+		info.evtq_prod, info.evtq_cons, info.evtq_last_prod,
+		info.evtq_last_cons);
+	shell_item_line("evtq.ops:poll:%u events:%u err:%u overflow:%u quarantine:%u",
+		info.evtq_polled, info.evtq_events, info.evtq_errors,
+		info.evtq_overflow, info.evtq_quarantined);
+	shell_item_line("evtq.last:w0:0x%016lx w1:0x%016lx w2:0x%016lx w3:0x%016lx",
+		info.evtq_last_word0, info.evtq_last_word1,
+		info.evtq_last_word2, info.evtq_last_word3);
 	shell_item_line("idr0:0x%08x idr1:0x%08x idr5:0x%08x",
 		info.idr0, info.idr1, info.idr5);
 	shell_item_line("iidr:0x%08x aidr:0x%08x", info.iidr, info.aidr);
 	shell_item_line("ready.scope:abort-default + vm-stage2 STE");
-	shell_item_line("assignment:%s streams:%u",
-		shell_yes_no(arm_smmu_assignment_ready()), stream_count);
+	shell_item_line("assignment:%s streams:%u ok:%u fail:%u unassign.ok:%u unassign.fail:%u",
+		shell_yes_no(arm_smmu_assignment_ready()), stream_count,
+		info.assign_ok, info.assign_fail, info.unassign_ok, info.unassign_fail);
+	shell_item_line("its:ready:%s base:0x%016lx size:0x%016lx target:0x%016lx",
+		shell_yes_no(its.ready), its.base, its.size, its.target);
+	shell_item_line("its:typer:0x%016lx cmd.writer:0x%08x vectors:%u/%u programmed:%u devs:%u",
+		its.typer, its.cmdq_writer, its.vectors_used, its.vector_capacity,
+		its.vectors_programmed, its.devices_used);
+	shell_item_line("its.ops:msi:%u/%u msix:%u/%u rel:%u/%u map:%u/%u unmap:%u/%u",
+		its.alloc_msi_ok, its.alloc_msi_fail,
+		its.alloc_msix_ok, its.alloc_msix_fail,
+		its.release_msi, its.release_msix,
+		its.map_event_ok, its.map_event_fail,
+		its.unmap_event_ok, its.unmap_event_fail);
+	shell_item_line("its.cmd:issued:%u err:%u timeout:%u stall:%u last-ret:%d",
+		its.cmd_issued, its.cmd_errors, its.cmd_timeouts,
+		its.cmd_stalls, its.last_ret);
 	for (idx = 0U; idx < stream_count; idx++) {
-		shell_item_line("stream[0x%04x] vm%hu ipa:%u root:0x%016lx assigned:%s",
+		shell_item_line("stream[0x%04x] vm%hu ipa:%u root:0x%016lx assigned:%s quarantine:%s",
 			streams[idx].stream_id, streams[idx].owner_vmid,
 			streams[idx].ipa_width, streams[idx].root_table_hpa,
-			shell_yes_no(streams[idx].assigned));
+			shell_yes_no(streams[idx].assigned),
+			shell_yes_no(streams[idx].quarantined));
+		if (streams[idx].fault_count != 0U) {
+			shell_item_line("     fault:count:%u code:0x%02x iova:0x%016lx",
+				streams[idx].fault_count, streams[idx].last_fault_code,
+				streams[idx].last_fault_iova);
+		}
 	}
 	shell_item_end();
 
@@ -425,6 +479,8 @@ static const char *shell_pcistat_stream_state(const struct arm_smmu_stream_confi
 
 	if (stream == NULL) {
 		state = "missing";
+	} else if (stream->quarantined) {
+		state = "quarantine";
 	} else if (!stream->assigned) {
 		state = "free";
 	} else if (stream->owner_vmid == vm_id) {
@@ -500,8 +556,14 @@ static void shell_pcistat_vm(uint16_t vm_id,
 			dev_config->pbdf.value,
 			shell_pcistat_stream_state(stream, vm_id));
 		if (stream != NULL) {
-			shell_item_line("     owner:vm%hu ipa:%u root:0x%016lx",
-				stream->owner_vmid, stream->ipa_width, stream->root_table_hpa);
+			shell_item_line("     owner:vm%hu ipa:%u root:0x%016lx quarantine:%s",
+				stream->owner_vmid, stream->ipa_width, stream->root_table_hpa,
+				shell_yes_no(stream->quarantined));
+			if (stream->fault_count != 0U) {
+				shell_item_line("     fault:count:%u code:0x%02x iova:0x%016lx",
+					stream->fault_count, stream->last_fault_code,
+					stream->last_fault_iova);
+			}
 		}
 		if (vdev != NULL) {
 			shell_pcistat_print_bars(vdev);
@@ -524,6 +586,7 @@ static int32_t shell_pcistat(int32_t argc, char **argv)
 		return -EINVAL;
 	}
 
+	arm_smmu_poll_events();
 	stream_count = arm_smmu_get_stream_configs(streams, ARRAY_SIZE(streams));
 	shell_puts("\r\npcistat:\r\n");
 	shell_pcistat_host();
@@ -1311,6 +1374,96 @@ static void shell_print_cpu_bitmap(uint64_t bitmap)
 	}
 }
 
+static void shell_cachestat_print_vm_affinity(uint16_t vm_id,
+	const struct acrn_vm_config *vm_config, const struct acrn_vm *vm)
+{
+	const char *name = (vm->name[0] != '\0') ? vm->name : vm_config->name;
+	uint16_t count = vm_config->cpu_affinity_num;
+	uint16_t vcpu_id;
+
+	if (count == 0U) {
+		count = vm->hw.created_vcpus;
+	}
+	if (count == 0U) {
+		shell_item_line("vm%hu:%s cache:affinity:none", vm_id, name);
+		return;
+	}
+
+	for (vcpu_id = 0U; vcpu_id < count; vcpu_id++) {
+		uint16_t pcpu_id = INVALID_CPU_ID;
+		uint32_t llc_id;
+
+		if (vcpu_id < vm_config->cpu_affinity_num) {
+			pcpu_id = vm_config->cpu_affinity_order[vcpu_id];
+		} else if (vcpu_id < vm->hw.created_vcpus) {
+			const struct acrn_vcpu *vcpu =
+				vcpu_from_vid((struct acrn_vm *)vm, vcpu_id);
+
+			if (vcpu != NULL) {
+				pcpu_id = vcpu->thread_obj.pcpu_id;
+			}
+		}
+
+		llc_id = arm64_cache_llc_id_for_pcpu(pcpu_id);
+		if (llc_id == UINT32_MAX) {
+			shell_item_line("vm%hu:%s vcpu%hu pcpu:- llc:-", vm_id, name, vcpu_id);
+		} else {
+			shell_item_line("vm%hu:%s vcpu%hu pcpu:%hu llc:%u",
+				vm_id, name, vcpu_id, pcpu_id, llc_id);
+		}
+	}
+}
+
+static int32_t shell_cachestat(int32_t argc, __unused char **argv)
+{
+	struct arm64_cache_info info;
+	uint32_t idx;
+	uint16_t vm_id;
+
+	if (argc != 1) {
+		return -EINVAL;
+	}
+
+	arm64_cache_get_info(&info);
+	shell_item_begin("cachestat");
+	shell_item_line("valid:%s ctr:0x%016lx clidr:0x%016lx line:d:%u i:%u",
+		shell_yes_no(info.valid), info.ctr_el0, info.clidr_el1,
+		info.dcache_line_size, info.icache_line_size);
+	shell_item_line("llc:domains:%u level:%u type:%s size:%luKB mask:0x%016lx",
+		info.llc_domain_count, info.llc_level, arm64_cache_type_str(info.llc_type),
+		info.llc_size / 1024UL, info.llc_pcpu_mask);
+
+	if (info.leaf_count == 0U) {
+		shell_item_line("cache:none");
+	} else {
+		shell_item_line("cache leaves:");
+		shell_item_line("level  type     line  sets   ways   sizeKB   shared-pcpu-mask");
+		shell_item_line("─────  ───────  ────  ─────  ─────  ──────  ────────────────");
+		for (idx = 0U; idx < info.leaf_count; idx++) {
+			const struct arm64_cache_leaf *leaf = &info.leaves[idx];
+
+			shell_item_line("%-5u  %-7s  %-4u  %-5u  %-5u  %-6lu  0x%016lx",
+				leaf->level, arm64_cache_type_str(leaf->type), leaf->line_size,
+				leaf->sets, leaf->ways, leaf->size / 1024UL,
+				leaf->shared_pcpu_mask);
+		}
+	}
+
+	shell_item_line("vm llc placement:");
+	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
+		struct acrn_vm_config *vm_config = get_vm_config(vm_id);
+		struct acrn_vm *vm = get_vm_from_vmid(vm_id);
+
+		if (!shell_vm_config_present(vm_config) &&
+			(vm->hw.created_vcpus == 0U) && is_poweroff_vm(vm)) {
+			continue;
+		}
+		shell_cachestat_print_vm_affinity(vm_id, vm_config, vm);
+	}
+	shell_item_end();
+	return 0;
+}
+
 static void shell_print_vm_affinity(const struct acrn_vm_config *vm_config,
 	const struct acrn_vm *vm)
 {
@@ -1474,9 +1627,12 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 	struct virtio_console_stats vcon = { 0U };
 	struct acrn_vuart *vu = NULL;
 	struct arm64_vm_mpu_sve_status sve_status = { 0U };
+	struct arm64_vits_stats vits = { 0U };
+	bool has_vits;
 	char temp_str[MAX_STR_SIZE];
 
 	arm64_vm_mpu_get_sve_status(vm, &sve_status);
+	has_vits = arm64_vgicv3_get_its_stats((struct acrn_vm *)vm, &vits);
 	(void)console_vm_ring_get_stats(vm_id, &ring);
 	if (!is_poweroff_vm(vm)) {
 		vu = vm_console_vuart((struct acrn_vm *)vm);
@@ -1500,6 +1656,24 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 		vgic->rdist_count, vgic->lr_count, vgic->vmcr, vgic->gicd_ctlr);
 	shell_item_line("its:enabled:%s typer:0x%08lx ctlr:0x%08x",
 		shell_yes_no(vgic->its_enabled), vgic->its.typer, vgic->its.ctlr);
+	if (has_vits) {
+		shell_item_line("vits:q ctlr:%s cbaser:%s writer:0x%016lx reader:0x%016lx cmds:%lu invalid:%lu unsupported:%lu qerr:%lu copy-fail:%lu budget:%lu",
+			shell_yes_no(vits.ctlr_enabled), shell_yes_no(vits.cbaser_valid),
+			vits.cwriter, vits.creadr, vits.cmd_processed,
+			vits.cmd_invalid, vits.cmd_unsupported,
+			vits.cmd_queue_errors, vits.cmd_copy_fail,
+			vits.cmd_budget_exhausted);
+		shell_item_line("vits:tables dev:%u evt:%u col:%u cfg:%lu/%lu mmio:%lu/%lu trans:%lu inject:%lu/%lu no-event:%lu bad-target:%lu",
+			vits.devices, vits.events, vits.collections,
+			vits.config_update_ok, vits.config_update_fail,
+			vits.mmio_read, vits.mmio_write, vits.translater_write,
+			vits.inject_ok, vits.inject_fail,
+			vits.inject_no_event, vits.inject_bad_target);
+		shell_item_line("vits:last op:0x%02x dev:%u event:%u lpi:%u col:%hu target:%hu ret:%d",
+			vits.last_opcode, vits.last_device, vits.last_event,
+			vits.last_lpi, vits.last_collection,
+			vits.last_target, vits.last_status);
+	}
 	shell_item_line("mpu:sve:cfg:%s active:%s host:%s vl:%u host-vl:%u reason:%s",
 		shell_yes_no(sve_status.configured),
 		shell_yes_no(sve_status.active),

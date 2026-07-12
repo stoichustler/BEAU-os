@@ -50,6 +50,7 @@ HOST_C_SRCS += arch/arm64/lib/random.c
 HOST_C_SRCS += arch/arm64/cpu.c
 HOST_C_SRCS += arch/arm64/psci.c
 HOST_C_SRCS += arch/arm64/mmu.c
+HOST_C_SRCS += arch/arm64/cache.c
 HOST_C_SRCS += arch/arm64/pgtable.c
 HOST_C_SRCS += arch/arm64/irq.c
 HOST_C_SRCS += arch/arm64/panic.c

@@ -21,6 +21,7 @@
 #include <barrier.h>
 #include <asm/platform.h>
 #include <asm/irq.h>
+#include <asm/cache.h>
 #ifdef STACK_PROTECTOR
 #include <asm/security.h>
 #endif
@@ -153,6 +154,7 @@ void init_primary_pcpu(uint64_t mpidr, uint64_t fdt_paddr)
 	if (!arm64_mmu_is_enabled()) {
 		panic("arm64 mmu is not enabled on bsp");
 	}
+	arm64_cache_init();
 	serial_init(false);
 	arm64_gicv3_init_early();
 

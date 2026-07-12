@@ -128,6 +128,19 @@ static uint16_t vits_valid_target_vcpu(const struct arm64_vgicv3 *vgic,
 	return (target_vcpu_id < vgic->vcpu_count) ? target_vcpu_id : 0U;
 }
 
+static void vits_record_last(struct arm64_vits *its, uint32_t opcode,
+	uint32_t device_id, uint32_t event_id, uint32_t lpi,
+	uint16_t collection_id, uint16_t target_vcpu, int32_t status)
+{
+	its->stats.last_opcode = opcode;
+	its->stats.last_device = device_id;
+	its->stats.last_event = event_id;
+	its->stats.last_lpi = lpi;
+	its->stats.last_collection = collection_id;
+	its->stats.last_target = target_vcpu;
+	its->stats.last_status = status;
+}
+
 void arm64_vgicv3_its_init(struct arm64_vgicv3 *vgic)
 {
 	struct arm64_vits *its = &vgic->its;
@@ -304,6 +317,7 @@ static bool vits_update_lpi_config_locked(struct acrn_vm *vm,
 	desc->enabled = ((property & LPI_PROP_ENABLED) != 0U);
 	arm64_vgicv3_update_irq_row_lr_locked(vm, target_vcpu_id, desc);
 	updated = true;
+	vgic->its.stats.config_update_ok++;
 
 	return updated;
 }
@@ -319,6 +333,13 @@ static bool vits_update_event_lpi_config_locked(struct acrn_vm *vm,
 
 	target_vcpu_id = vits_target_vcpu_id(vgic, event->collection_id);
 	return vits_update_lpi_config_locked(vm, vgic, target_vcpu_id, event->lpi);
+}
+
+static void vits_record_config_update(struct arm64_vgicv3 *vgic, bool updated)
+{
+	if (!updated) {
+		vgic->its.stats.config_update_fail++;
+	}
 }
 
 static void vits_clear_event_state_locked(struct acrn_vm *vm,
@@ -372,24 +393,56 @@ static int32_t vits_inject_event_locked(struct acrn_vm *vm, struct arm64_vgicv3 
 	return ret;
 }
 
+static int32_t vits_inject_event_by_id_locked(struct acrn_vm *vm,
+	struct arm64_vgicv3 *vgic, uint32_t device_id, uint32_t event_id)
+{
+	struct arm64_vits *its = &vgic->its;
+	struct arm64_vits_event *event;
+	uint16_t target_vcpu_id = VGIC_ITS_INVALID_VCPU_ID;
+	uint32_t lpi = 0U;
+	int32_t ret;
+
+	event = vits_find_event(its, device_id, event_id);
+	if (event == NULL) {
+		ret = -EINVAL;
+		its->stats.inject_fail++;
+		its->stats.inject_no_event++;
+		vits_record_last(its, GITS_CMD_INT, device_id, event_id, lpi,
+			0U, target_vcpu_id, ret);
+		return ret;
+	}
+
+	lpi = event->lpi;
+	target_vcpu_id = vits_target_vcpu_id(vgic, event->collection_id);
+	ret = vits_inject_event_locked(vm, vgic, event);
+	if (ret == 0) {
+		its->stats.inject_ok++;
+	} else {
+		its->stats.inject_fail++;
+		if (ret == -ENODEV) {
+			its->stats.inject_bad_target++;
+		}
+	}
+	vits_record_last(its, GITS_CMD_INT, device_id, event_id, lpi,
+		event->collection_id, target_vcpu_id, ret);
+
+	return ret;
+}
+
 int32_t arm64_vgicv3_its_inject_msi(struct acrn_vm *vm, struct arm64_vgicv3 *vgic,
 	uint32_t device_id, uint32_t event_id)
 {
-	struct arm64_vits_event *event;
-	int32_t ret = -EINVAL;
-
-	event = vits_find_event(&vgic->its, device_id, event_id);
-	if (event != NULL) {
-		ret = vits_inject_event_locked(vm, vgic, event);
-	}
-
-	return ret;
+	return vits_inject_event_by_id_locked(vm, vgic, device_id, event_id);
 }
 
 bool arm64_vgicv3_its_inv_lpi_locked(struct acrn_vm *vm,
 	struct arm64_vgicv3 *vgic, uint16_t vcpu_id, uint32_t lpi)
 {
-	return vits_update_lpi_config_locked(vm, vgic, vcpu_id, lpi);
+	bool updated = vits_update_lpi_config_locked(vm, vgic, vcpu_id, lpi);
+
+	vits_record_config_update(vgic, updated);
+
+	return updated;
 }
 
 bool arm64_vgicv3_its_invall_vcpu_locked(struct acrn_vm *vm,
@@ -419,6 +472,8 @@ bool arm64_vgicv3_its_invall_vcpu_locked(struct acrn_vm *vm,
 		}
 	}
 
+	vits_record_config_update(vgic, updated);
+
 	return updated;
 }
 
@@ -439,7 +494,7 @@ static void vits_drop_device(struct arm64_vits *its, uint32_t device_id)
 	}
 }
 
-static void vits_execute_cmd(struct acrn_vm *vm, struct arm64_vgicv3 *vgic,
+static bool vits_execute_cmd(struct acrn_vm *vm, struct arm64_vgicv3 *vgic,
 	const uint64_t cmd[4])
 {
 	struct arm64_vits *its = &vgic->its;
@@ -453,6 +508,8 @@ static void vits_execute_cmd(struct acrn_vm *vm, struct arm64_vgicv3 *vgic,
 	struct arm64_vits_event *event;
 	struct arm64_vits_collection *collection;
 	uint32_t dev_idx;
+	bool accepted = true;
+	bool supported = true;
 
 	switch (opcode) {
 	case GITS_CMD_MAPD:
@@ -483,6 +540,8 @@ static void vits_execute_cmd(struct acrn_vm *vm, struct arm64_vgicv3 *vgic,
 
 			device->itt_addr = itt_addr;
 			device->event_count = event_count;
+		} else {
+			accepted = false;
 		}
 		break;
 	case GITS_CMD_MAPC:
@@ -492,6 +551,8 @@ static void vits_execute_cmd(struct acrn_vm *vm, struct arm64_vgicv3 *vgic,
 			collection->target_vcpu =
 				vits_valid_target_vcpu(vgic, (uint16_t)((cmd[2] >> 16U) &
 					0xffffU));
+		} else {
+			accepted = false;
 		}
 		break;
 	case GITS_CMD_MAPI:
@@ -503,6 +564,7 @@ static void vits_execute_cmd(struct acrn_vm *vm, struct arm64_vgicv3 *vgic,
 		if (!vits_irq_is_lpi(lpi) || (device == NULL) ||
 			(event_id >= device->event_count) ||
 			(collection == NULL) || !collection->valid) {
+			accepted = false;
 			break;
 		}
 		event = vits_find_event(its, device_id, event_id);
@@ -512,7 +574,10 @@ static void vits_execute_cmd(struct acrn_vm *vm, struct arm64_vgicv3 *vgic,
 		if (event != NULL) {
 			event->lpi = lpi;
 			event->collection_id = collection_id;
-			(void)vits_update_event_lpi_config_locked(vm, vgic, event);
+			vits_record_config_update(vgic,
+				vits_update_event_lpi_config_locked(vm, vgic, event));
+		} else {
+			accepted = false;
 		}
 		break;
 	case GITS_CMD_MOVI:
@@ -520,6 +585,8 @@ static void vits_execute_cmd(struct acrn_vm *vm, struct arm64_vgicv3 *vgic,
 		collection = vits_find_collection(its, collection_id);
 		if ((event != NULL) && (collection != NULL) && collection->valid) {
 			event->collection_id = collection_id;
+		} else {
+			accepted = false;
 		}
 		break;
 	case GITS_CMD_DISCARD:
@@ -527,11 +594,13 @@ static void vits_execute_cmd(struct acrn_vm *vm, struct arm64_vgicv3 *vgic,
 		if (event != NULL) {
 			vits_clear_event_state_locked(vm, vgic, event);
 			event->valid = false;
+		} else {
+			accepted = false;
 		}
 		break;
 	case GITS_CMD_INT:
-		(void)vits_inject_event_locked(vm, vgic,
-			vits_find_event(its, device_id, event_id));
+		accepted = vits_inject_event_by_id_locked(vm, vgic,
+			device_id, event_id) == 0;
 		break;
 	case GITS_CMD_CLEAR:
 		event = vits_find_event(its, device_id, event_id);
@@ -546,25 +615,45 @@ static void vits_execute_cmd(struct acrn_vm *vm, struct arm64_vgicv3 *vgic,
 				desc->active = false;
 				arm64_vgicv3_update_irq_row_lr_locked(vm, target, desc);
 			}
+		} else {
+			accepted = false;
 		}
 		break;
 	case GITS_CMD_INV:
-		(void)vits_update_event_lpi_config_locked(vm, vgic,
-			vits_find_event(its, device_id, event_id));
+		event = vits_find_event(its, device_id, event_id);
+		accepted = vits_update_event_lpi_config_locked(vm, vgic, event);
+		vits_record_config_update(vgic, accepted);
 		break;
 	case GITS_CMD_INVALL:
 		collection = vits_find_collection(its, collection_id);
 		if ((collection != NULL) && collection->valid) {
-			(void)arm64_vgicv3_its_invall_vcpu_locked(vm, vgic,
+			accepted = arm64_vgicv3_its_invall_vcpu_locked(vm, vgic,
 				collection->target_vcpu);
+		} else {
+			accepted = false;
 		}
 		break;
 	case GITS_CMD_SYNC:
 	case GITS_CMD_MOVALL:
 		break;
 	default:
+		supported = false;
+		accepted = false;
 		break;
 	}
+
+	its->stats.cmd_processed++;
+	if (!supported) {
+		its->stats.cmd_unsupported++;
+	} else if (!accepted) {
+		its->stats.cmd_invalid++;
+	}
+	if (opcode != GITS_CMD_INT) {
+		vits_record_last(its, opcode, device_id, event_id, lpi,
+			collection_id, VGIC_ITS_INVALID_VCPU_ID, accepted ? 0 : -EINVAL);
+	}
+
+	return accepted;
 }
 
 static uint64_t vits_cmd_queue_base(const struct arm64_vits *its)
@@ -591,6 +680,9 @@ static bool vits_process_command_queue(struct acrn_vm *vm, struct arm64_vgicv3 *
 		((its->cbaser & GITS_CBASER_VALID) == 0UL) ||
 		(size < GITS_CMD_SIZE)) {
 		its->creadr = writer;
+		if (reader != writer) {
+			its->stats.cmd_queue_errors++;
+		}
 		return false;
 	}
 
@@ -602,6 +694,7 @@ static bool vits_process_command_queue(struct acrn_vm *vm, struct arm64_vgicv3 *
 	if ((reader >= size) || (writer >= size) ||
 		!vits_offset_aligned(reader) || !vits_offset_aligned(writer)) {
 		its->creadr = writer;
+		its->stats.cmd_queue_errors++;
 		return false;
 	}
 
@@ -614,9 +707,10 @@ static bool vits_process_command_queue(struct acrn_vm *vm, struct arm64_vgicv3 *
 		uint64_t cmd[4];
 
 		if (copy_from_gpa(vm, cmd, base + reader, sizeof(cmd)) != 0) {
+			its->stats.cmd_copy_fail++;
 			break;
 		}
-		vits_execute_cmd(vm, vgic, cmd);
+		(void)vits_execute_cmd(vm, vgic, cmd);
 		flush = true;
 		reader += GITS_CMD_SIZE;
 		processed++;
@@ -625,6 +719,9 @@ static bool vits_process_command_queue(struct acrn_vm *vm, struct arm64_vgicv3 *
 		}
 	}
 
+	if ((reader != writer) && (processed >= GITS_CMD_QUEUE_BUDGET)) {
+		its->stats.cmd_budget_exhausted++;
+	}
 	its->creadr = reader;
 	return flush;
 }
@@ -639,7 +736,8 @@ static void vits_write_translater(struct acrn_vm *vm, struct arm64_vgicv3 *vgic,
 	 * local test path. Passthrough/MSI code should call arm64_vgicv3_inject_msi()
 	 * with the real DeviceID once that layer exists.
 	 */
-	vits_inject_event_locked(vm, vgic, vits_find_event(&vgic->its, 0U, event_id));
+	vgic->its.stats.translater_write++;
+	(void)vits_inject_event_by_id_locked(vm, vgic, 0U, event_id);
 }
 
 static uint32_t vits_baser_index(uint32_t offset)
@@ -654,6 +752,7 @@ static bool vits_mmio_read(struct acrn_vcpu *vcpu, struct arm64_vgicv3 *vgic,
 	uint64_t value64 = 0UL;
 	bool flush = false;
 
+	its->stats.mmio_read++;
 	if ((offset >= GITS_BASER) &&
 		(offset < (GITS_BASER + (ARM64_VGIC_ITS_BASER_NUM * 8U)))) {
 		uint32_t idx = vits_baser_index(offset);
@@ -730,6 +829,7 @@ static bool vits_mmio_write(struct acrn_vcpu *vcpu, struct arm64_vgicv3 *vgic,
 	uint64_t value = mmio->value & UINT32_MAX;
 	bool flush = false;
 
+	its->stats.mmio_write++;
 	if ((offset >= GITS_BASER) &&
 		(offset < (GITS_BASER + (ARM64_VGIC_ITS_BASER_NUM * 8U)))) {
 		uint32_t idx = vits_baser_index(offset);
@@ -823,6 +923,7 @@ bool arm64_vgicv3_its_mmio_access64(struct acrn_vcpu *vcpu,
 	if ((offset == GITS_CWRITER) && (mmio->size == 8UL) &&
 		(mmio->direction == ACRN_IOREQ_DIR_WRITE)) {
 		handled = true;
+		its->stats.mmio_write++;
 		/*
 		 * CWRITER is a 64-bit producer pointer. Update the full value before
 		 * consuming commands so a split low/high emulation does not run the

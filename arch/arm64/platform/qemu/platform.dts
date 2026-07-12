@@ -465,8 +465,8 @@
 				reg = <0x0 0x76000000 0x0 0x0>;
 				size-source = "symbol";
 				size-symbol = "BEAU_LINUX_VM2_IMAGE_SIZE";
-				load-addr = <0x0 0x48080000>;
-				entry-addr = <0x0 0x48080000>;
+				load-addr = <0x0 0x48200000>;
+				entry-addr = <0x0 0x48200000>;
 				bootargs = "console=hvc0 rdinit=/init loglevel=4";
 			};
 
@@ -529,8 +529,8 @@
 				reg = <0x0 0x7c000000 0x0 0x0>;
 				size-source = "symbol";
 				size-symbol = "BEAU_LINUX_VM3_IMAGE_SIZE";
-				load-addr = <0x0 0x58080000>;
-				entry-addr = <0x0 0x58080000>;
+				load-addr = <0x0 0x58200000>;
+				entry-addr = <0x0 0x58200000>;
 				bootargs = "console=hvc0 rdinit=/init loglevel=4";
 			};
 

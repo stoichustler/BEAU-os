@@ -61,7 +61,33 @@ struct arm_smmu_hw_info {
 	uint32_t strtab_log2_entries;
 	uint32_t cmdq_entries;
 	uint32_t evtq_entries;
+	uint32_t cmdq_prod;
+	uint32_t cmdq_cons;
+	uint32_t cmdq_last_cons;
+	uint32_t cmdq_issued;
+	uint32_t cmdq_syncs;
+	uint32_t cmdq_errors;
+	uint32_t cmdq_full;
+	uint32_t cmdq_timeouts;
+	uint32_t evtq_prod;
+	uint32_t evtq_cons;
+	uint32_t evtq_last_prod;
+	uint32_t evtq_last_cons;
+	uint32_t evtq_polled;
+	uint32_t evtq_events;
+	uint32_t evtq_errors;
+	uint32_t evtq_overflow;
+	uint32_t evtq_quarantined;
+	uint64_t evtq_last_word0;
+	uint64_t evtq_last_word1;
+	uint64_t evtq_last_word2;
+	uint64_t evtq_last_word3;
+	uint32_t assign_ok;
+	uint32_t assign_fail;
+	uint32_t unassign_ok;
+	uint32_t unassign_fail;
 	int32_t init_status;
+	int32_t cmdq_last_ret;
 	bool discovered;
 	bool probed;
 	bool aborted;
@@ -76,6 +102,10 @@ struct arm_smmu_stream_config {
 	uint32_t ipa_width;
 	uint64_t root_table_hpa;
 	bool assigned;
+	bool quarantined;
+	uint32_t fault_count;
+	uint32_t last_fault_code;
+	uint64_t last_fault_iova;
 };
 
 /*
@@ -100,6 +130,7 @@ int32_t move_pt_device(struct iommu_domain *src, struct iommu_domain *dst,
 	uint8_t bus, uint8_t devfun);
 void arm_smmu_probe(uint64_t base, uint64_t size);
 void arm_smmu_get_hw_info(struct arm_smmu_hw_info *info);
+void arm_smmu_poll_events(void);
 bool arm_smmu_assignment_ready(void);
 uint32_t arm_smmu_get_stream_configs(struct arm_smmu_stream_config *configs,
 	uint32_t max_configs);
