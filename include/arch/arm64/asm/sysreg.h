@@ -75,7 +75,20 @@
 #define HCR_RW			(1UL << 31U)
 #define HCR_VI			(1UL << 7U)
 #define HCR_VF			(1UL << 6U)
+#define HCR_TID3		(1UL << 18U)
 #define HCR_TSC			(1UL << 19U)
+
+/*
+ * CPTR_EL2.TZ traps EL1/EL0 SVE access to EL2. BEAU keeps it set unless the
+ * vMPU policy grants SVE to the current VM and a matching vCPU context image
+ * is loaded.
+ */
+#define CPTR_EL2_TZ		(1UL << 8U)
+
+#define ID_AA64PFR0_SVE_SHIFT	32U
+#define ID_AA64PFR0_SVE_MASK	(0xfUL << ID_AA64PFR0_SVE_SHIFT)
+
+#define ZCR_ELx_LEN_MASK	0xfUL
 
 /* ICH_HCR_EL2 controls the virtual GIC CPU interface exposed to a vCPU. */
 #define ICH_HCR_EN		(1UL << 0U)
@@ -512,6 +525,87 @@ static inline void write_ich_ap1r0_el2(uint64_t val)
 static inline void write_hcr_el2(uint64_t val)
 {
 	asm volatile ("msr hcr_el2, %0; isb" : : "r" (val) : "memory");
+}
+
+static inline uint64_t read_cptr_el2(void)
+{
+	uint64_t val;
+
+	asm volatile ("mrs %0, cptr_el2" : "=r" (val));
+	return val;
+}
+
+static inline void write_cptr_el2(uint64_t val)
+{
+	asm volatile ("msr cptr_el2, %0; isb" : : "r" (val) : "memory");
+}
+
+static inline uint64_t read_id_aa64pfr0_el1(void)
+{
+	uint64_t val;
+
+	asm volatile ("mrs %0, id_aa64pfr0_el1" : "=r" (val));
+	return val;
+}
+
+static inline uint64_t read_id_aa64zfr0_el1(void)
+{
+	uint64_t val;
+
+	asm volatile ("mrs %0, s3_0_c0_c4_4" : "=r" (val));
+	return val;
+}
+
+static inline uint64_t read_zcr_el1(void)
+{
+	uint64_t val;
+
+	asm volatile ("mrs %0, s3_0_c1_c2_0" : "=r" (val));
+	return val;
+}
+
+static inline void write_zcr_el1(uint64_t val)
+{
+	asm volatile ("msr s3_0_c1_c2_0, %0; isb" : : "r" (val) : "memory");
+}
+
+static inline uint64_t read_zcr_el2(void)
+{
+	uint64_t val;
+
+	asm volatile ("mrs %0, s3_4_c1_c2_0" : "=r" (val));
+	return val;
+}
+
+static inline void write_zcr_el2(uint64_t val)
+{
+	asm volatile ("msr s3_4_c1_c2_0, %0; isb" : : "r" (val) : "memory");
+}
+
+static inline uint64_t read_fpsr(void)
+{
+	uint64_t val;
+
+	asm volatile ("mrs %0, fpsr" : "=r" (val));
+	return val;
+}
+
+static inline void write_fpsr(uint64_t val)
+{
+	asm volatile ("msr fpsr, %0" : : "r" (val) : "memory");
+}
+
+static inline uint64_t read_fpcr(void)
+{
+	uint64_t val;
+
+	asm volatile ("mrs %0, fpcr" : "=r" (val));
+	return val;
+}
+
+static inline void write_fpcr(uint64_t val)
+{
+	asm volatile ("msr fpcr, %0" : : "r" (val) : "memory");
 }
 
 static inline void write_vtcr_el2(uint64_t val)

@@ -32,6 +32,7 @@
 #include <asm/mmu.h>
 #include <asm/platform.h>
 #include <asm/guest/vcpu.h>
+#include <asm/guest/vmpu.h>
 #include <asm/guest/vgicv3.h>
 #include <asm/sysreg.h>
 #include <asm/vtd.h>
@@ -1472,8 +1473,10 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 	struct console_vm_ring_stats ring = { 0U };
 	struct virtio_console_stats vcon = { 0U };
 	struct acrn_vuart *vu = NULL;
+	struct arm64_vm_mpu_sve_status sve_status = { 0U };
 	char temp_str[MAX_STR_SIZE];
 
+	arm64_vm_mpu_get_sve_status(vm, &sve_status);
 	(void)console_vm_ring_get_stats(vm_id, &ring);
 	if (!is_poweroff_vm(vm)) {
 		vu = vm_console_vuart((struct acrn_vm *)vm);
@@ -1497,6 +1500,12 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 		vgic->rdist_count, vgic->lr_count, vgic->vmcr, vgic->gicd_ctlr);
 	shell_item_line("its:enabled:%s typer:0x%08lx ctlr:0x%08x",
 		shell_yes_no(vgic->its_enabled), vgic->its.typer, vgic->its.ctlr);
+	shell_item_line("mpu:sve:cfg:%s active:%s host:%s vl:%u host-vl:%u reason:%s",
+		shell_yes_no(sve_status.configured),
+		shell_yes_no(sve_status.active),
+		shell_yes_no(sve_status.host_supported),
+		sve_status.vl_bits, sve_status.host_vl_bits,
+		arm64_vm_mpu_sve_reason_str(sve_status.reason));
 	shell_vmstat_collect_timer_summary(vm, &timer);
 	shell_item_line("timer:cntv:Y ppi:%lu backup:%lu poll:%lu pre-eret:%lu/%lu lr-miss:%lu cnthp:Y cntp-emul:Y maintenance:Y time-delta:%ld",
 		timer.cntv_ppi, timer.cntv_backup, timer.cntv_poll,

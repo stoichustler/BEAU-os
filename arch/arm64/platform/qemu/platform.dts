@@ -364,6 +364,7 @@
 			direct-map;
 			cpu-affinity = <0 2>;
 			guest-flags = "static", "no-fw";
+			beau,sve = "disabled";
 
 			sched {
 				bvt-weight = <128>;
@@ -398,6 +399,7 @@
 			direct-map;
 			cpu-affinity = <1 7>;
 			guest-flags = "static";
+			beau,sve = "disabled";
 
 			sched {
 				bvt-weight = <64>;
@@ -442,6 +444,8 @@
 			direct-map;
 			cpu-affinity = <4 2 3 6>;
 			guest-flags = "static";
+			beau,sve = "enabled";
+			beau,sve-vl-bits = <128>;
 
 			sched {
 				bvt-weight = <128>;
@@ -507,6 +511,8 @@
 			direct-map;
 			cpu-affinity = <5 2 3 7>;
 			guest-flags = "static";
+			beau,sve = "enabled";
+			beau,sve-vl-bits = <128>;
 
 			sched {
 				bvt-weight = <64>;

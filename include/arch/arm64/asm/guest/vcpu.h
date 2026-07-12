@@ -11,6 +11,7 @@
 #include <timer.h>
 #include <asm/page.h>
 #include <cpu.h>
+#include <asm/guest/vsve.h>
 #include <asm/guest/vgicv3.h>
 
 #ifndef ASSEMBLER
@@ -454,6 +455,7 @@ struct acrn_vcpu_arch {
 	struct cpu_regs regs;
 
 	struct arm64_vcpu_guest_ctx gctx;
+	struct arm64_vcpu_sve_state sve;
 	struct arm64_vgicv3_vcpu_ctx vgic;
 	struct arm64_vcpu_trap_info trap;
 	struct arm64_vcpu_debug_info debug;

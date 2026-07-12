@@ -26,6 +26,7 @@
 #include <asm/trap.h>
 #include <asm/guest/vcpu_priv.h>
 #include <asm/guest/vm_reset.h>
+#include <asm/guest/vmpu.h>
 #include <asm/guest/vgicv3.h>
 
 /* [20260630] vCPU exit principle:
@@ -843,7 +844,12 @@ static int32_t handle_sysreg(struct acrn_vcpu *vcpu)
 	 *   ICC control -> vCPU interface shadow/control
 	 *   CNT* -> timer shadow + vtimer update
 	 */
-	if (((iss & ESR_SYSREG_DIR_READ) == 0UL) &&
+	ret = arm64_vm_mpu_handle_sysreg(vcpu, sysreg, read, reg);
+	if (ret == 0) {
+		advance_vcpu_elr(vcpu);
+	} else if (ret != -ENODATA) {
+		/* vMPU owns the diagnostic for policy-denied architectural features. */
+	} else if (((iss & ESR_SYSREG_DIR_READ) == 0UL) &&
 		((sysreg == SYSREG_ICC_SGI1R_EL1) || (sysreg == SYSREG_ICC_SGI0R_EL1) ||
 		(sysreg == SYSREG_ICC_ASGI1R_EL1)) &&
 		(reg != NULL)) {
@@ -1020,6 +1026,9 @@ int32_t vcpu_exit_handler(struct acrn_vcpu *vcpu)
 		break;
 	case ESR_EL2_EC_SYSREG:
 		ret = handle_sysreg(vcpu);
+		break;
+	case ESR_EL2_EC_SVE:
+		ret = arm64_vm_mpu_handle_sve_trap(vcpu);
 		break;
 	case ESR_EL2_EC_WFI_WFE:
 		ret = handle_wfx(vcpu);

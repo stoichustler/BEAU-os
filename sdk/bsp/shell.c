@@ -1925,7 +1925,7 @@ static int32_t shell_irqstat(int32_t argc, __unused char **argv)
 	}
 
 	snprintf(temp_str, MAX_STR_SIZE,
-		"\r\nirqstat: nr_irqs=%u, pcpus=%hu\r\n",
+		"\r\nhost pirq: nr_irqs=%u, pcpus=%hu\r\n",
 		NR_IRQS, pcpu_num);
 	shell_puts(temp_str);
 	shell_puts("irq   name             active ");

@@ -17,6 +17,7 @@
 #include <asm/sysreg.h>
 #include <asm/trap.h>
 #include <asm/guest/vcpu_priv.h>
+#include <asm/guest/vmpu.h>
 #include <asm/guest/virq.h>
 #include <asm/guest/vgicv3.h>
 
@@ -108,6 +109,7 @@ static void arm64_init_guest_control_context(struct acrn_vcpu *vcpu)
 	gctx->cntvoff_el2 = (uint64_t)vcpu->vm->arch_vm.time_delta;
 	gctx->timer_virq = ARM64_GIC_PPI_VIRTUAL_TIMER;
 	gctx->sctlr_el1 = ARM64_GUEST_SCTLR_EL1_INIT;
+	arm64_vcpu_mpu_init(vcpu);
 }
 
 void arm64_prepare_linux_vcpu_context(struct acrn_vcpu *vcpu, uint64_t entry, uint64_t x0)
@@ -397,6 +399,7 @@ void load_vcpu(__unused struct acrn_vcpu *vcpu)
 	write_cnthctl_el2(CNTHCTL_EL2_EL1PCTEN);
 	asm volatile ("msr cntvoff_el2, %0; isb" : : "r" (gctx->cntvoff_el2) : "memory");
 	restore_el1_sysregs(gctx);
+	arm64_vcpu_mpu_load(vcpu);
 	arm64_vtimer_load_current(vcpu);
 	arm64_vgicv3_load_vcpu(vcpu);
 	arm64_vtimer_trace_switch(vcpu, ARM64_VTIMER_TRACE_LOAD);
@@ -415,6 +418,7 @@ void unload_vcpu(__unused struct acrn_vcpu *vcpu)
 	struct arm64_vcpu_guest_ctx *gctx = &vcpu->arch.gctx;
 
 	save_el1_sysregs(gctx);
+	arm64_vcpu_mpu_unload(vcpu);
 	arm64_vtimer_save_current(vcpu);
 	arm64_vgicv3_update_current_vtimer(vcpu);
 	arm64_vtimer_trace_switch(vcpu, ARM64_VTIMER_TRACE_UNLOAD);

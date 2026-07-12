@@ -17,6 +17,7 @@
 #include <passthrough.h>
 #include <asm/irq.h>
 #include <asm/platform.h>
+#include <asm/sve.h>
 #include <asm/vtd.h>
 #include <arm64_platform_dts.h>
 #include <virtio_proxy.h>
@@ -1018,6 +1019,44 @@ static void dts_parse_os(const void *fdt, int32_t vm_node,
 	}
 }
 
+static void dts_parse_vm_mpu(const void *fdt, int32_t vm_node,
+	struct acrn_vm_config *vm_config)
+{
+	const char *sve = dts_string_prop(fdt, vm_node, "beau,sve",
+		dts_string_prop(fdt, vm_node, "sve", "disabled"));
+	uint32_t vl_bits;
+	uint32_t host_vl_bits;
+
+	vm_config->arch.guest_feature_mask = 0UL;
+	vm_config->arch.guest_sve_vl_bits = ARM64_SVE_VL_BITS_DEFAULT;
+
+	if (strcmp(sve, "disabled") == 0) {
+		return;
+	}
+	if (strcmp(sve, "enabled") != 0) {
+		panic("unknown arm64 dts beau,sve policy '%s'", sve);
+	}
+	if (vm_config->os_config.os_family != VM_OS_LINUX) {
+		panic("arm64 dts SVE is only allowed for linux vm");
+	}
+
+	vl_bits = dts_u32_prop(fdt, vm_node, "beau,sve-vl-bits",
+		dts_u32_prop(fdt, vm_node, "sve-vl-bits", ARM64_SVE_VL_BITS_DEFAULT));
+	if ((vl_bits < ARM64_SVE_VL_BITS_MIN) ||
+		(vl_bits > ARM64_SVE_VL_BITS_MAX) ||
+		((vl_bits % ARM64_SVE_VL_BITS_MIN) != 0U)) {
+		panic("invalid arm64 dts SVE vector length %u bits", vl_bits);
+	}
+	host_vl_bits = arm64_sve_host_vl_bits();
+	if ((host_vl_bits != 0U) && (vl_bits > host_vl_bits)) {
+		panic("arm64 dts SVE vector length %u exceeds host %u bits",
+			vl_bits, host_vl_bits);
+	}
+
+	vm_config->arch.guest_feature_mask |= ARM64_VM_FEATURE_SVE;
+	vm_config->arch.guest_sve_vl_bits = vl_bits;
+}
+
 static void dts_parse_arch(const void *fdt, int32_t generic, uint16_t vm_id,
 	struct acrn_vm_config *vm_config)
 {
@@ -1208,6 +1247,7 @@ static void dts_parse_vm_node(const void *fdt, int32_t generic, int32_t vm_node,
 	dts_parse_pci_devices(fdt, vm_node, vm_id, vm_config);
 	dts_parse_sched(fdt, vm_node, vm_config);
 	dts_parse_os(fdt, vm_node, vm_config, ops);
+	dts_parse_vm_mpu(fdt, vm_node, vm_config);
 	dts_parse_arch(fdt, generic, vm_id, vm_config);
 }
 

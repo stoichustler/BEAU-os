@@ -33,6 +33,11 @@
 #define ARM64_VIRTIO_PROXY_THROUGHPUT_LOW	0U
 #define ARM64_VIRTIO_PROXY_THROUGHPUT_HIGH	1U
 
+#define ARM64_VM_FEATURE_SVE			(1UL << 0U)
+#define ARM64_SVE_VL_BITS_MIN			128U
+#define ARM64_SVE_VL_BITS_DEFAULT		128U
+#define ARM64_SVE_VL_BITS_MAX			2048U
+
 struct arm64_virtio_proxy_config {
 	uint64_t base;
 	uint64_t size;
@@ -67,6 +72,9 @@ struct arch_vm_config {
 	uint64_t guest_virtio_console_base;
 	uint64_t guest_virtio_console_size;
 	uint32_t guest_virtio_console_irq;
+
+	uint64_t guest_feature_mask;
+	uint32_t guest_sve_vl_bits;
 
 	uint16_t guest_virtio_proxy_num;
 	struct arm64_virtio_proxy_config guest_virtio_proxy[ARM64_VIRTIO_PROXY_MAX];
