@@ -511,14 +511,24 @@ $(HV_OBJDIR)/include $(HV_OBJDIR)/include/generated:
 endif
 endif
 
-$(BANNER_H): sdk/BANNER | $(HV_OBJDIR)/include
+# Escape the banner character-by-character; awk gsub backslash handling varies.
+$(BANNER_H): sdk/BANNER Makefile | $(HV_OBJDIR)/include
 	@echo "banner             $(notdir $@)"
 	@{ \
 		echo "/* Auto-generated from sdk/BANNER. */"; \
 		echo "#ifndef BANNER_H"; \
 		echo "#define BANNER_H"; \
 		echo "static const char beau_banner[] ="; \
-		awk '{ gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); printf "\"%s\\r\\n\"\n", $$0 }' $<; \
+		awk 'BEGIN { bs = sprintf("%c", 92); dq = sprintf("%c", 34) } \
+			{ out = ""; \
+			  for (i = 1; i <= length($$0); i++) { \
+			    c = substr($$0, i, 1); \
+			    if (c == bs) out = out bs bs; \
+			    else if (c == dq) out = out bs dq; \
+			    else out = out c; \
+			  } \
+			  printf "%c%s%sr%sn%c\n", dq, out, bs, bs, dq; \
+			}' $<; \
 		echo ";"; \
 		echo "#endif /* BANNER_H */"; \
 	} > $@
