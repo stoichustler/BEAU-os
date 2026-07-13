@@ -866,7 +866,16 @@ struct pci_vdev *vpci_init_vdev(struct acrn_vpci *vpci, struct acrn_vm_pci_dev_c
 			vdev->vdev_ops = &pci_pt_dev_ops;
 			ASSERT(dev_config->emu_type == PCI_DEV_TYPE_PTDEV,
 				"only pci_dev_type_ptdev could not configure vdev_ops");
-			ASSERT(dev_config->pdev != NULL, "pci ptdev is not present on platform!");
+			if (dev_config->pdev == NULL) {
+				LOG_WRN("vm%u ptdev %02x:%02x.%x is not present",
+					vpci2vm(vpci)->vm_id, dev_config->pbdf.bits.b,
+					dev_config->pbdf.bits.d, dev_config->pbdf.bits.f);
+				hlist_del(&vdev->link);
+				bitmap_clear_non_atomic((id & 0x3FU),
+					&vpci->vdev_bitmaps[id >> 6U]);
+				(void)memset(vdev, 0U, sizeof(*vdev));
+				return NULL;
+			}
 		}
 		vdev->vdev_ops->init_vdev(vdev);
 		/*
@@ -922,13 +931,19 @@ static int32_t vpci_init_vdevs(struct acrn_vm *vm)
 		if ((!is_postlaunched_vm(vm)) || (vm_config->pci_devs[idx].vbdf.value != UNASSIGNED_VBDF)) {
 			vdev = vpci_init_vdev(vpci, &vm_config->pci_devs[idx], NULL);
 			if (vdev == NULL) {
-				LOG_ERR("%s: failed to initialize vdev %hu", __func__, idx);
-				ret = -ENODEV;
-				break;
+				if (vm_config->pci_devs[idx].optional) {
+					LOG_WRN("%s: skip optional vdev %hu", __func__, idx);
+				} else {
+					LOG_ERR("%s: failed to initialize vdev %hu", __func__, idx);
+					ret = -ENODEV;
+					break;
+				}
 			}
-			ret = check_pt_dev_pio_bars(vdev);
-			if (ret != 0) {
-				break;
+			if (vdev != NULL) {
+				ret = check_pt_dev_pio_bars(vdev);
+				if (ret != 0) {
+					break;
+				}
 			}
 		}
 	}

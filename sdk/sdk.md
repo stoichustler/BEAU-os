@@ -17,7 +17,8 @@
     ├── codex
     ├── image
     ├── kbe              // Linux kernel virtio backend
-    └── udev             // Userspace implementation (ask if allow to modify)
+    ├── udev             // Userspace implementation (ask if allow to modify)
+    └── zsh              // Zephyr guest shell validation sources
 ```
 
 ## Coding Spec
@@ -97,6 +98,14 @@ publish ownership
    external inputs, fail closed on isolation errors, keep cleanup deterministic,
    avoid hidden ownership transfer, and keep diagnostics actionable.
    (More details refer to [ISO26262.md](beau/ISO26262.md))
+
+8. After BEAU OS general-purpose Linux drivers and Zephyr test shell code are
+   validated, move the retained copies into `sdk/kbe` and `sdk/zsh`
+   respectively so later porting and validation can reuse them quickly.
+
+9. Move validation images that need to be reused, including Linux `Image`,
+   `rtthread.bin`, and `zephyr.bin`, into `sdk/image` so VM boot and regression
+   validation can find stable guest image inputs.
 
 ## BEAU OS Architecture
 

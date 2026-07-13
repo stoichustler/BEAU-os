@@ -1,4 +1,0 @@
-interface:
-  display_name: "BEAU Hypervisor Dev"
-  short_description: "Develop and debug the BEAU ARM64 hypervisor."
-  default_prompt: "Use this skill when working on BEAU hypervisor development tasks in this repository."

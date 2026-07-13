@@ -121,6 +121,11 @@
 	 ACRN_VIRTIO_PROXY_CAP_BATCH | \
 	 ACRN_VIRTIO_PROXY_CAP_SHARED_RING)
 
+/* Minimal virtio-net feature/config values used by the QEMU validation path. */
+#define VIRTIO_NET_F_MAC		5U
+#define VIRTIO_NET_F_STATUS		16U
+#define VIRTIO_NET_S_LINK_UP		1U
+
 /* Minimal virtio-blk feature/config values used by the QEMU validation path. */
 #define VIRTIO_BLK_F_SIZE_MAX		1U
 #define VIRTIO_BLK_F_SEG_MAX		2U
@@ -130,6 +135,17 @@
 
 /* virtio-i2c feature bits used by the QEMU validation path. */
 #define VIRTIO_I2C_F_ZERO_LENGTH_REQUEST	0U
+
+/*
+ * struct virtio_proxy_net_config - static virtio-net config-space image.
+ *
+ * @mac: Stable frontend MAC used by the VM3 virtio-net driver.
+ * @status: Link status when VIRTIO_NET_F_STATUS is offered.
+ */
+struct virtio_proxy_net_config {
+	uint8_t mac[6];
+	uint16_t status;
+};
 
 /*
  * struct virtio_proxy_fs_config - static virtio-fs config-space image.

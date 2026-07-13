@@ -1,28 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Common BEAU virtio_proxy backend worker.
- *
- * 2026-07-10, VM2 backend worker principle:
- *
- * Backend modules own protocol semantics, while this worker owns the common HVC
- * lifecycle. A backend registers its virtio device id and queue set, polls BEAU
- * for pending VM3 requests, lets the protocol-specific handle_one() validate
- * and fill a reply, then completes the same request through BEAU.
- *
- *   fs/rng/blk/i2c backend module
- *              |
- *              v
- *   beau_proxy_backend_start()
- *              |
- *              v
- *   REGISTER -> POLL/BATCH_POLL -> handle_one() -> REPLY/BATCH_REPLY
- *              |                                      |
- *              v                                      v
- *        heartbeat / wait hint                 VM3 used-ring IRQ
- *
- * The batch path uses the BEAU-filled entry array as a local shared ring for
- * metadata and payload buffers. handle_one() still sees the same logical IOC,
- * so protocol backends do not need separate single-request and batch parsers.
  */
 
 #include <linux/delay.h>

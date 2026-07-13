@@ -2,7 +2,9 @@
 #ifndef _BEAU_HCALL_H
 #define _BEAU_HCALL_H
 
+#include <linux/bits.h>
 #include <linux/delay.h>
+#include <linux/limits.h>
 #include <linux/types.h>
 
 #define BEAU_PROXY_ABI_VERSION		3U
@@ -27,6 +29,20 @@
 #define BEAU_PROXY_CAP_BATCH		0x8U
 #define BEAU_PROXY_CAP_SHARED_RING	0x10U
 #define BEAU_PROXY_BATCH_F_LOCAL_REPLY	0x80000000U
+
+#define BEAU_IPC_ABI_VERSION		1U
+#define BEAU_IPC_OP_QUERY		0U
+#define BEAU_IPC_OP_NOTIFY		1U
+#define BEAU_IPC_OP_ACK		2U
+#define BEAU_IPC_STATUS_OK		0U
+#define BEAU_IPC_STATUS_BAD_PARAM	1U
+#define BEAU_IPC_STATUS_NO_CHANNEL	2U
+#define BEAU_IPC_RING_MAGIC		0x42495043U
+#define BEAU_IPC_CHANNEL_ANY		U32_MAX
+#define BEAU_IPC_RING_COUNT		2U
+#define BEAU_IPC_DIR_EP0_TO_EP1	0U
+#define BEAU_IPC_DIR_EP1_TO_EP0	1U
+#define BEAU_IPC_FLAG_NOTIFY_IRQ	BIT(0)
 
 struct beau_proxy_desc {
 	u32 len;
@@ -76,6 +92,40 @@ struct beau_proxy_ioc {
 	struct beau_proxy_desc desc[BEAU_PROXY_DESC_MAX];
 } __aligned(8);
 
+struct beau_ipc_ioc {
+	u32 op;
+	u32 status;
+	u32 abi_version;
+	u32 ioc_size;
+	u32 channel_id;
+	u16 peer_vmid;
+	u16 flags;
+	u64 gpa_base;
+	u32 ring_size;
+	u32 ring_count;
+	u32 notify_count;
+	u32 ack_count;
+	u32 reserved;
+} __aligned(8);
+
+struct beau_ipc_ring_header {
+	u32 magic;
+	u32 version;
+	u32 header_size;
+	u32 ring_size;
+	u16 owner_vmid;
+	u16 peer_vmid;
+	u16 direction;
+	u16 flags;
+	u32 elem_size;
+	u32 elem_count;
+	u64 prod __aligned(64);
+	u64 cons __aligned(64);
+	u64 notify_count;
+	u64 drop_count;
+	u64 bytes;
+} __aligned(64);
+
 static inline void beau_proxy_poll_idle_delay(unsigned int *idle_polls)
 {
 	if (idle_polls == NULL)
@@ -100,5 +150,6 @@ static inline void beau_proxy_poll_active(unsigned int *idle_polls)
 
 long beau_hcall_vm_wdt_kick(unsigned long token);
 long beau_hcall_virtio_proxy_backend(struct beau_proxy_ioc *ioc);
+long beau_hcall_ipc(struct beau_ipc_ioc *ioc);
 
 #endif /* _BEAU_HCALL_H */

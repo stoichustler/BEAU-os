@@ -1037,6 +1037,7 @@ static void dts_parse_pci_devices(const void *fdt, int32_t vm_node, uint16_t vm_
 		dev_config->emu_type = PCI_DEV_TYPE_PTDEV;
 		dev_config->pbdf.value = (uint16_t)pbdf;
 		dev_config->vbdf.value = (uint16_t)vbdf;
+		dev_config->optional = fdt_getprop(fdt, node, "beau,optional", NULL) != NULL;
 		dts_parse_pci_pbar_base(fdt, node, dev_config);
 		dts_parse_pci_vbar_base(fdt, node, dev_config);
 		vm_config->pci_dev_num++;

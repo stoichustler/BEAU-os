@@ -57,6 +57,15 @@
 				beau,stream-id = <0x0008>;
 				beau,writable;
 			};
+
+			pcie-net {
+				compatible = "beau,passthrough-pci-device",
+					     "beau,passthrough-device";
+				beau,name = "qemu-pcie-net";
+				beau,owner-vm = <2>;
+				beau,stream-id = <0x0010>;
+				beau,writable;
+			};
 		};
 
 		ipc-channels {
@@ -358,6 +367,19 @@
 				beau,tag = "proxy-i2c";
 				beau,throughput = "low";
 			};
+
+			virtio-proxy-net-mmio@a000a00 {
+				compatible = "beau,virtio-proxy", "beau,virtio-net", "virtio,mmio";
+				reg = <0x0 0x0a000a00 0x0 0x00000200>;
+				interrupts = <0x0 0x15 0x4>;
+				beau,device-id = <1>;
+				beau,frontend-vmid = <3>;
+				beau,queue-num = <2>;
+				beau,queue-size = <256>;
+				beau,pending-num = <4>;
+				beau,tag = "proxy-net";
+				beau,throughput = "high";
+			};
 		};
 
 		/*
@@ -503,12 +525,24 @@
 			};
 
 			pci-devices {
-				pci {
+				pcie-edu {
 					compatible = "beau,passthrough-pci-device";
 					beau,pbdf = <0x0008>;
 					beau,vbdf = <0x0008>;
 					beau,pbar-base = <0x0 0x10000000>;
 					beau,vbar-base = <0x0 0x80000000>;
+				};
+
+				pcie-net {
+					compatible = "beau,passthrough-pci-device";
+					beau,pbdf = <0x0010>;
+					beau,vbdf = <0x0010>;
+					beau,optional;
+					beau,pbar-base = <0x0 0x00000000>,
+							 <0x0 0x10100000>,
+							 <0x0 0x00000000>,
+							 <0x0 0x00000000>,
+							 <0x0 0x10110000>;
 				};
 			};
 		};

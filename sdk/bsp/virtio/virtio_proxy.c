@@ -373,6 +373,7 @@ static bool virtio_proxy_enabled(const struct acrn_vm_config *vm_config)
 static void virtio_proxy_build_config(struct virtio_proxy_dev *dev,
 	const struct arm64_virtio_proxy_config *proxy_config)
 {
+	struct virtio_proxy_net_config net_config;
 	struct virtio_proxy_fs_config fs_config;
 	struct virtio_proxy_blk_config blk_config;
 
@@ -395,7 +396,18 @@ static void virtio_proxy_build_config(struct virtio_proxy_dev *dev,
 	 *                               |
 	 *                               +--> backend may override before use
 	 */
-	if (dev->device_id == VIRTIO_DEVICE_ID_FS) {
+	if (dev->device_id == VIRTIO_DEVICE_ID_NET) {
+		(void)memset(&net_config, 0U, sizeof(net_config));
+		net_config.mac[0] = 0x52U;
+		net_config.mac[1] = 0x54U;
+		net_config.mac[2] = 0x00U;
+		net_config.mac[3] = 0xbeU;
+		net_config.mac[4] = 0x03U;
+		net_config.mac[5] = 0x00U;
+		net_config.status = VIRTIO_NET_S_LINK_UP;
+		(void)memcpy(dev->config, &net_config, sizeof(net_config));
+		dev->config_size = sizeof(net_config);
+	} else if (dev->device_id == VIRTIO_DEVICE_ID_FS) {
 		(void)memset(&fs_config, 0U, sizeof(fs_config));
 		(void)strncpy_s(fs_config.tag, sizeof(fs_config.tag),
 			dev->tag,
@@ -643,7 +655,11 @@ void virtio_proxy_init_vm(struct acrn_vm *vm)
 		init.device_id = dev->device_id;
 		init.queue_num = proxy_config->queue_num;
 		init.queue_size = proxy_config->queue_size;
-		if (dev->device_id == VIRTIO_DEVICE_ID_BLOCK) {
+		if (dev->device_id == VIRTIO_DEVICE_ID_NET) {
+			init.device_features =
+				(1UL << VIRTIO_NET_F_MAC) |
+				(1UL << VIRTIO_NET_F_STATUS);
+		} else if (dev->device_id == VIRTIO_DEVICE_ID_BLOCK) {
 			init.device_features =
 				(1UL << VIRTIO_BLK_F_SIZE_MAX) |
 				(1UL << VIRTIO_BLK_F_SEG_MAX);

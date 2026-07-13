@@ -17,6 +17,24 @@ config BEAU_VWDT
 	  This is a heartbeat only: if Linux stops scheduling the heartbeat worker,
 	  BEAU can mark the VM as stuck.
 
+config BEAU_EDU_TEST
+	bool "BEAU QEMU edu PCI passthrough test"
+	depends on PCI && PCI_MSI
+	default y
+	help
+	  Probe the QEMU edu PCI endpoint used by BEAU VM2 passthrough
+	  validation. The driver enables BAR MMIO, allocates one MSI/MSI-X
+	  vector, raises one device interrupt, and reports whether the
+	  interrupt handler observed it.
+
+config BEAU_IPC_TEST
+	bool "BEAU static IPC validation endpoint"
+	default y
+	help
+	  Join the first BEAU IPC channel visible to this VM, map its shared
+	  SPSC rings, and exchange length-prefixed validation messages with the
+	  peer endpoint through HC_IPC notifications.
+
 config BEAU_VIRTIOFS_BACKEND
 	bool "BEAU VM2 virtio-fs backend"
 	depends on VIRTIO_FS
@@ -59,5 +77,17 @@ config BEAU_VIRTIOI2C_BACKEND
 	  adapter device id 34. VM3's standard virtio-i2c frontend sends I2C
 	  message descriptors; VM2 exposes a small in-memory device at 7-bit
 	  address 0x50 for QEMU validation with i2c-tools.
+
+config BEAU_VIRTIONET_BACKEND
+	bool "BEAU VM2 virtio-net uplink backend"
+	depends on NET
+	default y
+	help
+	  Service BEAU virtio-proxy network requests from a backend Linux VM.
+
+	  Enable this with a frontend virtio-proxy device advertising virtio NET
+	  device id 1. VM3's standard virtio-net frontend exchanges Ethernet
+	  frames with VM2. VM2 forwards those frames through one uplink netdev,
+	  selected by the backend's uplink parameter and defaulting to eth0.
 
 endif

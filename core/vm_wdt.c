@@ -433,13 +433,13 @@ static void vm_wdt_print_one(uint16_t vm_id, const struct vm_wdt_snapshot *snaps
 	last_msec = snapshot->last_ms % 1000UL;
 	if (snapshot->status == VM_WDT_STATUS_STUCK) {
 		(void)snprintf(line, sizeof(line),
-			"%s[κ][%s] WDT: vm%hu:%9s status:%7s (%02lu.%03lus) kick:%08lu reason:%s" SHELL_COLOR_RESET "\r\n",
+			"%s[κ][%s] WDT: vm%hu:%9s status:%7s (%02lu.%03lus) kick:%8lu reason:%s" SHELL_COLOR_RESET "\r\n",
 			color, timestamp_str, vm_id, vm_wdt_name(vm_id),
 			vm_wdt_status_str(snapshot->status), last_sec, last_msec,
 			snapshot->kick_count, vm_wdt_reason_str(snapshot->reason));
 	} else {
 		(void)snprintf(line, sizeof(line),
-			"%s[κ][%s] WDT: vm%hu:%9s status:%7s (%02lu.%03lus) kick:%08lu" SHELL_COLOR_RESET "\r\n",
+			"%s[κ][%s] WDT: vm%hu:%9s status:%7s (%02lu.%03lus) kick:%8lu" SHELL_COLOR_RESET "\r\n",
 			color, timestamp_str, vm_id, vm_wdt_name(vm_id),
 			vm_wdt_status_str(snapshot->status), last_sec, last_msec,
 			snapshot->kick_count);

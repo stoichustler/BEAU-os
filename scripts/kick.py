@@ -68,6 +68,29 @@ def parse_args():
         help="do not attach the default QEMU PCIe passthrough test endpoint",
     )
     parser.add_argument(
+        "--pcie-net-backend",
+        action="store_true",
+        help="legacy no-op: the VM2 QEMU PCI net endpoint is attached by default",
+    )
+    parser.add_argument(
+        "--no-pcie-net-backend",
+        action="store_true",
+        help="do not attach the default QEMU PCI net endpoint for the VM2 backend",
+    )
+    parser.add_argument(
+        "--vm2-netdev",
+        default=getenv("BEAU_VM2_NETDEV", "user,id=beau_vm2_net"),
+        help="QEMU -netdev argument used for the VM2 PCI net endpoint",
+    )
+    parser.add_argument(
+        "--vm2-net-device",
+        default=getenv(
+            "BEAU_VM2_NET_DEVICE",
+            "virtio-net-pci-non-transitional,netdev=beau_vm2_net,addr=0x2,mac=52:54:00:be:02:00",
+        ),
+        help="QEMU -device argument used for the VM2 PCI net endpoint",
+    )
+    parser.add_argument(
         "--repack-initramfs",
         action="store_true",
         help="refresh the default shared Linux initramfs before building",
@@ -167,6 +190,8 @@ def main():
     ]
     if not args.no_pcie_test:
         qemu_cmd.extend(["-device", "edu,addr=0x1"])
+    if not args.no_pcie_net_backend:
+        qemu_cmd.extend(["-netdev", args.vm2_netdev, "-device", args.vm2_net_device])
     qemu_cmd.extend(args.extra)
 
     if args.dry_run:

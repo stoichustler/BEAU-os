@@ -2071,6 +2071,9 @@ static const char *shell_virtio_device_to_str(uint32_t device_id)
 	const char *str;
 
 	switch (device_id) {
+	case VIRTIO_DEVICE_ID_NET:
+		str = "virtio-net";
+		break;
 	case VIRTIO_DEVICE_ID_BLOCK:
 		str = "virtio-blk";
 		break;
@@ -2160,7 +2163,8 @@ static bool shell_virtio_stats_active(const struct virtio_proxy_stats *stats)
 
 static bool shell_virtio_is_grouped_device(uint32_t device_id)
 {
-	return (device_id == VIRTIO_DEVICE_ID_FS) ||
+	return (device_id == VIRTIO_DEVICE_ID_NET) ||
+		(device_id == VIRTIO_DEVICE_ID_FS) ||
 		(device_id == VIRTIO_DEVICE_ID_RNG) ||
 		(device_id == VIRTIO_DEVICE_ID_BLOCK) ||
 		(device_id == VIRTIO_DEVICE_ID_I2C);
@@ -2273,6 +2277,7 @@ static void shell_virtiostat_print_summary_others(void)
 
 static void shell_virtiostat_print_summary(void)
 {
+	(void)shell_virtiostat_print_summary_for_device(VIRTIO_DEVICE_ID_NET);
 	(void)shell_virtiostat_print_summary_for_device(VIRTIO_DEVICE_ID_FS);
 	(void)shell_virtiostat_print_summary_for_device(VIRTIO_DEVICE_ID_RNG);
 	(void)shell_virtiostat_print_summary_for_device(VIRTIO_DEVICE_ID_BLOCK);

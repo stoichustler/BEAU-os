@@ -17,6 +17,8 @@ Linux kernel tree so they can be ported to multiple Linux versions.
   read/write validation through BEAU virtio-proxy.
 - `virtio-i2c-backend.c`: VM2 virtio-i2c EEPROM-style backend for VM3
   frontend I2C validation through BEAU virtio-proxy.
+- `virtio-net-backend.c`: VM2 virtio-net uplink backend for VM3 frontend
+  Ethernet validation through BEAU virtio-proxy.
 - `vwdt.c`: BEAU VM watchdog heartbeat driver.
 - `Kconfig`, `Makefile`: Kbuild integration snippets for `drivers/virt/beau`.
 
@@ -32,7 +34,8 @@ Linux kernel tree so they can be ported to multiple Linux versions.
    - `CONFIG_BEAU_VWDT`
    - one or more virtio-proxy backends, for example:
      `CONFIG_BEAU_VIRTIOFS_BACKEND`, `CONFIG_BEAU_VIRTIORNG_BACKEND`, and
-     `CONFIG_BEAU_VIRTIOBLK_BACKEND`, and `CONFIG_BEAU_VIRTIOI2C_BACKEND`
+     `CONFIG_BEAU_VIRTIOBLK_BACKEND`, `CONFIG_BEAU_VIRTIOI2C_BACKEND`, and
+     `CONFIG_BEAU_VIRTIONET_BACKEND`
 6. Build the target kernel image and install it into the BEAU Linux image slot
    used by the VM that should run the driver.
 
@@ -45,9 +48,10 @@ semantics are intentionally not implemented here.
 
 The virtio-proxy HVC ABI includes the virtio device id, so multiple protocol
 backends can register for the same frontend VM. The QEMU test topology uses
-VM3 virtio-fs (`device-id = 26`), VM3 virtio-rng (`device-id = 4`), VM3
-virtio-blk (`device-id = 2`), and VM3 virtio-i2c (`device-id = 34`) at the
-same time, all serviced by VM2 Linux backends.
+VM3 virtio-fs (`device-id = 26`), VM3 virtio-rng (`device-id = 4`), and VM3
+virtio-blk (`device-id = 2`), VM3 virtio-i2c (`device-id = 34`), and VM3
+virtio-net (`device-id = 1`) at the same time, all serviced by VM2 Linux
+backends.
 
 The virtio-blk backend is a validation backend, not persistent storage. It
 exports a 1 MiB RAM disk, supports single-segment 4 KiB read/write requests,
@@ -57,6 +61,22 @@ The virtio-i2c backend is also a validation backend. It exposes one in-memory
 7-bit I2C device at address `0x50`; byte 0 of a write selects the EEPROM
 offset, later write bytes update the map, and reads return bytes starting at
 the current offset.
+
+The virtio-net backend is a QEMU validation backend. It exposes VM3 MAC
+`52:54:00:be:03:00`, advertises only `VIRTIO_NET_F_MAC` and
+`VIRTIO_NET_F_STATUS`, and forwards frames through one VM2 uplink netdev. The
+uplink defaults to `eth0`; override it with the backend's `uplink` parameter
+when the passthrough or QEMU NIC has a different interface name. If `eth0` is
+not present, the backend auto-selects the first non-loopback VM2 netdev. The backend
+keeps offload, mergeable buffers, control queue, multi-queue, and RSS disabled
+for the first BEAU virtio-proxy data-plane validation.
+On QEMU, keep the existing edu passthrough endpoint at `addr=0x1`/BDF
+`0x0008`; attach a modern MMIO PCI net endpoint such as
+`virtio-net-pci-non-transitional` as an additional endpoint at `addr=0x2`/BDF
+`0x0010`. VM3 still uses the virtio-net frontend; the VM2 PCI netdev is only
+the physical uplink that the backend forwards frames through. Avoid legacy
+PIO-dependent NICs such as QEMU `e1000` for the default ARM64 validation path
+unless PCI I/O space forwarding is being tested explicitly.
 
 Backend poll loops run through the common virtio-proxy worker. The worker
 registers ABI v3 capabilities, sends `BEAU_PROXY_OP_HEARTBEAT`, and uses
@@ -68,7 +88,9 @@ High-throughput backends can use the ABI v3 shared batch buffer. VM2 registers
 `beau_proxy_batch_entry` records per `BEAU_PROXY_OP_BATCH_POLL`, and VM2
 completes them with one `BEAU_PROXY_OP_BATCH_REPLY`. The current QEMU path
 enables this for virtio-fs and virtio-blk. virtio-rng and virtio-i2c keep the
-single-request path because their request rate is low.
+single-request path because their request rate is low. virtio-net uses a
+dedicated single-request worker so RX buffers are polled only after VM2 has an
+uplink frame ready for VM3.
 
 Backends may also provide protocol features and config-space bytes during
 `BEAU_PROXY_OP_REGISTER`; BEAU keeps board DTS defaults until a backend

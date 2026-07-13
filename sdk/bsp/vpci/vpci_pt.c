@@ -273,10 +273,12 @@ void vdev_pt_map_msix(struct pci_vdev *vdev, bool hold_lock)
 				addr_lo, addr_hi, vdev, hold_lock);
 		arm64_stage2_unmap(vm, addr_lo, addr_hi - addr_lo);
 		msix->mmio_gpa = vbar->base_gpa;
+#if CONFIG_VERBOSE_LOG
 		LOG_INF("vm%u ptdev msix table trap %02x:%02x.%x bar%u gpa=0x%lx hpa=0x%lx size=0x%lx",
 			vm->vm_id, vdev->bdf.bits.b, vdev->bdf.bits.d, vdev->bdf.bits.f,
 			msix->table_bar, addr_lo, msix->mmio_hpa + msix->table_offset,
 			addr_hi - addr_lo);
+#endif
 	}
 }
 
