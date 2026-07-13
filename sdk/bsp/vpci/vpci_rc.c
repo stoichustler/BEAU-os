@@ -32,8 +32,12 @@
 #include <bsp/pci.h>
 #include <logmsg.h>
 #include <bsp/vacpi.h>
-#include <bsp/vroot_port.h>
 #include "vpci_internal.h"
+
+#define VRP_VENDOR			0x8086U
+#define VRP_DEVICE			0x9d14U
+
+static const struct pci_vdev_ops vrp_ops;
 
 /* Host bridge device IDs whose PCIEXBAR is at config offset 0x60. */
 static const uint32_t hostbridge_did_highbytes[] = {0x19U, 0x5aU, 0x59U, 0x3eU, 0x9aU, 0x45U, 0x9bU};
@@ -590,7 +594,7 @@ int32_t destroy_vrp(struct pci_vdev *vdev)
 	return 0;
 }
 
-const struct pci_vdev_ops vrp_ops = {
+static const struct pci_vdev_ops vrp_ops = {
 	.init_vdev         = init_vrp,
 	.deinit_vdev       = deinit_vrp,
 	.write_vdev_cfg    = write_vrp_cfg,

@@ -52,11 +52,12 @@
 #define SHELL_ASCII_DEL		0x7fU
 #define SHELL_VT100_CLEAR_LINE	"\033[2K"
 #define SHELL_VLOG_CHUNK_SIZE	128U
-#define SHELL_VLOG_PREFIX_SIZE	16U
+#define SHELL_VLOG_CPR_QUERY_LEN	4U
 #define SHELL_SCHEDSTAT_MAX_THREADS	((CONFIG_MAX_VM_NUM * MAX_VCPUS_PER_VM) + MAX_PCPU_NUM + 8U)
 #define SHELL_SCHEDSTAT_PERCENT_SCALE	1000UL
 
 char shell_log_buf[SHELL_LOG_BUF_SIZE];
+static const char shell_vlog_cpr_query[] = "\033[6n";
 
 extern struct shell_cmd arch_shell_cmds[];
 extern uint32_t arch_shell_cmds_sz;
@@ -67,6 +68,7 @@ extern uint32_t arch_shell_cmds_sz;
 static void shell_print_registered_commands(void);
 static void shell_handle_tab_key(void);
 static int32_t shell_version(__unused int32_t argc, __unused char **argv);
+static int32_t shell_clear(__unused int32_t argc, __unused char **argv);
 static int32_t shell_symtab(int32_t argc, __unused char **argv);
 static int32_t shell_loglevel(int32_t argc, char **argv);
 static int32_t shell_dump_host_mem(int32_t argc, char **argv);
@@ -84,6 +86,12 @@ static struct shell_cmd shell_cmds[] = {
 		.cmd_param	= SHELL_CMD_VERSION_PARAM,
 		.help_str	= SHELL_CMD_VERSION_HELP,
 		.fcn		= shell_version,
+	},
+	{
+		.str		= SHELL_CMD_CLEAR,
+		.cmd_param	= SHELL_CMD_CLEAR_PARAM,
+		.help_str	= SHELL_CMD_CLEAR_HELP,
+		.fcn		= shell_clear,
 	},
 	{
 		.str		= SHELL_CMD_SYMTAB,
@@ -1141,6 +1149,12 @@ static int32_t shell_version(__unused int32_t argc, __unused char **argv)
 	return 0;
 }
 
+static int32_t shell_clear(__unused int32_t argc, __unused char **argv)
+{
+	shell_puts("\e[2J\e[;H");
+	return 0;
+}
+
 static int32_t shell_symtab(int32_t argc, __unused char **argv)
 {
 	char temp_str[MAX_STR_SIZE];
@@ -1570,6 +1584,7 @@ static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 	bool has_bvt_stats = false;
 	bool has_rtds_stats = false;
 	bool has_cbs_stats = false;
+	bool printed_cbs_pcpu_header = false;
 	uint64_t window_ticks;
 
 	shell_schedstat_take_snapshot(&shell_schedstat_sample);
@@ -1608,6 +1623,23 @@ static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 			shell_sched_runqueue_count(pcpu_id),
 			name);
 		shell_puts(temp_str);
+	}
+
+	for (pcpu_id = 0U; pcpu_id < pcpu_num; pcpu_id++) {
+		struct sched_cbs_pcpu_stats cbs_pcpu;
+
+		if (sched_get_cbs_pcpu_stats(pcpu_id, &cbs_pcpu)) {
+			if (!printed_cbs_pcpu_header) {
+				shell_puts("\r\nCBS pCPU stats:\r\n\r\n");
+				shell_puts("pcpu  admission.ppm  runqueue\r\n");
+				shell_puts("────  ─────────────  ────────\r\n");
+				printed_cbs_pcpu_header = true;
+			}
+			snprintf(temp_str, MAX_STR_SIZE, "%-5hu %-14lu %-8u\r\n",
+				pcpu_id, cbs_pcpu.admission_utilization,
+				cbs_pcpu.runqueue_count);
+			shell_puts(temp_str);
+		}
 	}
 
 	shell_schedstat_print_cpu_usage(head, window_ticks);
@@ -1698,8 +1730,8 @@ static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 		 * forward when budget is replenished after depletion or wake admission.
 		 */
 		shell_puts("\r\nCBS stats:\r\n\r\n");
-		shell_puts("name             pcpu  state     period.us  budget.us  remain.us  deadline-in.us\r\n");
-		shell_puts("───────────────  ────  ────────  ─────────  ─────────  ─────────  ──────────────\r\n");
+		shell_puts("name             pcpu  state     period.us  budget.us  remain.us  deadline-in.us  dep       repl      wake      late\r\n");
+		shell_puts("───────────────  ────  ────────  ─────────  ─────────  ─────────  ──────────────  ────────  ────────  ────────  ────────\r\n");
 
 		list_for_each(pos, head) {
 			struct thread_object *thread = container_of(pos, struct thread_object, node);
@@ -1707,7 +1739,7 @@ static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 
 			if (sched_get_cbs_stats(thread, &cbs)) {
 				snprintf(temp_str, MAX_STR_SIZE,
-					"%-15s  %-4hu  %-8s  %-9lu  %-9lu  %-9lu  %-11lu\r\n",
+					"%-15s  %-4hu  %-8s  %-9lu  %-9lu  %-9lu  %-14lu  %-8lu  %-8lu  %-8lu  %-8lu\r\n",
 					thread->name,
 					thread->pcpu_id,
 					thread_state_str(thread->status),
@@ -1715,7 +1747,11 @@ static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 					ticks_to_us(cbs.budget_ticks),
 					ticks_to_us(cbs.remaining_ticks),
 					(cbs.deadline_ticks > now) ?
-						ticks_to_us(cbs.deadline_ticks - now) : 0UL);
+						ticks_to_us(cbs.deadline_ticks - now) : 0UL,
+					cbs.depleted_count,
+					cbs.replenish_count,
+					cbs.wake_replenish_count,
+					cbs.late_account_count);
 				shell_puts(temp_str);
 			}
 		}
@@ -2010,6 +2046,15 @@ static void shell_vlog_flush(char *out, uint32_t *out_len)
 	}
 }
 
+static void shell_vlog_print_divider(uint16_t vmid, const char *label)
+{
+	char temp_str[MAX_STR_SIZE];
+
+	(void)snprintf(temp_str, sizeof(temp_str),
+		"─────────────── vlog vm%u %s ───────────────\r\n", vmid, label);
+	shell_puts(temp_str);
+}
+
 static void shell_vlog_put_char(char *out, uint32_t *out_len, char ch)
 {
 	if (*out_len >= (MAX_STR_SIZE - 1U)) {
@@ -2019,42 +2064,78 @@ static void shell_vlog_put_char(char *out, uint32_t *out_len, char ch)
 	(*out_len)++;
 }
 
-static void shell_vlog_put_bytes(char *out, uint32_t *out_len, const char *buf, uint32_t len)
+static void shell_vlog_write_visible_char(char *out, uint32_t *out_len,
+	bool *line_start, bool *last_cr, char ch)
 {
-	for (uint32_t idx = 0U; idx < len; idx++) {
-		shell_vlog_put_char(out, out_len, buf[idx]);
+	shell_vlog_put_char(out, out_len, ch);
+	if (ch == '\r') {
+		*line_start = true;
+		*last_cr = true;
+	} else if (ch == '\n') {
+		*line_start = true;
+		*last_cr = false;
+	} else {
+		*line_start = false;
+		*last_cr = false;
 	}
 }
 
-static void shell_vlog_write_prefixed(uint16_t vmid, const char *buf, uint32_t len,
-	bool *line_start, bool *last_cr)
+static void shell_vlog_flush_terminal_query(char *out, uint32_t *out_len,
+	char *terminal_query_buf, uint32_t *terminal_query_len, bool *line_start, bool *last_cr)
 {
-	char prefix[SHELL_VLOG_PREFIX_SIZE];
+	for (uint32_t idx = 0U; idx < *terminal_query_len; idx++) {
+		shell_vlog_write_visible_char(out, out_len, line_start, last_cr,
+			terminal_query_buf[idx]);
+	}
+	*terminal_query_len = 0U;
+}
+
+static bool shell_vlog_filter_terminal_query(char *out, uint32_t *out_len,
+	char *terminal_query_buf, uint32_t *terminal_query_len, bool *line_start,
+	bool *last_cr, char ch)
+{
+	bool consumed = false;
+
+	if ((*terminal_query_len != 0U) || (ch == shell_vlog_cpr_query[0U])) {
+		if (*terminal_query_len < SHELL_VLOG_CPR_QUERY_LEN) {
+			terminal_query_buf[*terminal_query_len] = ch;
+			(*terminal_query_len)++;
+		}
+		consumed = true;
+
+		if (memcmp(terminal_query_buf, shell_vlog_cpr_query, *terminal_query_len) == 0) {
+			if (*terminal_query_len == SHELL_VLOG_CPR_QUERY_LEN) {
+				*terminal_query_len = 0U;
+			}
+		} else {
+			shell_vlog_flush_terminal_query(out, out_len, terminal_query_buf,
+				terminal_query_len, line_start, last_cr);
+		}
+	}
+
+	return consumed;
+}
+
+static void shell_vlog_write(const char *buf, uint32_t len,
+	bool *line_start, bool *last_cr, char *terminal_query_buf, uint32_t *terminal_query_len)
+{
 	char out[MAX_STR_SIZE];
 	uint32_t out_len = 0U;
-	size_t prefix_len;
-
-	(void)snprintf(prefix, sizeof(prefix), "[vmid %u] ", vmid);
-	prefix_len = strnlen_s(prefix, sizeof(prefix));
 
 	for (uint32_t idx = 0U; idx < len; idx++) {
 		char ch = buf[idx];
 
-		if (*line_start && (!*last_cr || (ch != '\n'))) {
-			shell_vlog_put_bytes(out, &out_len, prefix, (uint32_t)prefix_len);
-			*line_start = false;
+		/*
+		 * Replay must not emit guest terminal cursor-position queries to the
+		 * host terminal. A raw ESC[6n in the historical log makes the terminal
+		 * answer ESC[row;colR, which then pollutes the BEAU shell input.
+		 */
+		if (shell_vlog_filter_terminal_query(out, &out_len, terminal_query_buf,
+			terminal_query_len, line_start, last_cr, ch)) {
+			continue;
 		}
 
-		shell_vlog_put_char(out, &out_len, ch);
-		if (ch == '\r') {
-			*line_start = true;
-			*last_cr = true;
-		} else if (ch == '\n') {
-			*line_start = true;
-			*last_cr = false;
-		} else {
-			*last_cr = false;
-		}
+		shell_vlog_write_visible_char(out, &out_len, line_start, last_cr, ch);
 	}
 	shell_vlog_flush(out, &out_len);
 }
@@ -2068,6 +2149,8 @@ static int32_t shell_vm_log(int32_t argc, char **argv)
 	uint32_t offset = 0U;
 	bool line_start = true;
 	bool last_cr = false;
+	uint32_t terminal_query_len = 0U;
+	char terminal_query_buf[SHELL_VLOG_CPR_QUERY_LEN];
 	uint16_t vm_id;
 
 	if (argc != 2) {
@@ -2086,14 +2169,17 @@ static int32_t shell_vm_log(int32_t argc, char **argv)
 		return -EINVAL;
 	}
 
+	shell_puts("\r\n");
+	shell_vlog_print_divider(vm_id, "BEG");
 	(void)snprintf(temp_str, sizeof(temp_str),
-		"\r\nvlog vm%u: buffered:%u/%u dropped:%lu overflow:%lu drained:%lu\r\n",
+		"vlog vm%u: buffered:%u/%u dropped:%lu overflow:%lu drained:%lu\r\n",
 		vm_id, stats.queued, stats.capacity, stats.dropped_bytes,
 		stats.overflow_events, stats.drained_bytes);
 	shell_puts(temp_str);
 
 	if (stats.queued == 0U) {
 		shell_puts("(no buffered vm log)\r\n");
+		shell_vlog_print_divider(vm_id, "END");
 		return 0;
 	}
 
@@ -2108,12 +2194,22 @@ static int32_t shell_vm_log(int32_t argc, char **argv)
 		if (count == 0U) {
 			break;
 		}
-		shell_vlog_write_prefixed(vm_id, buf, count, &line_start, &last_cr);
+		shell_vlog_write(buf, count, &line_start, &last_cr,
+			terminal_query_buf, &terminal_query_len);
 		offset += count;
+	}
+	if (terminal_query_len != 0U) {
+		char out[MAX_STR_SIZE];
+		uint32_t out_len = 0U;
+
+		shell_vlog_flush_terminal_query(out, &out_len, terminal_query_buf,
+			&terminal_query_len, &line_start, &last_cr);
+		shell_vlog_flush(out, &out_len);
 	}
 	if (!line_start) {
 		shell_puts("\r\n");
 	}
+	shell_vlog_print_divider(vm_id, "END");
 
 	return 0;
 }

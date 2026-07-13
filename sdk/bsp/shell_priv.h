@@ -59,6 +59,10 @@ struct shell {
 #define SHELL_CMD_VERSION_PARAM		NULL
 #define SHELL_CMD_VERSION_HELP		"display the hv version information"
 
+#define SHELL_CMD_CLEAR		"clear"
+#define SHELL_CMD_CLEAR_PARAM		NULL
+#define SHELL_CMD_CLEAR_HELP		"clear the BEAU console screen"
+
 #define SHELL_CMD_SYMTAB		"symtab"
 #define SHELL_CMD_SYMTAB_PARAM		NULL
 #define SHELL_CMD_SYMTAB_HELP		"list debug symbol offsets and names"

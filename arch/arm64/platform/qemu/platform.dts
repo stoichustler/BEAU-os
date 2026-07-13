@@ -397,7 +397,16 @@
 			load-order = "service";
 			beau,static-mem = <0x0 0x42000000 0x0 0x06000000>;
 			direct-map;
-			cpu-affinity = <0 2>;
+			/*
+			 * [20260713] CBS shared-pool balance:
+			 *
+			 * VM0 vcpu1 used to share pCPU2 with VM2 vcpu1 and VM3 vcpu1.
+			 * Linux boot creates bursty CBS demand on those shared cores, so
+			 * pCPU2 became the first kick-to-run latency bottleneck. Mapping
+			 * VM0 vcpu1 to pCPU6 keeps the shared pool closer to 2/2/2/2
+			 * runnable vCPU placement before changing CBS policy itself.
+			 */
+			cpu-affinity = <0 6>;
 			guest-flags = "static", "no-fw";
 			beau,sve = "disabled";
 

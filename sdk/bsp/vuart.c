@@ -34,20 +34,6 @@
 #include <vm.h>
 #include <logmsg.h>
 
-/**
- * @addtogroup vp-dm_vperipheral
- *
- * @{
- */
-
-/**
- * @file
- * @brief Implementation of virtual UART device.
- *
- * This file implements all the APIs to support virtual UART device. It also defines some helper functions to simulate
- * the device that are commonly used in this file.
- */
-
 /* [20260712] vUART byte-service boundary
  *
  * vUART is the byte FIFO and interrupt service used by guest console backends.
@@ -930,6 +916,3 @@ void deinit_legacy_vuarts(struct acrn_vm *vm)
 	}
 }
 
-/**
- * @}
- */

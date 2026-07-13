@@ -20,7 +20,6 @@
 #include <bsp/vuart.h>
 #include <bsp/io_req.h>
 #include <bsp/vpci.h>
-#include <bsp/vrtc.h>
 #include <spinlock.h>
 #include <vm_config.h>
 #include <fdt_api.h>
@@ -91,7 +90,6 @@ struct acrn_vm {
 	struct iommu_domain *iommu;	/* iommu domain of this VM */
 	char name[MAX_VM_NAME_LEN];
 	struct acrn_vpci vpci;
-	struct acrn_vrtc vrtc;
 
 	spinlock_t emul_mmio_lock;	/* Used to protect emulation mmio_node concurrent access for a VM */
 	uint16_t nr_emul_mmio_regions;	/* the emulated mmio_region number */

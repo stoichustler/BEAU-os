@@ -97,6 +97,15 @@ struct sched_cbs_stats {
 	uint64_t remaining_ticks;
 	uint64_t deadline_ticks;
 	uint64_t last_start_ticks;
+	uint64_t depleted_count;
+	uint64_t replenish_count;
+	uint64_t wake_replenish_count;
+	uint64_t late_account_count;
+};
+
+struct sched_cbs_pcpu_stats {
+	uint64_t admission_utilization;
+	uint32_t runqueue_count;
 };
 
 struct thread_object;
@@ -212,6 +221,7 @@ struct sched_cbs_control {
 	struct hv_timer tick_timer;
 	/* Cached one-shot deadline; 0 means no CBS timer is armed. */
 	uint64_t timer_deadline_ticks;
+	uint64_t admission_utilization;
 };
 
 extern struct acrn_scheduler sched_prio;
@@ -234,6 +244,7 @@ void sched_get_latency(const struct thread_object *obj, struct sched_latency_sta
 bool sched_get_bvt_stats(const struct thread_object *obj, struct sched_bvt_stats *stats);
 bool sched_get_rtds_stats(const struct thread_object *obj, struct sched_rtds_stats *stats);
 bool sched_get_cbs_stats(const struct thread_object *obj, struct sched_cbs_stats *stats);
+bool sched_get_cbs_pcpu_stats(uint16_t pcpu_id, struct sched_cbs_pcpu_stats *stats);
 void sched_set_platform_config(const struct sched_platform_config *config);
 const struct sched_platform_config *sched_get_platform_config(void);
 const struct sched_cpupool_config *sched_get_pcpu_pool_config(uint16_t pcpu_id);

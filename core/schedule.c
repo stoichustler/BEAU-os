@@ -428,6 +428,12 @@ __attribute__((weak)) bool sched_get_cbs_stats(__unused const struct thread_obje
 	return false;
 }
 
+__attribute__((weak)) bool sched_get_cbs_pcpu_stats(__unused uint16_t pcpu_id,
+	__unused struct sched_cbs_pcpu_stats *stats)
+{
+	return false;
+}
+
 void sched_account_tick(struct sched_control *ctl)
 {
 	if (ctl != NULL) {

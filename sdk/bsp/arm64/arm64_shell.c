@@ -63,7 +63,7 @@
 #define SHELL_CMD_SMMUSTAT_PARAM	NULL
 #define SHELL_CMD_SMMUSTAT_HELP		"list ARM SMMUv3 and ITS passthrough state"
 #define SHELL_CMD_PCISTAT		"pcistat"
-#define SHELL_CMD_PCISTAT_PARAM		"[vm id]"
+#define SHELL_CMD_PCISTAT_PARAM		NULL
 #define SHELL_CMD_PCISTAT_HELP		"list PCI passthrough and SMMU stream state"
 #define SHELL_CMD_RESET			"reset"
 #define SHELL_CMD_RESET_PARAM		"<vm id>"
@@ -585,15 +585,14 @@ static void shell_pcistat_vm(uint16_t vm_id,
 	shell_item_end();
 }
 
-static int32_t shell_pcistat(int32_t argc, char **argv)
+static int32_t shell_pcistat(int32_t argc, __unused char **argv)
 {
 	struct arm_smmu_stream_config streams[PCISTAT_MAX_STREAMS];
 	uint32_t stream_count;
-	int64_t param;
 	uint16_t vm_id;
 
-	if (argc > 2) {
-		shell_puts("usage: pcistat [vm id]\r\n");
+	if (argc > 1) {
+		shell_puts("usage: pcistat\r\n");
 		return -EINVAL;
 	}
 
@@ -601,16 +600,6 @@ static int32_t shell_pcistat(int32_t argc, char **argv)
 	stream_count = arm_smmu_get_stream_configs(streams, ARRAY_SIZE(streams));
 	shell_puts("\r\npcistat:\r\n");
 	shell_pcistat_host();
-
-	if (argc == 2) {
-		param = strtol_deci(argv[1]);
-		if ((param < 0) || (param >= CONFIG_MAX_VM_NUM)) {
-			shell_puts("invalid vm id\r\n");
-			return -EINVAL;
-		}
-		shell_pcistat_vm((uint16_t)param, streams, stream_count);
-		return 0;
-	}
 
 	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
 		struct acrn_vm_config *vm_config = get_vm_config(vm_id);
@@ -1988,11 +1977,13 @@ static void shell_vmstat_vcpus(const struct acrn_vm *vm)
 			uint64_t now = cpu_ticks();
 
 			/* CBS fields expose the reservation server window and budget. */
-			shell_item_line("      cbs:period-us:%lu budget-us:%lu remain-us:%lu deadline-in-us:%lu",
+			shell_item_line("      cbs:period-us:%lu budget-us:%lu remain-us:%lu deadline-in-us:%lu dep:%lu repl:%lu wake:%lu late:%lu",
 				ticks_to_us(cbs.period_ticks), ticks_to_us(cbs.budget_ticks),
 				ticks_to_us(cbs.remaining_ticks),
 				(cbs.deadline_ticks > now) ?
-					ticks_to_us(cbs.deadline_ticks - now) : 0UL);
+					ticks_to_us(cbs.deadline_ticks - now) : 0UL,
+				cbs.depleted_count, cbs.replenish_count,
+				cbs.wake_replenish_count, cbs.late_account_count);
 		}
 		shell_vmstat_vcpu_timer(vcpu);
 	}

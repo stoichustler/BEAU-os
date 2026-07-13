@@ -64,7 +64,7 @@
  *
  * Main flow:
  *
- *   wake/prioritize inactive server
+ *   wake inactive server
  *          |
  *          v
  *   CBS density rule
@@ -79,6 +79,70 @@
  *          +--> refresh active server window
  *          +--> pick earliest deadline
  *          +--> arm local one-shot timer
+ *
+ * [20260713] Soft-CBS boot-latency optimization:
+ *
+ * Reason:
+ * - QEMU 4OS boot puts several secondary vCPUs on the shared CBS pool. During
+ *   Linux boot, virtio, timers, and IRQ kicks generate bursty runnable demand.
+ * - A previous hard-CBS experiment strictly throttled depleted servers and made
+ *   boot-time kick-to-run latency worse. Current BEAU keeps soft CBS as the
+ *   default for shared Linux/service vCPUs because it can absorb boot bursts by
+ *   moving deadlines instead of idling until a hard replenishment point.
+ * - Generic event kicks call request_thread_priority() even when the target vCPU
+ *   is already RUNNABLE. Treating that as a fresh inactive wake can run the CBS
+ *   density rule again and push the target's deadline later during a kick storm.
+ *   Therefore wake() owns inactive admission; prioritize() only refreshes the
+ *   active server window and reinserts the object by its existing CBS deadline.
+ *
+ * Current soft-CBS event framework:
+ *
+ *   BLOCKED vCPU wake
+ *          |
+ *          v
+ *   sched_cbs_wake()
+ *          |
+ *          +--> inactive density rule
+ *          +--> optional now+period replenishment
+ *          +--> EDF runqueue insert
+ *
+ *   IRQ/timer kick for RUNNABLE vCPU
+ *          |
+ *          v
+ *   request_thread_priority()
+ *          |
+ *          v
+ *   schedule() consumes priority_pending
+ *          |
+ *          v
+ *   sched_cbs_prioritize()
+ *          |
+ *          +--> active window refresh only
+ *          +--> preserve existing deadline when still admissible
+ *          +--> EDF runqueue reinsert
+ *
+ *   timer / pick_next / sleep
+ *          |
+ *          v
+ *   cbs_account_runtime()
+ *          |
+ *          +--> charge runtime across late windows
+ *          +--> count dep/repl/late for schedstat and vmstat
+ *
+ * Counter meaning:
+ * - dep:  budget depletion events caused by charged runtime.
+ * - repl: budget replenishments caused by depletion/deadline rollover.
+ * - wake: replenishments caused specifically by inactive wake admission.
+ * - late: accounting observed after budget exhaustion or deadline had already
+ *         passed, which points to timer latency, IRQ-off time, or overloaded
+ *         scheduling windows rather than a CBS policy decision alone.
+ *
+ * Admission and placement:
+ * - Admission stats use DTS cpu_affinity_order when present, because it is the
+ *   actual vCPU-index to pCPU mapping. The bitmap is only a legacy set view and
+ *   cannot explain which shared pCPU is overloaded.
+ * - QEMU platform affinity is also part of the optimization: spreading secondary
+ *   vCPUs avoids making pCPU2 the bottleneck before changing CBS policy.
  *
  * CBS and RTDS comparison in this tree:
  *
@@ -117,6 +181,10 @@ struct sched_cbs_data {
 	uint64_t remaining_ticks;
 	uint64_t deadline_ticks;
 	uint64_t last_start_ticks;
+	uint64_t depleted_count;
+	uint64_t replenish_count;
+	uint64_t wake_replenish_count;
+	uint64_t late_account_count;
 };
 
 static bool cbs_is_queued(const struct sched_cbs_data *data)
@@ -167,13 +235,24 @@ static void cbs_normalize_us(uint16_t pcpu_id, const struct sched_params *params
 	*budget_us = budget;
 }
 
-static void cbs_replenish_from_now(struct sched_cbs_data *data, uint64_t now)
+static void cbs_count_event(uint64_t *counter)
+{
+	if (*counter != UINT64_MAX) {
+		(*counter)++;
+	}
+}
+
+static void cbs_replenish_from_now(struct sched_cbs_data *data, uint64_t now,
+	bool count)
 {
 	data->deadline_ticks = now + data->period_ticks;
 	data->remaining_ticks = data->budget_ticks;
+	if (count) {
+		cbs_count_event(&data->replenish_count);
+	}
 }
 
-static void cbs_replenish_next_window(struct sched_cbs_data *data)
+static void cbs_replenish_next_window(struct sched_cbs_data *data, bool count)
 {
 	if (data->deadline_ticks > (UINT64_MAX - data->period_ticks)) {
 		data->deadline_ticks = UINT64_MAX;
@@ -181,15 +260,19 @@ static void cbs_replenish_next_window(struct sched_cbs_data *data)
 		data->deadline_ticks += data->period_ticks;
 	}
 	data->remaining_ticks = data->budget_ticks;
+	if (count) {
+		cbs_count_event(&data->replenish_count);
+	}
 }
 
-static void cbs_replenish_after_depletion(struct sched_cbs_data *data, uint64_t now)
+static void cbs_replenish_after_depletion(struct sched_cbs_data *data, uint64_t now,
+	bool count)
 {
 	if (data->deadline_ticks == 0UL) {
-		cbs_replenish_from_now(data, now);
+		cbs_replenish_from_now(data, now, count);
 	} else {
 		do {
-			cbs_replenish_next_window(data);
+			cbs_replenish_next_window(data, count);
 		} while ((data->deadline_ticks <= now) &&
 			(data->deadline_ticks != UINT64_MAX));
 	}
@@ -205,11 +288,11 @@ static void cbs_replenish_after_depletion(struct sched_cbs_data *data, uint64_t 
  *        +--> deadline += period, remaining = budget
  *        +--> continue charging leftover delta
  */
-static void cbs_charge_runtime(struct sched_cbs_data *data, uint64_t delta)
+static void cbs_charge_runtime(struct sched_cbs_data *data, uint64_t delta, bool count)
 {
 	while (delta != 0UL) {
 		if (data->remaining_ticks == 0UL) {
-			cbs_replenish_next_window(data);
+			cbs_replenish_next_window(data, count);
 		}
 
 		if (delta < data->remaining_ticks) {
@@ -219,6 +302,9 @@ static void cbs_charge_runtime(struct sched_cbs_data *data, uint64_t delta)
 
 		delta -= data->remaining_ticks;
 		data->remaining_ticks = 0UL;
+		if (count) {
+			cbs_count_event(&data->depleted_count);
+		}
 	}
 }
 
@@ -280,9 +366,9 @@ static bool cbs_needs_wake_replenish(const struct sched_cbs_data *data, uint64_t
 static void cbs_refresh_active_window(struct sched_cbs_data *data, uint64_t now)
 {
 	if (data->remaining_ticks == 0UL) {
-		cbs_replenish_after_depletion(data, now);
+		cbs_replenish_after_depletion(data, now, true);
 	} else if (data->deadline_ticks <= now) {
-		cbs_replenish_from_now(data, now);
+		cbs_replenish_from_now(data, now, true);
 	}
 }
 
@@ -298,10 +384,18 @@ static void cbs_refresh_active_window(struct sched_cbs_data *data, uint64_t now)
  */
 static void cbs_apply_inactive_wake_rule(struct sched_cbs_data *data, uint64_t now)
 {
+	bool replenished = false;
+
 	if (data->remaining_ticks == 0UL) {
-		cbs_replenish_after_depletion(data, now);
+		cbs_replenish_after_depletion(data, now, true);
+		replenished = true;
 	} else if (cbs_needs_wake_replenish(data, now)) {
-		cbs_replenish_from_now(data, now);
+		cbs_replenish_from_now(data, now, true);
+		replenished = true;
+	}
+
+	if (replenished) {
+		cbs_count_event(&data->wake_replenish_count);
 	}
 }
 
@@ -339,6 +433,32 @@ static void cbs_queue_insert(struct thread_object *obj)
 	list_add_tail(&data->list, &cbs_ctl->runqueue);
 }
 
+static void cbs_record_late_account(struct sched_cbs_data *data, uint64_t now)
+{
+	uint64_t due = data->deadline_ticks;
+	uint64_t budget_due = 0UL;
+
+	/*
+	 * "late" is a diagnostic counter, not extra CBS policy. The local timer
+	 * should normally fire at the earlier of budget exhaustion and deadline.
+	 * If accounting observes time later than that earliest due point, the vCPU
+	 * has run past the expected scheduling boundary because the timer or
+	 * schedule() path arrived late.
+	 */
+	if (data->remaining_ticks == 0UL) {
+		budget_due = data->last_start_ticks;
+	} else if (data->last_start_ticks <= (UINT64_MAX - data->remaining_ticks)) {
+		budget_due = data->last_start_ticks + data->remaining_ticks;
+	}
+
+	if ((budget_due != 0UL) && ((due == 0UL) || (budget_due < due))) {
+		due = budget_due;
+	}
+	if ((due != 0UL) && (due < now)) {
+		cbs_count_event(&data->late_account_count);
+	}
+}
+
 static void cbs_account_runtime(struct thread_object *obj, uint64_t now)
 {
 	struct sched_cbs_data *data = (struct sched_cbs_data *)obj->data;
@@ -350,9 +470,10 @@ static void cbs_account_runtime(struct thread_object *obj, uint64_t now)
 	}
 
 	delta = now - data->last_start_ticks;
+	cbs_record_late_account(data, now);
 	data->last_start_ticks = now;
 
-	cbs_charge_runtime(data, delta);
+	cbs_charge_runtime(data, delta, true);
 }
 
 static void cbs_refresh_thread(struct thread_object *obj, uint64_t now)
@@ -462,7 +583,23 @@ static void cbs_timer_handler(void *param)
 	release_schedule_lock(pcpu_id, rflags);
 }
 
-static void cbs_validate_pcpu_admission(uint16_t pcpu_id)
+static bool cbs_vm_uses_pcpu(const struct acrn_vm_config *vm_config, uint16_t pcpu_id)
+{
+	uint16_t idx;
+
+	if (vm_config->cpu_affinity_num != 0U) {
+		for (idx = 0U; idx < vm_config->cpu_affinity_num; idx++) {
+			if (vm_config->cpu_affinity_order[idx] == pcpu_id) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	return (vm_config->cpu_affinity & AFFINITY_CPU(pcpu_id)) != 0UL;
+}
+
+static uint64_t cbs_validate_pcpu_admission(uint16_t pcpu_id)
 {
 	const struct acrn_vm_config *vm_config;
 	uint16_t vm_id;
@@ -473,7 +610,7 @@ static void cbs_validate_pcpu_admission(uint16_t pcpu_id)
 		uint32_t budget_us;
 
 		vm_config = get_vm_config(vm_id);
-		if ((vm_config->cpu_affinity & AFFINITY_CPU(pcpu_id)) == 0UL) {
+		if (!cbs_vm_uses_pcpu(vm_config, pcpu_id)) {
 			continue;
 		}
 
@@ -483,6 +620,8 @@ static void cbs_validate_pcpu_admission(uint16_t pcpu_id)
 			panic("CBS admission failed on pCPU%hu", pcpu_id);
 		}
 	}
+
+	return utilization;
 }
 
 static int sched_cbs_init(struct sched_control *ctl)
@@ -491,10 +630,9 @@ static int sched_cbs_init(struct sched_control *ctl)
 
 	ASSERT(ctl->pcpu_id == get_pcpu_id(), "init scheduler on wrong cpu!");
 
-	cbs_validate_pcpu_admission(ctl->pcpu_id);
-
 	ctl->priv = cbs_ctl;
 	INIT_LIST_HEAD(&cbs_ctl->runqueue);
+	cbs_ctl->admission_utilization = cbs_validate_pcpu_admission(ctl->pcpu_id);
 	cbs_ctl->timer_deadline_ticks = 0UL;
 	initialize_timer(&cbs_ctl->tick_timer, cbs_timer_handler, ctl, 0UL, 0UL);
 
@@ -524,6 +662,10 @@ static void sched_cbs_init_data(struct thread_object *obj, struct sched_params *
 	data->remaining_ticks = data->budget_ticks;
 	data->deadline_ticks = now + data->period_ticks;
 	data->last_start_ticks = 0UL;
+	data->depleted_count = 0UL;
+	data->replenish_count = 0UL;
+	data->wake_replenish_count = 0UL;
+	data->late_account_count = 0UL;
 }
 
 static struct thread_object *sched_cbs_pick_next(struct sched_control *ctl)
@@ -582,15 +724,12 @@ static void sched_cbs_prioritize(struct thread_object *obj)
 	uint64_t now = cpu_ticks();
 
 	/*
-	 * CBS priority requests are treated as new server demand, not unbounded
-	 * boost credit. A depleted server receives a later deadline with fresh
-	 * budget; an over-dense wakeup receives a fresh now+period deadline.
+	 * Event priority only asks CBS to reconsider already-runnable work. The
+	 * inactive wake density rule belongs to wake(), where new demand enters
+	 * from BLOCKED state; applying it again to a runnable vCPU can push its
+	 * deadline later during a kick storm and lengthen interrupt delivery.
 	 */
-	if (cbs_is_current(obj)) {
-		cbs_refresh_active_window(data, now);
-	} else {
-		cbs_apply_inactive_wake_rule(data, now);
-	}
+	cbs_refresh_active_window(data, now);
 	if (!cbs_is_current(obj)) {
 		cbs_queue_insert(obj);
 	}
@@ -613,6 +752,10 @@ static void sched_cbs_snapshot(const struct thread_object *obj,
 		.remaining_ticks = data->remaining_ticks,
 		.deadline_ticks = data->deadline_ticks,
 		.last_start_ticks = data->last_start_ticks,
+		.depleted_count = data->depleted_count,
+		.replenish_count = data->replenish_count,
+		.wake_replenish_count = data->wake_replenish_count,
+		.late_account_count = data->late_account_count,
 	};
 
 	if ((obj->status == THREAD_STS_RUNNING) && !is_idle_thread(obj) &&
@@ -620,7 +763,7 @@ static void sched_cbs_snapshot(const struct thread_object *obj,
 		struct sched_cbs_data live = *data;
 		uint64_t delta = now - data->last_start_ticks;
 
-		cbs_charge_runtime(&live, delta);
+		cbs_charge_runtime(&live, delta, false);
 		stats->remaining_ticks = live.remaining_ticks;
 		stats->deadline_ticks = live.deadline_ticks;
 	}
@@ -637,6 +780,44 @@ bool sched_get_cbs_stats(const struct thread_object *obj, struct sched_cbs_stats
 		sched_cbs_snapshot(obj, stats);
 		release_schedule_lock(obj->pcpu_id, rflags);
 		valid = true;
+	}
+
+	return valid;
+}
+
+static uint32_t cbs_runqueue_count(const struct sched_cbs_control *cbs_ctl)
+{
+	const struct list_head *pos;
+	uint32_t count = 0U;
+
+	list_for_each(pos, &cbs_ctl->runqueue) {
+		count++;
+	}
+
+	return count;
+}
+
+bool sched_get_cbs_pcpu_stats(uint16_t pcpu_id, struct sched_cbs_pcpu_stats *stats)
+{
+	struct sched_control *ctl;
+	struct sched_cbs_control *cbs_ctl;
+	bool valid = false;
+	uint64_t rflags;
+
+	if ((pcpu_id < get_pcpu_nums()) && (stats != NULL)) {
+		ctl = &per_cpu(sched_ctl, pcpu_id);
+		if (ctl->scheduler == &sched_cbs) {
+			obtain_schedule_lock(pcpu_id, &rflags);
+			cbs_ctl = (struct sched_cbs_control *)ctl->priv;
+			if (cbs_ctl != NULL) {
+				*stats = (struct sched_cbs_pcpu_stats) {
+					.admission_utilization = cbs_ctl->admission_utilization,
+					.runqueue_count = cbs_runqueue_count(cbs_ctl),
+				};
+				valid = true;
+			}
+			release_schedule_lock(pcpu_id, rflags);
+		}
 	}
 
 	return valid;

@@ -23,7 +23,6 @@
  * The total params size is:
  * (MEM_1K + MEM_4K + MEM_2K + 20K) = 27KB
  */
-
 struct elf_boot_para {
 	char init_gdt[40];
 	char loader_name[20];
@@ -105,8 +104,9 @@ static void *do_load_elf64(struct acrn_vm *vm)
 				 */
 				(void)copy_to_gpa(vm, p_elf_img + p_prg_tbl_head64->p_offset,
 					p_prg_tbl_head64->p_paddr, (uint32_t)p_prg_tbl_head64->p_filesz);
-				/* copy_to_gpa has its own pre_user_access/post_user_access inside. Call pre_user_access again here to keep
-				 * the context. */
+				/* copy_to_gpa has its own pre_user_access/post_user_access inside. Call
+				 * pre_user_access again here to keep the context.
+				 */
 				pre_user_access();
 			}
 			p_prg_tbl_head64++;
@@ -167,8 +167,9 @@ static void *do_load_elf32(struct acrn_vm *vm)
 				 */
 				(void)copy_to_gpa(vm, p_elf_img + p_prg_tbl_head32->p_offset,
 					p_prg_tbl_head32->p_paddr, p_prg_tbl_head32->p_filesz);
-				/* copy_to_gpa has its own pre_user_access/post_user_access inside. Call pre_user_access again here to keep
-				 * the context. */
+				/* copy_to_gpa has its own pre_user_access/post_user_access inside. Call
+				 * pre_user_access again here to keep the context.
+				 */
 				pre_user_access();
 			}
 			p_prg_tbl_head32++;
