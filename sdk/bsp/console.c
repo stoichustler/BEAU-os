@@ -130,7 +130,7 @@ struct hv_timer console_timer;
 #endif
 #define VM_CONSOLE_INPUT_COLLECT_BUDGET CONFIG_VM_CONSOLE_INPUT_COLLECT_BUDGET
 #define VM_CONSOLE_DRAIN_BUF_SIZE 1024U
-#define VM_CONSOLE_PREFIX_MAX_SIZE 16U
+#define VM_CONSOLE_PREFIX_MAX_SIZE 32U
 #define VM_CONSOLE_CPR_QUERY_LEN 4U
 #define VM_CONSOLE_EXCEPTION_RINGBUF_SIZE 4096U
 #define VM_CONSOLE_EXCEPTION_RINGBUF_MASK (VM_CONSOLE_EXCEPTION_RINGBUF_SIZE - 1U)
@@ -1125,7 +1125,8 @@ static void console_vm_ring_write_prefixed(uint16_t vmid, struct vm_console_ring
 	 * Prefix each visible guest line so interleaved host/guest diagnostics can
 	 * still be attributed after copying logs from a single serial stream.
 	 */
-	(void)snprintf(prefix, sizeof(prefix), "[vmid %u] ", vmid);
+	(void)snprintf(prefix, sizeof(prefix), "%s[vmid %u] %s",
+		SHELL_COLOR_MAGENTA, vmid, SHELL_COLOR_RESET);
 	prefix_len = strnlen_s(prefix, sizeof(prefix));
 
 	for (uint32_t idx = 0U; idx < len; idx++) {

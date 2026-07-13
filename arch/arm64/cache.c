@@ -10,23 +10,35 @@
 #include <asm/cache.h>
 #include <asm/sysreg.h>
 
-/*
- * [20260712] ARM64 cache discovery framework:
+/* [20260712] ARM64 cache discovery and placement framework
  *
- *   CTR_EL0      -> minimum I/D cache line size
- *   CLIDR_EL1    -> cache type present at each architectural level
- *   CSSELR_EL1   -> selects level + I-cache/D-cache view
- *   CCSIDR_EL1   -> line size, associativity, set count
- *        |
- *        v
- *   arm64_cache_info
- *        |
- *        +-- shell cachestat
- *        +-- future LLC policy / cache-partition hooks
+ * boot BSP after EL2 MMU/cache enable
+ *     |
+ *     v
+ * read architected cache registers
+ *     |
+ *     +--> CTR_EL0    -> minimum I/D cache line sizes
+ *     +--> CLIDR_EL1  -> cache type present at each level
+ *     +--> CSSELR_EL1 -> select one level/view
+ *     +--> CCSIDR_EL1 -> line size, ways, sets
+ *     |
+ *     v
+ * arm64_cache_state snapshot
+ *     |
+ *     +--> shell cachestat
+ *     +--> VM placement diagnostics: vCPU -> pCPU -> LLC domain
+ *     +--> future LLC policy / cache-partition hooks
  *
  * The current QEMU and BEAU reference platform expose one shared LLC domain.
  * This file keeps the topology query explicit so platform-specific isolation
  * can be added without changing VM or shell code.
+ *
+ * Key rule:
+ *   - collect once after paging has enabled architected cache state;
+ *   - consumers read arm64_cache_info instead of touching CSSELR/CCSIDR;
+ *   - default to one shared LLC domain until platform code publishes masks;
+ *   - page-table and device-owned cache maintenance stays with MMU/SMMU/ITS
+ *     owners so discovery never changes hardware-visible memory ordering.
  */
 #define ARM64_CACHE_LEVEL_MAX		7U
 #define ARM64_CLIDR_CTYPE_MASK		0x7UL
@@ -81,6 +93,11 @@ static bool arm64_cache_add_leaf(uint8_t level, uint8_t type, bool instruction)
 		return false;
 	}
 
+	/*
+	 * CSSELR_EL1 selects the CCSIDR_EL1 view. Keep this selector pair inside
+	 * discovery so later cache-placement users cannot race by changing the
+	 * selected cache level behind each other.
+	 */
 	write_csselr_el1((((uint64_t)level - 1UL) << 1U) | (instruction ? 1UL : 0UL));
 	ccsidr = read_ccsidr_el1();
 
@@ -96,6 +113,11 @@ static bool arm64_cache_add_leaf(uint8_t level, uint8_t type, bool instruction)
 	leaf->shared_pcpu_mask = arm64_cache_all_pcpu_mask();
 	arm64_cache_state.leaf_count++;
 
+	/*
+	 * The last cache leaf discovered by CLIDR order is the closest LLC model
+	 * BEAU can infer without MPIDR/firmware topology. Platform code can later
+	 * replace this single-domain policy with per-cluster masks.
+	 */
 	arm64_cache_state.llc_level = level;
 	arm64_cache_state.llc_type = type;
 	arm64_cache_state.llc_size = leaf->size;

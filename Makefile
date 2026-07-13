@@ -354,7 +354,7 @@ BSP_LIB_SRCS += sdk/bsp/vpci/vpci_rc.c
 BSP_LIB_SRCS += sdk/bsp/vpci/vpci_sriov.c
 
 ifeq ($(ARCH),arm64)
-COMMON_C_SRCS += arch/arm64/guest/hypercall.c
+COMMON_C_SRCS += arch/arm64/guest/hcall.c
 endif
 
 COMMON_C_OBJS := $(patsubst %.c,$(HV_OBJDIR)/%.o,$(COMMON_C_SRCS))

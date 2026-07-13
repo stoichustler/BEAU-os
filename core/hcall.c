@@ -15,7 +15,7 @@
 #include <asm/guest/assign.h>
 #include <asm/guest/ept.h>
 #include <asm/mmu.h>
-#include <hypercall.h>
+#include <hcall.h>
 #include <errno.h>
 #include <logmsg.h>
 #include <asm/ioapic.h>
@@ -29,7 +29,7 @@
 
 #define DBG_LEVEL_HYCALL	6U
 
-/* [20260712] Common hypercall boundary
+/* [20260712] Common hcall boundary
  *
  * guest request buffer
  *        |

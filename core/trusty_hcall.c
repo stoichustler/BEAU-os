@@ -5,10 +5,32 @@
  */
 
 #include <vm.h>
-#include <hypercall.h>
+#include <hcall.h>
 #include <errno.h>
 #include <logmsg.h>
 
+/* [20260713] Trusty hcall world-state principle
+ *
+ * normal world HVC
+ *     |
+ *     v
+ * validate sworld_control
+ *     |
+ *     +--> initialize Trusty
+ *     |       -> copy boot params from caller GPA -> activate secure world
+ *     |
+ *     +--> world switch
+ *     |       -> current context decides next world -> switch_world()
+ *     |
+ *     +--> BSP save/restore
+ *             -> save secure context -> later restore into same VM
+ *
+ * Key rule:
+ *   - sworld_control is owned by the VM and gates every transition;
+ *   - only the BSP saves/restores VM-wide secure-world context;
+ *   - invalid ordering fails closed so normal-world guests cannot enter an
+ *     uninitialized or already-owned secure context.
+ */
 
 int32_t hcall_world_switch(struct acrn_vcpu *vcpu, __unused struct acrn_vm *target_vm,
 		__unused uint64_t param1, __unused uint64_t param2)

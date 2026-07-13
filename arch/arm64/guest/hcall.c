@@ -9,7 +9,7 @@
 #include <vm.h>
 #include <vcpu.h>
 #include <guest_memory.h>
-#include <hypercall.h>
+#include <hcall.h>
 #include <acrn_hv_defs.h>
 #include <vm_wdt.h>
 #include <version.h>
@@ -18,7 +18,7 @@
 #include <virtio_proxy.h>
 #include <asm/guest/vipc.h>
 
-/* [20260630] hypercall principle:
+/* [20260630] ARM64 hcall dispatch principle:
  *
  * ARM64 guests use HVC for two ABIs in this bring-up tree:
  * - PSCI, identified by the standard PSCI function IDs.
@@ -34,15 +34,34 @@
  * and unsupported legacy hypercalls return -ENOTTY until their ARM64
  * dependencies exist here.
  */
+/* [20260713] hcall permission and target ownership
+ *
+ * guest x0..x2
+ *     |
+ *     v
+ * mask HC_ID/function
+ *     |
+ *     v
+ * dispatch table
+ *     |
+ *     +--> service VM operation
+ *     |       -> relative VMID -> target VM lock -> handler()
+ *     |
+ *     +--> static guest operation
+ *     |       -> guest flag check -> handler(vcpu, own VM)
+ *     |
+ *     +--> unsupported / wrong owner
+ *             -> fail closed with -ENOTTY
+ *
+ * Key rule:
+ *   - the table is the ABI boundary and permission map;
+ *   - service-VM calls lock the target before touching target state;
+ *   - guest self-service calls never borrow another VM's ownership;
+ *   - failed dispatches are observable, but noisy retry paths stay debug-only.
+ */
 #define ACRN_HCALL_ID_MASK	0xffffffffUL
 #define ACRN_HCALL_FUNC(id)	((id) & ACRN_HCALL_ID_MASK)
 #define ACRN_HCALL_ID(id)	((ACRN_HCALL_FUNC(id) >> 24U) == HC_ID)
-
-struct arm64_hc_dispatch {
-	int32_t (*handler)(struct acrn_vcpu *vcpu, struct acrn_vm *target_vm,
-		uint64_t param1, uint64_t param2);
-	uint64_t permission_flags;
-};
 
 static int32_t hcall_arm64_get_api_version(struct acrn_vcpu *vcpu,
 	__unused struct acrn_vm *target_vm, uint64_t param1,
@@ -107,7 +126,7 @@ static int32_t hcall_arm64_not_supported(__unused struct acrn_vcpu *vcpu,
 	return -ENOTTY;
 }
 
-static const struct arm64_hc_dispatch arm64_hc_dispatch_table[] = {
+static const struct hcall_dispatch_entry arm64_hc_dispatch_table[] = {
 	[HC_IDX(HC_GET_API_VERSION)] = {
 		.handler = hcall_arm64_get_api_version,
 	},
@@ -187,7 +206,7 @@ int32_t arm64_dispatch_hypercall(struct acrn_vcpu *vcpu)
 	int32_t ret = -ENOTTY;
 
 	if (HC_IDX(hcall_id) < ARRAY_SIZE(arm64_hc_dispatch_table)) {
-		const struct arm64_hc_dispatch *dispatch =
+		const struct hcall_dispatch_entry *dispatch =
 			&arm64_hc_dispatch_table[HC_IDX(hcall_id)];
 		uint64_t guest_flags = get_vm_config(vm->vm_id)->guest_flags;
 		uint64_t permission_flags = dispatch->permission_flags;

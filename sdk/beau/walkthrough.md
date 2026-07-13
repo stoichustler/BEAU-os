@@ -327,7 +327,7 @@ HVC exits are split into two ABIs:
 HVC function ID
       |
       +--> PSCI ID       -> vcpu_exit.c CPU/power emulation
-      +--> ACRN HC_ID    -> arch/arm64/guest/hypercall.c
+      +--> ACRN HC_ID    -> arch/arm64/guest/hcall.c
 ```
 
 ARM64 keeps the ACRN hypercall table small. x86-only operations return
