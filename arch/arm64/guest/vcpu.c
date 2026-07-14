@@ -494,11 +494,37 @@ void arch_vcpu_thread(struct thread_object *obj)
 	struct acrn_vcpu *vcpu = container_of(obj, struct acrn_vcpu, thread_obj);
 	int32_t ret;
 
-	/*
-	 * The vCPU thread alternates between pre-entry request processing and the
-	 * assembly guest-entry path. Exits return to the same thread stack, so the
-	 * persistent register block is copied to/from a temporary trap frame rather
-	 * than being used directly as the live EL2 stack.
+	/* [20260714] vCPU thread run loop
+	 *
+	 * The scheduler sees this as a normal thread. The thread body is the guest
+	 * run loop: materialize pending EL2 work, enter EL1, then return here through
+	 * the assembly exit path when a trap or physical IRQ occurs.
+	 *
+	 *   scheduler pick
+	 *        |
+	 *        v
+	 *   arch_context_switch_in()
+	 *     - install VTTBR/VTCR
+	 *     - restore EL1 sysregs, vGIC, vtimer
+	 *        |
+	 *        v
+	 *   arch_vcpu_thread()
+	 *     - process pending requests
+	 *     - trace guest-entry boundary
+	 *     - arm64_run_vcpu()
+	 *        |
+	 *        v
+	 *   ERET to guest EL1
+	 *        |
+	 *        v
+	 *   vcpu_exit.c dispatch
+	 *     - emulate trap or handle IRQ
+	 *     - maybe schedule another vCPU
+	 *     - restore trap frame for return
+	 *
+	 * Key rule: durable state lives in vcpu->arch. Guest entry/exit uses a
+	 * temporary stack frame so scheduler context switches stay independent from
+	 * guest register save/restore.
 	 */
 	while (vcpu->state == VCPU_RUNNING) {
 		ret = arm64_process_vcpu_requests(vcpu);

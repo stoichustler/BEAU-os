@@ -295,9 +295,29 @@ int32_t acrn_insert_request(struct acrn_vcpu *vcpu, const struct io_request *io_
 		req_buf = (struct acrn_io_request_buffer *)(vcpu->vm->sw.io_shared_page);
 		cur = vcpu->vcpu_id;
 
+		/*
+		 * HSM request publication:
+		 *
+		 *   vcpu->req
+		 *      |
+		 *      v
+		 *   shared slot[cur] payload
+		 *      |
+		 *      v
+		 *   write barrier
+		 *      |
+		 *      v
+		 *   processed = PENDING
+		 *      |
+		 *      v
+		 *   notify Service VM / device model
+		 *
+		 * The shared slot is visible to another VM. Publish the payload before the
+		 * processed flag so the consumer never observes PENDING with stale request
+		 * contents.
+		 */
 		pre_user_access();
 		acrn_io_req = &req_buf->req_slot[cur];
-		/* ACRN insert request to HSM and inject upcall */
 		acrn_io_req->type = io_req->io_type;
 		(void)memcpy_s(&acrn_io_req->reqs, sizeof(acrn_io_req->reqs),
 			&io_req->reqs, sizeof(acrn_io_req->reqs));
@@ -307,13 +327,13 @@ int32_t acrn_insert_request(struct acrn_vcpu *vcpu, const struct io_request *io_
 		}
 		post_user_access();
 
-		/* Before updating the acrn_io_req state, enforce all fill acrn_io_req operations done */
 		cpu_write_memory_barrier();
 
-		/* Must clear the signal before we mark req as pending
-		 * Once we mark it pending, HSM may process req and signal us
-		 * before we perform upcall.
-		 * because HSM can work in pulling mode without wait for upcall
+		/*
+		 * HSM may poll the shared page and complete the request before the upcall
+		 * interrupt is handled. From this point on, the hypervisor must wait for
+		 * COMPLETE through either polling or VCPU_EVENT_IOREQ before reclaiming the
+		 * slot.
 		 */
 		set_io_req_state(vcpu->vm, vcpu->vcpu_id, ACRN_IOREQ_STATE_PENDING);
 
@@ -504,8 +524,19 @@ static void complete_ioreq(struct acrn_vcpu *vcpu, struct io_request *io_req)
 	}
 
 	/*
-	 * Only HV will check whether processed is ACRN_IOREQ_STATE_FREE on per-vCPU before inject a ioreq.
-	 * Only HV will set processed to ACRN_IOREQ_STATE_FREE when ioreq is done.
+	 * Completion folds the device-model result back into vcpu->req before freeing
+	 * the shared slot:
+	 *
+	 *   shared slot[cur] value
+	 *      |
+	 *      v
+	 *   vcpu->req value
+	 *      |
+	 *      v
+	 *   processed = FREE
+	 *
+	 * Only EL2 frees the slot. The Service VM owns the emulated value while the
+	 * slot is COMPLETE, but cannot publish the next request.
 	 */
 	acrn_io_req->processed = ACRN_IOREQ_STATE_FREE;
 	post_user_access();
@@ -829,6 +860,19 @@ emulate_io(struct acrn_vcpu *vcpu, struct io_request *io_req)
 	vm_config = get_vm_config(vcpu->vm->vm_id);
 #endif
 
+	/*
+	 * Dispatch order is intentionally local-first:
+	 *
+	 *   vcpu->req
+	 *      |
+	 *      +-- EL2 handler registered for this VM -> complete immediately
+	 *      |
+	 *      +-- post-launched VM with no handler
+	 *             -> asyncio fast path or HSM shared request page
+	 *
+	 * This keeps virtual platform devices deterministic in EL2 while still
+	 * allowing a Service VM device model to own post-launched device behavior.
+	 */
 	switch (io_req->io_type) {
 	case ACRN_IOREQ_TYPE_PORTIO:
 		status = hv_emulate_pio(vcpu, io_req);

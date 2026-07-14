@@ -57,6 +57,31 @@ static struct hlist_head pdevs_hlist_heads[PDEV_HLIST_HASHSIZE];
 static uint32_t num_hv_owned_pci_pdev;
 static struct pci_pdev *hv_owned_pci_pdevs[CONFIG_MAX_PCI_DEV_NUM];
 
+/* [20260714] Physical PCI inventory and config access framework
+ *
+ *   platform MMCFG / ACPI DMAR policy
+ *       |
+ *       v
+ *   config ops
+ *       +--> MMCFG in normal boot
+ *       +--> PIO fallback for debug-only paths
+ *       |
+ *       v
+ *   scan_pci_hierarchy()
+ *       |
+ *       +--> pci_pdevs[]: host inventory of BDF, BARs, capabilities, DRHD
+ *       +--> hv_owned_pci_pdevs[]: devices reserved to the hypervisor
+ *       |
+ *       v
+ *   consumers: vPCI, passthrough policy, SMMU domains, shell diagnostics
+ *
+ * Key rule:
+ *   - this file discovers physical devices and provides bounded config access;
+ *   - vPCI decides what a guest sees in virtual config space;
+ *   - passthrough and SMMU code transfer device/DMA ownership;
+ *   - a discovered pdev is host inventory, not guest ownership.
+ */
+
 uint32_t get_hv_owned_pdev_num(void)
 {
 	return num_hv_owned_pci_pdev;

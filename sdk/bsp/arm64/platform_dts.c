@@ -34,6 +34,34 @@ static uint16_t dts_bare_boot_option_count;
 static struct arm64_mem_region dts_mmio_regions[ARM64_DTS_MMIO_REGION_MAX];
 static uint32_t dts_mmio_region_count;
 
+/* [20260714] ARM64 platform DTS ingestion
+ *
+ * The platform device tree is the static contract for the learning hypervisor:
+ * it describes host hardware, VM layout, scheduler policy, boot images, and
+ * passthrough ownership before any VM object exists.
+ *
+ *   platform.dts
+ *        |
+ *        v
+ *   arm64_platform_dts.c
+ *     - validate required nodes and properties
+ *     - normalize aliases and legacy property names
+ *     - populate vm_config[], boot_options[], PCI and MMIO policy
+ *        |
+ *        v
+ *   common runtime
+ *     - init_primary_pcpu() consumes host policy
+ *     - create_vm() consumes VM policy
+ *     - launch_vms() consumes boot module tags
+ *     - sched_get_pcpu_pool_config() consumes scheduler policy
+ *
+ * Key rule:
+ *   - DTS parsing fails closed on missing or ambiguous ownership;
+ *   - parsed storage is plain runtime config, not live hardware state;
+ *   - architecture and common code consume the normalized structs instead of
+ *     re-reading the flattened tree.
+ */
+
 static void arm64_dts_panic(const char *op, int32_t ret)
 {
 	panic("failed to parse arm64 platform dts: %s ret=%d", op, ret);
@@ -1441,15 +1469,30 @@ static void dts_parse_sched_cpupool(const void *fdt, int32_t sched,
 	pool->has_pcpu_mask = true;
 	pool->pcpu_mask = dts_parse_sched_pcpus(fdt, node);
 	pool->policy = dts_parse_sched_policy(dts_required_string_prop(fdt, node, "policy"));
+	/*
+	 * period/budget are pool-level aliases shared by budget schedulers. The old
+	 * cbs-period-us, cbs-budget-us, rtds-period-us, and rtds-budget-us names
+	 * remain accepted so DTS migration can be incremental while still converging
+	 * on one scheduler cpupool schema.
+	 */
 	pool->period_us = dts_u32_prop(fdt, node, "period",
 		dts_u32_prop(fdt, node, "cbs-period-us",
 		dts_u32_prop(fdt, node, "rtds-period-us", 0U)));
 	pool->budget_us = dts_u32_prop(fdt, node, "budget",
 		dts_u32_prop(fdt, node, "cbs-budget-us",
 		dts_u32_prop(fdt, node, "rtds-budget-us", 0U)));
+	/*
+	 * A boolean gang knob hides which scheduler semantics are active. Fail closed
+	 * and require policy = "cbs+" so CBS and CBS+ remain distinguishable in DTS,
+	 * shell output, and regression logs.
+	 */
 	if (fdt_getprop(fdt, node, "gang", NULL) != NULL) {
 		panic("arm64 dts scheduler gang property is obsolete; use policy \"cbs+\"");
 	}
+	/*
+	 * Parsed for every pool so the config snapshot is complete; sched_cbs consumes
+	 * the value only when the selected pool policy is cbs+.
+	 */
 	pool->gang_skew_us = dts_u32_prop(fdt, node, "gang-skew-us",
 		ARM64_DTS_CBS_GANG_SKEW_US_DEFAULT);
 }

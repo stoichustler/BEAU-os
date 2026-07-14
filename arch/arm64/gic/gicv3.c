@@ -41,6 +41,31 @@
 #include <asm/platform.h>
 #include <asm/sysreg.h>
 
+/* [20260714] Physical GICv3 host interrupt framework
+ *
+ *   platform.dts
+ *       |
+ *       v
+ *   beau_config.{gicd,gicr,gits}
+ *       |
+ *       +--> boot pCPU: Distributor, Redistributor discovery, global SPI policy
+ *       +--> each pCPU: local Redistributor and ICC_* CPU interface
+ *       |
+ *       v
+ *   hardware INTID -> ARM64 IRQ domain -> common IRQ handler -> GIC EOI
+ *
+ *   physical GICv3 (this file)          guest interrupt model
+ *       owns EL2 host IRQ delivery  ->   arch/arm64/guest/vgicv3*.c
+ *       programs GICD/GICR/ICC_*         owns guest-visible IRQ/LR state
+ *
+ * Key rule:
+ *   - accept only INTIDs inside the discovered hardware range;
+ *   - program SPIs through the Distributor and SGIs/PPIs through the current
+ *     pCPU Redistributor;
+ *   - keep physical GIC state separate from guest vGIC state so host IRQ
+ *     routing and guest injection cannot silently share ownership.
+ */
+
 #ifndef PAGE_SIZE_64K
 #define	PAGE_SIZE_64K		0x10000UL
 #endif

@@ -30,6 +30,40 @@
 #define	NEED_SHUTDOWN_VM	(2U)
 #define NEED_RESET_VM		(3U)
 
+/* [20260714] Common VM object ownership map
+ *
+ *   struct acrn_vm
+ *       |
+ *       +-- arch_vm
+ *       |     ARM64 stage-2, vGIC, vtimer, and architecture-owned VM state
+ *       |
+ *       +-- hw
+ *       |     vCPU array and pCPU placement selected by VM policy
+ *       |
+ *       +-- sw
+ *       |     boot modules, image metadata, shared IO/event pages
+ *       |
+ *       +-- vuart / vpci / emul_mmio / emul_pio
+ *       |     guest-visible virtual devices and trap dispatch frontends
+ *       |
+ *       +-- root_stg2ptp / stg2_pgtable
+ *             CPU memory isolation root for this VM
+ *
+ *   VM_POWERED_OFF
+ *       |
+ *       v
+ *   create_vm(): common locks/state + arch_init_vm() + vCPU threads
+ *       |
+ *       v
+ *   start_vm(): BSP becomes schedulable and guest EL1 may execute
+ *
+ * Key rule:
+ *   - common VM code owns state, locks, lifetime, and vCPU array creation;
+ *   - arch code owns arch_vm and stage-2 page-table semantics;
+ *   - BSP/device code registers MMIO, PIO, and shared-page handlers;
+ *   - VM_CREATED means structures exist but no guest instruction has run.
+ */
+
 struct vm_hw_info {
 	/* vcpu array of this VM */
 	struct acrn_vcpu vcpu_array[MAX_VCPUS_PER_VM];

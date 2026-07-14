@@ -11,7 +11,45 @@
  *         \/       \/        \/                   \/      \/ (2026)
  * ─────────────────────────────────────────────────────────────────
  *
- * XXX: BEAU OS entry point.
+ * [20260714] BEAU OS EL2 bootstrap and runtime framework:
+ *
+ *   reset / PSCI
+ *       |
+ *       +--> _start                  (boot pCPU)
+ *       |       - require EL2
+ *       |       - install EL2 vectors
+ *       |       - clear BSS and use the boot stack
+ *       |       - pass MPIDR + DTB PA to C init
+ *       |
+ *       +--> _start_secondary_psci   (secondary pCPU)
+ *               - keep exceptions masked
+ *               - install EL2 vectors
+ *               - use PSCI-provided EL2 stack
+ *               - pass MPIDR to C init
+ *       |
+ *       v
+ *   arch/arm64/init.c
+ *       |
+ *       +--> platform.dts / boot modules
+ *       |       host HW policy, VM layout, image metadata
+ *       |
+ *       +--> host EL2 services
+ *       |       stage-1 MMU, GIC/ITS, SMMU, PCI, timer, scheduler, shell
+ *       |
+ *       +--> VM construction
+ *       |       stage-2 MMU, vGIC, vtimer, vPL011/vPCI/virtio frontends
+ *       |
+ *       v
+ *   scheduler thread -> arch_vcpu_thread() -> guest EL1
+ *       |
+ *       v
+ *   EL2 vectors -> trap/IRQ emulation -> resume guest or service host work
+ *
+ * Key rule:
+ *   - this file owns only the minimal EL2-safe bootstrap state;
+ *   - C initialization owns platform policy and subsystem ordering;
+ *   - guest CPU/device ownership is not exposed before stage-2, interrupt,
+ *     and scheduler state are initialized.
  */
 
 #include <asm/cpu.h>

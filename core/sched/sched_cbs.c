@@ -9,7 +9,7 @@
  *
  *   platform.dts
  *   shared-cpupool {
- *       policy = "cbs";   // or "cbs+" for CBS with relaxed gang preference
+ *       policy = "cbs";   // or "cbs+" for bounded same-VM gang preference
  *       period = <T>;
  *       budget = <Q>;
  *   }
@@ -462,6 +462,8 @@ static void cbs_queue_insert(struct thread_object *obj)
  *   - CBS owns runtime accounting, replenishment, admission, and timers;
  *   - relaxed gang owns only a bounded preference among already-runnable CBS
  *     servers;
+ *   - gang-skew-us is the fairness budget measured against the EDF head. A zero
+ *     skew limits the overlay to equal-deadline candidates;
  *   - no pCPU waits for a full gang, no idle time is inserted, and no candidate
  *     can bypass budget exhaustion;
  *   - cross-pCPU current-thread reads are hints. Stale reads at worst miss or
@@ -486,6 +488,11 @@ static bool cbs_has_running_gang_sibling(const struct thread_object *obj)
 	struct thread_object *current;
 	uint16_t pcpu_id;
 
+	/*
+	 * Only a currently running same-VM vCPU creates gang pressure. BLOCKED or
+	 * merely RUNNABLE siblings fall back to normal EDF, which keeps the overlay
+	 * from manufacturing demand or delaying unrelated CBS servers.
+	 */
 	if (!obj->is_vcpu) {
 		return false;
 	}
@@ -495,6 +502,11 @@ static bool cbs_has_running_gang_sibling(const struct thread_object *obj)
 			continue;
 		}
 
+		/*
+		 * This is an advisory cross-pCPU read. Taking remote scheduler locks from
+		 * pick_next() would create lock-order coupling between pCPUs; a stale
+		 * current pointer can only affect one selection inside the skew window.
+		 */
 		current = sched_get_current(pcpu_id);
 		if ((current != NULL) && (current != obj) && current->is_vcpu &&
 			(current->status == THREAD_STS_RUNNING) &&
@@ -524,6 +536,10 @@ static struct thread_object *cbs_pick_next_candidate(struct sched_control *ctl)
 
 	first_data = (struct sched_cbs_data *)first_obj->data;
 	skew_ticks = us_to_ticks(pool->gang_skew_us);
+	/*
+	 * The EDF head remains the fairness anchor. The queue is sorted by deadline,
+	 * so the first item outside gang-skew-us closes the whole preference window.
+	 */
 	list_for_each(pos, &cbs_ctl->runqueue) {
 		iter_obj = container_of(pos, struct thread_object, data);
 		iter_data = (struct sched_cbs_data *)iter_obj->data;
@@ -713,6 +729,11 @@ static uint64_t cbs_validate_pcpu_admission(uint16_t pcpu_id)
 	uint16_t vm_id;
 	uint64_t utilization = 0UL;
 
+	/*
+	 * Admission is per pCPU because CBS state is partitioned. CBS+ shares this
+	 * same Q/T bound; gang preference can reorder eligible work but cannot create
+	 * extra reservation capacity.
+	 */
 	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
 		uint32_t period_us;
 		uint32_t budget_us;

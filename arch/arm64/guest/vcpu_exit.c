@@ -1056,12 +1056,29 @@ void dispatch_vcpu_trap(struct cpu_regs *regs)
 	int32_t ret;
 
 	/*
-	 * Synchronous guest exits are handled on the current vCPU thread. The saved
-	 * frame may be modified by emulation, scheduling, or request processing
-	 * before being restored to the assembly return path.
+	 * Synchronous guest exits are handled on the current vCPU thread. The vector
+	 * frame is temporary; emulation updates vcpu->arch.regs, and the final selected
+	 * vCPU's saved frame is copied back before returning to assembly.
 	 *
-	 *   emulate exit -> optional schedule -> poll/update vtimer
-	 *        -> process vCPU requests -> restore frame
+	 *   EL1 sync exit
+	 *        |
+	 *        v
+	 *   save vector frame -> vcpu->arch.regs
+	 *        |
+	 *        v
+	 *   vcpu_exit_handler()
+	 *     - HVC/PSCI
+	 *     - sysreg/vGIC/vtimer
+	 *     - stage-2 data abort -> MMIO emulation
+	 *        |
+	 *        v
+	 *   optional schedule / request processing
+	 *        |
+	 *        v
+	 *   prepare vtimer/vGIC for next ERET
+	 *        |
+	 *        v
+	 *   restore selected vCPU regs -> vector frame
 	 */
 	save_exit_regs(vcpu, regs);
 

@@ -44,6 +44,36 @@
 #include <asm/page.h>
 #include <asm/irq.h>
 
+/* [20260714] Physical ITS and MSI/MSI-X remap framework
+ *
+ *   PCI requester writes MSI/MSI-X
+ *       |
+ *       v
+ *   GITS_TRANSLATER(event_id)
+ *       |
+ *       v
+ *   ITS tables: Device -> ITT -> Collection
+ *       |
+ *       v
+ *   LPI INTID -> Redistributor pending table -> EL2 IRQ domain
+ *       |
+ *       +--> host handler
+ *       +--> passthrough/vPCI path -> vGIC injection
+ *
+ * Ownership boundary:
+ *   - this file owns physical ITS tables, command queue, LPI allocation, and
+ *     the physical MSI message programmed into a device;
+ *   - guest-visible virtual ITS state belongs to arch/arm64/guest/vgicv3_its.c;
+ *   - vPCI/passthrough callers receive remapped messages, not permission to
+ *     expose arbitrary physical ITS state.
+ *
+ * Key rule:
+ *   - publish backing tables before enabling LPIs/ITS;
+ *   - issue ITS commands under the ITS lock and wait for command completion
+ *     before software marks an event programmed;
+ *   - fail closed when device, event, or LPI space is exhausted or inconsistent.
+ */
+
 #ifndef PAGE_SIZE_64K
 #define	PAGE_SIZE_64K		0x10000UL
 #endif

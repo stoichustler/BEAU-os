@@ -48,8 +48,8 @@ enum sched_policy_id {
 	SCHED_POLICY_IORR,
 	SCHED_POLICY_BVT,
 	SCHED_POLICY_RTDS,
-	SCHED_POLICY_CBS,
-	SCHED_POLICY_CBS_PLUS,
+	SCHED_POLICY_CBS,	/* partitioned CBS */
+	SCHED_POLICY_CBS_PLUS,	/* CBS with bounded same-VM gang preference */
 	SCHED_POLICY_PRIO,
 };
 
@@ -58,9 +58,9 @@ struct sched_cpupool_config {
 	bool has_pcpu_mask;
 	uint64_t pcpu_mask;
 	enum sched_policy_id policy;
-	uint32_t period_us;
-	uint32_t budget_us;
-	uint32_t gang_skew_us;
+	uint32_t period_us;	/* pool default period for budget schedulers */
+	uint32_t budget_us;	/* pool default execution budget */
+	uint32_t gang_skew_us;	/* CBS+ deadline slack against the EDF head */
 };
 
 struct sched_platform_config {

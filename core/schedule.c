@@ -174,7 +174,8 @@ static struct acrn_scheduler *scheduler_from_policy(enum sched_policy_id policy)
 	 *   co-scheduling. It uses the CBS backend with a relaxed gang overlay.
 	 *   Principle: CBS still owns budget and EDF deadlines. The overlay may
 	 *   select a same-VM candidate within gang-skew-us when a sibling vCPU is
-	 *   already running on another cbs+ pCPU. It never waits for a full gang.
+	 *   already running on another cbs+ pCPU. If no candidate is eligible, it
+	 *   falls back to the EDF head and never waits for a full gang.
 	 *   Main parameters: CBS period/budget plus cpupool gang-skew-us.
 	 *
 	 * rtds:
@@ -394,7 +395,10 @@ void init_thread_data(struct thread_object *obj, struct sched_params *params)
 	if (scheduler->init_data != NULL) {
 		scheduler->init_data(obj, params);
 	}
-	/* initial as BLOCKED status, so we can wake it up to run */
+	/*
+	 * New objects enter through wake() even before first execution. That gives
+	 * each scheduler one admission path for initial placement and later unblock.
+	 */
 	set_thread_status(obj, THREAD_STS_BLOCKED);
 	obj->priority_pending = false;
 	obj->latency.state_since = cpu_ticks();
@@ -422,6 +426,11 @@ const char *sched_get_scheduler_name(uint16_t pcpu_id)
 	struct sched_control *ctl = &per_cpu(sched_ctl, pcpu_id);
 	const struct sched_cpupool_config *pool = sched_get_pcpu_pool_config(pcpu_id);
 
+	/*
+	 * CBS and CBS+ intentionally share the sched_cbs backend. Report the DTS
+	 * policy name here so shell/regression output can tell the overlay apart from
+	 * plain CBS without duplicating scheduler code.
+	 */
 	if ((pool != NULL) && (pool->policy == SCHED_POLICY_CBS_PLUS)) {
 		return "sched_cbs+";
 	}
@@ -434,6 +443,7 @@ const char *sched_get_scheduler_stat_desc(uint16_t pcpu_id)
 	struct sched_control *ctl = &per_cpu(sched_ctl, pcpu_id);
 	const struct sched_cpupool_config *pool = sched_get_pcpu_pool_config(pcpu_id);
 
+	/* Keep the stat description aligned with the policy name override above. */
 	if ((pool != NULL) && (pool->policy == SCHED_POLICY_CBS_PLUS)) {
 		return "partitioned-edf-cbs:relaxed-gang";
 	}
