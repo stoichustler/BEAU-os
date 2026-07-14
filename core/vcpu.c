@@ -140,6 +140,8 @@ static void init_vcpu_thread(struct acrn_vcpu *vcpu, uint16_t pcpu_id)
 	vcpu->thread_obj.thread_entry = arch_vcpu_thread;
 	vcpu->thread_obj.pcpu_id = pcpu_id;
 	vcpu->thread_obj.is_vcpu = true;
+	vcpu->thread_obj.vm_id = vm->vm_id;
+	vcpu->thread_obj.vcpu_id = vcpu->vcpu_id;
 	vcpu->thread_obj.host_sp = arch_build_stack_frame(vcpu);
 	vcpu->thread_obj.switch_out = arch_context_switch_out;
 	vcpu->thread_obj.switch_in = arch_context_switch_in;

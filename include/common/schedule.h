@@ -49,6 +49,7 @@ enum sched_policy_id {
 	SCHED_POLICY_BVT,
 	SCHED_POLICY_RTDS,
 	SCHED_POLICY_CBS,
+	SCHED_POLICY_CBS_PLUS,
 	SCHED_POLICY_PRIO,
 };
 
@@ -59,6 +60,7 @@ struct sched_cpupool_config {
 	enum sched_policy_id policy;
 	uint32_t period_us;
 	uint32_t budget_us;
+	uint32_t gang_skew_us;
 };
 
 struct sched_platform_config {
@@ -126,6 +128,12 @@ struct thread_object {
 	 * inside IRQ/vCPU locks; schedulers that do not implement .prioritize ignore it.
 	 */
 	volatile bool priority_pending;
+	/*
+	 * VM identity is scheduler metadata, not ownership. It lets CBS make a
+	 * bounded co-scheduling preference without depending on VM/vCPU internals.
+	 */
+	uint16_t vm_id;
+	uint16_t vcpu_id;
 
 	uint64_t host_sp;
 	switch_t switch_out;

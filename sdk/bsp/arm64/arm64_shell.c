@@ -1860,6 +1860,26 @@ static void shell_vmstat_vcpu_diag(const struct acrn_vcpu *vcpu,
 	}
 }
 
+static const char *shell_vmstat_scheduler_label(uint16_t pcpu_id, bool has_bvt,
+	bool has_rtds, bool has_cbs)
+{
+	const struct sched_cpupool_config *pool;
+
+	if (has_rtds) {
+		return "rtds";
+	}
+	if (has_cbs) {
+		pool = sched_get_pcpu_pool_config(pcpu_id);
+		return ((pool != NULL) && (pool->policy == SCHED_POLICY_CBS_PLUS)) ?
+			"cbs+" : "cbs";
+	}
+	if (has_bvt) {
+		return "bvt";
+	}
+
+	return "-";
+}
+
 static void shell_vmstat_vcpu_timer(const struct acrn_vcpu *vcpu)
 {
 	const struct arm64_vcpu_guest_ctx *gctx = &vcpu->arch.gctx;
@@ -1942,18 +1962,21 @@ static void shell_vmstat_vcpus(const struct acrn_vm *vm)
 		bool has_bvt;
 		bool has_rtds;
 		bool has_cbs;
+		const char *sched_label;
 
 		current = sched_get_current(vcpu->thread_obj.pcpu_id);
 		sched_get_latency(&vcpu->thread_obj, &latency);
 		has_bvt = sched_get_bvt_stats(&vcpu->thread_obj, &bvt);
 		has_rtds = sched_get_rtds_stats(&vcpu->thread_obj, &rtds);
 		has_cbs = sched_get_cbs_stats(&vcpu->thread_obj, &cbs);
+		sched_label = shell_vmstat_scheduler_label(vcpu->thread_obj.pcpu_id,
+			has_bvt, has_rtds, has_cbs);
 		shell_vmstat_vcpu_diag(vcpu, current, &latency, &rtds, has_rtds,
 			&cbs, has_cbs,
 			diag, sizeof(diag));
 		shell_item_line("%-9s  %-4hu  %-5s  %-7s  %-8s  %-3s  0x%016lx  %s",
 			vcpu->thread_obj.name, vcpu->thread_obj.pcpu_id,
-			has_rtds ? "rtds" : (has_cbs ? "cbs" : (has_bvt ? "bvt" : "-")),
+			sched_label,
 			shell_vcpu_state_to_str(vcpu->state),
 			thread_state_to_str(vcpu->thread_obj.status),
 			shell_yes_no(current == &vcpu->thread_obj),
@@ -1977,7 +2000,9 @@ static void shell_vmstat_vcpus(const struct acrn_vm *vm)
 			uint64_t now = cpu_ticks();
 
 			/* CBS fields expose the reservation server window and budget. */
-			shell_item_line("      cbs:period-us:%lu budget-us:%lu remain-us:%lu deadline-in-us:%lu dep:%lu repl:%lu wake:%lu late:%lu",
+			shell_item_line("      %s:period-us:%lu budget-us:%lu remain-us:%lu "
+				"deadline-in-us:%lu dep:%lu repl:%lu wake:%lu late:%lu",
+				sched_label,
 				ticks_to_us(cbs.period_ticks), ticks_to_us(cbs.budget_ticks),
 				ticks_to_us(cbs.remaining_ticks),
 				(cbs.deadline_ticks > now) ?

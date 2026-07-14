@@ -3,8 +3,8 @@
 This directory keeps the BEAU Zephyr guest validation shell sources that are
 also installed in:
 
-```
-/home/beau/nebula/zephyr/samples/subsys/shell/shell_module/src
+```text
+zephyr/samples/subsys/shell/shell_module/src
 ```
 
 The current source set is:

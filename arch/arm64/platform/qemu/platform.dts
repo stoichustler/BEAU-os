@@ -252,9 +252,10 @@
 			};
 			shared-cpupool {
 				pcpus = <2 3 6 7>;
-				policy = "cbs";
+				policy = "cbs+";
 				period = <3000>;
 				budget = <1000>;
+				gang-skew-us = <450>;
 			};
 		};
 	};
@@ -571,7 +572,10 @@
 			beau,sve-vl-bits = <128>;
 
 			sched {
-				bvt-weight = <64>;
+				bvt-weight = <128>;
+				bvt-warp-value = <8>;
+				bvt-warp-limit = <2>;
+				bvt-unwarp-period = <4>;
 			};
 
 			os {

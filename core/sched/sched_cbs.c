@@ -9,7 +9,7 @@
  *
  *   platform.dts
  *   shared-cpupool {
- *       policy = "cbs";
+ *       policy = "cbs";   // or "cbs+" for CBS with relaxed gang preference
  *       period = <T>;
  *       budget = <Q>;
  *   }
@@ -218,7 +218,9 @@ static void cbs_normalize_us(uint16_t pcpu_id, const struct sched_params *params
 	uint32_t budget = (params->cbs_budget_us != 0U) ?
 		params->cbs_budget_us : CBS_DEFAULT_BUDGET_US;
 
-	if ((pool != NULL) && (pool->policy == SCHED_POLICY_CBS)) {
+	if ((pool != NULL) &&
+		((pool->policy == SCHED_POLICY_CBS) ||
+		 (pool->policy == SCHED_POLICY_CBS_PLUS))) {
 		if ((params->cbs_period_us == 0U) && (pool->period_us != 0U)) {
 			period = pool->period_us;
 		}
@@ -431,6 +433,112 @@ static void cbs_queue_insert(struct thread_object *obj)
 	}
 
 	list_add_tail(&data->list, &cbs_ctl->runqueue);
+}
+
+/* [20260714] CBS relaxed gang overlay
+ *
+ * Current CBS ownership:
+ *
+ *   pCPU-local CBS queue
+ *       |
+ *       +--> EDF order by absolute deadline
+ *       |
+ *       v
+ *   pick_next()
+ *       |
+ *       +--> optional relaxed gang preference
+ *       |
+ *       v
+ *   selected vCPU keeps its CBS budget/deadline
+ *
+ * Relaxed gang scheduling is deliberately a selection overlay, not a new budget
+ * source. It may choose a later EDF candidate only when:
+ *   - the cpupool explicitly selects policy = "cbs+";
+ *   - the candidate deadline is within gang-skew-us of the EDF head;
+ *   - another vCPU from the same VM is already running on a CBS relaxed-gang
+ *     pCPU.
+ *
+ * Key rule:
+ *   - CBS owns runtime accounting, replenishment, admission, and timers;
+ *   - relaxed gang owns only a bounded preference among already-runnable CBS
+ *     servers;
+ *   - no pCPU waits for a full gang, no idle time is inserted, and no candidate
+ *     can bypass budget exhaustion;
+ *   - cross-pCPU current-thread reads are hints. Stale reads at worst miss or
+ *     apply one bounded preference, while the local scheduler lock still owns
+ *     the selected object and the CBS server state.
+ */
+static bool cbs_relaxed_gang_enabled(uint16_t pcpu_id)
+{
+	const struct sched_cpupool_config *pool = sched_get_pcpu_pool_config(pcpu_id);
+
+	return (pool != NULL) && (pool->policy == SCHED_POLICY_CBS_PLUS);
+}
+
+static bool cbs_deadline_within_skew(uint64_t deadline, uint64_t base,
+	uint64_t skew)
+{
+	return (deadline <= base) || ((deadline - base) <= skew);
+}
+
+static bool cbs_has_running_gang_sibling(const struct thread_object *obj)
+{
+	struct thread_object *current;
+	uint16_t pcpu_id;
+
+	if (!obj->is_vcpu) {
+		return false;
+	}
+
+	for (pcpu_id = 0U; pcpu_id < get_pcpu_nums(); pcpu_id++) {
+		if ((pcpu_id == obj->pcpu_id) || !cbs_relaxed_gang_enabled(pcpu_id)) {
+			continue;
+		}
+
+		current = sched_get_current(pcpu_id);
+		if ((current != NULL) && (current != obj) && current->is_vcpu &&
+			(current->status == THREAD_STS_RUNNING) &&
+			(current->vm_id == obj->vm_id)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static struct thread_object *cbs_pick_next_candidate(struct sched_control *ctl)
+{
+	struct sched_cbs_control *cbs_ctl = (struct sched_cbs_control *)ctl->priv;
+	const struct sched_cpupool_config *pool = sched_get_pcpu_pool_config(ctl->pcpu_id);
+	struct thread_object *first_obj;
+	struct thread_object *iter_obj;
+	struct sched_cbs_data *first_data;
+	struct sched_cbs_data *iter_data;
+	struct list_head *pos;
+	uint64_t skew_ticks;
+
+	first_obj = get_first_item(&cbs_ctl->runqueue, struct thread_object, data);
+	if (!cbs_relaxed_gang_enabled(ctl->pcpu_id)) {
+		return first_obj;
+	}
+
+	first_data = (struct sched_cbs_data *)first_obj->data;
+	skew_ticks = us_to_ticks(pool->gang_skew_us);
+	list_for_each(pos, &cbs_ctl->runqueue) {
+		iter_obj = container_of(pos, struct thread_object, data);
+		iter_data = (struct sched_cbs_data *)iter_obj->data;
+
+		if (!cbs_deadline_within_skew(iter_data->deadline_ticks,
+			first_data->deadline_ticks, skew_ticks)) {
+			break;
+		}
+
+		if (cbs_has_running_gang_sibling(iter_obj)) {
+			return iter_obj;
+		}
+	}
+
+	return first_obj;
 }
 
 static void cbs_record_late_account(struct sched_cbs_data *data, uint64_t now)
@@ -683,7 +791,7 @@ static struct thread_object *sched_cbs_pick_next(struct sched_control *ctl)
 	cbs_refresh_queues(ctl, now);
 
 	if (!list_empty(&cbs_ctl->runqueue)) {
-		next = get_first_item(&cbs_ctl->runqueue, struct thread_object, data);
+		next = cbs_pick_next_candidate(ctl);
 		cbs_queue_remove(next);
 	} else {
 		next = &get_cpu_var(idle);

@@ -125,6 +125,75 @@ static struct acrn_scheduler *scheduler_from_policy(enum sched_policy_id policy)
 {
 	struct acrn_scheduler *scheduler = NULL;
 
+	/*
+	 * DTS scheduler policy comparison:
+	 *
+	 * noop:
+	 *   Fit: an exclusive pCPU that is guaranteed to have only one runnable
+	 *   non-idle object. It is the lowest-overhead policy, but it is fragile if
+	 *   a second runnable object is later placed on the same pCPU.
+	 *   Principle: remember one runnable object and always select it; otherwise
+	 *   run idle.
+	 *   Main parameters: none.
+	 *
+	 * iorr:
+	 *   Fit: simple equal treatment for multiple same-class runnable objects.
+	 *   It is easy to reason about, but less latency/fairness-aware than BVT or
+	 *   the budget schedulers.
+	 *   Principle: fixed time-slice round robin; the local scheduler tick charges
+	 *   the current object and rotates it to the runqueue tail when its slice is
+	 *   exhausted.
+	 *   Main parameters: compile-time slice length in sched_iorr.c
+	 *   (CONFIG_SLICE_MS, currently 10 ms) and the 1 ms scheduler tick.
+	 *
+	 * bvt:
+	 *   Fit: exclusive pCPUs and general mixed workloads that need low overhead,
+	 *   proportional share, and good event/wakeup response. This is the default
+	 *   fit for BEAU exclusive cores.
+	 *   Principle: charge actual runtime into actual virtual time (AVT), sort
+	 *   runnable objects by effective virtual time (EVT), and run the lowest EVT.
+	 *   Higher weight advances virtual time more slowly. Bounded warp gives a
+	 *   temporary ordering boost for wake/event latency without changing long-term
+	 *   fairness.
+	 *   Main parameters: sched_params.bvt_weight, bvt_warp_value,
+	 *   bvt_warp_limit, bvt_unwarp_period, plus Kconfig MCU and CSA values.
+	 *
+	 * cbs:
+	 *   Fit: shared pCPUs with bursty or wake-heavy vCPUs where bandwidth should
+	 *   be capped but boot and IRQ bursts should still make progress. This is the
+	 *   default fit for BEAU shared Linux/service vCPUs.
+	 *   Principle: each object is a Constant Bandwidth Server with budget Q and
+	 *   period T. Runnable objects are EDF-ordered by deadline. Runtime consumes
+	 *   remaining budget; depletion shifts the deadline and replenishes budget,
+	 *   so long-term demand is limited to Q/T.
+	 *   Main parameters: cpupool period/budget, or per-VM
+	 *   sched_params.cbs_period_us and cbs_budget_us when provided.
+	 *
+	 * cbs+:
+	 *   Fit: shared pCPUs running SMP guests where sibling vCPUs benefit from
+	 *   co-scheduling. It uses the CBS backend with a relaxed gang overlay.
+	 *   Principle: CBS still owns budget and EDF deadlines. The overlay may
+	 *   select a same-VM candidate within gang-skew-us when a sibling vCPU is
+	 *   already running on another cbs+ pCPU. It never waits for a full gang.
+	 *   Main parameters: CBS period/budget plus cpupool gang-skew-us.
+	 *
+	 * rtds:
+	 *   Fit: shared pCPUs with periodic real-time style load where fixed period
+	 *   boundaries are more important than burst absorption.
+	 *   Principle: each object has a periodic budget server. EDF chooses the
+	 *   earliest deadline among servers with remaining budget; depleted servers
+	 *   wait for the next period boundary, with work-conserving slack only when no
+	 *   budgeted server is ready.
+	 *   Main parameters: cpupool period/budget, normalized by sched_rtds.c.
+	 *
+	 * prio:
+	 *   Fit: small, controlled sets of runnable objects with a clear static
+	 *   priority order. It is unsuitable as a general fairness policy because low
+	 *   priority objects can starve.
+	 *   Principle: keep the runqueue sorted by fixed priority and always pick the
+	 *   highest-priority runnable object.
+	 *   Main parameters: sched_params.prio.
+	 */
 	switch (policy) {
 	case SCHED_POLICY_NOOP:
 		scheduler = &sched_noop;
@@ -139,6 +208,7 @@ static struct acrn_scheduler *scheduler_from_policy(enum sched_policy_id policy)
 		scheduler = &sched_rtds;
 		break;
 	case SCHED_POLICY_CBS:
+	case SCHED_POLICY_CBS_PLUS:
 		scheduler = &sched_cbs;
 		break;
 	case SCHED_POLICY_PRIO:
@@ -350,6 +420,11 @@ struct thread_object *sched_get_current(uint16_t pcpu_id)
 const char *sched_get_scheduler_name(uint16_t pcpu_id)
 {
 	struct sched_control *ctl = &per_cpu(sched_ctl, pcpu_id);
+	const struct sched_cpupool_config *pool = sched_get_pcpu_pool_config(pcpu_id);
+
+	if ((pool != NULL) && (pool->policy == SCHED_POLICY_CBS_PLUS)) {
+		return "sched_cbs+";
+	}
 
 	return (ctl->scheduler != NULL) ? ctl->scheduler->name : "none";
 }
@@ -357,6 +432,11 @@ const char *sched_get_scheduler_name(uint16_t pcpu_id)
 const char *sched_get_scheduler_stat_desc(uint16_t pcpu_id)
 {
 	struct sched_control *ctl = &per_cpu(sched_ctl, pcpu_id);
+	const struct sched_cpupool_config *pool = sched_get_pcpu_pool_config(pcpu_id);
+
+	if ((pool != NULL) && (pool->policy == SCHED_POLICY_CBS_PLUS)) {
+		return "partitioned-edf-cbs:relaxed-gang";
+	}
 
 	return (ctl->scheduler != NULL) ? ctl->scheduler->stat_desc : "";
 }

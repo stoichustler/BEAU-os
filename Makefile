@@ -259,22 +259,22 @@ COMMON_C_SRCS += core/trace.c
 COMMON_C_SRCS += core/schedule.c
 COMMON_C_SRCS += core/mmu.c
 ifeq ($(CONFIG_SCHED_NOOP),y)
-COMMON_C_SRCS += core/sched_noop.c
+COMMON_C_SRCS += core/sched/sched_noop.c
 endif
 ifeq ($(CONFIG_SCHED_BVT),y)
-COMMON_C_SRCS += core/sched_bvt.c
+COMMON_C_SRCS += core/sched/sched_bvt.c
 endif
 ifeq ($(CONFIG_SCHED_RTDS),y)
-COMMON_C_SRCS += core/sched_rtds.c
+COMMON_C_SRCS += core/sched/sched_rtds.c
 endif
 ifeq ($(CONFIG_SCHED_CBS),y)
-COMMON_C_SRCS += core/sched_cbs.c
+COMMON_C_SRCS += core/sched/sched_cbs.c
 endif
 ifeq ($(CONFIG_SCHED_IORR),y)
-COMMON_C_SRCS += core/sched_iorr.c
+COMMON_C_SRCS += core/sched/sched_iorr.c
 endif
 ifeq ($(CONFIG_SCHED_PRIO),y)
-COMMON_C_SRCS += core/sched_prio.c
+COMMON_C_SRCS += core/sched/sched_prio.c
 endif
 COMMON_C_SRCS += core/sbuf.c
 COMMON_C_SRCS += core/logmsg.c
