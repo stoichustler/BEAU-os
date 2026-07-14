@@ -7,17 +7,16 @@
 ├── arch
 │   ├── arm64            // Arm64
 │   └── lds
-├── core                 // BEAU core services
+├── core                 // BEAU OS core services
 ├── include
 ├── lib
 ├── scripts
 └── sdk
     ├── beau             // Documentation
     ├── bsp              // BEAU dev/vdev drivers
-    ├── codex
     ├── image
     ├── kbe              // Linux kernel virtio backend
-    ├── udev             // Userspace implementation (ask if allow to modify)
+    ├── ube              // Userspace backend (not used yet)
     └── zsh              // Zephyr guest shell validation sources
 ```
 
