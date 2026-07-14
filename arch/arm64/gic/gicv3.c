@@ -615,6 +615,29 @@ void arm64_gicv3_set_irq_priority(uint32_t intid, uint8_t priority)
 	}
 }
 
+bool arm64_gicv3_set_irq_affinity(uint32_t intid, uint16_t pcpu_id)
+{
+	struct beau_gic_v3_softc *sc = &gic_v3_sc;
+	bool ret = false;
+
+	/*
+	 * Only SPIs are programmable through GICD_IROUTER. SGIs/PPIs are
+	 * redistributor-local by definition, and LPIs are routed by ITS
+	 * collections rather than this distributor register. Rejecting all
+	 * non-programmable INTIDs keeps passthrough affinity policy limited to
+	 * the physical interrupt class that has a single well-defined owner pCPU.
+	 */
+	if ((pcpu_id < get_pcpu_nums()) && gic_v3_is_programmable_spi(sc, intid) &&
+		(sc->gic_redist_bases[pcpu_id] != 0UL)) {
+		gic_d_write_8(sc, GICD_IROUTER(intid),
+			gic_v3_mpidr_to_affinity(per_cpu(arch.mpidr, pcpu_id)));
+		gic_v3_wait_for_rwp(sc, false);
+		ret = true;
+	}
+
+	return ret;
+}
+
 void arm64_gicv3_set_local_irq_active(uint16_t pcpu_id, uint32_t intid)
 {
 	struct beau_gic_v3_softc *sc = &gic_v3_sc;

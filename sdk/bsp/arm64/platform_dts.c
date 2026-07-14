@@ -5,10 +5,12 @@
  */
 
 #include <types.h>
+#include <cpu.h>
 #include <errno.h>
 #include <bare.h>
 #include <vm_config.h>
 #include <schedule.h>
+#include <pgtable.h>
 #include <libfdt.h>
 #include <logmsg.h>
 #include <rtl.h>
@@ -148,6 +150,11 @@ static int32_t dts_child_by_any_name(const void *fdt, int32_t parent,
 static bool dts_has_compatible(const void *fdt, int32_t node, const char *compat)
 {
 	return fdt_node_check_compatible(fdt, node, compat) == 0;
+}
+
+static bool dts_has_prop(const void *fdt, int32_t node, const char *name)
+{
+	return fdt_getprop(fdt, node, name, NULL) != NULL;
 }
 
 static bool dts_has_any_compatible(const void *fdt, int32_t node,
@@ -449,8 +456,50 @@ static uint32_t dts_parse_pt_stream_id(const void *fdt, int32_t node)
 	return stream_id;
 }
 
+/* [20260715] Passthrough SPI IRQ affinity DTS contract
+ *
+ * Framework:
+ *
+ *   passthrough device node
+ *     - iommus / beau,stream-id        -> SMMU StreamID ownership
+ *     - beau,owner-vm                  -> VM allowed to own the device
+ *     - interrupts + beau,guest-irq    -> physical SPI to guest vIRQ mapping
+ *     - beau,irq-affinity              -> optional host routing policy
+ *                |
+ *                v
+ *   struct passthrough_spi_mapping
+ *                |
+ *                v
+ *   BSP passthrough ledger
+ *                |
+ *                v
+ *   ptirq_activate_entry()
+ *                |
+ *                v
+ *   arch_set_irq_affinity() -> GICD_IROUTER before request_irq() enables SPI
+ *
+ * Flow:
+ *
+ *   no "interrupts" property
+ *       -> no static SPI mapping
+ *       -> any beau,irq-affinity property is invalid and parsing panics
+ *
+ *   beau,irq-affinity = "owner"
+ *       -> require beau,owner-vm
+ *       -> runtime resolves to that VM's configured BSP pCPU
+ *
+ *   beau,irq-affinity = "pcpu"
+ *       -> require beau,irq-affinity-pcpu = <n>
+ *       -> n must name an existing pCPU
+ *
+ * Principle:
+ *   The DTS parser performs only schema normalization and fail-closed checks.
+ *   It does not program hardware. The final pCPU decision is kept in the BSP
+ *   passthrough ledger so the later ptdev path can atomically combine IRQ,
+ *   DMA, and VM ownership policy when the device is actually assigned.
+ */
 static bool dts_parse_pt_spi(const void *fdt, int32_t node,
-	struct passthrough_spi_mapping *mapping)
+	uint16_t owner_vmid, struct passthrough_spi_mapping *mapping)
 {
 	const fdt32_t *irq;
 	int32_t len;
@@ -493,6 +542,37 @@ static bool dts_parse_pt_spi(const void *fdt, int32_t node,
 		arm64_dts_panic("passthrough irq flags", -EINVAL);
 	}
 
+	mapping->affinity_policy = PASSTHROUGH_IRQ_AFFINITY_NONE;
+	mapping->affinity_pcpu = INVALID_CPU_ID;
+	if (dts_has_prop(fdt, node, "beau,irq-affinity") ||
+		dts_has_prop(fdt, node, "beau,irq-affinity-pcpu")) {
+		const char *policy = dts_string_prop(fdt, node, "beau,irq-affinity",
+			dts_has_prop(fdt, node, "beau,irq-affinity-pcpu") ? "pcpu" : "none");
+
+		if (strcmp(policy, "none") == 0) {
+			if (dts_has_prop(fdt, node, "beau,irq-affinity-pcpu")) {
+				arm64_dts_panic("passthrough irq affinity pcpu", -EINVAL);
+			}
+		} else if (strcmp(policy, "owner") == 0) {
+			if ((owner_vmid == ACRN_INVALID_VMID) ||
+				dts_has_prop(fdt, node, "beau,irq-affinity-pcpu")) {
+				arm64_dts_panic("passthrough irq affinity owner", -EINVAL);
+			}
+			mapping->affinity_policy = PASSTHROUGH_IRQ_AFFINITY_OWNER;
+		} else if (strcmp(policy, "pcpu") == 0) {
+			uint32_t pcpu = dts_u32_prop(fdt, node, "beau,irq-affinity-pcpu",
+				UINT32_MAX);
+
+			if (pcpu >= get_pcpu_nums()) {
+				arm64_dts_panic("passthrough irq affinity pcpu", -EINVAL);
+			}
+			mapping->affinity_policy = PASSTHROUGH_IRQ_AFFINITY_PCPU;
+			mapping->affinity_pcpu = (uint16_t)pcpu;
+		} else {
+			arm64_dts_panic("passthrough irq affinity", -EINVAL);
+		}
+	}
+
 	return true;
 }
 
@@ -527,11 +607,14 @@ static void dts_parse_passthrough_device(const void *fdt, int32_t node)
 		arm64_dts_panic("passthrough device", ret);
 	}
 
-	if (dts_parse_pt_spi(fdt, node, &mapping)) {
+	if (dts_parse_pt_spi(fdt, node, owner_vmid, &mapping)) {
 		ret = passthrough_register_spi(stream_id, &mapping);
 		if (ret != 0) {
 			arm64_dts_panic("passthrough spi", ret);
 		}
+	} else if (dts_has_prop(fdt, node, "beau,irq-affinity") ||
+		dts_has_prop(fdt, node, "beau,irq-affinity-pcpu")) {
+		arm64_dts_panic("passthrough irq affinity without spi", -EINVAL);
 	}
 }
 
@@ -890,6 +973,42 @@ static enum vm_os_family dts_parse_os_family(const char *family)
 	return ret;
 }
 
+static void dts_validate_budget_pair(const char *scope, uint32_t period_us,
+	uint32_t budget_us)
+{
+	if ((period_us != 0U) && (budget_us != 0U) && (budget_us > period_us)) {
+		panic("invalid arm64 dts %s budget %u > period %u",
+			scope, budget_us, period_us);
+	}
+}
+
+static bool dts_range_end(uint64_t start, uint64_t size, uint64_t *end)
+{
+	bool valid = false;
+
+	if ((size != 0UL) && (start <= (UINT64_MAX - size))) {
+		*end = start + size;
+		valid = true;
+	}
+
+	return valid;
+}
+
+static bool dts_ranges_overlap(uint64_t start_a, uint64_t size_a,
+	uint64_t start_b, uint64_t size_b)
+{
+	uint64_t end_a;
+	uint64_t end_b;
+	bool overlap = false;
+
+	if (dts_range_end(start_a, size_a, &end_a) &&
+		dts_range_end(start_b, size_b, &end_b)) {
+		overlap = (start_a < end_b) && (start_b < end_a);
+	}
+
+	return overlap;
+}
+
 static bool dts_is_vboot_node(const void *fdt, int32_t node)
 {
 	return dts_has_any_compatible(fdt, node, "beau,vboot", "beau,module");
@@ -967,6 +1086,9 @@ static void dts_parse_sched(const void *fdt, int32_t vm_node,
 			dts_u32_prop(fdt, sched, "cbs-period-us", 0U);
 		vm_config->sched_params.cbs_budget_us =
 			dts_u32_prop(fdt, sched, "cbs-budget-us", 0U);
+		dts_validate_budget_pair("vm CBS",
+			vm_config->sched_params.cbs_period_us,
+			vm_config->sched_params.cbs_budget_us);
 	}
 }
 
@@ -1312,9 +1434,11 @@ static void dts_parse_static_mem(const void *fdt, int32_t node,
 {
 	const fdt32_t *mem;
 	int32_t len;
+	uint64_t ram_end;
+	uint64_t host_end;
 
 	mem = fdt_getprop(fdt, node, "beau,static-mem", &len);
-	if ((mem == NULL) || (len < (int32_t)(4U * sizeof(fdt32_t)))) {
+	if ((mem == NULL) || (len != (int32_t)(4U * sizeof(fdt32_t)))) {
 		arm64_dts_panic("beau,static-mem", mem == NULL ? len : -EINVAL);
 	}
 
@@ -1322,6 +1446,53 @@ static void dts_parse_static_mem(const void *fdt, int32_t node,
 		(uint64_t)fdt32_to_cpu(mem[1]);
 	*ram_size = ((uint64_t)fdt32_to_cpu(mem[2]) << 32U) |
 		(uint64_t)fdt32_to_cpu(mem[3]);
+
+	if (!dts_range_end(*ram_start, *ram_size, &ram_end)) {
+		panic("invalid arm64 dts static memory range start=0x%lx size=0x%lx",
+			*ram_start, *ram_size);
+	}
+	if (!mem_aligned_check(*ram_start, PAGE_SIZE) ||
+		!mem_aligned_check(*ram_size, PAGE_SIZE)) {
+		panic("arm64 dts static memory must be page aligned start=0x%lx size=0x%lx",
+			*ram_start, *ram_size);
+	}
+	if (!mem_aligned_check(*ram_start, PGTL1_SIZE) ||
+		!mem_aligned_check(*ram_size, PGTL1_SIZE)) {
+		panic("arm64 dts static memory must be stage-2 block aligned start=0x%lx size=0x%lx",
+			*ram_start, *ram_size);
+	}
+	if (!dts_range_end(beau_config.ram_start, beau_config.ram_size, &host_end) ||
+		(*ram_start < beau_config.ram_start) || (ram_end > host_end)) {
+		panic("arm64 dts static memory outside host RAM start=0x%lx size=0x%lx host=0x%lx+0x%lx",
+			*ram_start, *ram_size, beau_config.ram_start, beau_config.ram_size);
+	}
+}
+
+static void dts_validate_static_mem_regions(void)
+{
+	uint16_t a;
+
+	for (a = 0U; a < dts_storage->vm_config_count; a++) {
+		const struct vm_hpa_regions *region_a = &dts_storage->memory_regions[a];
+		uint16_t b;
+
+		if (region_a->size_hpa == 0UL) {
+			continue;
+		}
+		for (b = a + 1U; b < dts_storage->vm_config_count; b++) {
+			const struct vm_hpa_regions *region_b = &dts_storage->memory_regions[b];
+
+			if (region_b->size_hpa == 0UL) {
+				continue;
+			}
+			if (dts_ranges_overlap(region_a->start_hpa, region_a->size_hpa,
+				region_b->start_hpa, region_b->size_hpa)) {
+				panic("arm64 dts static memory overlap vm%hu[0x%lx+0x%lx] vm%hu[0x%lx+0x%lx]",
+					a, region_a->start_hpa, region_a->size_hpa,
+					b, region_b->start_hpa, region_b->size_hpa);
+			}
+		}
+	}
 }
 
 static void dts_parse_vm_node(const void *fdt, int32_t generic, int32_t vm_node,
@@ -1481,6 +1652,7 @@ static void dts_parse_sched_cpupool(const void *fdt, int32_t sched,
 	pool->budget_us = dts_u32_prop(fdt, node, "budget",
 		dts_u32_prop(fdt, node, "cbs-budget-us",
 		dts_u32_prop(fdt, node, "rtds-budget-us", 0U)));
+	dts_validate_budget_pair(node_name, pool->period_us, pool->budget_us);
 	/*
 	 * A boolean gang knob hides which scheduler semantics are active. Fail closed
 	 * and require policy = "cbs+" so CBS and CBS+ remain distinguishable in DTS,
@@ -1515,6 +1687,44 @@ static void dts_validate_sched_config(const struct sched_platform_config *config
 	}
 }
 
+static void dts_validate_sched_vm_placement(void)
+{
+	const struct sched_platform_config *config = sched_get_platform_config();
+	uint16_t vm_id;
+
+	if (!config->configured || !config->strict_placement) {
+		return;
+	}
+
+	for (vm_id = 0U; vm_id < dts_storage->vm_config_count; vm_id++) {
+		const struct acrn_vm_config *vm_config = &dts_storage->vm_configs[vm_id];
+		uint64_t exclusive_affinity = vm_config->cpu_affinity & config->exclusive.pcpu_mask;
+
+		if (vm_config->cpu_affinity == 0UL) {
+			continue;
+		}
+
+		if ((vm_config->os_config.os_family == VM_OS_LINUX) &&
+			(exclusive_affinity != 0UL)) {
+			panic("arm64 dts strict scheduler placement: linux vm%hu uses exclusive pCPUs 0x%lx",
+				vm_id, exclusive_affinity);
+		}
+		if (vm_config->os_config.os_family == VM_OS_RTOS) {
+			uint16_t bsp_pcpu;
+
+			if (vm_config->cpu_affinity_num == 0U) {
+				panic("arm64 dts strict scheduler placement: rtos vm%hu has no ordered affinity",
+					vm_id);
+			}
+			bsp_pcpu = vm_config->cpu_affinity_order[0U];
+			if ((config->exclusive.pcpu_mask & AFFINITY_CPU(bsp_pcpu)) == 0UL) {
+				panic("arm64 dts strict scheduler placement: rtos vm%hu bsp pCPU%hu is not exclusive",
+					vm_id, bsp_pcpu);
+			}
+		}
+	}
+}
+
 static void dts_parse_hypervisor_sched(const void *fdt)
 {
 	struct sched_platform_config config = { 0U };
@@ -1541,6 +1751,7 @@ static void dts_parse_hypervisor_sched(const void *fdt)
 	}
 
 	config.configured = true;
+	config.strict_placement = fdt_getprop(fdt, sched, "strict-placement", NULL) != NULL;
 	dts_parse_sched_cpupool(fdt, sched, "exclusive-cpupool", &config.exclusive);
 	dts_parse_sched_cpupool(fdt, sched, "shared-cpupool", &config.shared);
 	dts_validate_sched_config(&config);
@@ -1603,6 +1814,8 @@ void arm64_platform_dts_parse_vms(const void *fdt,
 			dts_parse_vm_node(fdt, generic, vm_node, ops);
 		}
 	}
+	dts_validate_static_mem_regions();
+	dts_validate_sched_vm_placement();
 
 	dts_parse_boot_options(fdt, vm_root, ops);
 }

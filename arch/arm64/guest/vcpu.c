@@ -19,6 +19,7 @@
 #include <asm/guest/vcpu_priv.h>
 #include <asm/guest/vmpu.h>
 #include <asm/guest/virq.h>
+#include <asm/guest/stage2.h>
 #include <asm/guest/vgicv3.h>
 
 /* [20260630] vCPU scheduling coverage:
@@ -103,7 +104,7 @@ static void arm64_init_guest_control_context(struct acrn_vcpu *vcpu)
 	 * hypervisors while keeping BEAU's stage-2 and timer virtualization state.
 	 */
 	(void)memset(gctx, 0U, sizeof(*gctx));
-	gctx->vttbr_el2 = hva2hpa(vcpu->vm->root_stg2ptp);
+	gctx->vttbr_el2 = arm64_stage2_vttbr(vcpu->vm);
 	gctx->vtcr_el2 = VTCR_EL2_VALUE;
 	gctx->hcr_el2 = HCR_VM | HCR_RW | HCR_IMO | HCR_FMO | HCR_AMO | HCR_TSC;
 	gctx->cntvoff_el2 = (uint64_t)vcpu->vm->arch_vm.time_delta;
@@ -383,7 +384,6 @@ void load_vcpu(__unused struct acrn_vcpu *vcpu)
 	arm64_vtimer_cancel_all(vcpu);
 	write_vtcr_el2(gctx->vtcr_el2);
 	write_vttbr_el2(gctx->vttbr_el2);
-	flush_stage2_tlb_local();
 	write_vmpidr_el2(vcpu_get_vmpidr(vcpu));
 	/* [20260626] vCPU/vtimer principle:
 	 *
@@ -412,8 +412,9 @@ void unload_vcpu(__unused struct acrn_vcpu *vcpu)
 	 * Save guest-owned EL1 state before clearing EL2 virtualization state.
 	 * CNTV is disabled after its compare/control registers are captured so an
 	 * expired deadline from this vCPU cannot interrupt the next vCPU scheduled
-	 * on the same pCPU. Clearing HCR/VTTBR removes stale guest execution and
-	 * stage-2 context before the host scheduler continues.
+	 * on the same pCPU. Clearing HCR/VTTBR removes guest execution context before
+	 * the host scheduler continues; stage-2 TLBI is reserved for map/unmap
+	 * changes because VTTBR now carries a per-VM VMID.
 	 */
 	struct arm64_vcpu_guest_ctx *gctx = &vcpu->arch.gctx;
 
@@ -427,7 +428,6 @@ void unload_vcpu(__unused struct acrn_vcpu *vcpu)
 	arm64_vgicv3_arm_cntv_timer(vcpu);
 	write_hcr_el2(0UL);
 	write_vttbr_el2(0UL);
-	flush_stage2_tlb_local();
 }
 
 void flush_vcpu_context(__unused struct acrn_vcpu *vcpu)

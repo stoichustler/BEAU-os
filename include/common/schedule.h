@@ -13,6 +13,7 @@
 #define	NEED_RESCHEDULE		(1U)
 
 #define THREAD_DATA_SIZE	(256U)
+#define SCHED_LATENCY_HIST_BUCKETS	8U
 
 enum thread_object_state {
 	THREAD_STS_RUNNING = 1,
@@ -65,6 +66,7 @@ struct sched_cpupool_config {
 
 struct sched_platform_config {
 	bool configured;
+	bool strict_placement;
 	struct sched_cpupool_config exclusive;
 	struct sched_cpupool_config shared;
 };
@@ -76,6 +78,7 @@ struct sched_latency_stats {
 	uint64_t state_since;
 	uint64_t runnable_since;
 	uint64_t runtime_ticks;
+	uint64_t wait_hist[SCHED_LATENCY_HIST_BUCKETS];
 };
 
 struct sched_bvt_stats {
@@ -249,6 +252,7 @@ uint64_t sched_get_context_switches(uint16_t pcpu_id);
 uint64_t sched_get_reschedule_requests(uint16_t pcpu_id);
 void sched_account_tick(struct sched_control *ctl);
 void sched_get_latency(const struct thread_object *obj, struct sched_latency_stats *stats);
+const char *sched_latency_hist_bucket_name(uint32_t bucket);
 bool sched_get_bvt_stats(const struct thread_object *obj, struct sched_bvt_stats *stats);
 bool sched_get_rtds_stats(const struct thread_object *obj, struct sched_rtds_stats *stats);
 bool sched_get_cbs_stats(const struct thread_object *obj, struct sched_cbs_stats *stats);
@@ -280,6 +284,7 @@ void wake_thread(struct thread_object *obj);
  * NEED_RESCHEDULE; only schedulers with .prioritize attach extra ordering state.
  */
 void request_thread_priority(struct thread_object *obj);
+void request_thread_priority_no_resched(struct thread_object *obj);
 void yield_current(void);
 void schedule(void);
 

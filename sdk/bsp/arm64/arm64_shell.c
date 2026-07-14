@@ -25,6 +25,7 @@
 #include <acrn_hv_defs.h>
 #include <virtio_console.h>
 #include <virtio_proxy.h>
+#include <bsp/cpufreq.h>
 #include <bsp/pci.h>
 #include <bsp/vpci.h>
 #include <bsp/vuart.h>
@@ -65,6 +66,9 @@
 #define SHELL_CMD_PCISTAT		"pcistat"
 #define SHELL_CMD_PCISTAT_PARAM		NULL
 #define SHELL_CMD_PCISTAT_HELP		"list PCI passthrough and SMMU stream state"
+#define SHELL_CMD_CPUFREQ		"cpufreq"
+#define SHELL_CMD_CPUFREQ_PARAM		NULL
+#define SHELL_CMD_CPUFREQ_HELP		"list host CPU frequency policy state"
 #define SHELL_CMD_RESET			"reset"
 #define SHELL_CMD_RESET_PARAM		"<vm id>"
 #define SHELL_CMD_RESET_HELP		"reset a non-service VM by id"
@@ -86,6 +90,7 @@ static int32_t shell_ipcstat(int32_t argc, __unused char **argv);
 static int32_t shell_virtiostat(int32_t argc, char **argv);
 static int32_t shell_smmustat(int32_t argc, __unused char **argv);
 static int32_t shell_pcistat(int32_t argc, char **argv);
+static int32_t shell_cpufreq(int32_t argc, __unused char **argv);
 static int32_t shell_reset_vm(int32_t argc, char **argv);
 static int32_t shell_reboot(__unused int32_t argc, __unused char **argv);
 static const char *shell_yes_no(bool value);
@@ -138,6 +143,12 @@ struct shell_cmd arch_shell_cmds[] = {
 		.cmd_param	= SHELL_CMD_PCISTAT_PARAM,
 		.help_str	= SHELL_CMD_PCISTAT_HELP,
 		.fcn		= shell_pcistat,
+	},
+	{
+		.str		= SHELL_CMD_CPUFREQ,
+		.cmd_param	= SHELL_CMD_CPUFREQ_PARAM,
+		.help_str	= SHELL_CMD_CPUFREQ_HELP,
+		.fcn		= shell_cpufreq,
 	},
 	{
 		.str		= SHELL_CMD_RESET,
@@ -259,6 +270,12 @@ static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv)
 	return 0;
 }
 
+static int32_t shell_cpufreq(__unused int32_t argc, __unused char **argv)
+{
+	cpufreq_dump();
+	return 0;
+}
+
 /* [20260709] SMMU monitor:
  *
  * smmustat is deliberately diagnostic-only. Probe puts the hardware into an
@@ -272,7 +289,51 @@ static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv)
  *                               |
  *                               v
  *                    shell snapshot: SMMU + ITS + streams
+ *
+ * Stream output principle:
+ *
+ *   sw-owner : VM recorded in the software stream ownership table
+ *   ste-vm   : VMID decoded from the current STE word2
+ *   cfg      : hardware action for DMA from this StreamID
+ *              abort  - block DMA
+ *              bypass - no translation; unsafe for assigned guest devices
+ *              s2     - translate through the VM stage-2 root
+ *
+ * A healthy assigned passthrough stream should show sw-owner == ste-vm and
+ * cfg == s2. A healthy unassigned stream should show sw-owner none and cfg
+ * abort. Anything else is a useful signal for passthrough DMA debugging.
  */
+static void shell_format_vmid(char *buf, size_t size, uint16_t vmid)
+{
+	if (vmid == ACRN_INVALID_VMID) {
+		snprintf(buf, size, "none");
+	} else {
+		snprintf(buf, size, "vm%hu", vmid);
+	}
+}
+
+static const char *shell_smmu_ste_cfg_to_str(uint32_t cfg)
+{
+	const char *str;
+
+	switch (cfg) {
+	case 0U:
+		str = "abort";
+		break;
+	case 4U:
+		str = "bypass";
+		break;
+	case 6U:
+		str = "s2";
+		break;
+	default:
+		str = "unknown";
+		break;
+	}
+
+	return str;
+}
+
 static int32_t shell_smmustat(int32_t argc, __unused char **argv)
 {
 	struct arm_smmu_hw_info info;
@@ -350,11 +411,26 @@ static int32_t shell_smmustat(int32_t argc, __unused char **argv)
 		its.cmd_issued, its.cmd_errors, its.cmd_timeouts,
 		its.cmd_stalls, its.last_ret);
 	for (idx = 0U; idx < stream_count; idx++) {
-		shell_item_line("stream[0x%04x] vm%hu ipa:%u root:0x%016lx assigned:%s quarantine:%s",
-			streams[idx].stream_id, streams[idx].owner_vmid,
-			streams[idx].ipa_width, streams[idx].root_table_hpa,
+		char owner[16U];
+		char domain[16U];
+
+		shell_format_vmid(owner, sizeof(owner), streams[idx].owner_vmid);
+		shell_format_vmid(domain, sizeof(domain), streams[idx].domain_vmid);
+		shell_item_line("stream[0x%04x] sw-owner:%s ste-vm:%s assigned:%s quarantine:%s strtab:%s idx:0x%04x",
+			streams[idx].stream_id, owner, domain,
 			shell_yes_no(streams[idx].assigned),
-			shell_yes_no(streams[idx].quarantined));
+			shell_yes_no(streams[idx].quarantined),
+			shell_yes_no(streams[idx].in_strtab), streams[idx].strtab_index);
+		shell_item_line("     s2:ipa:%u root:0x%016lx",
+			streams[idx].ipa_width, streams[idx].root_table_hpa);
+		if (streams[idx].in_strtab) {
+			shell_item_line("     ste:valid:%s cfg:%s(%u) w0:0x%016lx w1:0x%016lx",
+				shell_yes_no(streams[idx].ste_valid),
+				shell_smmu_ste_cfg_to_str(streams[idx].ste_cfg),
+				streams[idx].ste_cfg, streams[idx].ste[0], streams[idx].ste[1]);
+			shell_item_line("     ste:w2:0x%016lx w3:0x%016lx",
+				streams[idx].ste[2], streams[idx].ste[3]);
+		}
 		if (streams[idx].fault_count != 0U) {
 			shell_item_line("     fault:count:%u code:0x%02x iova:0x%016lx",
 				streams[idx].fault_count, streams[idx].last_fault_code,
@@ -1771,6 +1847,15 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 		shell_item_line("        virtio-console:active:%s irq:%u status:0x%02x isr:0x%02x tx:%lu rx:%lu",
 			shell_yes_no(vcon.active), vcon.irq, vcon.status,
 			vcon.interrupt_status, vcon.tx_count, vcon.rx_count);
+		shell_item_line("        vcon.stat tx:%luB/s rx:%luB/s notify:%lu/%lu irq:%lu/%lu",
+			vcon.tx_byte_rate, vcon.rx_byte_rate,
+			vcon.tx_notify_count, vcon.rx_notify_count,
+			vcon.tx_irq_count, vcon.rx_irq_count);
+		shell_item_line("        vcon.lat tx:%lu/%lu/%luus rx:%lu/%lu/%luus samples:%lu/%lu",
+			vcon.tx_latency.min_us, vcon.tx_latency.avg_us,
+			vcon.tx_latency.max_us, vcon.rx_latency.min_us,
+			vcon.rx_latency.avg_us, vcon.rx_latency.max_us,
+			vcon.tx_latency.count, vcon.rx_latency.count);
 		for (uint16_t qid = 0U; qid < VIRTIO_CONSOLE_STAT_QUEUE_NUM; qid++) {
 			const struct virtio_console_queue_stats *queue = &vcon.queues[qid];
 
@@ -2223,6 +2308,14 @@ static void shell_virtiostat_print_summary_device(const struct virtio_proxy_stat
 		stats->queue_num, stats->notify_count, backend,
 		stats->backend_healthy ? "ok" : "stale", stats->pending_active,
 		stats->pending_limit);
+	shell_item_line("kick:notify:%lu merge:%lu prefetch:%lu backend:%lu bp:%lu irq:%lu saved:%lu",
+		stats->notify_count, stats->notify_coalesced_count,
+		stats->notify_prefetch_count, stats->notify_backend_kick_count,
+		stats->notify_backpressure_count, stats->irq_count,
+		stats->batch_irq_saved_count);
+	shell_item_line("throughput:req:%luB reply:%luB avg:%luB/s done:%lu",
+		stats->request_bytes, stats->reply_bytes, stats->byte_rate,
+		stats->completed_count);
 	shell_item_line("hcall:register:%lu poll:%lu/%lu empty:%lu reply:%lu/%lu busy:%lu bp:%lu ret:%6s(%d)",
 		stats->hcall_register_count, stats->hcall_poll_ok_count,
 		stats->hcall_poll_count, stats->hcall_empty_poll_count,

@@ -5,6 +5,7 @@
  */
 
 #include <errno.h>
+#include <cpu.h>
 #include <irq.h>
 #include <logmsg.h>
 #include <spinlock.h>
@@ -29,6 +30,8 @@ struct bsp_pt_mmio_res {
 struct bsp_pt_irq_res {
 	uint32_t phys_spi;
 	uint32_t virt_irq;
+	uint16_t affinity_pcpu;
+	enum passthrough_irq_affinity_policy affinity_policy;
 	bool level;
 	bool valid;
 };
@@ -60,6 +63,7 @@ struct bsp_pt_device {
  *      |  - StreamID -> allowed VM          |
  *      |  - writable policy                 |
  *      |  - optional SPI mapping            |
+ *      |  - optional SPI affinity policy    |
  *      +----------------+-------------------+
  *                       |
  *                       v
@@ -90,6 +94,30 @@ struct bsp_pt_device {
  * program the device to DMA anywhere unless the SMMU stream table points at the
  * VM stage-2 page table. Keep this BSP table as the single ownership ledger so
  * later DT/IORT parsing can populate devices without changing the safety checks.
+ *
+ * IRQ affinity extension:
+ *
+ *   platform.dts
+ *       beau,irq-affinity = "owner" | "pcpu"
+ *                    |
+ *                    v
+ *   passthrough_register_spi()
+ *       stores policy beside the physical SPI and owner policy
+ *                    |
+ *                    v
+ *   passthrough_irq_affinity(vm, phys_spi)
+ *       resolves to a concrete pCPU only if the caller's VM matches the
+ *       boot-time owner policy
+ *                    |
+ *                    v
+ *   ptirq_activate_entry()
+ *       programs the physical GIC route before enabling the interrupt
+ *
+ * This intentionally binds a host SPI to the VM owner pCPU rather than to the
+ * currently running pCPU. For RTOS/ARINC653-style partitioning the device
+ * interrupt should enter the same CPU pool as the guest vCPU that will consume
+ * it; otherwise Linux or another bursty VM can keep moving the physical IRQ
+ * across cores and add cross-core wakeup/IPI noise to the RTOS path.
  */
 static spinlock_t bsp_pt_lock = { .head = 0U, .tail = 0U };
 static struct bsp_pt_device bsp_pt_devices[BSP_PT_MAX_DEVICES];
@@ -111,6 +139,23 @@ static struct bsp_pt_device *bsp_pt_find_device(uint32_t stream_id)
 	}
 
 	return NULL;
+}
+
+static uint16_t bsp_pt_vm_owner_pcpu(uint16_t vm_id)
+{
+	const struct acrn_vm_config *vm_config;
+	uint16_t pcpu_id = INVALID_CPU_ID;
+
+	if (vm_id < CONFIG_MAX_VM_NUM) {
+		vm_config = get_vm_config(vm_id);
+		if (vm_config->cpu_affinity_num != 0U) {
+			pcpu_id = vm_config->cpu_affinity_order[0U];
+		} else if (vm_config->cpu_affinity != 0UL) {
+			pcpu_id = ffs64(vm_config->cpu_affinity);
+		}
+	}
+
+	return pcpu_id;
 }
 
 static struct bsp_pt_device *bsp_pt_alloc_device(uint32_t stream_id,
@@ -201,6 +246,15 @@ int32_t passthrough_register_spi(uint32_t stream_id,
 		(mapping->phys_spi >= ARM64_GIC_SPURIOUS_INTID)) {
 		return -EINVAL;
 	}
+	if ((mapping->affinity_policy != PASSTHROUGH_IRQ_AFFINITY_NONE) &&
+		(mapping->affinity_policy != PASSTHROUGH_IRQ_AFFINITY_OWNER) &&
+		(mapping->affinity_policy != PASSTHROUGH_IRQ_AFFINITY_PCPU)) {
+		return -EINVAL;
+	}
+	if ((mapping->affinity_policy == PASSTHROUGH_IRQ_AFFINITY_PCPU) &&
+		(mapping->affinity_pcpu >= get_pcpu_nums())) {
+		return -EINVAL;
+	}
 
 	spinlock_irqsave_obtain(&bsp_pt_lock, &flags);
 	dev = bsp_pt_find_device(stream_id);
@@ -209,6 +263,19 @@ int32_t passthrough_register_spi(uint32_t stream_id,
 	} else if (dev->owner == BSP_PT_OWNER_VM) {
 		ret = -EBUSY;
 	} else {
+		uint32_t i;
+
+		for (i = 0U; i < ARRAY_SIZE(bsp_pt_devices); i++) {
+			const struct bsp_pt_device *other = &bsp_pt_devices[i];
+
+			if ((other != dev) && other->valid && other->irq_res.valid &&
+				(other->irq_res.phys_spi == mapping->phys_spi)) {
+				ret = -EBUSY;
+				break;
+			}
+		}
+	}
+	if (ret == 0) {
 		/*
 		 * SPIs are distributor INTIDs. Unlike MSI/MSI-X, a platform SPI
 		 * has no ITS DeviceID/EventID; the hypervisor must remember the
@@ -218,10 +285,76 @@ int32_t passthrough_register_spi(uint32_t stream_id,
 		 */
 		dev->irq_res.phys_spi = mapping->phys_spi;
 		dev->irq_res.virt_irq = mapping->virt_irq;
+		dev->irq_res.affinity_pcpu = mapping->affinity_pcpu;
+		dev->irq_res.affinity_policy = mapping->affinity_policy;
 		dev->irq_res.level = mapping->level;
 		dev->irq_res.valid = true;
 	}
 	spinlock_irqrestore_release(&bsp_pt_lock, flags);
+
+	return ret;
+}
+
+/* Resolve a DTS-authored IRQ affinity policy into a concrete pCPU.
+ *
+ * Flow:
+ *
+ *   phys_spi lookup
+ *      -> reject if no passthrough SPI policy owns this interrupt
+ *      -> reject if the policy owner is another VM
+ *      -> "owner": use VM cpu_affinity_order[0], falling back to bitmap ffs
+ *      -> "pcpu" : use the explicit DTS pCPU
+ *
+ * Returning false is not an error for devices without affinity policy; it means
+ * the legacy routing selected during GIC distributor init should remain in
+ * effect. Returning true is a hard contract: ptdev will fail activation if the
+ * architecture cannot program that route.
+ */
+bool passthrough_irq_affinity(uint16_t vm_id, uint32_t phys_spi,
+	uint16_t *pcpu_id)
+{
+	uint64_t flags;
+	uint16_t resolved_pcpu = INVALID_CPU_ID;
+	bool ret = false;
+	uint32_t i;
+
+	if ((vm_id >= CONFIG_MAX_VM_NUM) || (pcpu_id == NULL)) {
+		return false;
+	}
+
+	spinlock_irqsave_obtain(&bsp_pt_lock, &flags);
+	for (i = 0U; i < ARRAY_SIZE(bsp_pt_devices); i++) {
+		const struct bsp_pt_device *dev = &bsp_pt_devices[i];
+
+		if (!dev->valid || !dev->irq_res.valid ||
+			(dev->irq_res.phys_spi != phys_spi)) {
+			continue;
+		}
+		if ((dev->policy_owner_vmid != ACRN_INVALID_VMID) &&
+			(dev->policy_owner_vmid != vm_id)) {
+			continue;
+		}
+
+		switch (dev->irq_res.affinity_policy) {
+		case PASSTHROUGH_IRQ_AFFINITY_OWNER:
+			resolved_pcpu = bsp_pt_vm_owner_pcpu(vm_id);
+			ret = resolved_pcpu < get_pcpu_nums();
+			break;
+		case PASSTHROUGH_IRQ_AFFINITY_PCPU:
+			resolved_pcpu = dev->irq_res.affinity_pcpu;
+			ret = resolved_pcpu < get_pcpu_nums();
+			break;
+		default:
+			ret = false;
+			break;
+		}
+		break;
+	}
+	spinlock_irqrestore_release(&bsp_pt_lock, flags);
+
+	if (ret) {
+		*pcpu_id = resolved_pcpu;
+	}
 
 	return ret;
 }

@@ -99,10 +99,16 @@ struct arm_smmu_hw_info {
 struct arm_smmu_stream_config {
 	uint32_t stream_id;
 	uint16_t owner_vmid;
+	uint16_t domain_vmid;
 	uint32_t ipa_width;
 	uint64_t root_table_hpa;
+	uint64_t ste[4];
+	uint32_t strtab_index;
+	uint32_t ste_cfg;
 	bool assigned;
 	bool quarantined;
+	bool in_strtab;
+	bool ste_valid;
 	uint32_t fault_count;
 	uint32_t last_fault_code;
 	uint64_t last_fault_iova;

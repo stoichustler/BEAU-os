@@ -17,6 +17,7 @@
 #include <serial.h>
 #include <boot.h>
 #include <bsp/pci.h>
+#include <bsp/cpufreq.h>
 #include <fdt_api.h>
 #include <barrier.h>
 #include <asm/platform.h>
@@ -227,6 +228,7 @@ static void init_pcpu_comm_post(void)
 		if (!wait_pcpus_running(AP_MASK)) {
 			panic("failed to initialize all secondary cores!");
 		}
+		cpufreq_init();
 		shell_start();
 		vm_wdt_start();
 		arm64_release_vm_launch();

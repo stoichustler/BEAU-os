@@ -21,6 +21,7 @@ static uint32_t acrn_hsm_notification_vector = HYPERVISOR_CALLBACK_HSM_VECTOR;
 #define MMIO_DEFAULT_VALUE_SIZE_2	(0xFFFFUL)
 #define MMIO_DEFAULT_VALUE_SIZE_4	(0xFFFFFFFFUL)
 #define MMIO_DEFAULT_VALUE_SIZE_8	(0xFFFFFFFFFFFFFFFFUL)
+#define EMUL_MMIO_FAST_CACHE_SHIFT	9U
 
 /* [20260710] IO-request virtualization principle:
  *
@@ -755,6 +756,48 @@ hv_emulate_pio(struct acrn_vcpu *vcpu, struct io_request *io_req)
 #endif
 }
 
+static uint16_t emul_mmio_fast_cache_index(uint64_t address)
+{
+	return (uint16_t)((address >> EMUL_MMIO_FAST_CACHE_SHIFT) &
+		(EMUL_MMIO_FAST_CACHE_SIZE - 1U));
+}
+
+static bool emul_mmio_node_contains(const struct mem_io_node *node,
+	uint64_t address, uint64_t access_end)
+{
+	return (node != NULL) && (node->read_write != NULL) &&
+		(address >= node->range_start) && (access_end <= node->range_end);
+}
+
+static bool emul_mmio_node_overlaps(const struct mem_io_node *node,
+	uint64_t address, uint64_t access_end)
+{
+	return (node != NULL) && (node->read_write != NULL) &&
+		(access_end > node->range_start) && (address < node->range_end);
+}
+
+static void emul_mmio_cache_node(struct acrn_vm *vm, uint64_t address,
+	struct mem_io_node *node)
+{
+	if ((vm != NULL) && (node != NULL)) {
+		vm->emul_mmio_fast[emul_mmio_fast_cache_index(address)] = node;
+	}
+}
+
+static void emul_mmio_uncache_node(struct acrn_vm *vm,
+	const struct mem_io_node *node)
+{
+	if ((vm == NULL) || (node == NULL)) {
+		return;
+	}
+
+	for (uint16_t i = 0U; i < EMUL_MMIO_FAST_CACHE_SIZE; i++) {
+		if (vm->emul_mmio_fast[i] == node) {
+			vm->emul_mmio_fast[i] = NULL;
+		}
+	}
+}
+
 /**
  * Use registered MMIO handlers on the given request if it falls in the range of
  * any of them.
@@ -770,8 +813,9 @@ hv_emulate_mmio(struct acrn_vcpu *vcpu, struct io_request *io_req)
 {
 	int32_t status = -ENODEV;
 	bool hold_lock = true;
+	bool handler_found = false;
 	uint16_t idx;
-	uint64_t address, size, base, end;
+	uint64_t address, size, access_end, base, end;
 	struct acrn_mmio_request *mmio_req = &io_req->reqs.mmio_request;
 	struct mem_io_node *mmio_handler = NULL;
 	hv_mem_io_handler_t read_write = NULL;
@@ -783,33 +827,52 @@ hv_emulate_mmio(struct acrn_vcpu *vcpu, struct io_request *io_req)
 
 	address = mmio_req->address;
 	size = mmio_req->size;
+	if ((size == 0UL) || (address > (UINT64_MAX - size))) {
+		LOG_FTL("err mmio, address:0x%lx, size:%lx", address, size);
+		return -EIO;
+	}
+	access_end = address + size;
 
 	/*
-	 * Performance bottleneck: trapped ARM64 MMIO reaches this path on every
-	 * data-abort device access. Handler selection is a linear scan under
-	 * emul_mmio_lock, so adding more emulated regions or a high-frequency
-	 * device increases latency before the actual device handler runs.
+	 * Trapped ARM64 MMIO reaches this path on every data-abort device access.
+	 * A small per-VM direct-mapped cache keeps hot virtio/vGIC/vUART regions
+	 * out of the linear fallback scan while preserving the registration lock.
 	 */
 	spinlock_obtain(&vcpu->vm->emul_mmio_lock);
-	for (idx = 0U; idx <= vcpu->vm->nr_emul_mmio_regions; idx++) {
-		mmio_handler = &(vcpu->vm->emul_mmio[idx]);
-		if (mmio_handler->read_write != NULL) {
-			base = mmio_handler->range_start;
-			end = mmio_handler->range_end;
+	mmio_handler =
+		vcpu->vm->emul_mmio_fast[emul_mmio_fast_cache_index(address)];
+	if (emul_mmio_node_contains(mmio_handler, address, access_end)) {
+		handler_found = true;
+		hold_lock = mmio_handler->hold_lock;
+		read_write = mmio_handler->read_write;
+		handler_private_data = mmio_handler->handler_private_data;
+	} else if (emul_mmio_node_overlaps(mmio_handler, address, access_end)) {
+		LOG_FTL("err mmio, address:0x%lx, size:%lx", address, size);
+		status = -EIO;
+	}
 
-			if (((address + size) <= base) || (address >= end)) {
-				continue;
-			} else {
-				 if ((address >= base) && ((address + size) <= end)) {
-					hold_lock = mmio_handler->hold_lock;
-					read_write = mmio_handler->read_write;
-					handler_private_data = mmio_handler->handler_private_data;
-				} else {
-					LOG_FTL("err mmio, address:0x%lx, size:%x", address, size);
-					status = -EIO;
-				}
-				break;
-			}
+	for (idx = 0U; (status == -ENODEV) && !handler_found &&
+		(idx < CONFIG_MAX_EMULATED_MMIO_REGIONS) &&
+		(idx <= vcpu->vm->nr_emul_mmio_regions); idx++) {
+		mmio_handler = &(vcpu->vm->emul_mmio[idx]);
+		if (mmio_handler->read_write == NULL) {
+			continue;
+		}
+		base = mmio_handler->range_start;
+		end = mmio_handler->range_end;
+
+		if ((access_end <= base) || (address >= end)) {
+			continue;
+		}
+		if ((address >= base) && (access_end <= end)) {
+			handler_found = true;
+			hold_lock = mmio_handler->hold_lock;
+			read_write = mmio_handler->read_write;
+			handler_private_data = mmio_handler->handler_private_data;
+			emul_mmio_cache_node(vcpu->vm, address, mmio_handler);
+		} else {
+			LOG_FTL("err mmio, address:0x%lx, size:%lx", address, size);
+			status = -EIO;
 		}
 	}
 
@@ -1033,11 +1096,13 @@ void register_mmio_emulation_handler(struct acrn_vm *vm,
 		mmio_node = find_free_mmio_node(vm);
 		if (mmio_node != NULL) {
 			/* Fill in information for this node */
+			emul_mmio_uncache_node(vm, mmio_node);
 			mmio_node->hold_lock = hold_lock;
 			mmio_node->read_write = read_write;
 			mmio_node->handler_private_data = handler_private_data;
 			mmio_node->range_start = start;
 			mmio_node->range_end = end;
+			emul_mmio_cache_node(vm, start, mmio_node);
 		}
 		spinlock_release(&vm->emul_mmio_lock);
 	}
@@ -1061,6 +1126,7 @@ void unregister_mmio_emulation_handler(struct acrn_vm *vm,
 	spinlock_obtain(&vm->emul_mmio_lock);
 	mmio_node = find_match_mmio_node(vm, start, end);
 	if (mmio_node != NULL) {
+		emul_mmio_uncache_node(vm, mmio_node);
 		(void)memset(mmio_node, 0U, sizeof(struct mem_io_node));
 	}
 	spinlock_release(&vm->emul_mmio_lock);
@@ -1069,5 +1135,7 @@ void unregister_mmio_emulation_handler(struct acrn_vm *vm,
 void deinit_emul_io(struct acrn_vm *vm)
 {
 	(void)memset(vm->emul_mmio, 0U, sizeof(vm->emul_mmio));
+	(void)memset(vm->emul_mmio_fast, 0U, sizeof(vm->emul_mmio_fast));
+	vm->nr_emul_mmio_regions = 0U;
 	(void)memset(vm->emul_pio, 0U, sizeof(vm->emul_pio));
 }

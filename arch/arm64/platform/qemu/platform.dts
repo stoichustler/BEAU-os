@@ -27,6 +27,27 @@
 			current-speed = <115200>;
 		};
 
+		cpufreq {
+			status = "okay";
+			policy = "performance";
+			backend = "stub";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			domain@0 {
+				reg = <0>;
+				cpus = <0 1 2 3 4 5 6 7>;
+				min-khz = <408000>;
+				max-khz = <1800000>;
+				pstates = <
+					408000  0
+					1008000 1
+					1416000 2
+					1800000 3
+				>;
+			};
+		};
+
 		mmio-ranges {
 			#address-cells = <2>;
 			#size-cells = <2>;
@@ -246,14 +267,15 @@
 
 	hypervisor {
 		sched {
+			strict-placement;
 			exclusive-cpupool {
-				pcpus = <0 1 4 5>;
+				pcpus = <0 1>;
 				policy = "bvt";
 			};
 			shared-cpupool {
-				pcpus = <2 3 6 7>;
+				pcpus = <2 3 4 5 6 7>;
 				policy = "cbs+";
-				period = <3000>;
+				period = <2000>;
 				budget = <1000>;
 				gang-skew-us = <450>;
 			};
@@ -385,9 +407,9 @@
 
 		/*
 		 * 2026-07-08, QEMU cpu-affinity is ordered: entry N is vcpuN's pCPU.
-		 * This 4OS layout keeps vCPU0 on an exclusive pCPU and maps
-		 * secondary vCPUs to shared pCPUs. VM0 and VM1 intentionally have
-		 * 2 vCPUs.
+		 * RTOS vCPU0 stays on exclusive BVT pCPUs. Linux and secondary RTOS
+		 * vCPUs run in the shared CBS+ pool, so Linux boot bursts cannot preempt
+		 * the RTOS exclusive cores.
 		 */
 		vm@0 {
 			compatible = "beau,vm";

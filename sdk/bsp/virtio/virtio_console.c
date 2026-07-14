@@ -12,6 +12,7 @@
 #include <bsp/vuart.h>
 #include <rtl.h>
 #include <bsp/io_req.h>
+#include <ticks.h>
 #include <virtio_mmio.h>
 #include <virtio_console.h>
 
@@ -72,11 +73,29 @@
 
 #define VIRTIO_CONSOLE_COPY_BUF_SIZE	64U
 #define VIRTIO_CONSOLE_CHAIN_LIMIT	VIRTIO_CONSOLE_QUEUE_SIZE
+#define VIRTIO_CONSOLE_USEC_PER_SEC	1000000UL
+
+struct virtio_console_latency_accum {
+	uint64_t count;
+	uint64_t min;
+	uint64_t max;
+	uint64_t sum;
+};
 
 struct virtio_console_dev {
 	struct virtio_mmio_dev mmio;
 	uint64_t tx_count;
 	uint64_t rx_count;
+	uint64_t tx_notify_count;
+	uint64_t rx_notify_count;
+	uint64_t tx_irq_count;
+	uint64_t rx_irq_count;
+	uint64_t tx_first_tick;
+	uint64_t tx_last_tick;
+	uint64_t rx_first_tick;
+	uint64_t rx_last_tick;
+	struct virtio_console_latency_accum tx_latency;
+	struct virtio_console_latency_accum rx_latency;
 };
 
 static struct virtio_console_dev virtio_console_devs[CONFIG_MAX_VM_NUM];
@@ -92,6 +111,85 @@ static uint32_t virtio_console_irq(const struct acrn_vm *vm)
 	return get_vm_config(vm->vm_id)->arch.guest_virtio_console_irq;
 }
 
+static void virtio_console_add_u64(uint64_t *counter, uint64_t delta)
+{
+	if (counter == NULL) {
+		return;
+	}
+
+	if (*counter > (UINT64_MAX - delta)) {
+		*counter = UINT64_MAX;
+	} else {
+		*counter += delta;
+	}
+}
+
+static void virtio_console_mark_bytes(uint64_t *first_tick,
+	uint64_t *last_tick, uint64_t now)
+{
+	if ((first_tick == NULL) || (last_tick == NULL)) {
+		return;
+	}
+
+	if (*first_tick == 0UL) {
+		*first_tick = now;
+	}
+	*last_tick = now;
+}
+
+static uint64_t virtio_console_byte_rate(uint64_t bytes, uint64_t first_tick,
+	uint64_t now)
+{
+	uint64_t elapsed_us;
+
+	if ((first_tick == 0UL) || (now <= first_tick)) {
+		return 0UL;
+	}
+
+	elapsed_us = ticks_to_us(now - first_tick);
+	if (elapsed_us == 0UL) {
+		return 0UL;
+	}
+	if (bytes > (UINT64_MAX / VIRTIO_CONSOLE_USEC_PER_SEC)) {
+		return UINT64_MAX;
+	}
+
+	return (bytes * VIRTIO_CONSOLE_USEC_PER_SEC) / elapsed_us;
+}
+
+static void virtio_console_latency_accum(
+	struct virtio_console_latency_accum *stats, uint64_t delta)
+{
+	if (stats == NULL) {
+		return;
+	}
+
+	if ((stats->count == 0UL) || (delta < stats->min)) {
+		stats->min = delta;
+	}
+	if (delta > stats->max) {
+		stats->max = delta;
+	}
+	virtio_console_add_u64(&stats->sum, delta);
+	stats->count++;
+}
+
+static void virtio_console_latency_export(
+	const struct virtio_console_latency_accum *src,
+	struct virtio_console_latency_stats *dst)
+{
+	if ((src == NULL) || (dst == NULL)) {
+		return;
+	}
+
+	dst->count = src->count;
+	if (src->count != 0UL) {
+		dst->min_us = ticks_to_us(src->min);
+		dst->avg_us = ticks_to_us(src->sum / src->count);
+		dst->max_us = ticks_to_us(src->max);
+	}
+}
+
 static void virtio_console_reset(struct virtio_mmio_dev *mmio)
 {
 	struct virtio_console_dev *dev = (struct virtio_console_dev *)virtio_mmio_priv(mmio);
@@ -99,6 +197,16 @@ static void virtio_console_reset(struct virtio_mmio_dev *mmio)
 	if (dev != NULL) {
 		dev->tx_count = 0UL;
 		dev->rx_count = 0UL;
+		dev->tx_notify_count = 0UL;
+		dev->rx_notify_count = 0UL;
+		dev->tx_irq_count = 0UL;
+		dev->rx_irq_count = 0UL;
+		dev->tx_first_tick = 0UL;
+		dev->tx_last_tick = 0UL;
+		dev->rx_first_tick = 0UL;
+		dev->rx_last_tick = 0UL;
+		(void)memset(&dev->tx_latency, 0U, sizeof(dev->tx_latency));
+		(void)memset(&dev->rx_latency, 0U, sizeof(dev->rx_latency));
 	}
 }
 
@@ -161,6 +269,8 @@ static void virtio_console_process_tx(struct virtio_console_dev *dev)
 	struct virtio_mmio_dev *mmio = &dev->mmio;
 	struct virtio_mmio_queue *vq = virtio_mmio_get_queue(mmio,
 		VIRTIO_CONSOLE_QUEUE_TX);
+	uint64_t start = cpu_ticks();
+	uint64_t now;
 	uint16_t head;
 	uint32_t total;
 	bool used = false;
@@ -168,12 +278,17 @@ static void virtio_console_process_tx(struct virtio_console_dev *dev)
 	while (virtio_mmio_pop_avail(mmio, vq, &head)) {
 		total = virtio_console_handle_tx_chain(mmio, vq, head);
 		if (virtio_mmio_add_used(mmio, vq, head, total)) {
-			dev->tx_count += total;
+			virtio_console_add_u64(&dev->tx_count, total);
 			used = true;
 		}
 	}
 
 	if (used) {
+		now = cpu_ticks();
+		virtio_console_mark_bytes(&dev->tx_first_tick,
+			&dev->tx_last_tick, now);
+		virtio_console_latency_accum(&dev->tx_latency, now - start);
+		virtio_console_add_u64(&dev->tx_irq_count, 1UL);
 		virtio_mmio_raise_used_irq(mmio);
 	}
 }
@@ -244,6 +359,8 @@ static void virtio_console_process_rx(struct virtio_console_dev *dev)
 	struct acrn_vuart *console = vm_console_vuart(virtio_mmio_vm(mmio));
 	struct virtio_mmio_queue *vq = virtio_mmio_get_queue(mmio,
 		VIRTIO_CONSOLE_QUEUE_RX);
+	uint64_t start = cpu_ticks();
+	uint64_t now;
 	uint16_t head;
 	uint32_t total;
 	bool used = false;
@@ -255,12 +372,17 @@ static void virtio_console_process_rx(struct virtio_console_dev *dev)
 			break;
 		}
 		if (virtio_mmio_add_used(mmio, vq, head, total)) {
-			dev->rx_count += total;
+			virtio_console_add_u64(&dev->rx_count, total);
 			used = true;
 		}
 	}
 
 	if (used) {
+		now = cpu_ticks();
+		virtio_console_mark_bytes(&dev->rx_first_tick,
+			&dev->rx_last_tick, now);
+		virtio_console_latency_accum(&dev->rx_latency, now - start);
+		virtio_console_add_u64(&dev->rx_irq_count, 1UL);
 		virtio_mmio_raise_used_irq(mmio);
 	}
 }
@@ -284,8 +406,10 @@ static void virtio_console_notify_queue(struct virtio_mmio_dev *mmio,
 		return;
 	}
 	if (queue_id == VIRTIO_CONSOLE_QUEUE_TX) {
+		virtio_console_add_u64(&dev->tx_notify_count, 1UL);
 		virtio_console_process_tx(dev);
 	} else if (queue_id == VIRTIO_CONSOLE_QUEUE_RX) {
+		virtio_console_add_u64(&dev->rx_notify_count, 1UL);
 		virtio_console_process_rx(dev);
 	}
 }
@@ -302,6 +426,7 @@ static void virtio_console_notify_rx(struct acrn_vuart *console)
 	struct virtio_console_dev *dev = virtio_console_get_dev(vm);
 
 	if (dev != NULL) {
+		virtio_console_add_u64(&dev->rx_notify_count, 1UL);
 		virtio_console_process_rx(dev);
 	}
 }
@@ -349,6 +474,7 @@ void virtio_console_reset_vm(struct acrn_vm *vm)
 bool virtio_console_get_stats(uint16_t vm_id, struct virtio_console_stats *stats)
 {
 	struct virtio_console_dev *dev;
+	uint64_t now = cpu_ticks();
 
 	if ((stats == NULL) || (vm_id >= CONFIG_MAX_VM_NUM)) {
 		return false;
@@ -370,6 +496,16 @@ bool virtio_console_get_stats(uint16_t vm_id, struct virtio_console_stats *stats
 	stats->driver_features = dev->mmio.driver_features;
 	stats->tx_count = dev->tx_count;
 	stats->rx_count = dev->rx_count;
+	stats->tx_notify_count = dev->tx_notify_count;
+	stats->rx_notify_count = dev->rx_notify_count;
+	stats->tx_irq_count = dev->tx_irq_count;
+	stats->rx_irq_count = dev->rx_irq_count;
+	stats->tx_byte_rate = virtio_console_byte_rate(dev->tx_count,
+		dev->tx_first_tick, now);
+	stats->rx_byte_rate = virtio_console_byte_rate(dev->rx_count,
+		dev->rx_first_tick, now);
+	virtio_console_latency_export(&dev->tx_latency, &stats->tx_latency);
+	virtio_console_latency_export(&dev->rx_latency, &stats->rx_latency);
 
 	for (uint16_t i = 0U;
 		(i < VIRTIO_CONSOLE_STAT_QUEUE_NUM) && (i < dev->mmio.queue_num); i++) {

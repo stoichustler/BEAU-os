@@ -144,6 +144,8 @@ struct ptirq_remapping_info {
 	uint64_t intr_count;
 	struct hv_timer intr_delay_timer; /* used for delay intr injection */
 	ptirq_arch_release_fn_t release_cb;
+	uint16_t affinity_pcpu;
+	bool affinity_valid;
 };
 
 static inline bool is_entry_active(const struct ptirq_remapping_info *entry)

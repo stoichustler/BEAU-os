@@ -229,9 +229,18 @@ static void cbs_normalize_us(uint16_t pcpu_id, const struct sched_params *params
 		}
 	}
 
-	period = max(period, CBS_MIN_PERIOD_US);
-	budget = max(budget, CBS_MIN_BUDGET_US);
-	budget = min(budget, period);
+	if (period < CBS_MIN_PERIOD_US) {
+		panic("CBS pCPU%hu period %u below minimum %u",
+			pcpu_id, period, CBS_MIN_PERIOD_US);
+	}
+	if (budget < CBS_MIN_BUDGET_US) {
+		panic("CBS pCPU%hu budget %u below minimum %u",
+			pcpu_id, budget, CBS_MIN_BUDGET_US);
+	}
+	if (budget > period) {
+		panic("CBS pCPU%hu budget %u > period %u",
+			pcpu_id, budget, period);
+	}
 
 	*period_us = period;
 	*budget_us = budget;
@@ -746,7 +755,8 @@ static uint64_t cbs_validate_pcpu_admission(uint16_t pcpu_id)
 		cbs_normalize_us(pcpu_id, &vm_config->sched_params, &period_us, &budget_us);
 		utilization += ((uint64_t)budget_us * CBS_UTIL_SCALE) / period_us;
 		if (utilization > CBS_UTIL_SCALE) {
-			panic("CBS admission failed on pCPU%hu", pcpu_id);
+			panic("CBS admission failed on pCPU%hu vm%hu util=%lu ppm budget=%u period=%u",
+				pcpu_id, vm_id, utilization, budget_us, period_us);
 		}
 	}
 

@@ -29,6 +29,7 @@
 
 #define	NEED_SHUTDOWN_VM	(2U)
 #define NEED_RESET_VM		(3U)
+#define EMUL_MMIO_FAST_CACHE_SIZE	16U
 
 /* [20260714] Common VM object ownership map
  *
@@ -128,6 +129,7 @@ struct acrn_vm {
 	spinlock_t emul_mmio_lock;	/* Used to protect emulation mmio_node concurrent access for a VM */
 	uint16_t nr_emul_mmio_regions;	/* the emulated mmio_region number */
 	struct mem_io_node emul_mmio[CONFIG_MAX_EMULATED_MMIO_REGIONS];
+	struct mem_io_node *emul_mmio_fast[EMUL_MMIO_FAST_CACHE_SIZE];
 	struct vm_io_handler_desc emul_pio[EMUL_PIO_IDX_MAX];
 
 	/* Pointer to root stage2 pagetable */

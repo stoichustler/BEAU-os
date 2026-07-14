@@ -164,6 +164,48 @@ config RTVM_SEVERITY_LEVEL
 	help
 	  Compatibility severity value used for real-time VM configuration.
 
+menuconfig CPUFREQ
+	bool "BSP CPU frequency policy"
+	default y if STATIC_ARM64_PLATFORM
+	help
+	  Enable the BEAU BSP CPU frequency policy. The first implementation is
+	  host-only and consumes static platform DTS policy.
+
+if CPUFREQ
+
+config CPUFREQ_EXPECTED_CPUS
+	int "Expected CPUFreq CPU count"
+	default 8 if PLATFORM_QEMU
+	default 4 if PLATFORM_RK356X
+	default 8
+	range 1 64
+	help
+	  Number of host pCPUs that the enabled CPUFreq DTS domain must cover.
+
+choice CPUFREQ_POLICY
+	prompt "CPUFreq policy"
+	default CPUFREQ_POLICY_PERFORMANCE
+
+config CPUFREQ_POLICY_PERFORMANCE
+	bool "Performance"
+	help
+	  Always select the highest configured P-state.
+
+endchoice
+
+choice CPUFREQ_BACKEND
+	prompt "CPUFreq backend"
+	default CPUFREQ_BACKEND_STUB
+
+config CPUFREQ_BACKEND_STUB
+	bool "Stub"
+	help
+	  Record the selected P-state without changing hardware frequency.
+
+endchoice
+
+endif
+
 source "sdk/bsp/acpi/Kconfig"
 source "sdk/bsp/arm64/Kconfig"
 source "sdk/bsp/boot/Kconfig"

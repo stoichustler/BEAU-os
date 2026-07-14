@@ -51,6 +51,8 @@
 
 static struct virtio_proxy_dev virtio_proxy_devs[CONFIG_MAX_VM_NUM][ARM64_VIRTIO_PROXY_MAX];
 
+#define VIRTIO_PROXY_USEC_PER_SEC	1000000UL
+
 struct virtio_proxy_batch_entry_meta {
 	uint32_t status;
 	uint16_t queue_id;
@@ -66,6 +68,11 @@ struct virtio_proxy_batch_entry_meta {
 _Static_assert(sizeof(struct virtio_proxy_batch_entry_meta) ==
 	offsetof(struct acrn_virtio_proxy_batch_entry, in),
 	"virtio_proxy batch metadata layout mismatch");
+
+static bool virtio_proxy_queue_has_unsent_locked(struct virtio_proxy_dev *dev,
+	uint16_t queue_id);
+static uint16_t virtio_proxy_prefetch_avail_locked(struct virtio_proxy_dev *dev,
+	uint16_t queue_id, uint64_t now);
 
 static struct virtio_proxy_dev *virtio_proxy_get_dev_by_id_index(uint16_t vm_id,
 	uint16_t index)
@@ -187,6 +194,66 @@ static uint16_t virtio_proxy_pending_active(const struct virtio_proxy_dev *dev)
 	}
 
 	return active;
+}
+
+static void virtio_proxy_add_u64(uint64_t *counter, uint64_t delta)
+{
+	if (counter == NULL) {
+		return;
+	}
+
+	if (*counter > (UINT64_MAX - delta)) {
+		*counter = UINT64_MAX;
+	} else {
+		*counter += delta;
+	}
+}
+
+static void virtio_proxy_mark_activity_locked(struct virtio_proxy_dev *dev,
+	uint64_t now)
+{
+	if (dev == NULL) {
+		return;
+	}
+
+	if (dev->first_activity_tick == 0UL) {
+		dev->first_activity_tick = now;
+	}
+	dev->last_activity_tick = now;
+}
+
+static uint64_t virtio_proxy_byte_rate_locked(const struct virtio_proxy_dev *dev,
+	uint64_t now)
+{
+	uint64_t elapsed_us;
+	uint64_t bytes;
+
+	if ((dev == NULL) || (dev->first_activity_tick == 0UL) ||
+		(now <= dev->first_activity_tick)) {
+		return 0UL;
+	}
+
+	bytes = dev->request_bytes + dev->reply_bytes;
+	if (bytes < dev->request_bytes) {
+		bytes = UINT64_MAX;
+	}
+	elapsed_us = ticks_to_us(now - dev->first_activity_tick);
+	if (elapsed_us == 0UL) {
+		return 0UL;
+	}
+	if (bytes > (UINT64_MAX / VIRTIO_PROXY_USEC_PER_SEC)) {
+		return UINT64_MAX;
+	}
+
+	return (bytes * VIRTIO_PROXY_USEC_PER_SEC) / elapsed_us;
+}
+
+static void virtio_proxy_raise_used_irq_locked(struct virtio_proxy_dev *dev)
+{
+	if (dev != NULL) {
+		virtio_mmio_raise_used_irq(&dev->mmio);
+		virtio_proxy_add_u64(&dev->irq_count, 1UL);
+	}
 }
 
 static void virtio_proxy_latency_accum(struct virtio_proxy_latency_accum *stats,
@@ -443,7 +510,18 @@ static void virtio_proxy_reset(struct virtio_mmio_dev *mmio)
 		dev->no_backend_logged = false;
 		spinlock_obtain(&dev->lock);
 		dev->notify_count = 0UL;
+		dev->notify_coalesced_count = 0UL;
+		dev->notify_prefetch_count = 0UL;
+		dev->notify_backend_kick_count = 0UL;
+		dev->notify_backpressure_count = 0UL;
 		dev->reset_count++;
+		dev->completed_count = 0UL;
+		dev->irq_count = 0UL;
+		dev->batch_irq_saved_count = 0UL;
+		dev->request_bytes = 0UL;
+		dev->reply_bytes = 0UL;
+		dev->first_activity_tick = 0UL;
+		dev->last_activity_tick = 0UL;
 		(void)memset(dev->last_notify_tick, 0U, sizeof(dev->last_notify_tick));
 		(void)memset(dev->pending, 0U, sizeof(dev->pending));
 		dev->last_hcall_ret = 0;
@@ -534,16 +612,20 @@ static void virtio_proxy_notify_queue(struct virtio_mmio_dev *mmio,
 {
 	struct virtio_proxy_dev *dev =
 		(struct virtio_proxy_dev *)virtio_mmio_priv(mmio);
+	uint64_t now;
+	bool hcall_backend_expected;
 
 	if ((dev == NULL) || (queue_id >= mmio->queue_num)) {
 		return;
 	}
 
 	spinlock_obtain(&dev->lock);
+	now = cpu_ticks();
 	dev->notify_count++;
-	dev->last_notify_tick[queue_id] = cpu_ticks();
-	spinlock_release(&dev->lock);
+	dev->last_notify_tick[queue_id] = now;
 	if ((dev->backend_ops != NULL) && (dev->backend_ops->notify_queue != NULL)) {
+		dev->notify_backend_kick_count++;
+		spinlock_release(&dev->lock);
 		/*
 		 * Notify is the main bridge handoff:
 		 *
@@ -560,14 +642,25 @@ static void virtio_proxy_notify_queue(struct virtio_mmio_dev *mmio,
 		return;
 	}
 	if (dev->hcall_backend_registered) {
+		bool had_pending = virtio_proxy_queue_has_unsent_locked(dev, queue_id);
+		uint16_t prefetched =
+			virtio_proxy_prefetch_avail_locked(dev, queue_id, now);
+
+		if ((prefetched == 0U) && had_pending) {
+			dev->notify_coalesced_count++;
+		}
+		spinlock_release(&dev->lock);
 		/*
 		 * A registered VM backend consumes the descriptor chain through
-		 * HC_VIRTIO_PROXY_BACKEND. Do not pop the avail ring here; the poll
-		 * path owns that transition so it can atomically snapshot one chain.
+		 * HC_VIRTIO_PROXY_BACKEND. The notify path opportunistically prefetches
+		 * a burst into pending slots, then batch-poll can return those slots to
+		 * the backend with fewer HVC exits.
 		 */
 		return;
 	}
-	if (dev->hcall_backend_expected) {
+	hcall_backend_expected = dev->hcall_backend_expected;
+	spinlock_release(&dev->lock);
+	if (hcall_backend_expected) {
 		/*
 		 * A frontend may notify before the backend VM reaches its BEAU
 		 * late_initcall and registers through HC_VIRTIO_PROXY_BACKEND.
@@ -889,6 +982,10 @@ bool virtio_proxy_get_stats(uint16_t vm_id, uint16_t index,
 		stats->queue_num = dev->mmio.queue_num;
 		stats->queue_size = dev->mmio.queue_size;
 		stats->notify_count = dev->notify_count;
+		stats->notify_coalesced_count = dev->notify_coalesced_count;
+		stats->notify_prefetch_count = dev->notify_prefetch_count;
+		stats->notify_backend_kick_count = dev->notify_backend_kick_count;
+		stats->notify_backpressure_count = dev->notify_backpressure_count;
 		stats->backend_bound = dev->backend_ops != NULL;
 		stats->hcall_backend_registered = dev->hcall_backend_registered;
 		stats->backend_healthy = !virtio_proxy_backend_stale_locked(dev, now);
@@ -928,6 +1025,12 @@ bool virtio_proxy_get_stats(uint16_t vm_id, uint16_t index,
 		}
 		stats->timeout_count = dev->timeout_count;
 		stats->reset_count = dev->reset_count;
+		stats->completed_count = dev->completed_count;
+		stats->irq_count = dev->irq_count;
+		stats->batch_irq_saved_count = dev->batch_irq_saved_count;
+		stats->request_bytes = dev->request_bytes;
+		stats->reply_bytes = dev->reply_bytes;
+		stats->byte_rate = virtio_proxy_byte_rate_locked(dev, now);
 		virtio_proxy_latency_export(&dev->latency_notify_poll,
 			&stats->latency_notify_poll);
 		virtio_proxy_latency_export(&dev->latency_poll_reply,
@@ -994,6 +1097,12 @@ static struct virtio_proxy_pending *virtio_proxy_unsent_pending_slot(
 	}
 
 	return NULL;
+}
+
+static bool virtio_proxy_queue_has_unsent_locked(struct virtio_proxy_dev *dev,
+	uint16_t queue_id)
+{
+	return virtio_proxy_unsent_pending_slot(dev, queue_id) != NULL;
 }
 
 static struct virtio_proxy_pending *virtio_proxy_sent_pending_slot(
@@ -1076,6 +1185,7 @@ static bool virtio_proxy_copy_chain_to_pending(struct virtio_proxy_dev *dev,
 		pending->valid = true;
 		pending->sent = false;
 		pending->done = false;
+		virtio_proxy_add_u64(&dev->request_bytes, in_len);
 	} else {
 		(void)memset(pending, 0U, sizeof(*pending));
 	}
@@ -1110,6 +1220,7 @@ static int32_t virtio_proxy_next_pending_locked(struct virtio_proxy_dev *dev,
 			}
 			pending->notify_tick = dev->last_notify_tick[queue_id] != 0UL ?
 				dev->last_notify_tick[queue_id] : now;
+			virtio_proxy_mark_activity_locked(dev, pending->notify_tick);
 		} else {
 			dev->hcall_empty_poll_count++;
 			return -ENODATA;
@@ -1123,6 +1234,43 @@ static int32_t virtio_proxy_next_pending_locked(struct virtio_proxy_dev *dev,
 
 	*out = pending;
 	return 0;
+}
+
+static uint16_t virtio_proxy_prefetch_avail_locked(struct virtio_proxy_dev *dev,
+	uint16_t queue_id, uint64_t now)
+{
+	struct virtio_proxy_pending *pending;
+	struct virtio_mmio_queue *vq;
+	uint16_t head;
+	uint16_t copied = 0U;
+
+	if (dev == NULL) {
+		return 0U;
+	}
+
+	vq = virtio_mmio_get_queue(&dev->mmio, queue_id);
+	while (copied < dev->pending_limit) {
+		pending = virtio_proxy_free_pending_slot(dev);
+		if (pending == NULL) {
+			if (copied == 0U) {
+				dev->notify_backpressure_count++;
+			}
+			break;
+		}
+		if (!virtio_mmio_pop_avail(&dev->mmio, vq, &head)) {
+			break;
+		}
+		if (!virtio_proxy_copy_chain_to_pending(dev, vq, queue_id,
+			head, pending)) {
+			break;
+		}
+		pending->notify_tick = now;
+		virtio_proxy_mark_activity_locked(dev, now);
+		dev->notify_prefetch_count++;
+		copied++;
+	}
+
+	return copied;
 }
 
 static uint64_t virtio_proxy_batch_entry_gpa(
@@ -1238,6 +1386,9 @@ static int32_t virtio_proxy_complete_pending_from_gpa(struct acrn_vcpu *vcpu,
 
 	pending->irq_tick = cpu_ticks();
 	virtio_proxy_latency_complete_locked(dev, pending);
+	virtio_proxy_add_u64(&dev->reply_bytes, out_len);
+	virtio_proxy_add_u64(&dev->completed_count, 1UL);
+	virtio_proxy_mark_activity_locked(dev, pending->irq_tick);
 	(void)memset(pending, 0U, sizeof(*pending));
 	pending->done = true;
 	return 0;
@@ -1394,7 +1545,7 @@ static int32_t virtio_proxy_hcall_reply(struct acrn_vcpu *vcpu,
 	if (ret != 0) {
 		goto out;
 	}
-	virtio_mmio_raise_used_irq(&dev->mmio);
+	virtio_proxy_raise_used_irq_locked(dev);
 	dev->hcall_reply_ok_count++;
 	ret = 0;
 
@@ -1516,12 +1667,16 @@ static int32_t virtio_proxy_hcall_batch_reply(struct acrn_vcpu *vcpu,
 
 	dev->last_batch_count = count;
 	if (count != 0U) {
-		virtio_mmio_raise_used_irq(&dev->mmio);
+		virtio_proxy_raise_used_irq_locked(dev);
+		if (count > 1U) {
+			virtio_proxy_add_u64(&dev->batch_irq_saved_count,
+				(uint64_t)count - 1UL);
+		}
 		dev->hcall_batch_reply_ok_count++;
 		dev->hcall_batch_reply_item_count += count;
 		ret = 0;
 	} else if (used_added) {
-		virtio_mmio_raise_used_irq(&dev->mmio);
+		virtio_proxy_raise_used_irq_locked(dev);
 	}
 
 	spinlock_release(&dev->lock);

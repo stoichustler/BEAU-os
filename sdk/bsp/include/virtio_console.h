@@ -23,6 +23,13 @@ struct virtio_console_queue_stats {
 	bool ready;
 };
 
+struct virtio_console_latency_stats {
+	uint64_t count;
+	uint64_t min_us;
+	uint64_t avg_us;
+	uint64_t max_us;
+};
+
 struct virtio_console_stats {
 	bool active;
 	uint64_t base;
@@ -34,6 +41,14 @@ struct virtio_console_stats {
 	uint64_t driver_features;
 	uint64_t tx_count;
 	uint64_t rx_count;
+	uint64_t tx_notify_count;
+	uint64_t rx_notify_count;
+	uint64_t tx_irq_count;
+	uint64_t rx_irq_count;
+	uint64_t tx_byte_rate;
+	uint64_t rx_byte_rate;
+	struct virtio_console_latency_stats tx_latency;
+	struct virtio_console_latency_stats rx_latency;
 	struct virtio_console_queue_stats queues[VIRTIO_CONSOLE_STAT_QUEUE_NUM];
 };
 

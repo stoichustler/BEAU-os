@@ -231,6 +231,50 @@ static uint32_t vgic_lr_count;
 static bool vgic_global_initialized;
 static spinlock_t vgic_irqstat_lock = { .head = 0U, .tail = 0U };
 
+/* [20260715] vGIC IRQ lifecycle statistics
+ *
+ * Framework:
+ *
+ *   physical IRQ / timer / SGI / emulated device
+ *                 |
+ *                 v
+ *   vgic_irqstat_record_assert()
+ *       last_assert_tick = now
+ *                 |
+ *                 v
+ *   vgicv3_flush_vcpu()
+ *       chooses a pending descriptor and writes an ICH_LR<n> slot
+ *                 |
+ *                 v
+ *   vgic_irqstat_record_lr(new_lr = true)
+ *       raise_to_lr += now - last_assert_tick
+ *       last_lr_tick = now
+ *                 |
+ *                 v
+ *   guest handles interrupt and writes EOIR/DIR, or EL2 sync observes EOI
+ *                 |
+ *                 v
+ *   vgic_irqstat_record_eoi()
+ *       lr_to_eoi += now - last_lr_tick
+ *
+ * Flow interpretation:
+ *
+ *   raise-to-LR:
+ *       Source became runnable/pending, but EL2 had not yet exposed it through
+ *       a hardware list register. High values point at scheduler latency,
+ *       target-vCPU not running, no free LR, or vGIC flush path contention.
+ *
+ *   LR-to-EOI:
+ *       The vIRQ was visible to the guest CPU interface, but completion had
+ *       not been observed. High values point at guest interrupt masking,
+ *       ISR runtime, guest scheduling, or lost/late EOI synchronization.
+ *
+ * Principle:
+ *   Keep the hot path accounting small: one spinlock-protected sparse table,
+ *   raw tick accumulation, and conversion to microseconds only when irqstat
+ *   snapshots the data. The counters are diagnostic and must not decide vGIC
+ *   delivery semantics.
+ */
 #if CONFIG_IRQSTAT_LATENCY
 struct vgic_irqstat_latency_accum {
 	uint64_t count;
@@ -253,8 +297,9 @@ struct vgic_irqstat_entry {
 	uint64_t eoi_count;
 #if CONFIG_IRQSTAT_LATENCY
 	uint64_t last_assert_tick;
-	struct vgic_irqstat_latency_accum assert_to_lr;
-	struct vgic_irqstat_latency_accum assert_to_eoi;
+	uint64_t last_lr_tick;
+	struct vgic_irqstat_latency_accum raise_to_lr;
+	struct vgic_irqstat_latency_accum lr_to_eoi;
 #endif
 };
 
@@ -383,7 +428,14 @@ static void vgic_irqstat_record_assert(const struct acrn_vcpu *vcpu,
 			entry->assert_count++;
 #if CONFIG_IRQSTAT_LATENCY
 			if (!entry->in_flight) {
+				/*
+				 * Start a new lifecycle sample only for the first raise while
+				 * no previous delivery is in flight. Repeated level assertions
+				 * update counters but do not restart the clock, otherwise a
+				 * noisy device would hide the original delivery delay.
+				 */
 				entry->last_assert_tick = cpu_ticks();
+				entry->last_lr_tick = 0UL;
 			}
 #endif
 			entry->in_flight = true;
@@ -434,8 +486,15 @@ static void vgic_irqstat_record_lr(const struct acrn_vcpu *vcpu,
 #if CONFIG_IRQSTAT_LATENCY
 			if (new_lr && entry->in_flight && (entry->last_assert_tick != 0UL) &&
 				(now >= entry->last_assert_tick)) {
-				vgic_irqstat_accum(&entry->assert_to_lr,
+				/*
+				 * new_lr is true only when a pending vIRQ was actually
+				 * published into an LR. Sync/readback paths may account an
+				 * already-existing LR, but those must not double-count
+				 * raise-to-LR latency.
+				 */
+				vgic_irqstat_accum(&entry->raise_to_lr,
 					now - entry->last_assert_tick);
+				entry->last_lr_tick = now;
 			}
 #endif
 		}
@@ -461,11 +520,19 @@ static void vgic_irqstat_record_eoi(const struct acrn_vcpu *vcpu,
 		if (entry != NULL) {
 			entry->eoi_count++;
 #if CONFIG_IRQSTAT_LATENCY
-			if (entry->in_flight && (entry->last_assert_tick != 0UL) &&
-				(now >= entry->last_assert_tick)) {
-				vgic_irqstat_accum(&entry->assert_to_eoi,
-					now - entry->last_assert_tick);
+			if (entry->in_flight && (entry->last_lr_tick != 0UL) &&
+				(now >= entry->last_lr_tick)) {
+				/*
+				 * LR-to-EOI measures only guest-visible completion. If no LR
+				 * timestamp exists, the EOI came from a partially synchronized
+				 * or reset lifecycle and is counted as an EOI event without a
+				 * latency sample.
+				 */
+				vgic_irqstat_accum(&entry->lr_to_eoi,
+					now - entry->last_lr_tick);
 			}
+			entry->last_assert_tick = 0UL;
+			entry->last_lr_tick = 0UL;
 #endif
 			entry->in_flight = false;
 		}
@@ -506,8 +573,8 @@ uint16_t arm64_vgicv3_get_irq_stats(struct arm64_vgic_irq_stats *stats, uint16_t
 		dst->lr_count = src->lr_count;
 		dst->eoi_count = src->eoi_count;
 #if CONFIG_IRQSTAT_LATENCY
-		vgic_irqstat_export_latency(&src->assert_to_lr, &dst->assert_to_lr);
-		vgic_irqstat_export_latency(&src->assert_to_eoi, &dst->assert_to_eoi);
+		vgic_irqstat_export_latency(&src->raise_to_lr, &dst->raise_to_lr);
+		vgic_irqstat_export_latency(&src->lr_to_eoi, &dst->lr_to_eoi);
 #endif
 		copied++;
 	}
@@ -529,6 +596,7 @@ static void vgic_irqstat_reset_vm(uint16_t vm_id)
 			entry->in_flight = false;
 #if CONFIG_IRQSTAT_LATENCY
 			entry->last_assert_tick = 0UL;
+			entry->last_lr_tick = 0UL;
 #endif
 		}
 	}

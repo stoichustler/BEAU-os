@@ -70,11 +70,14 @@ HOST_C_SRCS += arch/arm64/pm.c
 HOST_C_SRCS += arch/arm64/sve.c
 HOST_C_SRCS += arch/arm64/mpu.c
 HOST_C_SRCS += arch/arm64/smmu/smmuv3.c
+ifeq ($(CONFIG_CPUFREQ),y)
+HOST_C_SRCS += arch/arm64/platform/$(PLATFORM)/cpufreq.c
+endif
 
 VP_S_SRCS +=
-VP_S_SRCS += arch/arm64/guest/guest_entry.S
+VP_S_SRCS += arch/arm64/guest/entry.S
 
-VP_C_SRCS += arch/arm64/guest/guest_memory.c
+VP_C_SRCS += arch/arm64/guest/memory.c
 VP_C_SRCS += arch/arm64/guest/vcpu.c
 VP_C_SRCS += arch/arm64/guest/vmpu.c
 VP_C_SRCS += arch/arm64/guest/vsve.c

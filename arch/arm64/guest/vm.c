@@ -12,6 +12,7 @@
 #include <mmu.h>
 #include <pgtable.h>
 #include <per_cpu.h>
+#include <notify.h>
 #include <bsp/vfdt.h>
 #include <bsp/vpci.h>
 #include <logmsg.h>
@@ -108,6 +109,49 @@ static uint64_t stage2_pgentry_present(uint64_t pte)
 static inline uint64_t stage2_leaf_desc_type(enum _page_table_level level)
 {
 	return (level == PGT_LVL0) ? PAGE_PAGE_DESC : PAGE_BLOCK_DESC;
+}
+
+static uint64_t arm64_stage2_vmid(const struct acrn_vm *vm)
+{
+	uint64_t vmid = (uint64_t)vm->vm_id + 1UL;
+
+	if (vmid > ARM64_STAGE2_VMID_MASK) {
+		panic("vm-%u exceeds arm64 stage-2 vmid range", vm->vm_id);
+	}
+
+	return vmid;
+}
+
+uint64_t arm64_stage2_vttbr(const struct acrn_vm *vm)
+{
+	return hva2hpa(vm->root_stg2ptp) |
+		(arm64_stage2_vmid(vm) << ARM64_STAGE2_VMID_SHIFT);
+}
+
+static void arm64_stage2_flush_vttbr(void *data)
+{
+	uint64_t target_vttbr = *(uint64_t *)data;
+	uint64_t old_vttbr = read_vttbr_el2();
+
+	write_vttbr_el2(target_vttbr);
+	flush_stage2_tlb_local();
+	write_vttbr_el2(old_vttbr);
+}
+
+static void arm64_stage2_flush_vm_tlb(struct acrn_vm *vm)
+{
+	uint64_t target_vttbr;
+	uint64_t mask;
+
+	if ((vm == NULL) || (vm->root_stg2ptp == NULL) || (vm->hw.cpu_affinity == 0UL)) {
+		return;
+	}
+
+	target_vttbr = arm64_stage2_vttbr(vm);
+	mask = vm->hw.cpu_affinity & ALL_CPUS_MASK;
+	if (mask != 0UL) {
+		smp_call_function(mask, arm64_stage2_flush_vttbr, &target_vttbr);
+	}
 }
 
 /*
@@ -221,6 +265,12 @@ static void validate_stage2_ram_identity(const struct acrn_vm *vm, uint64_t mem_
 	if ((mem_size == 0UL) || ((mem_start + mem_size) <= mem_start)) {
 		panic("vm-%u has invalid stage-2 ram window", vm->vm_id);
 	}
+	if (!mem_aligned_check(mem_start, PGTL1_SIZE) ||
+		!mem_aligned_check(mem_hpa, PGTL1_SIZE) ||
+		!mem_aligned_check(mem_size, PGTL1_SIZE)) {
+		panic("vm-%u stage-2 ram is not block-map aligned ipa=0x%lx pa=0x%lx size=0x%lx",
+			vm->vm_id, mem_start, mem_hpa, mem_size);
+	}
 }
 
 static void init_stage2_identity_map(struct acrn_vm *vm)
@@ -312,6 +362,7 @@ void arm64_stage2_map(struct acrn_vm *vm, uint64_t hpa, uint64_t ipa,
 	pgtable_add_map((uint64_t *)vm->root_stg2ptp, hpa, ipa, size, prot,
 		&vm->stg2_pgtable);
 	spinlock_release(&vm->stg2pt_lock);
+	arm64_stage2_flush_vm_tlb(vm);
 }
 
 void arm64_stage2_unmap(struct acrn_vm *vm, uint64_t ipa, uint64_t size)
@@ -324,6 +375,7 @@ void arm64_stage2_unmap(struct acrn_vm *vm, uint64_t ipa, uint64_t size)
 	pgtable_modify_or_del_map((uint64_t *)vm->root_stg2ptp, ipa, size, 0UL, 0UL,
 		&vm->stg2_pgtable, MR_DEL);
 	spinlock_release(&vm->stg2pt_lock);
+	arm64_stage2_flush_vm_tlb(vm);
 }
 
 static void register_arm64_vio_mmio(struct acrn_vm *vm)

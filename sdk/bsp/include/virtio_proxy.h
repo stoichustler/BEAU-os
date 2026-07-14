@@ -64,6 +64,10 @@ struct virtio_proxy_stats {
 	uint16_t queue_num;
 	uint16_t queue_size;
 	uint64_t notify_count;
+	uint64_t notify_coalesced_count;
+	uint64_t notify_prefetch_count;
+	uint64_t notify_backend_kick_count;
+	uint64_t notify_backpressure_count;
 	bool backend_bound;
 	bool hcall_backend_registered;
 	bool backend_healthy;
@@ -98,6 +102,12 @@ struct virtio_proxy_stats {
 	uint64_t heartbeat_age_ms;
 	uint64_t timeout_count;
 	uint64_t reset_count;
+	uint64_t completed_count;
+	uint64_t irq_count;
+	uint64_t batch_irq_saved_count;
+	uint64_t request_bytes;
+	uint64_t reply_bytes;
+	uint64_t byte_rate;
 	struct virtio_proxy_latency_stats latency_notify_poll;
 	struct virtio_proxy_latency_stats latency_poll_reply;
 	struct virtio_proxy_latency_stats latency_reply_irq;

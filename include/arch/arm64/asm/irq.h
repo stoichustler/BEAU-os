@@ -106,6 +106,7 @@ void arm64_gicv3_unmask_irq(uint32_t intid);
 void arm64_gicv3_disable_irq(uint32_t intid);
 void arm64_gicv3_clear_irq(uint32_t intid);
 void arm64_gicv3_set_irq_priority(uint32_t intid, uint8_t priority);
+bool arm64_gicv3_set_irq_affinity(uint32_t intid, uint16_t pcpu_id);
 bool arm64_gicv3_has_its(void);
 bool arm64_gicv3_map_spi_msi(uint32_t intid, uint64_t *addr, uint32_t *data);
 int32_t arm64_gicv3_its_alloc_msi(uint32_t dev_id, uint32_t count,

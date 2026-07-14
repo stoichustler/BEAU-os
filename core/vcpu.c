@@ -164,14 +164,26 @@ void kick_vcpu(struct acrn_vcpu *vcpu)
 
 void vcpu_make_request(struct acrn_vcpu *vcpu, uint16_t eventid)
 {
+	uint16_t pcpu_id = pcpuid_from_vcpu(vcpu);
+	bool remote_running = (get_pcpu_id() != pcpu_id) && (get_running_vcpu(pcpu_id) == vcpu);
+
 	bitmap_set(eventid, &vcpu->pending_req);
 	/*
 	 * Interrupt injection may already hold architecture interrupt locks. Ask the
 	 * scheduler for best-effort event priority through a deferred request instead
 	 * of editing scheduler runqueue state directly from this path.
+	 *
+	 * If the target vCPU is already running on another pCPU, a direct vCPU kick is
+	 * sufficient to make it observe pending_req at the next guest-entry boundary.
+	 * Raising a scheduler reschedule IPI in that case creates a second cross-core
+	 * interrupt for the same event and does not improve runqueue latency.
 	 */
-	request_thread_priority(&vcpu->thread_obj);
-	kick_vcpu(vcpu);
+	if (remote_running) {
+		request_thread_priority_no_resched(&vcpu->thread_obj);
+		arch_smp_call_kick_pcpu(pcpu_id);
+	} else {
+		request_thread_priority(&vcpu->thread_obj);
+	}
 }
 
 int32_t create_vcpu(struct acrn_vm *vm, uint16_t pcpu_id)

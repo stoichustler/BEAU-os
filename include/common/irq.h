@@ -146,6 +146,7 @@ void arch_setup_irqs(void);
 void arch_init_interrupt(uint16_t pcpu_id);
 void arch_free_irq(uint32_t irq);
 bool arch_request_irq(uint32_t irq);
+bool arch_set_irq_affinity(uint32_t irq, uint16_t pcpu_id);
 void arch_pre_irq(const struct irq_desc *desc);
 void arch_post_irq(const struct irq_desc *desc);
 /*

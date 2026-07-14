@@ -272,6 +272,10 @@ struct virtio_proxy_pending {
  * @backend_ops: Optional in-hypervisor backend callbacks.
  * @backend_priv: Private pointer passed to @backend_ops callbacks.
  * @notify_count: Number of frontend QueueNotify events received.
+ * @notify_coalesced_count: QueueNotify events merged into pending work.
+ * @notify_prefetch_count: Descriptor chains copied to pending during notify.
+ * @notify_backend_kick_count: In-hypervisor backend notify callbacks issued.
+ * @notify_backpressure_count: Notify-time prefetches blocked by pending slots.
  * @no_backend_logged: Suppresses repeated notify-without-backend logs.
  * @hcall_backend_registered: True after a VM backend registers by HVC.
  * @hcall_backend_expected: True when this endpoint expects an HVC backend.
@@ -289,6 +293,13 @@ struct virtio_proxy_pending {
  * @hcall_backpressure_count: Polls rejected because pending slots were full.
  * @timeout_count: Number of in-flight requests that exceeded timeout budget.
  * @reset_count: Number of frontend transport resets.
+ * @completed_count: Requests completed back to the frontend used ring.
+ * @irq_count: Frontend used-ring IRQ injections requested by proxy hcalls.
+ * @batch_irq_saved_count: Extra per-request IRQs avoided by batch replies.
+ * @request_bytes: Bytes copied from frontend-readable descriptors.
+ * @reply_bytes: Bytes copied into frontend-writable descriptors.
+ * @first_activity_tick: First byte-transfer timestamp for throughput stats.
+ * @last_activity_tick: Last byte-transfer timestamp for throughput stats.
  * @last_notify_tick: Last QueueNotify timestamp per virtqueue.
  * @latency_notify_poll: QueueNotify to successful backend poll latency.
  * @latency_poll_reply: Successful backend poll to backend reply latency.
@@ -317,6 +328,10 @@ struct virtio_proxy_dev {
 	const struct virtio_proxy_backend_ops *backend_ops;
 	void *backend_priv;
 	uint64_t notify_count;
+	uint64_t notify_coalesced_count;
+	uint64_t notify_prefetch_count;
+	uint64_t notify_backend_kick_count;
+	uint64_t notify_backpressure_count;
 	bool no_backend_logged;
 	bool hcall_backend_registered;
 	bool hcall_backend_expected;
@@ -344,6 +359,13 @@ struct virtio_proxy_dev {
 	uint32_t last_wait_us;
 	uint64_t timeout_count;
 	uint64_t reset_count;
+	uint64_t completed_count;
+	uint64_t irq_count;
+	uint64_t batch_irq_saved_count;
+	uint64_t request_bytes;
+	uint64_t reply_bytes;
+	uint64_t first_activity_tick;
+	uint64_t last_activity_tick;
 	uint64_t last_notify_tick[VIRTIO_MMIO_MAX_QUEUES];
 	struct virtio_proxy_latency_accum latency_notify_poll;
 	struct virtio_proxy_latency_accum latency_poll_reply;

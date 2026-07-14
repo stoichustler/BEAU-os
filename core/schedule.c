@@ -80,6 +80,60 @@ static void sched_add_runtime(struct thread_object *obj, uint64_t ticks)
 	}
 }
 
+static uint32_t sched_latency_hist_bucket(uint64_t wait_ticks)
+{
+	uint64_t wait_us = ticks_to_us(wait_ticks);
+
+	if (wait_us < 100UL) {
+		return 0U;
+	}
+	if (wait_us < 500UL) {
+		return 1U;
+	}
+	if (wait_us < 1000UL) {
+		return 2U;
+	}
+	if (wait_us < 5000UL) {
+		return 3U;
+	}
+	if (wait_us < 10000UL) {
+		return 4U;
+	}
+	if (wait_us < 15000UL) {
+		return 5U;
+	}
+	if (wait_us < 20000UL) {
+		return 6U;
+	}
+
+	return 7U;
+}
+
+const char *sched_latency_hist_bucket_name(uint32_t bucket)
+{
+	static const char * const names[SCHED_LATENCY_HIST_BUCKETS] = {
+		"<100us",
+		"<500us",
+		"<1ms",
+		"<5ms",
+		"<10ms",
+		"<15ms",
+		"<20ms",
+		">=20ms",
+	};
+
+	return (bucket < SCHED_LATENCY_HIST_BUCKETS) ? names[bucket] : "?";
+}
+
+static void sched_record_wait_latency(struct thread_object *obj, uint64_t wait_ticks)
+{
+	uint32_t bucket = sched_latency_hist_bucket(wait_ticks);
+
+	if (obj->latency.wait_hist[bucket] != UINT64_MAX) {
+		obj->latency.wait_hist[bucket]++;
+	}
+}
+
 static inline void set_thread_status(struct thread_object *obj, enum thread_object_state status)
 {
 	obj->status = status;
@@ -278,6 +332,7 @@ static void sched_mark_running(struct thread_object *obj, uint64_t now)
 		if (wait_ticks > obj->latency.max_wait_ticks) {
 			obj->latency.max_wait_ticks = wait_ticks;
 		}
+		sched_record_wait_latency(obj, wait_ticks);
 	}
 
 	obj->latency.switches++;
@@ -741,18 +796,23 @@ void wake_thread(struct thread_object *obj)
 
 void request_thread_priority(struct thread_object *obj)
 {
-	struct acrn_scheduler *scheduler = get_scheduler(obj->pcpu_id);
-
 	/*
 	 * The flag is meaningful only for schedulers that opt in via .prioritize.
 	 * NEED_RESCHEDULE is still useful for all schedulers because the target pCPU
 	 * may need to leave idle or re-check pending vCPU requests.
 	 */
+	request_thread_priority_no_resched(obj);
+	make_reschedule_request(obj->pcpu_id);
+}
+
+void request_thread_priority_no_resched(struct thread_object *obj)
+{
+	struct acrn_scheduler *scheduler = get_scheduler(obj->pcpu_id);
+
 	if (scheduler->prioritize != NULL) {
 		obj->priority_pending = true;
 		per_cpu(sched_ctl, obj->pcpu_id).priority_pending = true;
 	}
-	make_reschedule_request(obj->pcpu_id);
 }
 
 void yield_current(void)

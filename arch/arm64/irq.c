@@ -174,6 +174,20 @@ bool arch_request_irq(uint32_t irq)
 	return ret;
 }
 
+bool arch_set_irq_affinity(uint32_t irq, uint16_t pcpu_id)
+{
+	struct arm64_irq_domain *gic_domain;
+	bool ret = false;
+
+	gic_domain = find_domain_by_name(ARM64_IRQD_GIC);
+	if ((gic_domain != NULL) && (irq >= gic_domain->base) &&
+		(irq < (gic_domain->base + gic_domain->irq_num))) {
+		ret = arm64_gicv3_set_irq_affinity(irq - gic_domain->base, pcpu_id);
+	}
+
+	return ret;
+}
+
 void arch_free_irq(uint32_t irq)
 {
 	uint64_t flags;

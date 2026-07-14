@@ -184,6 +184,8 @@ static void shell_thread_main(__unused struct thread_object *obj);
 struct shell_schedstat_thread_sample {
 	const struct thread_object *thread;
 	uint64_t runtime_ticks;
+	uint64_t max_wait_ticks;
+	uint64_t wait_hist[SCHED_LATENCY_HIST_BUCKETS];
 };
 
 struct shell_schedstat_snapshot {
@@ -1477,6 +1479,9 @@ static void shell_schedstat_take_snapshot(struct shell_schedstat_snapshot *snaps
 		if (snapshot->thread_count < SHELL_SCHEDSTAT_MAX_THREADS) {
 			snapshot->thread[snapshot->thread_count].thread = thread;
 			snapshot->thread[snapshot->thread_count].runtime_ticks = stats.runtime_ticks;
+			snapshot->thread[snapshot->thread_count].max_wait_ticks = stats.max_wait_ticks;
+			memcpy(snapshot->thread[snapshot->thread_count].wait_hist, stats.wait_hist,
+				sizeof(stats.wait_hist));
 			snapshot->thread_count++;
 		} else {
 			snapshot->overflow = true;
@@ -1520,6 +1525,23 @@ static void shell_schedstat_format_pcpu_busy(char *buf, size_t size, uint16_t pc
 
 	busy_permille = SHELL_SCHEDSTAT_PERCENT_SCALE - idle_permille;
 	snprintf(buf, size, "%lu.%01lu", busy_permille / 10UL, busy_permille % 10UL);
+}
+
+static const char *shell_schedstat_pcpu_role(uint16_t pcpu_id)
+{
+	const struct sched_platform_config *config = sched_get_platform_config();
+	uint64_t pcpu_mask = 1UL << pcpu_id;
+
+	if (config->configured) {
+		if ((config->exclusive.pcpu_mask & pcpu_mask) != 0UL) {
+			return "exclusive";
+		}
+		if ((config->shared.pcpu_mask & pcpu_mask) != 0UL) {
+			return "shared";
+		}
+	}
+
+	return pcpu_is_shared_by_vcpus(pcpu_id) ? "shared" : "exclusive";
 }
 
 static void shell_schedstat_print_cpu_usage(const struct list_head *head, uint64_t window_ticks)
@@ -1574,6 +1596,72 @@ static void shell_schedstat_print_cpu_usage(const struct list_head *head, uint64
 	}
 }
 
+static void shell_schedstat_print_cbs_latency_hist(const struct list_head *head)
+{
+	struct list_head *pos;
+	char temp_str[MAX_STR_SIZE];
+	bool printed_header = false;
+	bool has_previous = shell_schedstat_last.valid;
+
+	list_for_each(pos, head) {
+		struct thread_object *thread = container_of(pos, struct thread_object, node);
+		const struct shell_schedstat_thread_sample *current;
+		const struct shell_schedstat_thread_sample *previous;
+		struct sched_cbs_stats cbs;
+		uint64_t hist[SCHED_LATENCY_HIST_BUCKETS];
+		uint32_t bucket;
+
+		if (!sched_get_cbs_stats(thread, &cbs)) {
+			continue;
+		}
+		current = shell_schedstat_find_thread_sample(&shell_schedstat_sample, thread);
+		if (current == NULL) {
+			continue;
+		}
+		previous = shell_schedstat_find_thread_sample(&shell_schedstat_last, thread);
+		for (bucket = 0U; bucket < SCHED_LATENCY_HIST_BUCKETS; bucket++) {
+			hist[bucket] = (has_previous && (previous != NULL)) ?
+				shell_schedstat_delta(current->wait_hist[bucket],
+					previous->wait_hist[bucket]) :
+				current->wait_hist[bucket];
+		}
+
+		if (!printed_header) {
+			shell_puts(has_previous ?
+				"\r\nCBS latency histogram delta (runnable -> running):\r\n\r\n" :
+				"\r\nCBS latency histogram cumulative (runnable -> running):\r\n\r\n");
+			snprintf(temp_str, MAX_STR_SIZE,
+				"name             pcpu  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  max.us(total)\r\n",
+				sched_latency_hist_bucket_name(0U),
+				sched_latency_hist_bucket_name(1U),
+				sched_latency_hist_bucket_name(2U),
+				sched_latency_hist_bucket_name(3U),
+				sched_latency_hist_bucket_name(4U),
+				sched_latency_hist_bucket_name(5U),
+				sched_latency_hist_bucket_name(6U),
+				sched_latency_hist_bucket_name(7U));
+			shell_puts(temp_str);
+			shell_puts("───────────────  ────  ───────  ───────  ───────  ───────  ───────  ───────  ───────  ───────  ──────\r\n");
+			printed_header = true;
+		}
+
+		snprintf(temp_str, MAX_STR_SIZE,
+			"%-15s  %-4hu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-6lu\r\n",
+			thread->name,
+			thread->pcpu_id,
+			hist[0U],
+			hist[1U],
+			hist[2U],
+			hist[3U],
+			hist[4U],
+			hist[5U],
+			hist[6U],
+			hist[7U],
+			ticks_to_us(current->max_wait_ticks));
+		shell_puts(temp_str);
+	}
+}
+
 static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 {
 	const struct list_head *head = sched_get_thread_list();
@@ -1606,7 +1694,6 @@ static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 	for (pcpu_id = 0U; pcpu_id < pcpu_num; pcpu_id++) {
 		struct thread_object *current = sched_get_current(pcpu_id);
 		const char *name = (current != NULL) ? current->name : "-";
-		bool shared_pcpu = pcpu_is_shared_by_vcpus(pcpu_id);
 		char busy[16U];
 
 		shell_schedstat_format_pcpu_busy(busy, sizeof(busy), pcpu_id, window_ticks);
@@ -1614,7 +1701,7 @@ static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 		snprintf(temp_str, MAX_STR_SIZE,
 			"%-5hu %-10s %-12s %-6s %-7lu %-9lu %-8lu %-9u %s\r\n",
 			pcpu_id,
-			shared_pcpu ? "shared" : "exclusive",
+			shell_schedstat_pcpu_role(pcpu_id),
 			sched_get_scheduler_name(pcpu_id),
 			busy,
 			sched_get_ticks(pcpu_id),
@@ -1755,6 +1842,7 @@ static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 				shell_puts(temp_str);
 			}
 		}
+		shell_schedstat_print_cbs_latency_hist(head);
 	}
 
 	shell_schedstat_last = shell_schedstat_sample;
@@ -1880,6 +1968,23 @@ static void shell_print_guest_irqstat(void)
 	uint16_t count;
 	uint16_t idx;
 
+	/*
+	 * Guest vIRQ latency columns:
+	 *
+	 *   source raise/assert
+	 *          |
+	 *          | raise-lr
+	 *          v
+	 *   vGIC writes a hardware LR
+	 *          |
+	 *          | lr-eoi
+	 *          v
+	 *   guest EOI/deactivation observed by EL2
+	 *
+	 * Keeping both segments visible is more useful than a single end-to-end
+	 * number. It separates host-side delivery delay from guest-side interrupt
+	 * handling/completion delay.
+	 */
 	count = arm64_vgicv3_get_irq_stats(shell_irqstat_vgic_stats,
 		ARRAY_SIZE(shell_irqstat_vgic_stats));
 	shell_puts("\r\nguest virq:\r\n");
@@ -1889,7 +1994,7 @@ static void shell_print_guest_irqstat(void)
 	}
 
 #if CONFIG_IRQSTAT_LATENCY
-	shell_puts("vm   vcpu virq  type  live assert   deassert lr       eoi      assert-lr min/avg/max     assert-eoi min/avg/max\r\n");
+	shell_puts("vm   vcpu virq  type  live assert   deassert lr       eoi      raise-lr min/avg/max      lr-eoi min/avg/max\r\n");
 	shell_puts("──── ──── ───── ───── ──── ──────── ──────── ──────── ──────── ───────────────────────── ─────────────────────────\r\n");
 #else
 	shell_puts("vm   vcpu virq  type  live assert   deassert lr       eoi\r\n");
@@ -1900,13 +2005,13 @@ static void shell_print_guest_irqstat(void)
 		const struct arm64_vgic_irq_stats *entry = &shell_irqstat_vgic_stats[idx];
 
 #if CONFIG_IRQSTAT_LATENCY
-		char assert_to_lr[40U];
-		char assert_to_eoi[40U];
+		char raise_to_lr[40U];
+		char lr_to_eoi[40U];
 
-		shell_irqstat_format_vgic_latency(assert_to_lr, sizeof(assert_to_lr),
-			&entry->assert_to_lr);
-		shell_irqstat_format_vgic_latency(assert_to_eoi, sizeof(assert_to_eoi),
-			&entry->assert_to_eoi);
+		shell_irqstat_format_vgic_latency(raise_to_lr, sizeof(raise_to_lr),
+			&entry->raise_to_lr);
+		shell_irqstat_format_vgic_latency(lr_to_eoi, sizeof(lr_to_eoi),
+			&entry->lr_to_eoi);
 		snprintf(temp_str, sizeof(temp_str),
 			"%-4hu %-4hu %-5u %-5s %-4s %-8lu %-8lu %-8lu %-8lu %-25s %-25s\r\n",
 			entry->vm_id,
@@ -1918,8 +2023,8 @@ static void shell_print_guest_irqstat(void)
 			entry->deassert_count,
 			entry->lr_count,
 			entry->eoi_count,
-			assert_to_lr,
-			assert_to_eoi);
+			raise_to_lr,
+			lr_to_eoi);
 #else
 		snprintf(temp_str, sizeof(temp_str),
 			"%-4hu %-4hu %-5u %-5s %-4s %-8lu %-8lu %-8lu %-8lu\r\n",
@@ -1943,7 +2048,7 @@ static void shell_print_guest_irqstat(void)
  * irqstat prints two layers of interrupt accounting:
  *
  * - host IRQ handler entries from irq_desc/action + per_cpu(irq_count)
- * - ARM64 guest-visible vIRQ lifecycle and raise-to-LR/EOI latency
+ * - ARM64 guest-visible vIRQ lifecycle and raise-to-LR / LR-to-EOI latency
  *
  * Keeping both views in one command makes it possible to distinguish a missing
  * EL2 physical IRQ from a vGIC delivery/completion problem.

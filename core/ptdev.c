@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+#include <errno.h>
 #include <hash.h>
 #include <per_cpu.h>
 #include <vm.h>
@@ -250,7 +251,30 @@ static void ptirq_interrupt_handler(__unused uint32_t irq, void *data)
 	}
 }
 
-/* active intr with irq registering */
+/* Active interrupt remapping and register the host IRQ handler.
+ *
+ * Framework:
+ *
+ *   physical SPI/INTx
+ *        |
+ *        v
+ *   ptirq_remapping_info
+ *        |  (optional affinity_pcpu from DTS passthrough policy)
+ *        v
+ *   arch_set_irq_affinity()
+ *        |
+ *        v
+ *   request_irq() enables the physical interrupt
+ *        |
+ *        v
+ *   ptirq_interrupt_handler() -> SOFTIRQ_PTDEV -> guest vIRQ injection
+ *
+ * Programming affinity before request_irq() matters. request_irq() calls into
+ * arch_request_irq(), and the ARM64 implementation enables the GIC INTID. If
+ * IROUTER were written after that point, a pending SPI could still land on the
+ * default BSP route and immediately create the cross-core handoff this policy
+ * is meant to remove.
+ */
 int32_t ptirq_activate_entry(struct ptirq_remapping_info *entry, uint32_t phys_irq)
 {
 	int32_t ret = 0;
@@ -258,16 +282,24 @@ int32_t ptirq_activate_entry(struct ptirq_remapping_info *entry, uint32_t phys_i
 	uint64_t key;
 
 	if ((entry->intr_type == PTDEV_INTR_INTX) || !is_pi_capable(entry->vm)) {
-		/* register and allocate host vector/irq */
-		ret = request_irq(phys_irq, ptirq_interrupt_handler, (void *)entry, IRQF_PT);
-		if (ret >=0) {
-			irq = (uint32_t)ret;
+		if (entry->affinity_valid && !arch_set_irq_affinity(phys_irq, entry->affinity_pcpu)) {
+			LOG_ERR("set ptirq affinity failed, irq=%u pcpu=%hu", phys_irq,
+				entry->affinity_pcpu);
+			ret = -EINVAL;
 		} else {
-			LOG_ERR("request irq failed, please check!, phys-irq=%d", phys_irq);
+			/* register and allocate host vector/irq */
+			ret = request_irq(phys_irq, ptirq_interrupt_handler, (void *)entry,
+				IRQF_PT);
+			if (ret >= 0) {
+				irq = (uint32_t)ret;
+			} else {
+				LOG_ERR("request irq failed, please check!, phys-irq=%d",
+					phys_irq);
+			}
 		}
 	}
 
-	if (ret >=0) {
+	if (ret >= 0) {
 		entry->allocated_pirq = irq;
 		entry->active = true;
 

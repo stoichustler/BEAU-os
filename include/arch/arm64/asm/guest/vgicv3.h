@@ -74,8 +74,8 @@ struct arm64_vgic_irq_stats {
 	uint64_t deassert_count;	/* Source lowered a level-triggered vIRQ. */
 	uint64_t lr_count;	/* vGIC published the vIRQ into an LR. */
 	uint64_t eoi_count;	/* Guest completion observed by sync/EOI/DIR. */
-	struct arm64_vgic_irq_latency_stats assert_to_lr;
-	struct arm64_vgic_irq_latency_stats assert_to_eoi;
+	struct arm64_vgic_irq_latency_stats raise_to_lr;
+	struct arm64_vgic_irq_latency_stats lr_to_eoi;
 };
 
 /*

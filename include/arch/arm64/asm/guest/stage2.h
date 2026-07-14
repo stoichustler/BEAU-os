@@ -11,11 +11,15 @@
 
 struct acrn_vm;
 
+#define ARM64_STAGE2_VMID_SHIFT		48U
+#define ARM64_STAGE2_VMID_MASK		0xffUL
+
 #define ARM64_STAGE2_MAP_READ		(1U << 0U)
 #define ARM64_STAGE2_MAP_WRITE		(1U << 1U)
 #define ARM64_STAGE2_MAP_DEVICE		(1U << 2U)
 #define ARM64_STAGE2_MAP_NORMAL		(1U << 3U)
 
+uint64_t arm64_stage2_vttbr(const struct acrn_vm *vm);
 void arm64_stage2_map(struct acrn_vm *vm, uint64_t hpa, uint64_t ipa,
 	uint64_t size, uint32_t flags);
 void arm64_stage2_unmap(struct acrn_vm *vm, uint64_t ipa, uint64_t size);

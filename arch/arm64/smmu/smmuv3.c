@@ -10,6 +10,7 @@
 #include <irq.h>
 #include <logmsg.h>
 #include <pgtable.h>
+#include <passthrough.h>
 #include <spinlock.h>
 #include <util.h>
 #include <vm.h>
@@ -83,6 +84,22 @@
  *       |
  *       v
  *   replace STE with ABORT and sync CMDQ
+ *
+ * Ownership dump model:
+ *
+ *   software stream state                 hardware stream table
+ *   ---------------------                 ---------------------
+ *   stream->domain ---------------------> STE word0 CFG
+ *        |                                STE word2 S2 VMID
+ *        |                                STE word3 S2TTB
+ *        v
+ *   sw-owner printed by smmustat          ste-vm printed by smmustat
+ *
+ * The two sides are intentionally printed independently. During passthrough
+ * debugging, the important question is often not "did assignment return 0" but
+ * whether the SMMU-visible STE really matches the VM that software believes owns
+ * the StreamID. A mismatch means DMA may be aborted, bypassed, or translated
+ * with the wrong VMID/root even though the high-level device policy looks sane.
  *
  * Out of scope for this minimal EL2 passthrough path:
  *   stage-1 context descriptors, two-level stream tables, ATS/PRI, nested
@@ -162,12 +179,14 @@
 #define ARM_SMMU_Q_ERR_MASK		(0x7fU << 24U)
 #define ARM_SMMU_STE_0_V		(1UL << 0U)
 #define ARM_SMMU_STE_0_CFG_SHIFT	1U
+#define ARM_SMMU_STE_0_CFG_MASK	0x7UL
 #define ARM_SMMU_STE_0_CFG_ABORT	0UL
 #define ARM_SMMU_STE_0_CFG_BYPASS	4UL
 #define ARM_SMMU_STE_0_CFG_S2_TRANS	6UL
 #define ARM_SMMU_STE_1_SHCFG_SHIFT	44U
 #define ARM_SMMU_STE_1_SHCFG_INCOMING	1UL
 #define ARM_SMMU_STE_2_VTCR_SHIFT	32U
+#define ARM_SMMU_STE_2_S2VMID_MASK	0xffffUL
 #define ARM_SMMU_STE_2_S2AA64		(1UL << 51U)
 #define ARM_SMMU_STE_2_S2PTW		(1UL << 54U)
 #define ARM_SMMU_STE_2_S2R		(1UL << 58U)
@@ -1103,18 +1122,48 @@ uint32_t arm_smmu_get_stream_configs(struct arm_smmu_stream_config *configs,
 			continue;
 		}
 
+		(void)memset(&configs[copied], 0U, sizeof(configs[copied]));
 		configs[copied].stream_id = stream->stream_id;
 		configs[copied].assigned = stream->domain != NULL;
 		configs[copied].quarantined = stream->quarantined;
 		configs[copied].fault_count = stream->fault_count;
 		configs[copied].last_fault_code = stream->last_fault_code;
 		configs[copied].last_fault_iova = stream->last_fault_iova;
+		configs[copied].owner_vmid = ACRN_INVALID_VMID;
+		configs[copied].domain_vmid = ACRN_INVALID_VMID;
+		configs[copied].in_strtab = arm_smmu_stream_in_strtab(stream->stream_id);
+		configs[copied].strtab_index = configs[copied].in_strtab ?
+			stream->stream_id : ARM_SMMU_STREAM_ID_INVALID;
+		if (configs[copied].in_strtab) {
+			const uint64_t *ste = arm_smmu_strtab[stream->stream_id];
+			uint16_t s2vmid;
+
+			/*
+			 * Snapshot the STE words while holding arm_smmu_lock so shell output
+			 * can correlate software ownership with the hardware descriptor that
+			 * DMA will actually consume. Only word0..word3 are printed because
+			 * this implementation uses S2 translation; those words contain
+			 * validity/CFG, VMID/VTCR, and S2TTB root state.
+			 */
+			configs[copied].ste[0] = ste[0];
+			configs[copied].ste[1] = ste[1];
+			configs[copied].ste[2] = ste[2];
+			configs[copied].ste[3] = ste[3];
+			configs[copied].ste_valid = (ste[0] & ARM_SMMU_STE_0_V) != 0UL;
+			configs[copied].ste_cfg = (uint32_t)((ste[0] >> ARM_SMMU_STE_0_CFG_SHIFT) &
+				ARM_SMMU_STE_0_CFG_MASK);
+			s2vmid = (uint16_t)(ste[2] & ARM_SMMU_STE_2_S2VMID_MASK);
+			if (configs[copied].ste_valid &&
+				(configs[copied].ste_cfg == ARM_SMMU_STE_0_CFG_S2_TRANS) &&
+				(s2vmid != 0U)) {
+				configs[copied].domain_vmid = s2vmid - 1U;
+			}
+		}
 		if (stream->domain != NULL) {
 			configs[copied].owner_vmid = stream->domain->vm_id;
 			configs[copied].ipa_width = stream->domain->ipa_width;
 			configs[copied].root_table_hpa = stream->domain->root_table_hpa;
 		} else {
-			configs[copied].owner_vmid = ACRN_INVALID_VMID;
 			configs[copied].ipa_width = 0U;
 			configs[copied].root_table_hpa = 0UL;
 		}
@@ -1890,9 +1939,15 @@ int32_t ptirq_add_intx_remapping(struct acrn_vm *vm,
 		if (entry == NULL) {
 			ret = -ENOMEM;
 		} else {
+			uint16_t affinity_pcpu;
+
 			entry->phys_sid = phys_sid;
 			entry->virt_sid = virt_sid;
 			entry->polarity = 0U;
+			if (passthrough_irq_affinity(vm->vm_id, phys_gsi, &affinity_pcpu)) {
+				entry->affinity_pcpu = affinity_pcpu;
+				entry->affinity_valid = true;
+			}
 			ret = ptirq_activate_entry(entry, acrn_irq);
 			if (ret < 0) {
 				ptirq_release_entry(entry);
