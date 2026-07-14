@@ -269,11 +269,11 @@
 		sched {
 			strict-placement;
 			exclusive-cpupool {
-				pcpus = <0 1>;
+				pcpus = <0 1 2 3>;
 				policy = "bvt";
 			};
 			shared-cpupool {
-				pcpus = <2 3 4 5 6 7>;
+				pcpus = <4 5 6 7>;
 				policy = "cbs+";
 				period = <2000>;
 				budget = <1000>;
@@ -406,10 +406,13 @@
 		};
 
 		/*
-		 * 2026-07-08, QEMU cpu-affinity is ordered: entry N is vcpuN's pCPU.
-		 * RTOS vCPU0 stays on exclusive BVT pCPUs. Linux and secondary RTOS
-		 * vCPUs run in the shared CBS+ pool, so Linux boot bursts cannot preempt
-		 * the RTOS exclusive cores.
+		 * 2026-07-15, QEMU cpu-affinity is ordered: entry N is vcpuN's pCPU.
+		 *
+		 * Strict placement policy:
+		 *   - vcpu0 uses an exclusive BVT pCPU first; if there are more VMs than
+		 *     exclusive pCPUs, remaining vcpu0 entries may fall back to shared;
+		 *   - non-vcpu0 entries stay on the shared CBS+ pool;
+		 *   - each shared pCPU is kept at <= 3 VMs / 3 vCPUs by DTS validation.
 		 */
 		vm@0 {
 			compatible = "beau,vm";
@@ -426,10 +429,11 @@
 			 * VM0 vcpu1 used to share pCPU2 with VM2 vcpu1 and VM3 vcpu1.
 			 * Linux boot creates bursty CBS demand on those shared cores, so
 			 * pCPU2 became the first kick-to-run latency bottleneck. Mapping
-			 * VM0 vcpu1 to pCPU6 keeps the shared pool closer to 2/2/2/2
-			 * runnable vCPU placement before changing CBS policy itself.
+			 * VM0 vcpu1 to pCPU4 keeps the shared pool within the strict
+			 * <=3 VMs/vCPUs per shared pCPU bound before changing CBS policy
+			 * itself.
 			 */
-			cpu-affinity = <0 6>;
+			cpu-affinity = <0 4>;
 			guest-flags = "static", "no-fw";
 			beau,sve = "disabled";
 
@@ -464,7 +468,7 @@
 			load-order = "pre-std";
 			beau,static-mem = <0x0 0x60000000 0x0 0x08000000>;
 			direct-map;
-			cpu-affinity = <1 7>;
+			cpu-affinity = <1 5>;
 			guest-flags = "static";
 			beau,sve = "disabled";
 
@@ -509,7 +513,7 @@
 			load-order = "pre-std";
 			beau,static-mem = <0x0 0x48000000 0x0 0x08000000>;
 			direct-map;
-			cpu-affinity = <4 2 3 6>;
+			cpu-affinity = <2 4 6 7>;
 			guest-flags = "static";
 			beau,sve = "enabled";
 			beau,sve-vl-bits = <128>;
@@ -588,7 +592,7 @@
 			load-order = "pre-std";
 			beau,static-mem = <0x0 0x58000000 0x0 0x08000000>;
 			direct-map;
-			cpu-affinity = <5 2 3 7>;
+			cpu-affinity = <3 5 6 7>;
 			guest-flags = "static";
 			beau,sve = "enabled";
 			beau,sve-vl-bits = <128>;

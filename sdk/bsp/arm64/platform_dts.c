@@ -5,6 +5,7 @@
  */
 
 #include <types.h>
+#include <bits.h>
 #include <cpu.h>
 #include <errno.h>
 #include <bare.h>
@@ -30,6 +31,7 @@
 #define ARM64_DTS_IRQ_TYPE_EDGE_RISING	1U
 #define ARM64_DTS_IRQ_TYPE_LEVEL_HIGH	4U
 #define ARM64_DTS_CBS_GANG_SKEW_US_DEFAULT	500U
+#define ARM64_DTS_STRICT_SHARED_PCPU_VM_MAX	3U
 
 static const struct arm64_platform_dts_vm_storage *dts_storage;
 static uint16_t dts_bare_boot_option_count;
@@ -1690,38 +1692,107 @@ static void dts_validate_sched_config(const struct sched_platform_config *config
 static void dts_validate_sched_vm_placement(void)
 {
 	const struct sched_platform_config *config = sched_get_platform_config();
+	uint8_t exclusive_vcpu_count[MAX_PCPU_NUM] = { 0U };
+	uint8_t shared_vcpu_count[MAX_PCPU_NUM] = { 0U };
+	uint64_t shared_vm_masks[MAX_PCPU_NUM] = { 0UL };
+	uint64_t exclusive_bsp_mask = 0UL;
+	uint16_t configured_vm_count = 0U;
+	uint16_t exclusive_bsp_count = 0U;
+	uint16_t exclusive_capacity;
+	uint16_t expected_exclusive_bsp;
 	uint16_t vm_id;
 
 	if (!config->configured || !config->strict_placement) {
 		return;
 	}
 
+	/* [20260715] Strict scheduler placement contract
+	 *
+	 *   VM ordered affinity
+	 *       |
+	 *       +--> vcpu0: exclusive pool first
+	 *       |             fallback to shared only after exclusive capacity is full
+	 *       |
+	 *       +--> vcpuN: shared pool, each shared pCPU <= 3 VMs / 3 vCPUs
+	 *                    |
+	 *                    v
+	 *                fail closed before VM objects are created
+	 *
+	 * Key rule:
+	 *   - ordered cpu-affinity is the source of vCPU index ownership;
+	 *   - exclusive pCPUs are reserved for BSP/vCPU0 placement only;
+	 *   - shared pCPUs have a bounded VM fan-in so CBS/CBS+ latency cannot be
+	 *     hidden behind an overloaded static placement.
+	 */
+	exclusive_capacity = bitmap_weight(config->exclusive.pcpu_mask);
+
 	for (vm_id = 0U; vm_id < dts_storage->vm_config_count; vm_id++) {
 		const struct acrn_vm_config *vm_config = &dts_storage->vm_configs[vm_id];
-		uint64_t exclusive_affinity = vm_config->cpu_affinity & config->exclusive.pcpu_mask;
+		uint16_t idx;
+		uint16_t bsp_pcpu;
 
 		if (vm_config->cpu_affinity == 0UL) {
 			continue;
 		}
 
-		if ((vm_config->os_config.os_family == VM_OS_LINUX) &&
-			(exclusive_affinity != 0UL)) {
-			panic("arm64 dts strict scheduler placement: linux vm%hu uses exclusive pCPUs 0x%lx",
-				vm_id, exclusive_affinity);
+		configured_vm_count++;
+		if (vm_config->cpu_affinity_num == 0U) {
+			panic("arm64 dts strict scheduler placement: vm%hu has no ordered affinity",
+				vm_id);
 		}
-		if (vm_config->os_config.os_family == VM_OS_RTOS) {
-			uint16_t bsp_pcpu;
 
-			if (vm_config->cpu_affinity_num == 0U) {
-				panic("arm64 dts strict scheduler placement: rtos vm%hu has no ordered affinity",
-					vm_id);
+		bsp_pcpu = vm_config->cpu_affinity_order[0U];
+		if ((config->exclusive.pcpu_mask & AFFINITY_CPU(bsp_pcpu)) != 0UL) {
+			if ((exclusive_bsp_mask & AFFINITY_CPU(bsp_pcpu)) != 0UL) {
+				panic("arm64 dts strict scheduler placement: duplicate vcpu0 exclusive pCPU%hu",
+					bsp_pcpu);
 			}
-			bsp_pcpu = vm_config->cpu_affinity_order[0U];
-			if ((config->exclusive.pcpu_mask & AFFINITY_CPU(bsp_pcpu)) == 0UL) {
-				panic("arm64 dts strict scheduler placement: rtos vm%hu bsp pCPU%hu is not exclusive",
-					vm_id, bsp_pcpu);
+			exclusive_bsp_mask |= AFFINITY_CPU(bsp_pcpu);
+			exclusive_bsp_count++;
+		} else if ((config->shared.pcpu_mask & AFFINITY_CPU(bsp_pcpu)) == 0UL) {
+			panic("arm64 dts strict scheduler placement: vm%hu vcpu0 pCPU%hu is outside scheduler pools",
+				vm_id, bsp_pcpu);
+		}
+
+		for (idx = 0U; idx < vm_config->cpu_affinity_num; idx++) {
+			uint16_t pcpu_id = vm_config->cpu_affinity_order[idx];
+			uint64_t pcpu_mask = AFFINITY_CPU(pcpu_id);
+
+			if ((config->exclusive.pcpu_mask & pcpu_mask) != 0UL) {
+				if (idx != 0U) {
+					panic("arm64 dts strict scheduler placement: vm%hu vcpu%hu uses exclusive pCPU%hu",
+						vm_id, idx, pcpu_id);
+				}
+				exclusive_vcpu_count[pcpu_id]++;
+				if (exclusive_vcpu_count[pcpu_id] > 1U) {
+					panic("arm64 dts strict scheduler placement: exclusive pCPU%hu has %u vCPUs",
+						pcpu_id, exclusive_vcpu_count[pcpu_id]);
+				}
+			} else if ((config->shared.pcpu_mask & pcpu_mask) != 0UL) {
+				uint16_t shared_vm_count;
+
+				shared_vcpu_count[pcpu_id]++;
+				if (vm_id < 64U) {
+					shared_vm_masks[pcpu_id] |= AFFINITY_CPU(vm_id);
+				}
+				shared_vm_count = bitmap_weight(shared_vm_masks[pcpu_id]);
+				if ((shared_vcpu_count[pcpu_id] > ARM64_DTS_STRICT_SHARED_PCPU_VM_MAX) ||
+					(shared_vm_count > ARM64_DTS_STRICT_SHARED_PCPU_VM_MAX)) {
+					panic("arm64 dts strict scheduler placement: shared pCPU%hu has %u vCPUs from %hu VMs",
+						pcpu_id, shared_vcpu_count[pcpu_id], shared_vm_count);
+				}
+			} else {
+				panic("arm64 dts strict scheduler placement: vm%hu vcpu%hu pCPU%hu is outside scheduler pools",
+					vm_id, idx, pcpu_id);
 			}
 		}
+	}
+
+	expected_exclusive_bsp = (configured_vm_count < exclusive_capacity) ?
+		configured_vm_count : exclusive_capacity;
+	if (exclusive_bsp_count < expected_exclusive_bsp) {
+		panic("arm64 dts strict scheduler placement: only %hu/%hu vcpu0 entries use exclusive pCPUs",
+			exclusive_bsp_count, expected_exclusive_bsp);
 	}
 }
 

@@ -93,5 +93,12 @@ bool bitmap32_test_and_clear_non_atomic(uint32_t nr_arg, volatile uint32_t *addr
 
 uint16_t bitmap_weight(uint64_t bits)
 {
-	return (uint16_t)__builtin_popcountl(bits);
+	uint16_t weight = 0U;
+
+	while (bits != 0UL) {
+		bits &= bits - 1UL;
+		weight++;
+	}
+
+	return weight;
 }
