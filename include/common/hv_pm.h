@@ -125,6 +125,7 @@ int32_t hv_pm_record_wake(uint32_t wake_source, uint16_t source_index);
 int32_t hv_pm_mark_vm_suspended(uint16_t vmid, uint64_t epoch,
 	uint64_t resume_entry, uint64_t resume_context);
 int32_t hv_pm_resume_vm(uint16_t vmid, uint64_t epoch);
+int32_t hv_pm_guest_resume_complete(uint16_t vmid, uint64_t epoch);
 void make_system_suspend_request(uint16_t pcpu_id);
 bool has_system_suspend_request(uint16_t pcpu_id);
 bool need_system_suspend(uint16_t pcpu_id);

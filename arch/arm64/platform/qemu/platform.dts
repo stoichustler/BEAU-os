@@ -34,6 +34,7 @@
 			required-vms = <0 1 2 3>;
 			prepare-timeout-ms = <5000>;
 			resume-timeout-ms = <5000>;
+			event-virq = <60>;
 			wakeup-irqs = <33>;
 			qemu-mode = "simulated";
 		};

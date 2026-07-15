@@ -116,6 +116,31 @@ class HvPmContractTest(unittest.TestCase):
         self.assertIn("hv_pm_process_from_idle", sched)
         self.assertNotIn("platform_pm_enter", source("arch/arm64/guest/vpsci.c"))
 
+    def test_pm_hypercall_is_versioned_and_permission_checked(self):
+        abi = source("include/public/acrn_hv_defs.h")
+        hcall = source("arch/arm64/guest/hcall.c")
+        pm = source("sdk/bsp/pm.c")
+        for text in ("HC_PM_CONTROL", "ACRN_PM_ABI_VERSION",
+                     "ACRN_PM_REQUEST_SUSPEND", "ACRN_PM_GET_EVENT",
+                     "ACRN_PM_RESUME_COMPLETE", "struct acrn_pm_ioc"):
+            self.assertIn(text, abi)
+        self.assertIn("HC_IDX(HC_PM_CONTROL)", hcall)
+        self.assertIn("controller_vmid", pm)
+        self.assertIn("-EPERM", pm)
+        self.assertIn("_Static_assert(sizeof(struct acrn_pm_ioc) == 64U", abi)
+        self.assertIn("__aligned(64)", abi)
+
+    def test_pm_event_irq_is_published_to_every_qemu_guest(self):
+        policy = source("arch/arm64/platform/qemu/platform.dts")
+        parser = source("sdk/bsp/arm64/platform_dts.c")
+        builder = source("sdk/bsp/arm64/platform.c")
+        self.assertIn("event-virq", policy + parser)
+        self.assertIn("fdt_add_pm", builder)
+        for path in ("sdk/image/rtthread/beau-rtthread.dts",
+                     "sdk/image/linux/vm2/beau-linux.dts",
+                     "sdk/image/linux/vm3/beau-linux.dts"):
+            self.assertIn("beau,pm", source(path))
+
 
 if __name__ == "__main__":
     unittest.main()

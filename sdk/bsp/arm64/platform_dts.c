@@ -753,11 +753,18 @@ static void dts_parse_pm_policy(const void *fdt, int32_t platform,
 		"prepare-timeout-ms");
 	config->resume_timeout_ms = dts_required_u32_prop(fdt, node,
 		"resume-timeout-ms");
+	config->event_virq = dts_u32_prop(fdt, node, "event-virq", 0U);
 	if ((config->prepare_timeout_ms == 0U) ||
 		(config->prepare_timeout_ms > ARM64_DTS_PM_TIMEOUT_MAX_MS) ||
 		(config->resume_timeout_ms == 0U) ||
 		(config->resume_timeout_ms > ARM64_DTS_PM_TIMEOUT_MAX_MS)) {
 		arm64_dts_panic("power-management timeout", -EINVAL);
+	}
+	if (((config->enabled != 0U) &&
+		((config->event_virq < 32U) ||
+		 (config->event_virq >= IRQ_NUM_GIC_DOMAIN))) ||
+		((config->enabled == 0U) && (config->event_virq != 0U))) {
+		arm64_dts_panic("event-virq", -EINVAL);
 	}
 
 	required = fdt_getprop(fdt, node, "required-vms", &required_len);

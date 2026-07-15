@@ -358,6 +358,43 @@ int32_t hv_pm_resume_vm(uint16_t vmid, uint64_t epoch)
 	return status;
 }
 
+int32_t hv_pm_guest_resume_complete(uint16_t vmid, uint64_t epoch)
+{
+	struct beau_pm_snapshot *data = &pm_transaction.data;
+	struct beau_vm_pm_record *record;
+	uint64_t vm_mask;
+	uint64_t flags;
+	int32_t status = 0;
+
+	if ((vmid >= CONFIG_MAX_VM_NUM) || (epoch == 0UL)) {
+		return -EINVAL;
+	}
+
+	vm_mask = 1UL << vmid;
+	spinlock_irqsave_obtain(&pm_transaction.lock, &flags);
+	record = &data->vm[vmid];
+	if ((data->epoch != epoch) || (data->state != PM_RESUMING_GUESTS) ||
+		((data->required_vm_mask & vm_mask) == 0UL) ||
+		(record->epoch != epoch) || (record->state != VM_PM_RESUMING)) {
+		status = -EINVAL;
+	} else {
+		record->state = VM_PM_RUNNING;
+		record->status = 0;
+		data->ready_vm_mask &= ~vm_mask;
+		if ((data->ready_vm_mask == 0UL) &&
+			(data->resume_pending_vm_mask == 0UL)) {
+			data->last_epoch = epoch;
+			data->last_state = PM_RESUMING_GUESTS;
+			data->last_status = 0;
+			data->io_gated = 0U;
+			hv_pm_transition_locked(data, PM_RUNNING);
+		}
+	}
+	spinlock_irqrestore_release(&pm_transaction.lock, flags);
+
+	return status;
+}
+
 void hv_pm_get_snapshot(struct beau_pm_snapshot *snapshot)
 {
 	uint64_t flags;

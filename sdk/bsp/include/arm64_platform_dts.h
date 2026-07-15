@@ -19,6 +19,7 @@ struct arm64_platform_pm_config {
 	uint64_t required_vm_mask;
 	uint32_t prepare_timeout_ms;
 	uint32_t resume_timeout_ms;
+	uint32_t event_virq;
 	uint32_t wakeup_irqs[ARM64_PLATFORM_PM_MAX_WAKE_IRQS];
 	uint16_t controller_vmid;
 	uint16_t wakeup_irq_count;
