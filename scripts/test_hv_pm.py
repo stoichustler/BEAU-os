@@ -57,6 +57,18 @@ class HvPmContractTest(unittest.TestCase):
         self.assertIn("spinlock_irqsave_obtain", pm)
         self.assertIn("memcpy_s", pm)
 
+    def test_hooks_are_bounded_and_rollback_only_completed_entries(self):
+        header = source("include/common/hv_pm.h")
+        pm = source("core/pm.c")
+        self.assertIn("HV_PM_MAX_HOOKS", header)
+        self.assertIn("struct beau_pm_ops", header)
+        self.assertIn("prepare", header)
+        self.assertIn("suspend", header)
+        self.assertIn("resume", header)
+        self.assertIn("abort", header)
+        self.assertIn("completed_hook_mask", pm)
+        self.assertIn("for (idx = count; idx > 0U; idx--)", pm)
+
 
 if __name__ == "__main__":
     unittest.main()

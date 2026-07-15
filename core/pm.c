@@ -7,6 +7,7 @@
 #include <types.h>
 #include <errno.h>
 #include <hv_pm.h>
+#include <rtl.h>
 #include <vm_config.h>
 
 /* [20260715] Coordinated guest STR transaction
@@ -49,6 +50,11 @@ static struct beau_pm_transaction pm_transaction = {
 		.controller_vmid = HV_PM_DEFAULT_CONTROLLER_VM,
 	},
 };
+
+static spinlock_t pm_hook_lock;
+static struct beau_pm_ops pm_hooks[HV_PM_MAX_HOOKS];
+static uint16_t pm_hook_count;
+static bool pm_hooks_finalized;
 
 static uint64_t hv_pm_next_epoch(uint64_t epoch)
 {
@@ -175,6 +181,185 @@ bool hv_pm_io_is_gated(void)
 	spinlock_irqrestore_release(&pm_transaction.lock, flags);
 
 	return gated;
+}
+
+int32_t hv_pm_register_hook(const struct beau_pm_ops *ops)
+{
+	uint64_t flags;
+	uint16_t idx;
+	uint16_t insert;
+	int32_t status = 0;
+
+	if ((ops == NULL) || (ops->name == NULL) || (ops->name[0] == '\0') ||
+		(ops->priority == 0U)) {
+		return -EINVAL;
+	}
+
+	spinlock_irqsave_obtain(&pm_hook_lock, &flags);
+	if (pm_hooks_finalized) {
+		status = -EPERM;
+	} else if (pm_hook_count >= HV_PM_MAX_HOOKS) {
+		status = -ENOMEM;
+	} else {
+		for (idx = 0U; idx < pm_hook_count; idx++) {
+			if (strcmp(pm_hooks[idx].name, ops->name) == 0) {
+				status = -EINVAL;
+				break;
+			}
+		}
+	}
+
+	if (status == 0) {
+		insert = pm_hook_count;
+		while ((insert > 0U) &&
+			(pm_hooks[insert - 1U].priority > ops->priority)) {
+			pm_hooks[insert] = pm_hooks[insert - 1U];
+			insert--;
+		}
+		pm_hooks[insert] = *ops;
+		pm_hook_count++;
+	}
+	spinlock_irqrestore_release(&pm_hook_lock, flags);
+
+	return status;
+}
+
+void hv_pm_finalize_hooks(void)
+{
+	uint64_t flags;
+
+	spinlock_irqsave_obtain(&pm_hook_lock, &flags);
+	pm_hooks_finalized = true;
+	spinlock_irqrestore_release(&pm_hook_lock, flags);
+}
+
+static int32_t hv_pm_get_hook_count(uint16_t *count)
+{
+	uint64_t flags;
+	int32_t status = 0;
+
+	spinlock_irqsave_obtain(&pm_hook_lock, &flags);
+	if (!pm_hooks_finalized) {
+		status = -EPERM;
+	} else {
+		*count = pm_hook_count;
+	}
+	spinlock_irqrestore_release(&pm_hook_lock, flags);
+
+	return status;
+}
+
+static int32_t hv_pm_set_hook_completed(uint64_t epoch, uint16_t idx)
+{
+	uint64_t flags;
+	int32_t status = 0;
+
+	spinlock_irqsave_obtain(&pm_transaction.lock, &flags);
+	if ((epoch == 0UL) || (epoch != pm_transaction.data.epoch) ||
+		(pm_transaction.data.state == PM_RUNNING)) {
+		status = -EINVAL;
+	} else {
+		pm_transaction.data.completed_hook_mask |= 1UL << idx;
+	}
+	spinlock_irqrestore_release(&pm_transaction.lock, flags);
+
+	return status;
+}
+
+static void hv_pm_clear_hook_completed(uint16_t idx)
+{
+	uint64_t flags;
+
+	spinlock_irqsave_obtain(&pm_transaction.lock, &flags);
+	pm_transaction.data.completed_hook_mask &= ~(1UL << idx);
+	spinlock_irqrestore_release(&pm_transaction.lock, flags);
+}
+
+static int32_t hv_pm_run_forward(uint64_t epoch, bool suspend_phase)
+{
+	uint16_t count;
+	uint16_t idx;
+	int32_t status = hv_pm_get_hook_count(&count);
+
+	if (status != 0) {
+		return status;
+	}
+
+	for (idx = 0U; idx < count; idx++) {
+		beau_pm_hook_fn callback = suspend_phase ?
+			pm_hooks[idx].suspend : pm_hooks[idx].prepare;
+
+		if (callback != NULL) {
+			status = callback(epoch);
+			if (status != 0) {
+				break;
+			}
+		}
+		status = hv_pm_set_hook_completed(epoch, idx);
+		if (status != 0) {
+			break;
+		}
+	}
+
+	return status;
+}
+
+int32_t hv_pm_run_prepare(uint64_t epoch)
+{
+	return hv_pm_run_forward(epoch, false);
+}
+
+int32_t hv_pm_run_suspend(uint64_t epoch)
+{
+	return hv_pm_run_forward(epoch, true);
+}
+
+static int32_t hv_pm_run_reverse(uint64_t epoch, bool abort_phase)
+{
+	struct beau_pm_snapshot snapshot;
+	uint16_t count;
+	uint16_t idx;
+	int32_t first_error = 0;
+	int32_t status = hv_pm_get_hook_count(&count);
+
+	if (status != 0) {
+		return status;
+	}
+
+	hv_pm_get_snapshot(&snapshot);
+	if ((epoch == 0UL) || (epoch != snapshot.epoch)) {
+		return -EINVAL;
+	}
+
+	for (idx = count; idx > 0U; idx--) {
+		uint16_t hook_idx = idx - 1U;
+		beau_pm_hook_fn callback;
+
+		if ((snapshot.completed_hook_mask & (1UL << hook_idx)) == 0UL) {
+			continue;
+		}
+		callback = abort_phase ? pm_hooks[hook_idx].abort :
+			pm_hooks[hook_idx].resume;
+		if (callback != NULL) {
+			status = callback(epoch);
+			if ((status != 0) && (first_error == 0)) {
+				first_error = status;
+			}
+		}
+		hv_pm_clear_hook_completed(hook_idx);
+	}
+
+	return first_error;
+}
+
+int32_t hv_pm_run_resume(uint64_t epoch)
+{
+	return hv_pm_run_reverse(epoch, false);
+}
+
+int32_t hv_pm_run_abort(uint64_t epoch)
+{
+	return hv_pm_run_reverse(epoch, true);
 }
 
 const char *hv_pm_state_to_str(enum beau_pm_system_state state)

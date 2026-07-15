@@ -12,6 +12,7 @@
 #include <vm_config.h>
 
 #define HV_PM_DEFAULT_CONTROLLER_VM	2U
+#define HV_PM_MAX_HOOKS		32U
 
 enum beau_pm_system_state {
 	PM_RUNNING = 0U,
@@ -78,11 +79,29 @@ struct beau_pm_transaction {
 	struct beau_pm_snapshot data;
 };
 
+typedef int32_t (*beau_pm_hook_fn)(uint64_t epoch);
+
+struct beau_pm_ops {
+	const char *name;
+	uint16_t priority;
+	uint16_t reserved;
+	beau_pm_hook_fn prepare;
+	beau_pm_hook_fn suspend;
+	beau_pm_hook_fn resume;
+	beau_pm_hook_fn abort;
+};
+
 const char *hv_pm_state_to_str(enum beau_pm_system_state state);
 int32_t hv_pm_request_suspend(uint16_t initiator_vmid);
 int32_t hv_pm_abort(uint64_t epoch, int32_t reason);
 void hv_pm_get_snapshot(struct beau_pm_snapshot *snapshot);
 bool hv_pm_io_is_gated(void);
+int32_t hv_pm_register_hook(const struct beau_pm_ops *ops);
+void hv_pm_finalize_hooks(void);
+int32_t hv_pm_run_prepare(uint64_t epoch);
+int32_t hv_pm_run_suspend(uint64_t epoch);
+int32_t hv_pm_run_resume(uint64_t epoch);
+int32_t hv_pm_run_abort(uint64_t epoch);
 
 void arch_shutdown_host(void);
 void arch_reset_host(bool warm);
