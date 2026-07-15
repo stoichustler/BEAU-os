@@ -318,13 +318,18 @@ static int32_t bsp_pm_publish_prepare_events(
 static bool bsp_pm_ioc_input_is_valid(const struct acrn_pm_ioc *ioc,
 	uint16_t caller_vmid)
 {
+	bool vmid_valid = (ioc != NULL) &&
+		((ioc->vmid == caller_vmid) ||
+		 ((ioc->op == ACRN_PM_QUERY_CAPS) &&
+		  (ioc->vmid == ACRN_INVALID_VMID)));
+
 	return (ioc != NULL) && (ioc->abi_version == ACRN_PM_ABI_VERSION) &&
 		(ioc->ioc_size == sizeof(*ioc)) &&
 		(ioc->op <= ACRN_PM_RESUME_COMPLETE) &&
 		((ioc->status == 0) || (ioc->op == ACRN_PM_ABORT)) &&
 		(ioc->wake_reason == 0UL) &&
 		(ioc->required_vm_mask == 0UL) && (ioc->pm_state == 0U) &&
-		(ioc->vm_state == 0U) && (ioc->vmid == caller_vmid) &&
+		(ioc->vm_state == 0U) && vmid_valid &&
 		(ioc->flags == 0U) && (ioc->event_virq == 0U) &&
 		(ioc->reserved == 0UL);
 }

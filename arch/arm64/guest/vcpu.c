@@ -154,7 +154,8 @@ int32_t arm64_vpsci_resume_vm(struct acrn_vm *vm, uint64_t epoch,
 	} else {
 		foreach_vcpu(idx, vm, vcpu) {
 			if ((vcpu != bsp) &&
-				(vcpu_get_state(vcpu) != VCPU_POWERED_OFF)) {
+				(vcpu_get_state(vcpu) != VCPU_POWERED_OFF) &&
+				(vcpu_get_state(vcpu) != VCPU_INIT)) {
 				status = -EBUSY;
 				break;
 			}

@@ -2652,8 +2652,13 @@ static void shell_health_collect_vm(uint16_t vm_id, struct shell_health_vm *heal
 	if (vm->state == VM_RUNNING) {
 		for (vcpu_id = 0U; vcpu_id < vm->hw.created_vcpus; vcpu_id++) {
 			struct acrn_vcpu *vcpu = vcpu_from_vid(vm, vcpu_id);
+			enum vcpu_state state = (vcpu != NULL) ?
+				vcpu_get_state(vcpu) : VCPU_OFFLINE;
 
-			if ((vcpu == NULL) || !is_vcpu_running(vcpu)) {
+			if ((vcpu == NULL) ||
+				((vcpu_id == BSP_CPU_ID) && !is_vcpu_running(vcpu)) ||
+				((vcpu_id != BSP_CPU_ID) && !is_vcpu_running(vcpu) &&
+				 (state != VCPU_INIT) && (state != VCPU_POWERED_OFF))) {
 				health->reasons |= SHELL_HEALTH_VM_VCPU_STATE;
 				shell_health_raise(&health->level, SHELL_HEALTH_FAIL);
 				break;

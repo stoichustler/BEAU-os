@@ -435,14 +435,9 @@
 			beau,static-mem = <0x0 0x42000000 0x0 0x06000000>;
 			direct-map;
 			/*
-			 * [20260713] CBS shared-pool balance:
-			 *
-			 * VM0 vcpu1 used to share pCPU2 with VM2 vcpu1 and VM3 vcpu1.
-			 * Linux boot creates bursty CBS demand on those shared cores, so
-			 * pCPU2 became the first kick-to-run latency bottleneck. Mapping
-			 * VM0 vcpu1 to pCPU4 keeps the shared pool within the strict
-			 * <=3 VMs/vCPUs per shared pCPU bound before changing CBS policy
-			 * itself.
+			 * Zephyr runs uniprocessor because it has no runtime CPU hotplug.
+			 * Keep its never-started vcpu1 mapped into the CBS pool to preserve
+			 * the QEMU scheduler topology; VCPU_INIT is an offline PSCI state.
 			 */
 			cpu-affinity = <0 4>;
 			guest-flags = "static", "no-fw";

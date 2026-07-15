@@ -189,6 +189,20 @@ class HvPmContractTest(unittest.TestCase):
                      "pm status"):
             self.assertIn(text, regress)
 
+    def test_linux_and_zephyr_agents_share_the_public_pm_abi(self):
+        linux = source("sdk/kbe/beau-pm.c")
+        zephyr = source("sdk/zsh/beau_pm.c")
+        for body in (linux, zephyr):
+            self.assertIn("HC_PM_CONTROL", body)
+            self.assertIn("ACRN_PM_GET_EVENT", body)
+            self.assertIn("ACRN_PM_RESUME_COMPLETE", body)
+            self.assertIn("ACRN_PM_GET_WAKE_REASON", body)
+
+    def test_pm_caps_query_bootstraps_the_calling_vmid(self):
+        pm = source("sdk/bsp/pm.c")
+        self.assertIn("ACRN_INVALID_VMID", pm)
+        self.assertIn("ACRN_PM_QUERY_CAPS", pm)
+
 
 if __name__ == "__main__":
     unittest.main()

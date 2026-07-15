@@ -9,6 +9,14 @@ menuconfig BEAU
 
 if BEAU
 
+config BEAU_PM
+	bool "BEAU coordinated guest suspend-to-RAM agent"
+	depends on SUSPEND
+	default y
+	help
+	  Expose the BEAU PM event device used by the init service to enter
+	  PSCI SYSTEM_SUSPEND and acknowledge the retained resume epoch.
+
 config BEAU_VWDT
 	bool "BEAU hypervisor watchdog heartbeat"
 	default y

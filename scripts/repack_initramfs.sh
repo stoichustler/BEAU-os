@@ -155,6 +155,37 @@ PS1='\[\033[0;92m\]uos \w\[\033[0m\] '
 
 export PS1 PATH TERM
 
+beau_pm_agent()
+{
+	while [ ! -c /dev/beau-pm ] || [ ! -w /sys/power/state ]; do
+		sleep 1
+	done
+
+	while true; do
+		epoch=
+		if ! IFS= read -r epoch < /dev/beau-pm; then
+			sleep 1
+			continue
+		fi
+		case "$epoch" in
+		''|*[!0-9]*)
+			echo "BEAU PM invalid epoch:$epoch" > /dev/kmsg 2>/dev/null || true
+			continue
+			;;
+		esac
+		echo "BEAU PM prepare epoch:$epoch" > /dev/kmsg 2>/dev/null || true
+		if ! echo mem > /sys/power/state; then
+			echo "BEAU PM suspend failed epoch:$epoch" > /dev/kmsg 2>/dev/null || true
+			continue
+		fi
+		if ! echo "$epoch" > /dev/beau-pm; then
+			echo "BEAU PM resume ack failed epoch:$epoch" > /dev/kmsg 2>/dev/null || true
+		fi
+	done
+}
+
+beau_pm_agent &
+
 while true; do
 	run_shell_on_tty /dev/hvc0 && continue
 	sleep 1

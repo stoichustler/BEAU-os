@@ -167,7 +167,8 @@ int64_t arm64_vpsci_system_suspend(struct acrn_vcpu *vcpu,
 	get_vm_lock(vcpu->vm);
 	foreach_vcpu(idx, vcpu->vm, target) {
 		if ((target != vcpu) &&
-			(vcpu_get_state(target) != VCPU_POWERED_OFF)) {
+			(vcpu_get_state(target) != VCPU_POWERED_OFF) &&
+			(vcpu_get_state(target) != VCPU_INIT)) {
 			put_vm_lock(vcpu->vm);
 			return PSCI_RET_DENIED;
 		}

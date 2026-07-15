@@ -606,6 +606,8 @@ def expect_vm2_id(qemu, name):
 
 def expect_vm2_kbe_backends(qemu, name):
     checks = (
+        "test -c /dev/beau-pm",
+        "grep -qw mem /sys/power/state",
         "dmesg | grep -q 'BEAU virtio-fs backend started'",
         "dmesg | grep -q 'BEAU virtio-rng backend started'",
         "dmesg | grep -q 'BEAU virtio-blk backend started'",
@@ -724,6 +726,11 @@ def expect_vm3_virtioi2c(qemu, name):
 
 
 def expect_vm3_virtio_proxy_smoke(qemu):
+    vm3_command(
+        qemu,
+        "test -c /dev/beau-pm && grep -qw mem /sys/power/state",
+        "VM3 BEAU PM agent ready",
+    )
     expect_vm3_virtiofs(qemu, "VM3 virtio-fs mount/write/read")
     expect_vm3_virtiorng(qemu, "VM3 virtio-rng read")
     expect_vm3_virtioblk(qemu, "VM3 virtio-blk 4K write/read")
@@ -1054,7 +1061,7 @@ def run_qemu(args, cmd):
                 "x00:0x",
                 "gt[",
                 "├─  vgic/vtimer",
-                "PPI27 cntv_ctl:",
+                "PPI27 live:",
                 "vgic:en:",
                 "route:saved-lr:",
                 "hcr:0x",
@@ -1074,6 +1081,10 @@ def run_qemu(args, cmd):
 
         qemu.send("vsh 0" + ENTER)
         qemu.expect(ZEPHYR_PROMPT, "VM0 Zephyr shell", keepalive=ENTER)
+        qemu.send("beau_pm status" + ENTER)
+        qemu.expect("beau_pm:ready:Y vm:0", "VM0 BEAU PM agent status",
+                    timeout=15.0)
+        qemu.expect(ZEPHYR_PROMPT, "VM0 shell after BEAU PM status", keepalive=ENTER)
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM0 shell")
 
