@@ -244,6 +244,8 @@ void arm64_vgicv3_sync_vcpu(struct acrn_vcpu *vcpu);
 void arm64_vgicv3_flush_current_vcpu(struct acrn_vcpu *vcpu);
 void arm64_vgicv3_flush_current_vcpu_with_lock(struct acrn_vcpu *vcpu);
 void arm64_vgicv3_sync_current_vcpu(struct acrn_vcpu *vcpu);
+int32_t arm64_vgicv3_suspend_vm(struct acrn_vm *vm, uint64_t epoch);
+int32_t arm64_vgicv3_resume_vm(struct acrn_vm *vm, uint64_t epoch);
 void arm64_vgicv3_refresh_current_level_irq(struct acrn_vm *vm, uint32_t virq);
 void arm64_vgicv3_complete_wfi_irqs(struct acrn_vcpu *vcpu);
 bool arm64_vgicv3_has_pending_irq(struct acrn_vcpu *vcpu);

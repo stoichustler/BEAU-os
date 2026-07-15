@@ -231,6 +231,18 @@ static uint32_t vgic_lr_count;
 static bool vgic_global_initialized;
 static spinlock_t vgic_irqstat_lock = { .head = 0U, .tail = 0U };
 
+struct arm64_vgicv3_pm_state {
+	uint64_t suspend_epoch;
+	uint64_t priority_checksum;
+	uint64_t cpuif_checksum;
+	uint32_t pending_irqs;
+	uint32_t active_irqs;
+	bool valid;
+};
+
+static struct arm64_vgicv3_pm_state
+	vgic_pm_state[CONFIG_MAX_VM_NUM];
+
 /* [20260715] vGIC IRQ lifecycle statistics
  *
  * Framework:
@@ -1946,6 +1958,130 @@ void arm64_vgicv3_sync_vcpu(struct acrn_vcpu *vcpu)
 	if ((vcpu != NULL) && (vcpu->vm != NULL) && vcpu->vm->arch_vm.vgic.initialized) {
 		vgicv3_sync_vcpu(vcpu, false);
 	}
+}
+
+static void vgicv3_capture_pm_summary(struct acrn_vm *vm,
+	struct arm64_vgicv3_pm_state *state)
+{
+	struct arm64_vgicv3 *vgic = &vm->arch_vm.vgic;
+	uint16_t vcpu_id;
+	uint32_t virq;
+
+	state->pending_irqs = 0U;
+	state->active_irqs = 0U;
+	state->priority_checksum = 0UL;
+	state->cpuif_checksum = 0UL;
+	for (vcpu_id = 0U; vcpu_id < vm->hw.created_vcpus; vcpu_id++) {
+		const struct arm64_vgicv3_vcpu_ctx *ctx =
+			&vcpu_from_vid(vm, vcpu_id)->arch.vgic;
+
+		state->cpuif_checksum ^= ctx->vmcr ^ ctx->hcr ^ ctx->ap0r0 ^
+			ctx->ap1r0 ^ ctx->sre ^ ctx->pmr ^ ctx->ctlr;
+		for (virq = 0U; virq < ARM64_VGIC_IRQ_NUM; virq++) {
+			const struct arm64_vgic_irq *desc = &vgic->irq[vcpu_id][virq];
+
+			state->pending_irqs += desc->pending ? 1U : 0U;
+			state->active_irqs += desc->active ? 1U : 0U;
+			state->priority_checksum =
+				(state->priority_checksum * 33UL) ^ desc->priority;
+		}
+		for (virq = 0U; vgic->its_enabled &&
+			(virq < ARM64_VGIC_LPI_NUM); virq++) {
+			const struct arm64_vgic_irq *desc = &vgic->lpi[vcpu_id][virq];
+
+			state->pending_irqs += desc->pending ? 1U : 0U;
+			state->active_irqs += desc->active ? 1U : 0U;
+			state->priority_checksum =
+				(state->priority_checksum * 33UL) ^ desc->priority;
+		}
+	}
+}
+
+int32_t arm64_vgicv3_suspend_vm(struct acrn_vm *vm, uint64_t epoch)
+{
+	struct arm64_vgicv3 *vgic;
+	struct arm64_vgicv3_pm_state *state;
+	uint64_t flags;
+	uint16_t vcpu_id;
+
+	if ((vm == NULL) || (vm->vm_id >= CONFIG_MAX_VM_NUM) || (epoch == 0UL)) {
+		return -EINVAL;
+	}
+	vgic = &vm->arch_vm.vgic;
+	if (!vgic->initialized || (vm->hw.created_vcpus > ARM64_VGIC_MAX_VCPUS)) {
+		return -ENODEV;
+	}
+	state = &vgic_pm_state[vm->vm_id];
+	if (state->valid) {
+		return (state->suspend_epoch == epoch) ? 0 : -EBUSY;
+	}
+
+	/* No hardware LR owner may survive into the host GIC suspend phase. */
+	for (vcpu_id = 0U; vcpu_id < vm->hw.created_vcpus; vcpu_id++) {
+		struct acrn_vcpu *vcpu = vcpu_from_vid(vm, vcpu_id);
+
+		if (get_running_vcpu(pcpuid_from_vcpu(vcpu)) == vcpu) {
+			return -EBUSY;
+		}
+	}
+
+	spinlock_irqsave_obtain(&vgic->lock, &flags);
+	for (vcpu_id = 0U; vcpu_id < vm->hw.created_vcpus; vcpu_id++) {
+		struct acrn_vcpu *vcpu = vcpu_from_vid(vm, vcpu_id);
+
+		if (get_running_vcpu(pcpuid_from_vcpu(vcpu)) == vcpu) {
+			spinlock_irqrestore_release(&vgic->lock, flags);
+			return -EBUSY;
+		}
+		/*
+		 * LR pending/active state is folded into the IRQ descriptors, while
+		 * priority and virtual CPU-interface state remain in the retained vGIC
+		 * and per-vCPU contexts. Those software shadows are the STR snapshot.
+		 */
+		vgicv3_sync_vcpu(vcpu, false);
+	}
+	state->suspend_epoch = epoch;
+	vgicv3_capture_pm_summary(vm, state);
+	state->valid = true;
+	spinlock_irqrestore_release(&vgic->lock, flags);
+
+	return 0;
+}
+
+int32_t arm64_vgicv3_resume_vm(struct acrn_vm *vm, uint64_t epoch)
+{
+	struct arm64_vgicv3 *vgic;
+	struct arm64_vgicv3_pm_state *state;
+	uint64_t flags;
+	uint16_t vcpu_id;
+
+	if ((vm == NULL) || (vm->vm_id >= CONFIG_MAX_VM_NUM) || (epoch == 0UL)) {
+		return -EINVAL;
+	}
+	vgic = &vm->arch_vm.vgic;
+	state = &vgic_pm_state[vm->vm_id];
+	if (!state->valid) {
+		return 0;
+	}
+	if (state->suspend_epoch != epoch) {
+		return -EINVAL;
+	}
+
+	spinlock_irqsave_obtain(&vgic->lock, &flags);
+	for (vcpu_id = 0U; vcpu_id < vm->hw.created_vcpus; vcpu_id++) {
+		struct acrn_vcpu *vcpu = vcpu_from_vid(vm, vcpu_id);
+
+		if (get_running_vcpu(pcpuid_from_vcpu(vcpu)) == vcpu) {
+			spinlock_irqrestore_release(&vgic->lock, flags);
+			return -EBUSY;
+		}
+	}
+	/* arm64_vgicv3_load_vcpu() restores the retained CPU interface and LRs. */
+	state->suspend_epoch = 0UL;
+	state->valid = false;
+	spinlock_irqrestore_release(&vgic->lock, flags);
+
+	return 0;
 }
 
 void arm64_vgicv3_sync_current_vcpu(struct acrn_vcpu *vcpu)

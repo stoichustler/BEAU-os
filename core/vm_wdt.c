@@ -92,8 +92,11 @@ struct vm_wdt_entry {
 	enum vm_wdt_cause recovery_cause;
 	uint64_t recovery_start_tsc;
 	uint64_t recovery_wait_vcpus;
+	uint64_t remaining_ticks;
+	uint64_t suspend_epoch;
 	bool timeout_active;
 	bool restart_pending;
+	bool pm_suspended;
 };
 
 static struct vm_wdt_entry vm_wdt_entries[CONFIG_MAX_VM_NUM];
@@ -103,6 +106,9 @@ static uint8_t vm_wdt_stack[CONFIG_STACK_SIZE] __aligned(16);
 static struct hv_timer vm_wdt_timer;
 static struct hv_timer vm_wdt_recovery_timer;
 static bool vm_wdt_started;
+static uint64_t vm_wdt_suspend_epoch;
+static uint64_t vm_wdt_suspend_ticks;
+static bool vm_wdt_pm_suspended;
 
 static bool vm_wdt_config_present(const struct acrn_vm_config *vm_config)
 {
@@ -125,6 +131,18 @@ static uint64_t vm_wdt_heartbeat_age_ticks(uint64_t now, const struct vm_wdt_ent
 static bool vm_wdt_heartbeat_started(const struct vm_wdt_entry *entry)
 {
 	return (entry != NULL) && (entry->kick_count != 0UL);
+}
+
+static bool vm_wdt_is_pm_suspended(void)
+{
+	uint64_t rflags;
+	bool suspended;
+
+	spinlock_irqsave_obtain(&vm_wdt_lock, &rflags);
+	suspended = vm_wdt_pm_suspended;
+	spinlock_irqrestore_release(&vm_wdt_lock, rflags);
+
+	return suspended;
 }
 
 static bool vm_wdt_is_timeout_age(uint64_t age_ticks)
@@ -706,6 +724,132 @@ static void vm_wdt_schedule_recovery_poll(void)
 	}
 }
 
+int32_t vm_wdt_pm_suspend(uint64_t epoch)
+{
+	const uint64_t timeout_ticks =
+		(uint64_t)CONFIG_VM_WDT_TIMEOUT_MS * TICKS_PER_MS;
+	uint16_t max_vm_id = (CONFIG_VM_WDT_MONITOR_VM_NUM < CONFIG_MAX_VM_NUM) ?
+		CONFIG_VM_WDT_MONITOR_VM_NUM : CONFIG_MAX_VM_NUM;
+	uint64_t now;
+	uint64_t rflags;
+	uint16_t vm_id;
+	int32_t status = 0;
+
+	if (epoch == 0UL) {
+		return -EINVAL;
+	}
+
+	now = cpu_ticks();
+	spinlock_irqsave_obtain(&vm_wdt_lock, &rflags);
+	if (vm_wdt_pm_suspended) {
+		status = (vm_wdt_suspend_epoch == epoch) ? 0 : -EBUSY;
+	} else {
+		vm_wdt_suspend_epoch = epoch;
+		vm_wdt_suspend_ticks = now;
+		vm_wdt_pm_suspended = true;
+		for (vm_id = 0U; vm_id < max_vm_id; vm_id++) {
+			struct vm_wdt_entry *entry = &vm_wdt_entries[vm_id];
+			uint64_t age_ticks = vm_wdt_heartbeat_age_ticks(now, entry);
+
+			entry->remaining_ticks = (age_ticks < timeout_ticks) ?
+				(timeout_ticks - age_ticks) : 0UL;
+			entry->suspend_epoch = epoch;
+			entry->pm_suspended = true;
+		}
+	}
+	spinlock_irqrestore_release(&vm_wdt_lock, rflags);
+
+	if ((status == 0) && vm_wdt_started) {
+		if (timer_is_started(&vm_wdt_timer)) {
+			del_timer(&vm_wdt_timer);
+		}
+		if (timer_is_started(&vm_wdt_recovery_timer)) {
+			del_timer(&vm_wdt_recovery_timer);
+		}
+	}
+
+	return status;
+}
+
+int32_t vm_wdt_pm_resume(uint64_t epoch)
+{
+	const uint64_t timeout_ticks =
+		(uint64_t)CONFIG_VM_WDT_TIMEOUT_MS * TICKS_PER_MS;
+	const uint64_t period_ticks =
+		(uint64_t)CONFIG_VM_WDT_PRINT_PERIOD_MS * TICKS_PER_MS;
+	uint16_t max_vm_id = (CONFIG_VM_WDT_MONITOR_VM_NUM < CONFIG_MAX_VM_NUM) ?
+		CONFIG_VM_WDT_MONITOR_VM_NUM : CONFIG_MAX_VM_NUM;
+	uint64_t now;
+	uint64_t sleep_ticks;
+	uint64_t rflags;
+	uint16_t vm_id;
+	bool recovery_pending = false;
+	int32_t status = 0;
+
+	if (epoch == 0UL) {
+		return -EINVAL;
+	}
+
+	now = cpu_ticks();
+	spinlock_irqsave_obtain(&vm_wdt_lock, &rflags);
+	if (!vm_wdt_pm_suspended) {
+		spinlock_irqrestore_release(&vm_wdt_lock, rflags);
+		return 0;
+	}
+	if (vm_wdt_suspend_epoch != epoch) {
+		spinlock_irqrestore_release(&vm_wdt_lock, rflags);
+		return -EINVAL;
+	}
+	for (vm_id = 0U; vm_id < max_vm_id; vm_id++) {
+		const struct vm_wdt_entry *entry = &vm_wdt_entries[vm_id];
+
+		if (!entry->pm_suspended || (entry->suspend_epoch != epoch)) {
+			spinlock_irqrestore_release(&vm_wdt_lock, rflags);
+			return -EFAULT;
+		}
+	}
+
+	sleep_ticks = vm_wdt_elapsed_ticks(now, vm_wdt_suspend_ticks);
+	for (vm_id = 0U; vm_id < max_vm_id; vm_id++) {
+		struct vm_wdt_entry *entry = &vm_wdt_entries[vm_id];
+		uint64_t age_ticks = (entry->remaining_ticks == 0UL) ?
+			(timeout_ticks + 1UL) : (timeout_ticks - entry->remaining_ticks);
+		uint64_t heartbeat_base = (now > age_ticks) ? (now - age_ticks) : 0UL;
+
+		if (entry->kick_count == 0UL) {
+			entry->start_tsc = heartbeat_base;
+		} else {
+			entry->last_kick_tsc = heartbeat_base;
+		}
+		entry->last_irq_total = vm_wdt_irq_total();
+		entry->last_irq_sample_tsc = now;
+		if (entry->restart_pending && (entry->recovery_start_tsc != 0UL)) {
+			entry->recovery_start_tsc += sleep_ticks;
+			recovery_pending = true;
+		}
+		entry->remaining_ticks = 0UL;
+		entry->suspend_epoch = 0UL;
+		entry->pm_suspended = false;
+	}
+	vm_wdt_suspend_epoch = 0UL;
+	vm_wdt_suspend_ticks = 0UL;
+	vm_wdt_pm_suspended = false;
+	spinlock_irqrestore_release(&vm_wdt_lock, rflags);
+
+	if (vm_wdt_started) {
+		update_timer(&vm_wdt_timer, now + period_ticks, period_ticks);
+		if (add_timer(&vm_wdt_timer) != 0) {
+			LOG_ERR("HWT: cannot resume periodic timer");
+			status = -EIO;
+		}
+		if (recovery_pending) {
+			vm_wdt_schedule_recovery_poll();
+		}
+	}
+
+	return status;
+}
+
 static void vm_wdt_check_timeouts(void)
 {
 	struct vm_wdt_snapshot snapshot;
@@ -741,7 +885,9 @@ static void vm_wdt_check_timeouts(void)
 
 static void vm_wdt_timer_callback(__unused void *data)
 {
-	wake_thread(&vm_wdt_thread);
+	if (!vm_wdt_is_pm_suspended()) {
+		wake_thread(&vm_wdt_thread);
+	}
 }
 
 static void vm_wdt_thread_main(__unused struct thread_object *obj)
@@ -749,7 +895,9 @@ static void vm_wdt_thread_main(__unused struct thread_object *obj)
 	while (true) {
 		sleep_thread(&vm_wdt_thread);
 		schedule();
-		vm_wdt_check_timeouts();
+		if (!vm_wdt_is_pm_suspended()) {
+			vm_wdt_check_timeouts();
+		}
 	}
 }
 
@@ -833,8 +981,11 @@ void vm_wdt_reset(const struct acrn_vm *vm)
 	vm_wdt_entries[vm->vm_id].recovery_cause = recovery_cause;
 	vm_wdt_entries[vm->vm_id].recovery_start_tsc = recovery_start_tsc;
 	vm_wdt_entries[vm->vm_id].recovery_wait_vcpus = recovery_wait_vcpus;
+	vm_wdt_entries[vm->vm_id].remaining_ticks = 0UL;
+	vm_wdt_entries[vm->vm_id].suspend_epoch = 0UL;
 	vm_wdt_entries[vm->vm_id].timeout_active = false;
 	vm_wdt_entries[vm->vm_id].restart_pending = restart_pending;
+	vm_wdt_entries[vm->vm_id].pm_suspended = false;
 	spinlock_irqrestore_release(&vm_wdt_lock, rflags);
 }
 

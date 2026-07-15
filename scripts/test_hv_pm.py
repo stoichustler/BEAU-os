@@ -141,6 +141,17 @@ class HvPmContractTest(unittest.TestCase):
                      "sdk/image/linux/vm3/beau-linux.dts"):
             self.assertIn("beau,pm", source(path))
 
+    def test_wdt_and_virtual_timer_have_epoch_pm_hooks(self):
+        wdt = source("core/vm_wdt.c")
+        timer = source("arch/arm64/guest/vtimer.c")
+        vgic = source("arch/arm64/guest/vgicv3.c")
+        for text in ("remaining_ticks", "suspend_epoch", "vm_wdt_pm_resume"):
+            self.assertIn(text, wdt)
+        for text in ("arm64_vtimer_suspend_vm", "arm64_vtimer_resume_vm"):
+            self.assertIn(text, timer)
+        for text in ("arm64_vgicv3_suspend_vm", "arm64_vgicv3_resume_vm"):
+            self.assertIn(text, vgic)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -38,6 +38,7 @@
 #include <asm/irq.h>
 #include <asm/sysreg.h>
 #include <asm/guest/vgicv3.h>
+#include <asm/guest/vtimer.h>
 
 /* [20260630] timer virtualization coverage:
  *
@@ -134,6 +135,26 @@
 #define SYSREG_CNTV_CVAL_EL0		SYSREG_ENC(3UL, 3UL, 14UL, 3UL, 2UL)
 #define SYSREG_CNTV_TVAL_EL0		SYSREG_ENC(3UL, 3UL, 14UL, 3UL, 0UL)
 #define SYSREG_CNTVCT_EL0		SYSREG_ENC(3UL, 3UL, 14UL, 0UL, 2UL)
+
+struct arm64_vtimer_pm_vcpu_state {
+	uint64_t cntvoff_el2;
+	uint64_t cntp_cval_el0;
+	uint64_t cntv_cval_el0;
+	uint32_t cntp_ctl_el0;
+	uint32_t cntv_ctl_el0;
+	uint32_t timer_virq;
+	bool cntv_el2_masked;
+};
+
+struct arm64_vtimer_pm_vm_state {
+	uint64_t suspend_epoch;
+	struct arm64_vtimer_pm_vcpu_state vcpu[MAX_VCPUS_PER_VM];
+	uint16_t vcpu_count;
+	bool valid;
+};
+
+static struct arm64_vtimer_pm_vm_state
+	vtimer_pm_state[CONFIG_MAX_VM_NUM];
 
 static uint64_t vtimer_virtual_now(const struct arm64_vcpu_guest_ctx *gctx)
 {
@@ -894,6 +915,119 @@ void arm64_vtimer_cancel_all(struct acrn_vcpu *vcpu)
 {
 	cntv_timer_disarm(vcpu);
 	cntp_timer_disarm(vcpu);
+}
+
+int32_t arm64_vtimer_suspend_vm(struct acrn_vm *vm, uint64_t epoch)
+{
+	struct arm64_vtimer_pm_vm_state *state;
+	uint16_t vcpu_id;
+
+	if ((vm == NULL) || (vm->vm_id >= CONFIG_MAX_VM_NUM) || (epoch == 0UL) ||
+		(vm->hw.created_vcpus > MAX_VCPUS_PER_VM)) {
+		return -EINVAL;
+	}
+
+	state = &vtimer_pm_state[vm->vm_id];
+	if (state->valid) {
+		return (state->suspend_epoch == epoch) ? 0 : -EBUSY;
+	}
+
+	/* A live CNTV register bank must have reached the normal switch-out save. */
+	for (vcpu_id = 0U; vcpu_id < vm->hw.created_vcpus; vcpu_id++) {
+		struct acrn_vcpu *vcpu = vcpu_from_vid(vm, vcpu_id);
+
+		if (get_running_vcpu(pcpuid_from_vcpu(vcpu)) == vcpu) {
+			return -EBUSY;
+		}
+	}
+
+	state->suspend_epoch = epoch;
+	state->vcpu_count = vm->hw.created_vcpus;
+	for (vcpu_id = 0U; vcpu_id < state->vcpu_count; vcpu_id++) {
+		struct acrn_vcpu *vcpu = vcpu_from_vid(vm, vcpu_id);
+		struct arm64_vcpu_guest_ctx *gctx = &vcpu->arch.gctx;
+		struct arm64_vtimer_pm_vcpu_state *saved = &state->vcpu[vcpu_id];
+
+		saved->cntvoff_el2 = gctx->cntvoff_el2;
+		saved->cntp_cval_el0 = gctx->cntp_cval_el0;
+		saved->cntv_cval_el0 = gctx->cntv_cval_el0;
+		saved->cntp_ctl_el0 = gctx->cntp_ctl_el0;
+		saved->cntv_ctl_el0 = gctx->cntv_ctl_el0;
+		saved->timer_virq = gctx->timer_virq;
+		saved->cntv_el2_masked = gctx->cntv_el2_masked;
+		arm64_vtimer_cancel_all(vcpu);
+	}
+	state->valid = true;
+
+	return 0;
+}
+
+int32_t arm64_vtimer_resume_vm(struct acrn_vm *vm, uint64_t epoch)
+{
+	struct arm64_vtimer_pm_vm_state *state;
+	uint16_t vcpu_id;
+	int32_t first_error = 0;
+
+	if ((vm == NULL) || (vm->vm_id >= CONFIG_MAX_VM_NUM) || (epoch == 0UL)) {
+		return -EINVAL;
+	}
+
+	state = &vtimer_pm_state[vm->vm_id];
+	if (!state->valid) {
+		return 0;
+	}
+	if ((state->suspend_epoch != epoch) ||
+		(state->vcpu_count != vm->hw.created_vcpus)) {
+		return -EINVAL;
+	}
+
+	for (vcpu_id = 0U; vcpu_id < state->vcpu_count; vcpu_id++) {
+		struct acrn_vcpu *vcpu = vcpu_from_vid(vm, vcpu_id);
+		struct arm64_vcpu_guest_ctx *gctx = &vcpu->arch.gctx;
+		const struct arm64_vtimer_pm_vcpu_state *saved = &state->vcpu[vcpu_id];
+		int32_t status = 0;
+
+		gctx->cntvoff_el2 = saved->cntvoff_el2;
+		gctx->cntp_cval_el0 = saved->cntp_cval_el0;
+		gctx->cntv_cval_el0 = saved->cntv_cval_el0;
+		gctx->cntp_ctl_el0 = saved->cntp_ctl_el0;
+		gctx->cntv_ctl_el0 = saved->cntv_ctl_el0;
+		gctx->timer_virq = saved->timer_virq;
+		gctx->cntv_el2_masked = saved->cntv_el2_masked;
+
+		if (!is_vcpu_running(vcpu)) {
+			continue;
+		}
+		if (vtimer_virtual_expired(gctx)) {
+			status = vtimer_inject_current(vcpu,
+				ARM64_GIC_PPI_VIRTUAL_TIMER,
+				gctx->cntv_ctl_el0, gctx->cntv_cval_el0);
+		} else {
+			cntv_timer_arm(vcpu);
+		}
+		if (vtimer_physical_expired(gctx)) {
+			int32_t physical_status = vtimer_inject_current(vcpu,
+				ARM64_GIC_PPI_PHYSICAL_TIMER,
+				gctx->cntp_ctl_el0, gctx->cntp_cval_el0);
+
+			if (status == 0) {
+				status = physical_status;
+			}
+		} else {
+			cntp_timer_arm(vcpu);
+		}
+		if ((status != 0) && (first_error == 0)) {
+			first_error = status;
+		}
+	}
+
+	if (first_error == 0) {
+		state->suspend_epoch = 0UL;
+		state->vcpu_count = 0U;
+		state->valid = false;
+	}
+
+	return first_error;
 }
 
 void arm64_vgicv3_update_current_vtimer(struct acrn_vcpu *vcpu)

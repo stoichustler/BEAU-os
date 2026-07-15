@@ -7,6 +7,7 @@
 #include <types.h>
 #include <errno.h>
 #include <hv_pm.h>
+#include <vm_wdt.h>
 #include <vcpu.h>
 #include <vm.h>
 #include <guest_memory.h>
@@ -14,19 +15,127 @@
 #include <bsp/pm.h>
 #include <asm/irq.h>
 #include <asm/guest/vgicv3.h>
+#include <asm/guest/vtimer.h>
 
 #define BSP_PM_MAX_WAKE_IRQS	8U
+#define BSP_PM_HOOK_PRIO_WDT	100U
+#define BSP_PM_HOOK_PRIO_VTIMER	800U
+#define BSP_PM_HOOK_PRIO_VGIC	900U
 
 static uint32_t bsp_pm_wakeup_irqs[BSP_PM_MAX_WAKE_IRQS];
 static uint16_t bsp_pm_wakeup_irq_count;
 static uint32_t bsp_pm_event_virq;
+static bool bsp_pm_retention_hooks_registered;
+
+typedef int32_t (*bsp_pm_vm_hook_fn)(struct acrn_vm *vm, uint64_t epoch);
+
+static int32_t bsp_pm_run_required_vm_hook(uint64_t epoch,
+	bsp_pm_vm_hook_fn hook)
+{
+	struct beau_pm_snapshot snapshot;
+	uint16_t vmid;
+
+	if ((epoch == 0UL) || (hook == NULL)) {
+		return -EINVAL;
+	}
+	hv_pm_get_snapshot(&snapshot);
+	if (snapshot.epoch != epoch) {
+		return -EINVAL;
+	}
+
+	for (vmid = 0U; vmid < CONFIG_MAX_VM_NUM; vmid++) {
+		struct acrn_vm *vm;
+		int32_t status;
+
+		if ((snapshot.required_vm_mask & (1UL << vmid)) == 0UL) {
+			continue;
+		}
+		vm = get_vm_from_vmid(vmid);
+		if (vm == NULL) {
+			return -ENODEV;
+		}
+		status = hook(vm, epoch);
+		if (status != 0) {
+			return status;
+		}
+	}
+
+	return 0;
+}
+
+static int32_t bsp_pm_vtimer_suspend(uint64_t epoch)
+{
+	return bsp_pm_run_required_vm_hook(epoch, arm64_vtimer_suspend_vm);
+}
+
+static int32_t bsp_pm_vtimer_resume(uint64_t epoch)
+{
+	return bsp_pm_run_required_vm_hook(epoch, arm64_vtimer_resume_vm);
+}
+
+static int32_t bsp_pm_vgic_suspend(uint64_t epoch)
+{
+	return bsp_pm_run_required_vm_hook(epoch, arm64_vgicv3_suspend_vm);
+}
+
+static int32_t bsp_pm_vgic_resume(uint64_t epoch)
+{
+	return bsp_pm_run_required_vm_hook(epoch, arm64_vgicv3_resume_vm);
+}
+
+static int32_t bsp_pm_register_retention_hooks(void)
+{
+	static const struct beau_pm_ops retention_hooks[] = {
+		{
+			.name = "vm-wdt",
+			.priority = BSP_PM_HOOK_PRIO_WDT,
+			.suspend = vm_wdt_pm_suspend,
+			.resume = vm_wdt_pm_resume,
+			.abort = vm_wdt_pm_resume,
+		},
+		{
+			.name = "arm64-vtimer",
+			.priority = BSP_PM_HOOK_PRIO_VTIMER,
+			.suspend = bsp_pm_vtimer_suspend,
+			.resume = bsp_pm_vtimer_resume,
+			.abort = bsp_pm_vtimer_resume,
+		},
+		{
+			.name = "arm64-vgicv3",
+			.priority = BSP_PM_HOOK_PRIO_VGIC,
+			.suspend = bsp_pm_vgic_suspend,
+			.resume = bsp_pm_vgic_resume,
+			.abort = bsp_pm_vgic_resume,
+		},
+	};
+	uint16_t idx;
+	int32_t status;
+
+	if (bsp_pm_retention_hooks_registered) {
+		return 0;
+	}
+	for (idx = 0U; idx < ARRAY_SIZE(retention_hooks); idx++) {
+		status = hv_pm_register_hook(&retention_hooks[idx]);
+		if (status != 0) {
+			return status;
+		}
+	}
+	bsp_pm_retention_hooks_registered = true;
+
+	return 0;
+}
 
 int32_t bsp_pm_set_wakeup_irqs(const uint32_t *irqs, uint16_t count)
 {
 	uint16_t idx;
+	int32_t status;
 
 	if ((irqs == NULL) || (count == 0U) || (count > BSP_PM_MAX_WAKE_IRQS)) {
 		return -EINVAL;
+	}
+	status = bsp_pm_register_retention_hooks();
+	if (status != 0) {
+		return status;
 	}
 
 	for (idx = 0U; idx < count; idx++) {
