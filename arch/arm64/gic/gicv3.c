@@ -31,6 +31,7 @@
  */
 
 #include <types.h>
+#include <errno.h>
 #include <cpu.h>
 #include <per_cpu.h>
 #include <io.h>
@@ -102,6 +103,8 @@
 
 void beau_gicv3_its_init(uint64_t base, uint64_t size);
 bool beau_gicv3_its_present(void);
+int32_t arm64_gicv3_its_pm_suspend(uint64_t epoch);
+int32_t arm64_gicv3_its_pm_resume(uint64_t epoch);
 
 struct beau_gic_v3_softc {
 	uint64_t	gic_dist;
@@ -117,6 +120,45 @@ struct beau_gic_v3_softc {
 };
 
 typedef int32_t (*gic_v3_initseq_t)(struct beau_gic_v3_softc *sc);
+
+#define GIC_PM_DIST_WORDS	((IRQ_NUM_GIC_DOMAIN + 31U) / 32U)
+#define GIC_PM_CFG_WORDS	((IRQ_NUM_GIC_DOMAIN + 15U) / 16U)
+
+struct arm64_gicv3_pm_cpu_state {
+	uint64_t suspend_epoch;
+	uint64_t sre;
+	uint64_t pmr;
+	uint64_t bpr1;
+	uint64_t ctlr;
+	uint64_t igrpen1;
+	bool valid;
+};
+
+struct arm64_gicv3_pm_redist_state {
+	uint32_t group;
+	uint32_t enabled;
+	uint32_t pending;
+	uint32_t active;
+	uint32_t config[2U];
+	uint8_t priority[32U];
+};
+
+struct arm64_gicv3_pm_state {
+	uint64_t suspend_epoch;
+	uint64_t route[IRQ_NUM_GIC_DOMAIN - GIC_FIRST_SPI];
+	uint32_t group[GIC_PM_DIST_WORDS];
+	uint32_t enabled[GIC_PM_DIST_WORDS];
+	uint32_t pending[GIC_PM_DIST_WORDS];
+	uint32_t active[GIC_PM_DIST_WORDS];
+	uint32_t config[GIC_PM_CFG_WORDS];
+	uint8_t priority[IRQ_NUM_GIC_DOMAIN];
+	struct arm64_gicv3_pm_redist_state redist[MAX_PCPU_NUM];
+	uint32_t ctlr;
+	bool valid;
+};
+
+static struct arm64_gicv3_pm_cpu_state gic_pm_cpu[MAX_PCPU_NUM];
+static struct arm64_gicv3_pm_state gic_pm_state;
 
 static struct beau_gic_v3_softc gic_v3_sc;
 
@@ -523,6 +565,220 @@ void arm64_gicv3_init(uint16_t pcpu_id)
 	}
 
 	gic_v3_run_init_sequence(sc, gic_v3_secondary_init);
+}
+
+static uint64_t gic_pm_read_bpr1(void)
+{
+	uint64_t value;
+
+	asm volatile ("mrs %0, icc_bpr1_el1" : "=r" (value));
+	return value;
+}
+
+int32_t arm64_gicv3_pm_suspend_cpu(uint64_t epoch)
+{
+	uint16_t pcpu_id = get_pcpu_id();
+	struct arm64_gicv3_pm_cpu_state *state;
+
+	if ((epoch == 0UL) || (pcpu_id >= MAX_PCPU_NUM)) {
+		return -EINVAL;
+	}
+	state = &gic_pm_cpu[pcpu_id];
+	if (state->valid) {
+		return (state->suspend_epoch == epoch) ? 0 : -EBUSY;
+	}
+
+	state->suspend_epoch = epoch;
+	state->sre = read_icc_sre_el1();
+	state->pmr = read_icc_pmr_el1();
+	state->bpr1 = gic_pm_read_bpr1();
+	state->ctlr = read_icc_ctlr_el1();
+	state->igrpen1 = read_icc_igrpen1_el1();
+	state->valid = true;
+
+	return 0;
+}
+
+int32_t arm64_gicv3_pm_resume_cpu(uint64_t epoch)
+{
+	uint16_t pcpu_id = get_pcpu_id();
+	struct arm64_gicv3_pm_cpu_state *state;
+
+	if ((epoch == 0UL) || (pcpu_id >= MAX_PCPU_NUM)) {
+		return -EINVAL;
+	}
+	state = &gic_pm_cpu[pcpu_id];
+	if (!state->valid) {
+		return 0;
+	}
+	if (state->suspend_epoch != epoch) {
+		return -EINVAL;
+	}
+
+	write_icc_sre_el1(state->sre | ICC_SRE_SRE);
+	write_icc_pmr_el1(state->pmr);
+	write_icc_bpr1_el1(state->bpr1);
+	write_icc_ctlr_el1(state->ctlr);
+	write_icc_igrpen1_el1(state->igrpen1);
+	state->suspend_epoch = 0UL;
+	state->valid = false;
+
+	return 0;
+}
+
+int32_t arm64_gicv3_pm_suspend(uint64_t epoch)
+{
+	struct beau_gic_v3_softc *sc = &gic_v3_sc;
+	uint32_t intid;
+	uint16_t pcpu_id;
+	int32_t ret;
+
+	if ((epoch == 0UL) || !sc->gic_initialized) {
+		return -EINVAL;
+	}
+	if (gic_pm_state.valid) {
+		return (gic_pm_state.suspend_epoch == epoch) ? 0 : -EBUSY;
+	}
+
+	ret = arm64_gicv3_pm_suspend_cpu(epoch);
+	if (ret != 0) {
+		return ret;
+	}
+	ret = arm64_gicv3_its_pm_suspend(epoch);
+	if (ret != 0) {
+		(void)arm64_gicv3_pm_resume_cpu(epoch);
+		return ret;
+	}
+
+	gic_pm_state.suspend_epoch = epoch;
+	gic_pm_state.ctlr = gic_d_read_4(sc, GICD_CTLR);
+	for (intid = GIC_FIRST_SPI; intid < sc->gic_nirqs; intid += 32U) {
+		uint32_t word = intid / 32U;
+
+		gic_pm_state.group[word] = gic_d_read_4(sc, GICD_IGROUPR(intid));
+		gic_pm_state.enabled[word] = gic_d_read_4(sc, GICD_ISENABLER(intid));
+		gic_pm_state.pending[word] = gic_d_read_4(sc, GICD_ISPENDR(intid));
+		gic_pm_state.active[word] = gic_d_read_4(sc, GICD_ISACTIVER(intid));
+	}
+	for (intid = GIC_FIRST_SPI; intid < sc->gic_nirqs; intid += 16U) {
+		gic_pm_state.config[intid / 16U] =
+			gic_d_read_4(sc, GICD_ICFGR(intid));
+	}
+	for (intid = GIC_FIRST_SPI; intid < sc->gic_nirqs; intid++) {
+		gic_pm_state.priority[intid] = mmio_read8(gic_mmio(sc->gic_dist,
+			GICD_IPRIORITYR_BASE + intid));
+		gic_pm_state.route[intid - GIC_FIRST_SPI] =
+			gic_d_read_8(sc, GICD_IROUTER(intid));
+	}
+	for (pcpu_id = 0U; pcpu_id < get_pcpu_nums(); pcpu_id++) {
+		struct arm64_gicv3_pm_redist_state *state =
+			&gic_pm_state.redist[pcpu_id];
+
+		state->group = gic_r_read_4(sc, pcpu_id,
+			GICR_SGI_BASE + GICD_IGROUPR(0U));
+		state->enabled = gic_r_read_4(sc, pcpu_id,
+			GICR_SGI_BASE + GICD_ISENABLER(0U));
+		state->pending = gic_r_read_4(sc, pcpu_id,
+			GICR_SGI_BASE + GICD_ISPENDR(0U));
+		state->active = gic_r_read_4(sc, pcpu_id,
+			GICR_SGI_BASE + GICD_ISACTIVER(0U));
+		state->config[0U] = gic_r_read_4(sc, pcpu_id,
+			GICR_SGI_BASE + GICD_ICFGR(0U));
+		state->config[1U] = gic_r_read_4(sc, pcpu_id,
+			GICR_SGI_BASE + GICD_ICFGR(16U));
+		for (intid = 0U; intid < 32U; intid++) {
+			state->priority[intid] = mmio_read8(gic_mmio(
+				sc->gic_redist_bases[pcpu_id], GICR_SGI_BASE +
+				GICD_IPRIORITYR_BASE + intid));
+		}
+	}
+	gic_pm_state.valid = true;
+
+	return 0;
+}
+
+int32_t arm64_gicv3_pm_resume(uint64_t epoch)
+{
+	struct beau_gic_v3_softc *sc = &gic_v3_sc;
+	uint32_t intid;
+	uint16_t pcpu_id;
+	int32_t ret;
+
+	if (epoch == 0UL) {
+		return -EINVAL;
+	}
+	if (!gic_pm_state.valid) {
+		return 0;
+	}
+	if (gic_pm_state.suspend_epoch != epoch) {
+		return -EINVAL;
+	}
+
+	gic_d_write_4(sc, GICD_CTLR, 0U);
+	gic_v3_wait_for_rwp(sc, false);
+	for (intid = GIC_FIRST_SPI; intid < sc->gic_nirqs; intid += 32U) {
+		uint32_t word = intid / 32U;
+
+		gic_d_write_4(sc, GICD_ICENABLER(intid), UINT32_MAX);
+		gic_d_write_4(sc, GICD_ICPENDR(intid), UINT32_MAX);
+		gic_d_write_4(sc, GICD_ICACTIVER(intid), UINT32_MAX);
+		gic_d_write_4(sc, GICD_IGROUPR(intid), gic_pm_state.group[word]);
+		gic_d_write_4(sc, GICD_ISPENDR(intid), gic_pm_state.pending[word]);
+		gic_d_write_4(sc, GICD_ISACTIVER(intid), gic_pm_state.active[word]);
+		gic_d_write_4(sc, GICD_ISENABLER(intid), gic_pm_state.enabled[word]);
+	}
+	for (intid = GIC_FIRST_SPI; intid < sc->gic_nirqs; intid += 16U) {
+		gic_d_write_4(sc, GICD_ICFGR(intid),
+			gic_pm_state.config[intid / 16U]);
+	}
+	for (intid = GIC_FIRST_SPI; intid < sc->gic_nirqs; intid++) {
+		mmio_write8(gic_pm_state.priority[intid], gic_mmio(sc->gic_dist,
+			GICD_IPRIORITYR_BASE + intid));
+		gic_d_write_8(sc, GICD_IROUTER(intid),
+			gic_pm_state.route[intid - GIC_FIRST_SPI]);
+	}
+	for (pcpu_id = 0U; pcpu_id < get_pcpu_nums(); pcpu_id++) {
+		const struct arm64_gicv3_pm_redist_state *state =
+			&gic_pm_state.redist[pcpu_id];
+
+		gic_v3_redist_wake(sc, pcpu_id);
+		gic_r_write_4(sc, pcpu_id, GICR_SGI_BASE +
+			GICD_ICENABLER(0U), UINT32_MAX);
+		gic_r_write_4(sc, pcpu_id, GICR_SGI_BASE +
+			GICD_ICPENDR(0U), UINT32_MAX);
+		gic_r_write_4(sc, pcpu_id, GICR_SGI_BASE +
+			GICD_ICACTIVER(0U), UINT32_MAX);
+		gic_r_write_4(sc, pcpu_id, GICR_SGI_BASE +
+			GICD_IGROUPR(0U), state->group);
+		gic_r_write_4(sc, pcpu_id, GICR_SGI_BASE +
+			GICD_ICFGR(0U), state->config[0U]);
+		gic_r_write_4(sc, pcpu_id, GICR_SGI_BASE +
+			GICD_ICFGR(16U), state->config[1U]);
+		for (intid = 0U; intid < 32U; intid++) {
+			mmio_write8(state->priority[intid], gic_mmio(
+				sc->gic_redist_bases[pcpu_id], GICR_SGI_BASE +
+				GICD_IPRIORITYR_BASE + intid));
+		}
+		gic_r_write_4(sc, pcpu_id, GICR_SGI_BASE +
+			GICD_ISPENDR(0U), state->pending);
+		gic_r_write_4(sc, pcpu_id, GICR_SGI_BASE +
+			GICD_ISACTIVER(0U), state->active);
+		gic_r_write_4(sc, pcpu_id, GICR_SGI_BASE +
+			GICD_ISENABLER(0U), state->enabled);
+	}
+	gic_d_write_4(sc, GICD_CTLR, gic_pm_state.ctlr);
+	gic_v3_wait_for_rwp(sc, false);
+
+	ret = arm64_gicv3_its_pm_resume(epoch);
+	if (ret == 0) {
+		ret = arm64_gicv3_pm_resume_cpu(epoch);
+	}
+	if (ret == 0) {
+		gic_pm_state.suspend_epoch = 0UL;
+		gic_pm_state.valid = false;
+	}
+
+	return ret;
 }
 
 uint32_t arm64_gicv3_ack_irq(void)

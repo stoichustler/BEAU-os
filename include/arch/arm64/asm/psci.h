@@ -23,5 +23,6 @@
 int64_t psci_cpu_on(uint64_t target_cpu, uint64_t entry_point, uint64_t context_id);
 int64_t psci_system_off(void);
 int64_t psci_system_reset(void);
+int64_t psci_system_suspend(uint64_t resume_entry, uint64_t context_id);
 
 #endif /* ARM64_PSCI_H */

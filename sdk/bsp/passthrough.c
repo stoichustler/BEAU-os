@@ -124,6 +124,7 @@ static spinlock_t bsp_pt_lock = { .head = 0U, .tail = 0U };
 static struct bsp_pt_device bsp_pt_devices[BSP_PT_MAX_DEVICES];
 static uint64_t bsp_pt_suspend_epoch;
 static bool bsp_pt_suspended;
+static bool bsp_pt_pm_dma_required;
 
 static bool bsp_pt_valid_stream(uint32_t stream_id)
 {
@@ -523,6 +524,7 @@ int32_t passthrough_pm_suspend(uint64_t epoch, uint64_t required_vm_mask)
 		spinlock_irqrestore_release(&bsp_pt_lock, flags);
 		return status;
 	}
+	bsp_pt_pm_dma_required = false;
 	for (i = 0U; i < ARRAY_SIZE(bsp_pt_devices); i++) {
 		struct bsp_pt_device *dev = &bsp_pt_devices[i];
 
@@ -534,6 +536,7 @@ int32_t passthrough_pm_suspend(uint64_t epoch, uint64_t required_vm_mask)
 		}
 		arm64_gicv3_disable_irq(dev->irq_res.phys_spi);
 		dev->pm_irq_masked = true;
+		bsp_pt_pm_dma_required = true;
 	}
 	bsp_pt_suspend_epoch = epoch;
 	bsp_pt_suspended = true;
@@ -549,6 +552,10 @@ int32_t passthrough_pm_resume(uint64_t epoch)
 
 	if (epoch == 0UL) {
 		return -EINVAL;
+	}
+	if (bsp_pt_suspended && bsp_pt_pm_dma_required &&
+		!arm_smmu_assignment_ready()) {
+		return -EACCES;
 	}
 
 	spinlock_irqsave_obtain(&bsp_pt_lock, &flags);
@@ -570,6 +577,7 @@ int32_t passthrough_pm_resume(uint64_t epoch)
 	}
 	bsp_pt_suspend_epoch = 0UL;
 	bsp_pt_suspended = false;
+	bsp_pt_pm_dma_required = false;
 	spinlock_irqrestore_release(&bsp_pt_lock, flags);
 
 	return 0;

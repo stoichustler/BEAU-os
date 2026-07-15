@@ -55,4 +55,17 @@ config STATIC_RK356X_PLATFORM
 	help
 	  Internal compatibility macro for rk356x-specific static platform code.
 
+config QEMU_PM_SIMULATED
+	bool
+	default y if PLATFORM_QEMU
+	help
+	  Build the QEMU WFI/QMP-assisted simulated suspend backend.
+
+config QEMU_PM_STRICT
+	bool
+	default n
+	depends on PLATFORM_QEMU
+	help
+	  Enable acceptance of the firmware PSCI SYSTEM_SUSPEND backend.
+
 endmenu

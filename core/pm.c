@@ -757,7 +757,7 @@ static int32_t hv_pm_publish_suspended(uint64_t epoch)
 	return status;
 }
 
-static int32_t hv_pm_resume_pending_contexts(uint64_t epoch)
+static int32_t hv_pm_resume_guests(uint64_t epoch)
 {
 	struct beau_pm_snapshot snapshot;
 	uint16_t vmid;
@@ -821,7 +821,7 @@ static void hv_pm_rollback_from_idle(uint64_t epoch, int32_t reason)
 	spinlock_irqrestore_release(&pm_transaction.lock, flags);
 
 	hook_status = hv_pm_run_abort(epoch);
-	guest_status = hv_pm_resume_pending_contexts(epoch);
+	guest_status = hv_pm_resume_guests(epoch);
 	if ((hook_status != 0) || (guest_status != 0)) {
 		hv_pm_fail_epoch(epoch,
 			(hook_status != 0) ? hook_status : guest_status);
@@ -927,7 +927,7 @@ void hv_pm_process_from_idle(uint16_t pcpu_id)
 			PM_RESUMING_GUESTS);
 	}
 	if (status == 0) {
-		status = hv_pm_resume_pending_contexts(epoch);
+		status = hv_pm_resume_guests(epoch);
 	}
 	if (status != 0) {
 		hv_pm_fail_epoch(epoch, status);

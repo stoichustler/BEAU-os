@@ -43,6 +43,7 @@ ARCH_ASFLAGS +=
 HOST_S_SRCS += arch/arm64/boot/cpu_entry.S
 HOST_S_SRCS += arch/arm64/vector.S
 HOST_S_SRCS += arch/arm64/sched.S
+HOST_S_SRCS += arch/arm64/suspend.S
 
 HOST_C_SRCS += arch/arm64/init.c
 HOST_C_SRCS += arch/arm64/boot/reloc.c
@@ -70,6 +71,9 @@ HOST_C_SRCS += arch/arm64/pm.c
 HOST_C_SRCS += arch/arm64/sve.c
 HOST_C_SRCS += arch/arm64/mpu.c
 HOST_C_SRCS += arch/arm64/smmu/smmuv3.c
+ifeq ($(PLATFORM),qemu)
+HOST_C_SRCS += arch/arm64/platform/qemu/pm.c
+endif
 ifeq ($(CONFIG_CPUFREQ),y)
 HOST_C_SRCS += arch/arm64/platform/$(PLATFORM)/cpufreq.c
 endif

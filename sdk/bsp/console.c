@@ -62,6 +62,7 @@
  *   - backpressure and drop-oldest replay protect the shell from noisy guests.
  */
 struct hv_timer console_timer;
+static bool console_pm_suspended;
 
 #ifndef CONFIG_CONSOLE_KICK_TIMER_TIMEOUT
 #define CONFIG_CONSOLE_KICK_TIMER_TIMEOUT 2UL
@@ -1269,15 +1270,17 @@ void console_vmexit_callback(struct acrn_vcpu *vcpu)
 
 void suspend_console(void)
 {
-	if (VUART_TIMER_CPU == BSP_CPU_ID) {
+	if (!console_pm_suspended && (VUART_TIMER_CPU == BSP_CPU_ID)) {
 		del_timer(&console_timer);
+		console_pm_suspended = true;
 	}
 }
 
 void resume_console(void)
 {
-	if (VUART_TIMER_CPU == BSP_CPU_ID) {
+	if (console_pm_suspended && (VUART_TIMER_CPU == BSP_CPU_ID)) {
 		console_setup_timer();
+		console_pm_suspended = false;
 	}
 }
 

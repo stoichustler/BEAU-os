@@ -416,6 +416,7 @@ int32_t vpci_pm_resume(struct acrn_vm *vm, uint64_t epoch)
 	struct vpci_pm_vm_state *state;
 	uint64_t flags;
 	uint32_t id;
+	bool dma_device = false;
 
 	if ((vm == NULL) || (vm->vm_id >= CONFIG_MAX_VM_NUM) || (epoch == 0UL)) {
 		return -EINVAL;
@@ -426,6 +427,12 @@ int32_t vpci_pm_resume(struct acrn_vm *vm, uint64_t epoch)
 	}
 	if (state->suspend_epoch != epoch) {
 		return -EINVAL;
+	}
+	for (id = 0U; id < CONFIG_MAX_PCI_DEV_NUM; id++) {
+		dma_device |= state->vdev[id].valid;
+	}
+	if (dma_device && !arm_smmu_assignment_ready()) {
+		return -EACCES;
 	}
 
 	spinlock_irqsave_obtain(&vm->vpci.lock, &flags);

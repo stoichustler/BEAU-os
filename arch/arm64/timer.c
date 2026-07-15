@@ -5,6 +5,7 @@
  */
 
 #include <types.h>
+#include <errno.h>
 #include <softirq.h>
 #include <timer.h>
 #include <irq.h>
@@ -14,6 +15,15 @@
 #include <asm/irq.h>
 
 #define ARM64_TIMER_MAX_DELTA	UINT32_MAX
+
+struct arm64_pm_timer_state {
+	uint64_t suspend_epoch;
+	uint64_t cval;
+	uint32_t ctl;
+	bool valid;
+};
+
+static struct arm64_pm_timer_state arm64_pm_timer[MAX_PCPU_NUM];
 
 static void arm64_stop_host_timer(void)
 {
@@ -74,6 +84,11 @@ void arch_set_timer_count(uint64_t timeout)
 {
 	uint64_t now = arch_cpu_ticks();
 	uint64_t delta = (timeout > now) ? (timeout - now) : 1UL;
+	uint16_t pcpu_id = get_pcpu_id();
+
+	if ((pcpu_id < MAX_PCPU_NUM) && arm64_pm_timer[pcpu_id].valid) {
+		return;
+	}
 
 	if (delta > ARM64_TIMER_MAX_DELTA) {
 		delta = ARM64_TIMER_MAX_DELTA;
@@ -82,4 +97,51 @@ void arch_set_timer_count(uint64_t timeout)
 	arm64_stop_host_timer();
 	write_cnthp_cval_el2(now + delta);
 	write_cnthp_ctl_el2(CNTV_CTL_ENABLE);
+}
+
+int32_t arch_pm_suspend_timer(uint64_t epoch)
+{
+	uint16_t pcpu_id = get_pcpu_id();
+	struct arm64_pm_timer_state *state;
+
+	if ((epoch == 0UL) || (pcpu_id >= MAX_PCPU_NUM)) {
+		return -EINVAL;
+	}
+	state = &arm64_pm_timer[pcpu_id];
+	if (state->valid) {
+		return (state->suspend_epoch == epoch) ? 0 : -EBUSY;
+	}
+
+	state->suspend_epoch = epoch;
+	state->cval = read_cnthp_cval_el2();
+	state->ctl = read_cnthp_ctl_el2();
+	state->valid = true;
+	arm64_stop_host_timer();
+
+	return 0;
+}
+
+int32_t arch_pm_resume_timer(uint64_t epoch)
+{
+	uint16_t pcpu_id = get_pcpu_id();
+	struct arm64_pm_timer_state *state;
+
+	if ((epoch == 0UL) || (pcpu_id >= MAX_PCPU_NUM)) {
+		return -EINVAL;
+	}
+	state = &arm64_pm_timer[pcpu_id];
+	if (!state->valid) {
+		return 0;
+	}
+	if (state->suspend_epoch != epoch) {
+		return -EINVAL;
+	}
+
+	write_cnthp_ctl_el2(0U);
+	write_cnthp_cval_el2(state->cval);
+	write_cnthp_ctl_el2(state->ctl);
+	state->suspend_epoch = 0UL;
+	state->valid = false;
+
+	return 0;
 }

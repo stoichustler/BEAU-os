@@ -125,6 +125,8 @@ void arch_set_timer_count(uint64_t cnt);
  * @brief Initialize arch specific timer.
  */
 void arch_init_timer(void);
+int32_t arch_pm_suspend_timer(uint64_t epoch);
+int32_t arch_pm_resume_timer(uint64_t epoch);
 
 /**
  * @}

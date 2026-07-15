@@ -152,6 +152,20 @@ static uint8_t beau_gicv3_its_lpi_pending[BEAU_GICV3_ITS_LPI_PEND_SIZE] __aligne
 static uint8_t beau_gicv3_its_itt[BEAU_GICV3_ITS_MAX_DEVS]
 	[BEAU_GICV3_ITS_MAX_EVENTS * BEAU_GICV3_ITS_ITT_ENTRY_MAX] __aligned(256);
 
+struct beau_gicv3_its_pm_state {
+	uint64_t suspend_epoch;
+	uint64_t cbaser;
+	uint64_t cwriter;
+	uint64_t baser[GITS_BASER_NUM];
+	uint64_t propbaser;
+	uint64_t pendbaser;
+	uint32_t ctlr;
+	bool active;
+	bool valid;
+};
+
+static struct beau_gicv3_its_pm_state beau_gicv3_its_pm;
+
 static inline void *beau_gits_addr(uint32_t off)
 {
 	return (void *)(beau_gicv3_its_base + off);
@@ -769,6 +783,130 @@ void beau_gicv3_its_init(uint64_t base, uint64_t size)
 
 	LOG_ERR("GICv3:  ITS quiesce timeout base=0x%lx size=0x%lx ctlr=0x%x",
 		base, size, beau_gits_read_4(GITS_CTLR));
+}
+
+int32_t arm64_gicv3_its_pm_suspend(uint64_t epoch)
+{
+	uint64_t rdist = arm64_gicv3_redist_base(BSP_CPU_ID);
+	uint64_t flags;
+	uint32_t idx;
+	int32_t ret = 0;
+
+	if (epoch == 0UL) {
+		return -EINVAL;
+	}
+	spinlock_irqsave_obtain(&beau_gicv3_its_lock, &flags);
+	if (beau_gicv3_its_pm.valid) {
+		ret = (beau_gicv3_its_pm.suspend_epoch == epoch) ? 0 : -EBUSY;
+		spinlock_irqrestore_release(&beau_gicv3_its_lock, flags);
+		return ret;
+	}
+
+	beau_gicv3_its_pm.suspend_epoch = epoch;
+	beau_gicv3_its_pm.active = beau_gicv3_its_ready;
+	if (beau_gicv3_its_pm.active) {
+		ret = beau_gicv3_its_cmd_sync();
+		if (ret == 0) {
+			beau_gicv3_its_pm.ctlr = beau_gits_read_4(GITS_CTLR);
+			beau_gicv3_its_pm.cbaser = beau_gits_read_8(GITS_CBASER);
+			beau_gicv3_its_pm.cwriter = beau_gits_read_8(GITS_CWRITER);
+			for (idx = 0U; idx < GITS_BASER_NUM; idx++) {
+				beau_gicv3_its_pm.baser[idx] =
+					beau_gits_read_8(GITS_BASER(idx));
+			}
+			beau_gicv3_its_pm.propbaser =
+				beau_gicr_read_8(rdist, GICR_PROPBASER);
+			beau_gicv3_its_pm.pendbaser =
+				beau_gicr_read_8(rdist, GICR_PENDBASER);
+		}
+	}
+	if (ret == 0) {
+		beau_gicv3_its_pm.valid = true;
+	}
+	spinlock_irqrestore_release(&beau_gicv3_its_lock, flags);
+
+	return ret;
+}
+
+int32_t arm64_gicv3_its_pm_resume(uint64_t epoch)
+{
+	uint64_t rdist = arm64_gicv3_redist_base(BSP_CPU_ID);
+	uint64_t flags;
+	uint32_t idx;
+	int32_t ret = 0;
+	bool hardware_lost;
+
+	if (epoch == 0UL) {
+		return -EINVAL;
+	}
+	spinlock_irqsave_obtain(&beau_gicv3_its_lock, &flags);
+	if (!beau_gicv3_its_pm.valid) {
+		spinlock_irqrestore_release(&beau_gicv3_its_lock, flags);
+		return 0;
+	}
+	if (beau_gicv3_its_pm.suspend_epoch != epoch) {
+		spinlock_irqrestore_release(&beau_gicv3_its_lock, flags);
+		return -EINVAL;
+	}
+	if (!beau_gicv3_its_pm.active) {
+		beau_gicv3_its_pm.valid = false;
+		spinlock_irqrestore_release(&beau_gicv3_its_lock, flags);
+		return 0;
+	}
+
+	hardware_lost = ((beau_gits_read_4(GITS_CTLR) & GITS_CTLR_EN) == 0U) ||
+		((beau_gits_read_8(GITS_CBASER) & GITS_CBASER_VALID) == 0UL);
+	if (hardware_lost) {
+		beau_gits_write_4(GITS_CTLR, 0U);
+		for (idx = 0U; idx < GITS_BASER_NUM; idx++) {
+			beau_gits_write_8(GITS_BASER(idx), beau_gicv3_its_pm.baser[idx]);
+		}
+		beau_gicr_write_8(rdist, GICR_PROPBASER,
+			beau_gicv3_its_pm.propbaser);
+		beau_gicr_write_8(rdist, GICR_PENDBASER,
+			beau_gicv3_its_pm.pendbaser);
+		ret = beau_gicv3_its_program_cmdq();
+		if (ret == 0) {
+			beau_gits_write_4(GITS_CTLR, beau_gicv3_its_pm.ctlr);
+			ret = beau_gicv3_its_cmd_mapc();
+		}
+		for (idx = 0U; (ret == 0) &&
+			(idx < BEAU_GICV3_ITS_MAX_DEVS); idx++) {
+			const struct beau_gicv3_its_device *dev =
+				&beau_gicv3_its_devs[idx];
+
+			if (dev->used) {
+				ret = beau_gicv3_its_cmd_mapd(dev->dev_id, idx,
+					dev->event_count);
+			}
+		}
+		for (idx = 0U; (ret == 0) &&
+			(idx < BEAU_GICV3_ITS_MAX_VECTORS); idx++) {
+			const struct beau_gicv3_its_irqsrc *irq =
+				&beau_gicv3_its_irqs[idx];
+
+			if (irq->used && irq->programmed) {
+				ret = beau_gicv3_its_cmd_mapti(irq->dev_id,
+					irq->event_id, irq->lpi);
+				if (ret == 0) {
+					ret = beau_gicv3_its_cmd_inv(irq->dev_id,
+						irq->event_id);
+				}
+			}
+		}
+		if (ret == 0) {
+			ret = beau_gicv3_its_cmd_sync();
+		}
+	}
+	if (ret == 0) {
+		beau_gicv3_its_ready = true;
+		beau_gicv3_its_pm.suspend_epoch = 0UL;
+		beau_gicv3_its_pm.active = false;
+		beau_gicv3_its_pm.valid = false;
+	}
+	spinlock_irqrestore_release(&beau_gicv3_its_lock, flags);
+
+	return ret;
 }
 
 bool beau_gicv3_its_present(void)

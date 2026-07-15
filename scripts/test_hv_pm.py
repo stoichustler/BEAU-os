@@ -163,6 +163,24 @@ class HvPmContractTest(unittest.TestCase):
         self.assertIn("ARM_SMMU_GBPA_ABORT", smmu)
         self.assertIn("arm_smmu_cmdq_sync", smmu)
 
+    def test_host_resume_order_restores_isolation_before_guests(self):
+        pm = source("arch/arm64/pm.c")
+        for text in ("arm64_restore_el2_context", "arm64_gicv3_pm_resume",
+                     "arm_smmu_pm_resume", "arch_pm_resume_timer",
+                     "arch_pm_resume_secondary_cpus"):
+            self.assertIn(text, pm)
+        self.assertLess(pm.index("arm64_gicv3_pm_resume"),
+                        pm.index("arm_smmu_pm_resume"))
+        self.assertLess(pm.index("arm_smmu_pm_resume"),
+                        pm.index("hv_pm_resume_guests"))
+
+    def test_qemu_backend_has_simulated_and_strict_modes(self):
+        qemu = source("arch/arm64/platform/qemu/pm.c")
+        self.assertIn("QEMU_PM_SIMULATED", qemu)
+        self.assertIn("QEMU_PM_STRICT", qemu)
+        self.assertIn("psci_system_suspend", qemu)
+        self.assertIn("asm_wfi", qemu)
+
 
 if __name__ == "__main__":
     unittest.main()

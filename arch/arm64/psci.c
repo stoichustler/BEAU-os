@@ -39,6 +39,7 @@
 #define PSCI_0_2_FN64(n)		(PSCI_0_2_FN64_BASE + (n))
 #define PSCI_0_2_FN(n)			(PSCI_0_2_FN_BASE + (n))
 #define PSCI_0_2_FN64_CPU_ON		PSCI_0_2_FN64(3UL)
+#define PSCI_0_2_FN64_SYSTEM_SUSPEND	PSCI_0_2_FN64(14UL)
 #define PSCI_0_2_FN_SYSTEM_OFF		PSCI_0_2_FN(8UL)
 #define PSCI_0_2_FN_SYSTEM_RESET	PSCI_0_2_FN(9UL)
 
@@ -77,4 +78,10 @@ int64_t psci_system_off(void)
 int64_t psci_system_reset(void)
 {
 	return (int64_t)arm_smccc_smc(PSCI_0_2_FN_SYSTEM_RESET, 0UL, 0UL, 0UL);
+}
+
+int64_t psci_system_suspend(uint64_t resume_entry, uint64_t context_id)
+{
+	return (int64_t)arm_smccc_smc(PSCI_0_2_FN64_SYSTEM_SUSPEND,
+		resume_entry, context_id, 0UL);
 }
