@@ -10,6 +10,7 @@
 #include <vm.h>
 #include <vm_config.h>
 #include <bsp/vfdt.h>
+#include <bsp/pm.h>
 #include <fdt_api.h>
 #include <libfdt.h>
 #include <pgtable.h>
@@ -54,7 +55,33 @@ void arm64_platform_init(uint64_t fdt_paddr)
 
 void arm64_platform_init_post_console(void)
 {
+	struct beau_pm_policy policy;
+	uint16_t vmid;
+	int32_t ret;
+
 	arm64_parse_vm_config_from_dts(get_host_fdt());
+
+	for (vmid = 0U; vmid < CONFIG_MAX_VM_NUM; vmid++) {
+		if (((platform_info.pm.required_vm_mask & (1UL << vmid)) != 0UL) &&
+			(get_vm_config(vmid)->cpu_affinity == 0UL)) {
+			panic("PM policy requires unconfigured VM%hu", vmid);
+		}
+	}
+	policy.required_vm_mask = platform_info.pm.required_vm_mask;
+	policy.prepare_timeout_ms = platform_info.pm.prepare_timeout_ms;
+	policy.resume_timeout_ms = platform_info.pm.resume_timeout_ms;
+	policy.controller_vmid = platform_info.pm.controller_vmid;
+	policy.enabled = platform_info.pm.enabled;
+	policy.platform_mode = platform_info.pm.qemu_mode;
+	ret = hv_pm_set_policy(&policy);
+	if (ret != 0) {
+		panic("failed to install PM policy: %d", ret);
+	}
+	ret = bsp_pm_set_wakeup_irqs(platform_info.pm.wakeup_irqs,
+		platform_info.pm.wakeup_irq_count);
+	if (ret != 0) {
+		panic("failed to install PM wake policy: %d", ret);
+	}
 }
 
 void arm64_platform_init_smmu(void)

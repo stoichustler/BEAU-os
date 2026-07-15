@@ -31,6 +31,7 @@
 #define ARM64_DTS_IRQ_TYPE_EDGE_RISING	1U
 #define ARM64_DTS_IRQ_TYPE_LEVEL_HIGH	4U
 #define ARM64_DTS_STRICT_SHARED_PCPU_VM_MAX	3U
+#define ARM64_DTS_PM_TIMEOUT_MAX_MS	600000U
 
 static const struct arm64_platform_dts_vm_storage *dts_storage;
 static uint16_t dts_bare_boot_option_count;
@@ -686,6 +687,132 @@ static void dts_parse_ipc_channels(const void *fdt, int32_t platform)
 	}
 }
 
+static uint32_t dts_required_u32_prop(const void *fdt, int32_t node,
+	const char *name)
+{
+	const fdt32_t *prop;
+	int32_t len;
+
+	prop = fdt_getprop(fdt, node, name, &len);
+	if ((prop == NULL) || (len != (int32_t)sizeof(fdt32_t))) {
+		arm64_dts_panic(name, prop == NULL ? -FDT_ERR_NOTFOUND : -EINVAL);
+	}
+
+	return fdt32_to_cpu(prop[0]);
+}
+
+static void dts_parse_pm_policy(const void *fdt, int32_t platform,
+	struct arm64_platform_pm_config *config)
+{
+	const fdt32_t *required;
+	const fdt32_t *wakeup_irqs;
+	const char *mode;
+	const char *status;
+	int32_t node;
+	int32_t required_len;
+	int32_t wakeup_len;
+	uint32_t required_count;
+	uint32_t wakeup_count;
+	uint32_t idx;
+
+	(void)memset(config, 0U, sizeof(*config));
+	node = dts_child_by_unit_name(fdt, platform, "beau,power-management");
+	if ((node < 0) || !dts_has_compatible(fdt, node, "beau,system-pm")) {
+		arm64_dts_panic("beau,power-management", node < 0 ? node : -EINVAL);
+	}
+
+	status = dts_required_string_prop(fdt, node, "status");
+	mode = dts_required_string_prop(fdt, node, "qemu-mode");
+	if (strcmp(mode, "simulated") == 0) {
+		config->qemu_mode = HV_PM_PLATFORM_SIMULATED;
+	} else if (strcmp(mode, "strict") == 0) {
+		config->qemu_mode = HV_PM_PLATFORM_STRICT;
+	} else if (strcmp(mode, "disabled") == 0) {
+		config->qemu_mode = HV_PM_PLATFORM_DISABLED;
+	} else {
+		arm64_dts_panic("qemu-mode", -EINVAL);
+	}
+	if (strcmp(status, "okay") == 0) {
+		config->enabled = 1U;
+	} else if (strcmp(status, "disabled") != 0) {
+		arm64_dts_panic("power-management status", -EINVAL);
+	}
+	if (((config->enabled != 0U) &&
+		(config->qemu_mode == HV_PM_PLATFORM_DISABLED)) ||
+		((config->enabled == 0U) &&
+		 (config->qemu_mode != HV_PM_PLATFORM_DISABLED))) {
+		arm64_dts_panic("power-management mode/status", -EINVAL);
+	}
+
+	config->controller_vmid = (uint16_t)dts_required_u32_prop(fdt, node,
+		"controller-vm");
+	if (config->controller_vmid >= CONFIG_MAX_VM_NUM) {
+		arm64_dts_panic("controller-vm", -EINVAL);
+	}
+	config->prepare_timeout_ms = dts_required_u32_prop(fdt, node,
+		"prepare-timeout-ms");
+	config->resume_timeout_ms = dts_required_u32_prop(fdt, node,
+		"resume-timeout-ms");
+	if ((config->prepare_timeout_ms == 0U) ||
+		(config->prepare_timeout_ms > ARM64_DTS_PM_TIMEOUT_MAX_MS) ||
+		(config->resume_timeout_ms == 0U) ||
+		(config->resume_timeout_ms > ARM64_DTS_PM_TIMEOUT_MAX_MS)) {
+		arm64_dts_panic("power-management timeout", -EINVAL);
+	}
+
+	required = fdt_getprop(fdt, node, "required-vms", &required_len);
+	if ((required == NULL) || (required_len <= 0) ||
+		((required_len % (int32_t)sizeof(fdt32_t)) != 0)) {
+		arm64_dts_panic("required-vms", -EINVAL);
+	}
+	required_count = (uint32_t)required_len / sizeof(fdt32_t);
+	if (required_count > CONFIG_MAX_VM_NUM) {
+		arm64_dts_panic("required-vms count", -EINVAL);
+	}
+	for (idx = 0U; idx < required_count; idx++) {
+		uint32_t vmid = fdt32_to_cpu(required[idx]);
+		uint64_t bit;
+
+		if (vmid >= CONFIG_MAX_VM_NUM) {
+			arm64_dts_panic("required-vms id", -EINVAL);
+		}
+		bit = 1UL << vmid;
+		if ((config->required_vm_mask & bit) != 0UL) {
+			arm64_dts_panic("required-vms duplicate", -EINVAL);
+		}
+		config->required_vm_mask |= bit;
+	}
+	if ((config->enabled != 0U) &&
+		((config->required_vm_mask & (1UL << config->controller_vmid)) == 0UL)) {
+		arm64_dts_panic("controller-vm not required", -EINVAL);
+	}
+
+	wakeup_irqs = fdt_getprop(fdt, node, "wakeup-irqs", &wakeup_len);
+	if ((wakeup_irqs == NULL) || (wakeup_len <= 0) ||
+		((wakeup_len % (int32_t)sizeof(fdt32_t)) != 0)) {
+		arm64_dts_panic("wakeup-irqs", -EINVAL);
+	}
+	wakeup_count = (uint32_t)wakeup_len / sizeof(fdt32_t);
+	if (wakeup_count > ARM64_PLATFORM_PM_MAX_WAKE_IRQS) {
+		arm64_dts_panic("wakeup-irqs count", -EINVAL);
+	}
+	for (idx = 0U; idx < wakeup_count; idx++) {
+		uint32_t irq = fdt32_to_cpu(wakeup_irqs[idx]);
+		uint32_t prev;
+
+		if ((irq < 32U) || (irq >= IRQ_NUM_GIC_DOMAIN)) {
+			arm64_dts_panic("wakeup-irqs range", -EINVAL);
+		}
+		for (prev = 0U; prev < idx; prev++) {
+			if (config->wakeup_irqs[prev] == irq) {
+				arm64_dts_panic("wakeup-irqs duplicate", -EINVAL);
+			}
+		}
+		config->wakeup_irqs[idx] = irq;
+	}
+	config->wakeup_irq_count = (uint16_t)wakeup_count;
+}
+
 void arm64_platform_dts_parse_info(const void *fdt, struct arm64_platform_dts_info *info)
 {
 	int32_t platform;
@@ -701,11 +828,12 @@ void arm64_platform_dts_parse_info(const void *fdt, struct arm64_platform_dts_in
 	info->uart_clock_hz = 24000000U;
 	info->uart_baud = 115200U;
 	info->service_vm_initrd = false;
+	(void)memset(&info->pm, 0U, sizeof(info->pm));
 	dts_mmio_region_count = 0U;
 
 	platform = fdt_path_offset(fdt, "/beau,platform");
 	if (platform < 0) {
-		return;
+		arm64_dts_panic("/beau,platform", platform);
 	}
 
 	info->gic_iidr = dts_u32_prop(fdt, platform, "gic-iidr", info->gic_iidr);
@@ -719,6 +847,7 @@ void arm64_platform_dts_parse_info(const void *fdt, struct arm64_platform_dts_in
 		"clock-frequency", info->uart_clock_hz);
 	info->uart_baud = dts_optional_u32_from_node(fdt, platform, "uart",
 		"current-speed", info->uart_baud);
+	dts_parse_pm_policy(fdt, platform, &info->pm);
 	dts_parse_mmio_ranges(fdt, platform);
 	dts_parse_passthrough_policy(fdt, platform);
 	dts_parse_ipc_channels(fdt, platform);

@@ -703,6 +703,21 @@ def run_qemu(args, cmd):
         if args.wdt_restart_smoke:
             run_wdt_restart_smoke(qemu)
             return
+        qemu.command_retry("pm status", [
+            "pm epoch:0",
+            "phase:running",
+            "controller:vm2",
+            "enabled:Y",
+            "mode:simulated",
+            "masks:policy:0x000000000000000f",
+            "timeouts:prepare:5000ms resume:5000ms",
+        ])
+        qemu.command_retry("pmstat", [
+            "pm epoch:0",
+            "phase:running",
+            "controller:vm2",
+            "mode:simulated",
+        ])
         qemu.command_retry("vcpus", [
             "vcpu",
             "pcpu_mode",

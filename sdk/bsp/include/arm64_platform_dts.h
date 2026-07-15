@@ -10,7 +10,22 @@
 #include <types.h>
 #include <bare.h>
 #include <vm_config.h>
+#include <hv_pm.h>
 #include <asm/platform.h>
+
+#define ARM64_PLATFORM_PM_MAX_WAKE_IRQS	8U
+
+struct arm64_platform_pm_config {
+	uint64_t required_vm_mask;
+	uint32_t prepare_timeout_ms;
+	uint32_t resume_timeout_ms;
+	uint32_t wakeup_irqs[ARM64_PLATFORM_PM_MAX_WAKE_IRQS];
+	uint16_t controller_vmid;
+	uint16_t wakeup_irq_count;
+	uint8_t enabled;
+	uint8_t qemu_mode;
+	uint8_t reserved[6U];
+};
 
 struct arm64_platform_dts_ops {
 	const uint8_t *(*module_addr)(const char *symbol);
@@ -36,6 +51,7 @@ struct arm64_platform_dts_info {
 	uint32_t uart_clock_hz;
 	uint32_t uart_baud;
 	bool service_vm_initrd;
+	struct arm64_platform_pm_config pm;
 };
 
 void arm64_platform_dts_parse_info(const void *fdt,

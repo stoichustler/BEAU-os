@@ -30,6 +30,7 @@
 #include <virtio_console.h>
 #include <virtio_proxy.h>
 #include <bsp/cpufreq.h>
+#include <bsp/pm.h>
 #include <bsp/pci.h>
 #include <bsp/vpci.h>
 #include <bsp/vuart.h>
@@ -92,6 +93,12 @@
 #define SHELL_CMD_REBOOT		"reboot"
 #define SHELL_CMD_REBOOT_PARAM		NULL
 #define SHELL_CMD_REBOOT_HELP		"trigger a system reboot (immediately)"
+#define SHELL_CMD_PM			"pm"
+#define SHELL_CMD_PM_PARAM		"<suspend|status|abort|wake> [value]"
+#define SHELL_CMD_PM_HELP		"control and inspect coordinated guest suspend"
+#define SHELL_CMD_PMSTAT		"pmstat"
+#define SHELL_CMD_PMSTAT_PARAM		NULL
+#define SHELL_CMD_PMSTAT_HELP		"list coordinated guest suspend transaction statistics"
 #define DUMPSTAT_SMP_CALL_TIMEOUT_US	1000U
 #define DUMPSTAT_STACK_DEPTH		16U
 #define DUMPSTAT_REG_KEY_FMT		"%5s:0x%016lx"
@@ -124,6 +131,8 @@ static int32_t shell_rttest(int32_t argc, __unused char **argv);
 static int32_t shell_trace(int32_t argc, char **argv);
 static int32_t shell_reset_vm(int32_t argc, char **argv);
 static int32_t shell_reboot(__unused int32_t argc, __unused char **argv);
+static int32_t shell_pm(int32_t argc, char **argv);
+static int32_t shell_pmstat(int32_t argc, __unused char **argv);
 static const char *shell_yes_no(bool value);
 static const char *shell_vm_state_to_str(enum vm_state state);
 
@@ -217,6 +226,18 @@ struct shell_cmd arch_shell_cmds[] = {
 		.cmd_param	= SHELL_CMD_REBOOT_PARAM,
 		.help_str	= SHELL_CMD_REBOOT_HELP,
 		.fcn		= shell_reboot,
+	},
+	{
+		.str		= SHELL_CMD_PM,
+		.cmd_param	= SHELL_CMD_PM_PARAM,
+		.help_str	= SHELL_CMD_PM_HELP,
+		.fcn		= shell_pm,
+	},
+	{
+		.str		= SHELL_CMD_PMSTAT,
+		.cmd_param	= SHELL_CMD_PMSTAT_PARAM,
+		.help_str	= SHELL_CMD_PMSTAT_HELP,
+		.fcn		= shell_pmstat,
 	},
 };
 uint32_t arch_shell_cmds_sz = ARRAY_SIZE(arch_shell_cmds);
@@ -3535,6 +3556,149 @@ static int32_t shell_virtiostat(int32_t argc, __unused char **argv)
 	}
 
 	shell_virtiostat_print_summary();
+	return 0;
+}
+
+static const char *shell_pm_mode_to_str(uint8_t mode)
+{
+	const char *name;
+
+	switch (mode) {
+	case HV_PM_PLATFORM_SIMULATED:
+		name = "simulated";
+		break;
+	case HV_PM_PLATFORM_STRICT:
+		name = "strict";
+		break;
+	default:
+		name = "disabled";
+		break;
+	}
+
+	return name;
+}
+
+static uint64_t shell_pm_phase_ticks(const struct beau_pm_snapshot *snapshot,
+	uint32_t phase)
+{
+	uint64_t duration = 0UL;
+
+	if (phase < HV_PM_PHASE_COUNT) {
+		duration = snapshot->phase_duration_ticks[phase];
+		if ((duration == 0UL) && (snapshot->state == phase) &&
+			(snapshot->phase_start_ticks[phase] != 0UL)) {
+			duration = cpu_ticks() - snapshot->phase_start_ticks[phase];
+		}
+	}
+
+	return duration;
+}
+
+static void shell_pm_print_snapshot(const struct beau_pm_snapshot *snapshot,
+	bool verbose)
+{
+	uint16_t vmid;
+	uint32_t phase;
+
+	shell_item_begin("pm epoch:%lu", snapshot->epoch);
+	shell_item_line("phase:%s owner:vm%hu controller:vm%hu enabled:%s mode:%s",
+		hv_pm_state_to_str((enum beau_pm_system_state)snapshot->state),
+		snapshot->initiator_vmid, snapshot->controller_vmid,
+		shell_yes_no(snapshot->enabled != 0U),
+		shell_pm_mode_to_str(snapshot->platform_mode));
+	shell_item_line("masks:policy:0x%016lx required:0x%016lx ready:0x%016lx resume:0x%016lx hooks:0x%016lx",
+		snapshot->policy_required_vm_mask, snapshot->required_vm_mask,
+		snapshot->ready_vm_mask, snapshot->resume_pending_vm_mask,
+		snapshot->completed_hook_mask);
+	shell_item_line("timeouts:prepare:%ums resume:%ums io-gated:%s",
+		snapshot->prepare_timeout_ms, snapshot->resume_timeout_ms,
+		shell_yes_no(snapshot->io_gated != 0U));
+	shell_item_line("wake:reason:%lu bitmap:0x%016lx",
+		snapshot->wake_reason, snapshot->wake_bitmap);
+	shell_item_line("last:epoch:%lu phase:%s status:%d error:epoch:%lu phase:%s vm:%hu status:%d",
+		snapshot->last_epoch,
+		hv_pm_state_to_str((enum beau_pm_system_state)snapshot->last_state),
+		snapshot->last_status, snapshot->last_error.epoch,
+		hv_pm_state_to_str((enum beau_pm_system_state)snapshot->last_error.phase),
+		snapshot->last_error.vmid, snapshot->last_error.status);
+	shell_item_line("current-duration.us:%lu",
+		ticks_to_us(shell_pm_phase_ticks(snapshot, snapshot->state)));
+
+	if (verbose) {
+		for (phase = 0U; phase < HV_PM_PHASE_COUNT; phase++) {
+			uint64_t duration = shell_pm_phase_ticks(snapshot, phase);
+
+			if ((duration != 0UL) || (snapshot->state == phase)) {
+				shell_item_line("phase:%-16s duration.us:%lu",
+					hv_pm_state_to_str((enum beau_pm_system_state)phase),
+					ticks_to_us(duration));
+			}
+		}
+		for (vmid = 0U; vmid < CONFIG_MAX_VM_NUM; vmid++) {
+			const struct beau_vm_pm_record *record = &snapshot->vm[vmid];
+
+			if ((snapshot->policy_required_vm_mask & (1UL << vmid)) != 0UL) {
+				shell_item_line("vm%hu epoch:%lu state:%u required:%u status:%d entry:0x%016lx context:0x%016lx",
+					vmid, record->epoch, record->state, record->required,
+					record->status, record->resume_entry, record->context_id);
+			}
+		}
+	}
+	shell_item_end();
+}
+
+static int32_t shell_pm(int32_t argc, char **argv)
+{
+	struct beau_pm_snapshot snapshot;
+	int64_t value;
+
+	if ((argc < 2) || (argc > 3)) {
+		shell_puts("usage: pm <suspend|status|abort|wake> [value]\r\n");
+		return -EINVAL;
+	}
+
+	if (strcmp(argv[1], "suspend") == 0) {
+		return (argc == 2) ? bsp_pm_request_suspend() : -EINVAL;
+	}
+	if (strcmp(argv[1], "status") == 0) {
+		if (argc != 2) {
+			return -EINVAL;
+		}
+		hv_pm_get_snapshot(&snapshot);
+		shell_pm_print_snapshot(&snapshot, false);
+		return 0;
+	}
+	if (strcmp(argv[1], "abort") == 0) {
+		value = (argc == 3) ? strtol_deci(argv[2]) : -EAGAIN;
+		if ((value < (-INT32_MAX - 1L)) || (value > INT32_MAX)) {
+			return -EINVAL;
+		}
+		return bsp_pm_abort((int32_t)value);
+	}
+	if (strcmp(argv[1], "wake") == 0) {
+		if (argc != 3) {
+			return -EINVAL;
+		}
+		value = strtol_deci(argv[2]);
+		if ((value < 0) || (value > UINT32_MAX)) {
+			return -EINVAL;
+		}
+		return bsp_pm_request_wake((uint32_t)value);
+	}
+
+	return -EINVAL;
+}
+
+static int32_t shell_pmstat(int32_t argc, __unused char **argv)
+{
+	struct beau_pm_snapshot snapshot;
+
+	if (argc != 1) {
+		return -EINVAL;
+	}
+	hv_pm_get_snapshot(&snapshot);
+	shell_pm_print_snapshot(&snapshot, true);
+
 	return 0;
 }
 

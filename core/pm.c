@@ -8,7 +8,7 @@
 #include <errno.h>
 #include <hv_pm.h>
 #include <rtl.h>
-#include <vm_config.h>
+#include <ticks.h>
 
 /* [20260715] Coordinated guest STR transaction
  *
@@ -62,20 +62,6 @@ static uint64_t hv_pm_next_epoch(uint64_t epoch)
 	return (epoch != 0UL) ? epoch : 1UL;
 }
 
-static uint64_t hv_pm_configured_vm_mask(void)
-{
-	uint64_t mask = 0UL;
-	uint16_t vmid;
-
-	for (vmid = 0U; vmid < CONFIG_MAX_VM_NUM; vmid++) {
-		if (get_vm_config(vmid)->cpu_affinity != 0UL) {
-			mask |= 1UL << vmid;
-		}
-	}
-
-	return mask;
-}
-
 static void hv_pm_reset_epoch_locked(struct beau_pm_snapshot *data,
 	uint16_t initiator_vmid, uint64_t required_vm_mask)
 {
@@ -88,6 +74,9 @@ static void hv_pm_reset_epoch_locked(struct beau_pm_snapshot *data,
 	data->completed_hook_mask = 0UL;
 	data->wake_reason = 0UL;
 	data->wake_bitmap = 0UL;
+	(void)memset(data->phase_start_ticks, 0U, sizeof(data->phase_start_ticks));
+	(void)memset(data->phase_duration_ticks, 0U,
+		sizeof(data->phase_duration_ticks));
 	data->initiator_vmid = initiator_vmid;
 	data->io_gated = 1U;
 	(void)memset(&data->last_error, 0U, sizeof(data->last_error));
@@ -102,7 +91,46 @@ static void hv_pm_reset_epoch_locked(struct beau_pm_snapshot *data,
 		record->state = record->required ? VM_PM_PREPARE_SENT : VM_PM_RUNNING;
 	}
 
+	data->phase_start_ticks[PM_PREPARING] = cpu_ticks();
 	data->state = PM_PREPARING;
+}
+
+int32_t hv_pm_set_policy(const struct beau_pm_policy *policy)
+{
+	struct beau_pm_snapshot *data = &pm_transaction.data;
+	uint64_t valid_vm_mask = (1UL << CONFIG_MAX_VM_NUM) - 1UL;
+	uint64_t flags;
+	int32_t status = 0;
+
+	if ((policy == NULL) || (policy->controller_vmid >= CONFIG_MAX_VM_NUM) ||
+		((policy->required_vm_mask & ~valid_vm_mask) != 0UL) ||
+		(policy->enabled > 1U) ||
+		(policy->platform_mode > HV_PM_PLATFORM_STRICT) ||
+		((policy->enabled == 0U) &&
+		 (policy->platform_mode != HV_PM_PLATFORM_DISABLED)) ||
+		((policy->enabled != 0U) &&
+		 ((policy->required_vm_mask == 0UL) ||
+		  ((policy->required_vm_mask & (1UL << policy->controller_vmid)) == 0UL) ||
+		  (policy->prepare_timeout_ms == 0U) ||
+		  (policy->resume_timeout_ms == 0U) ||
+		  (policy->platform_mode == HV_PM_PLATFORM_DISABLED)))) {
+		return -EINVAL;
+	}
+
+	spinlock_irqsave_obtain(&pm_transaction.lock, &flags);
+	if (data->state != PM_RUNNING) {
+		status = -EBUSY;
+	} else {
+		data->controller_vmid = policy->controller_vmid;
+		data->policy_required_vm_mask = policy->required_vm_mask;
+		data->prepare_timeout_ms = policy->prepare_timeout_ms;
+		data->resume_timeout_ms = policy->resume_timeout_ms;
+		data->enabled = policy->enabled;
+		data->platform_mode = policy->platform_mode;
+	}
+	spinlock_irqrestore_release(&pm_transaction.lock, flags);
+
+	return status;
 }
 
 int32_t hv_pm_request_suspend(uint16_t initiator_vmid)
@@ -112,13 +140,15 @@ int32_t hv_pm_request_suspend(uint16_t initiator_vmid)
 	int32_t status = 0;
 
 	spinlock_irqsave_obtain(&pm_transaction.lock, &flags);
-	if (initiator_vmid != data->controller_vmid) {
+	if (data->enabled == 0U) {
+		status = -ENODEV;
+	} else if (initiator_vmid != data->controller_vmid) {
 		status = -EACCES;
 	} else if (data->state != PM_RUNNING) {
 		status = -EBUSY;
 	} else {
 		hv_pm_reset_epoch_locked(data, initiator_vmid,
-			hv_pm_configured_vm_mask());
+			data->policy_required_vm_mask);
 	}
 	spinlock_irqrestore_release(&pm_transaction.lock, flags);
 
@@ -138,6 +168,11 @@ int32_t hv_pm_abort(uint64_t epoch, int32_t reason)
 		status = -EINVAL;
 	} else {
 		failed_phase = data->state;
+		if ((failed_phase < HV_PM_PHASE_COUNT) &&
+			(data->phase_start_ticks[failed_phase] != 0UL)) {
+			data->phase_duration_ticks[failed_phase] =
+				cpu_ticks() - data->phase_start_ticks[failed_phase];
+		}
 		data->state = PM_ABORTING;
 		data->last_epoch = data->epoch;
 		data->last_state = PM_ABORTING;
@@ -151,6 +186,30 @@ int32_t hv_pm_abort(uint64_t epoch, int32_t reason)
 		data->completed_hook_mask = 0UL;
 		data->io_gated = 0U;
 		data->state = PM_RUNNING;
+	}
+	spinlock_irqrestore_release(&pm_transaction.lock, flags);
+
+	return status;
+}
+
+int32_t hv_pm_record_wake(uint32_t wake_source, uint16_t source_index)
+{
+	struct beau_pm_snapshot *data = &pm_transaction.data;
+	uint64_t flags;
+	int32_t status = 0;
+
+	if (source_index >= 64U) {
+		return -EINVAL;
+	}
+
+	spinlock_irqsave_obtain(&pm_transaction.lock, &flags);
+	if (data->state == PM_RUNNING) {
+		status = -EINVAL;
+	} else {
+		if (data->wake_reason == 0UL) {
+			data->wake_reason = wake_source;
+		}
+		data->wake_bitmap |= 1UL << source_index;
 	}
 	spinlock_irqrestore_release(&pm_transaction.lock, flags);
 

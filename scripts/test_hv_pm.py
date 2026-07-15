@@ -69,6 +69,21 @@ class HvPmContractTest(unittest.TestCase):
         self.assertIn("completed_hook_mask", pm)
         self.assertIn("for (idx = count; idx > 0U; idx--)", pm)
 
+    def test_platform_dts_has_bounded_pm_policy(self):
+        qemu = source("arch/arm64/platform/qemu/platform.dts")
+        parser = source("sdk/bsp/arm64/platform_dts.c")
+        for text in ("beau,power-management", "controller-vm",
+                     "required-vms", "prepare-timeout-ms",
+                     "resume-timeout-ms", "wakeup-irqs", "qemu-mode"):
+            self.assertIn(text, qemu + parser)
+        self.assertIn("CONFIG_MAX_VM_NUM", parser)
+
+    def test_pm_shell_exposes_transaction_diagnostics(self):
+        shell = source("sdk/bsp/arm64/shell.c")
+        for text in ('"pm"', '"pmstat"', "hv_pm_get_snapshot",
+                     '"suspend"', '"status"', '"abort"', '"wake"'):
+            self.assertIn(text, shell)
+
 
 if __name__ == "__main__":
     unittest.main()

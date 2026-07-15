@@ -26,6 +26,8 @@ enum beau_pm_system_state {
 	PM_FAILED,
 };
 
+#define HV_PM_PHASE_COUNT		((uint32_t)PM_FAILED + 1U)
+
 enum beau_vm_pm_state {
 	VM_PM_RUNNING = 0U,
 	VM_PM_PREPARE_SENT,
@@ -33,6 +35,21 @@ enum beau_vm_pm_state {
 	VM_PM_SUSPENDED,
 	VM_PM_RESUMING,
 	VM_PM_FAILED,
+};
+
+enum beau_pm_platform_mode {
+	HV_PM_PLATFORM_DISABLED = 0U,
+	HV_PM_PLATFORM_SIMULATED,
+	HV_PM_PLATFORM_STRICT,
+};
+
+struct beau_pm_policy {
+	uint64_t required_vm_mask;
+	uint32_t prepare_timeout_ms;
+	uint32_t resume_timeout_ms;
+	uint16_t controller_vmid;
+	uint8_t enabled;
+	uint8_t platform_mode;
 };
 
 struct beau_vm_pm_record {
@@ -63,6 +80,8 @@ struct beau_pm_snapshot {
 	uint64_t completed_hook_mask;
 	uint64_t wake_reason;
 	uint64_t wake_bitmap;
+	uint64_t phase_start_ticks[HV_PM_PHASE_COUNT];
+	uint64_t phase_duration_ticks[HV_PM_PHASE_COUNT];
 	struct beau_vm_pm_record vm[CONFIG_MAX_VM_NUM];
 	struct beau_pm_phase_error last_error;
 	uint32_t state;
@@ -70,8 +89,13 @@ struct beau_pm_snapshot {
 	int32_t last_status;
 	uint16_t initiator_vmid;
 	uint16_t controller_vmid;
+	uint32_t prepare_timeout_ms;
+	uint32_t resume_timeout_ms;
+	uint64_t policy_required_vm_mask;
 	uint8_t io_gated;
-	uint8_t reserved[7U];
+	uint8_t enabled;
+	uint8_t platform_mode;
+	uint8_t reserved[5U];
 };
 
 struct beau_pm_transaction {
@@ -96,6 +120,8 @@ int32_t hv_pm_request_suspend(uint16_t initiator_vmid);
 int32_t hv_pm_abort(uint64_t epoch, int32_t reason);
 void hv_pm_get_snapshot(struct beau_pm_snapshot *snapshot);
 bool hv_pm_io_is_gated(void);
+int32_t hv_pm_set_policy(const struct beau_pm_policy *policy);
+int32_t hv_pm_record_wake(uint32_t wake_source, uint16_t source_index);
 int32_t hv_pm_register_hook(const struct beau_pm_ops *ops);
 void hv_pm_finalize_hooks(void);
 int32_t hv_pm_run_prepare(uint64_t epoch);

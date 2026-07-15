@@ -346,6 +346,7 @@ COMMON_C_SRCS += sdk/bsp/boot/bare.c
 # bsp device-emulation component
 COMMON_C_SRCS += sdk/bsp/vuart.c
 COMMON_C_SRCS += sdk/bsp/ioreq.c
+COMMON_C_SRCS += sdk/bsp/pm.c
 BSP_LIB_SRCS := $(filter-out sdk/bsp/ns16550.c sdk/bsp/pl011.c,$(wildcard sdk/bsp/*.c))
 BSP_LIB_SRCS += sdk/bsp/pl011.c
 BSP_LIB_SRCS += $(wildcard sdk/bsp/arm64/*.c)
