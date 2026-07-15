@@ -125,12 +125,17 @@ int32_t hv_pm_record_wake(uint32_t wake_source, uint16_t source_index);
 int32_t hv_pm_mark_vm_suspended(uint16_t vmid, uint64_t epoch,
 	uint64_t resume_entry, uint64_t resume_context);
 int32_t hv_pm_resume_vm(uint16_t vmid, uint64_t epoch);
+void make_system_suspend_request(uint16_t pcpu_id);
+bool has_system_suspend_request(uint16_t pcpu_id);
+bool need_system_suspend(uint16_t pcpu_id);
+void hv_pm_process_from_idle(uint16_t pcpu_id);
 int32_t hv_pm_register_hook(const struct beau_pm_ops *ops);
 void hv_pm_finalize_hooks(void);
 int32_t hv_pm_run_prepare(uint64_t epoch);
 int32_t hv_pm_run_suspend(uint64_t epoch);
 int32_t hv_pm_run_resume(uint64_t epoch);
 int32_t hv_pm_run_abort(uint64_t epoch);
+int32_t platform_pm_enter(uint64_t epoch);
 
 void arch_shutdown_host(void);
 void arch_reset_host(bool warm);

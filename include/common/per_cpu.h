@@ -23,6 +23,7 @@
 #include <board_info.h>
 #endif
 
+#define NEED_SYSTEM_SUSPEND	4U
 
 struct per_cpu_region {
 	/*

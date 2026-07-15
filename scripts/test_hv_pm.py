@@ -108,6 +108,14 @@ class HvPmContractTest(unittest.TestCase):
         self.assertIn("resume_entry", pm)
         self.assertIn("resume_context", pm)
 
+    def test_last_ready_guest_only_queues_idle_work(self):
+        pm = source("core/pm.c")
+        sched = source("core/schedule.c")
+        self.assertIn("NEED_SYSTEM_SUSPEND", pm)
+        self.assertIn("make_system_suspend_request", pm)
+        self.assertIn("hv_pm_process_from_idle", sched)
+        self.assertNotIn("platform_pm_enter", source("arch/arm64/guest/vpsci.c"))
+
 
 if __name__ == "__main__":
     unittest.main()

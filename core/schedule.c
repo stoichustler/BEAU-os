@@ -16,6 +16,7 @@
 #include <trace.h>
 #include <ticks.h>
 #include <logmsg.h>
+#include <hv_pm.h>
 #include <asm/guest/vm_reset.h>
 
 static struct list_head thread_list;
@@ -680,7 +681,9 @@ void schedule(void)
 			}
 		}
 	}
-	if (scheduler->pick_next != NULL) {
+	if (has_system_suspend_request(pcpu_id)) {
+		next = &per_cpu(idle, pcpu_id);
+	} else if (scheduler->pick_next != NULL) {
 		next = scheduler->pick_next(ctl);
 	}
 	bitmap_clear(NEED_RESCHEDULE, &ctl->flags);
@@ -812,7 +815,9 @@ void default_idle(__unused struct thread_object *obj)
 	uint16_t pcpu_id = get_pcpu_id();
 
 	while (1) {
-		if (need_reschedule(pcpu_id)) {
+		if (need_system_suspend(pcpu_id)) {
+			hv_pm_process_from_idle(pcpu_id);
+		} else if (need_reschedule(pcpu_id)) {
 			schedule();
 		} else if (need_offline(pcpu_id)) {
 			cpu_dead();
