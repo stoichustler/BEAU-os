@@ -1,140 +1,365 @@
 /*
- * Copyright (C) 2018-2022 Intel Corporation.
+ * Copyright (C) 2018-2026 Intel Corporation.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include <types.h>
-#include <per_cpu.h>
+#include <cpu.h>
+#include <errno.h>
+#include <rtl.h>
 #include <ticks.h>
 #include <trace.h>
 
 #ifdef CONFIG_ACRNTRACE_ENABLED
 
-/* [20260710] trace service principle:
- *
- * The trace path is a low-overhead producer for fixed-size diagnostic records.
- * Each pCPU writes only to its own ACRN_TRACE sbuf, avoiding a global trace lock
- * on hot paths such as scheduler, timer, and exit diagnostics.
+#ifndef CONFIG_TRACE_RECORDS_PER_CPU
+#define CONFIG_TRACE_RECORDS_PER_CPU	256U
+#endif
+
+#define TRACE_STOP_TIMEOUT_US		1000U
+
+struct trace_cpu_ring {
+	struct trace_record records[CONFIG_TRACE_RECORDS_PER_CPU];
+	uint32_t head;
+	uint32_t count;
+	uint64_t overwritten;
+	volatile bool writer_active;
+};
+
+static struct trace_cpu_ring trace_rings[MAX_PCPU_NUM];
+static volatile bool trace_running;
+static uint64_t trace_event_mask;
+
+_Static_assert(sizeof(struct trace_record) == 32U, "trace record ABI must stay 32 bytes");
+
+/*
+ * Runtime trace data flow:
  *
  *   TRACE_* caller
- *          |
- *          v
- *   per-pCPU trace_entry
- *     - timestamp
- *     - event id
- *     - compact payload
- *          |
- *          v
- *   per_cpu(sbuf)[ACRN_TRACE]
- *          |
- *          v
- *   service-side trace reader
+ *        |
+ *        v
+ *   stopped/mask fast-path check
+ *        |
+ *        v
+ *   local IRQ-off publish window
+ *        |
+ *        v
+ *   current pCPU fixed ring
+ *        |
+ *        v
+ *   trace stop -> shell chronological merge
  *
- * If the trace sbuf is not registered, tracing is a no-op. Callers should not
- * depend on trace delivery for correctness.
+ * A ring has one physical producer. Local IRQ masking prevents a timer or HVC
+ * trace from nesting another write on the same pCPU. The shell reads only after
+ * capture stops, so the hot path needs no global lock or shared Service VM
+ * buffer. Full rings retain the newest records and account overwritten history.
  */
-
-/* sizeof(trace_entry) == 4 x 64bit */
-struct trace_entry {
-	uint64_t tsc; /* TSC */
-	uint64_t id:48;
-	uint8_t n_data; /* nr of data in trace_entry */
-	uint8_t cpu; /* pcpu id of trace_entry */
-
-	union {
-		struct {
-			uint32_t a, b, c, d;
-		} fields_32;
-		struct {
-			uint8_t a1, a2, a3, a4;
-			uint8_t b1, b2, b3, b4;
-			uint8_t c1, c2, c3, c4;
-			uint8_t d1, d2, d3, d4;
-		} fields_8;
-		struct {
-			uint64_t e;
-			uint64_t f;
-		} fields_64;
-		char str[16];
-	} payload;
-} __aligned(8);
-
-static inline bool trace_check(uint16_t cpu_id)
+static uint64_t trace_event_category(uint32_t evid)
 {
-	return (per_cpu(sbuf, cpu_id)[ACRN_TRACE] != NULL);
+	uint64_t category = 0UL;
+
+	switch (evid) {
+	case TRACE_TIMER_ACTION_ADDED:
+	case TRACE_TIMER_ACTION_PCKUP:
+	case TRACE_TIMER_ACTION_UPDAT:
+	case TRACE_TIMER_IRQ:
+		category = TRACE_MASK_TIMER;
+		break;
+	case TRACE_SCHED_NEXT:
+		category = TRACE_MASK_SCHED;
+		break;
+	case TRACE_VM_ENTER:
+	case TRACE_VM_EXIT:
+		category = TRACE_MASK_VM;
+		break;
+	case TRACE_VMEXIT_VMCALL:
+		category = TRACE_MASK_HCALL;
+		break;
+	default:
+		break;
+	}
+
+	return category;
 }
 
-static inline void trace_put(uint16_t cpu_id, uint32_t evid, uint32_t n_data, struct trace_entry *entry)
+static bool trace_event_enabled(uint32_t evid)
 {
-	struct shared_buf *sbuf = per_cpu(sbuf, cpu_id)[ACRN_TRACE];
+	uint64_t category;
 
-	entry->tsc = cpu_ticks();
-	entry->id = evid;
-	entry->n_data = (uint8_t)n_data;
-	entry->cpu = (uint8_t)cpu_id;
-	(void)sbuf_put(sbuf, (uint8_t *)entry, sizeof(*entry));
+	if (!trace_running) {
+		return false;
+	}
+
+	category = trace_event_category(evid);
+	return (category != 0UL) && ((trace_event_mask & category) != 0UL);
+}
+
+static void trace_put(uint32_t evid, uint32_t n_data, struct trace_record *record)
+{
+	struct trace_cpu_ring *ring;
+	uint64_t rflags;
+	uint16_t pcpu_id;
+	uint32_t next;
+
+	if (!trace_event_enabled(evid)) {
+		return;
+	}
+
+	pcpu_id = get_pcpu_id();
+	if (pcpu_id >= get_pcpu_nums()) {
+		return;
+	}
+
+	local_irq_save(&rflags);
+	ring = &trace_rings[pcpu_id];
+	ring->writer_active = true;
+	cpu_write_memory_barrier();
+	if (!trace_event_enabled(evid)) {
+		ring->writer_active = false;
+		local_irq_restore(rflags);
+		return;
+	}
+
+	record->tsc = cpu_ticks();
+	record->id = evid;
+	record->n_data = (uint8_t)n_data;
+	record->cpu = (uint8_t)pcpu_id;
+	ring->records[ring->head] = *record;
+	next = ring->head + 1U;
+	if (next >= CONFIG_TRACE_RECORDS_PER_CPU) {
+		next = 0U;
+	}
+
+	/* Publish the complete record before exposing the new ring position. */
+	cpu_write_memory_barrier();
+	ring->head = next;
+	if (ring->count < CONFIG_TRACE_RECORDS_PER_CPU) {
+		ring->count++;
+	} else {
+		ring->overwritten++;
+	}
+	cpu_write_memory_barrier();
+	ring->writer_active = false;
+	local_irq_restore(rflags);
+}
+
+static int32_t trace_wait_writers(void)
+{
+	uint64_t deadline = cpu_ticks() + us_to_ticks(TRACE_STOP_TIMEOUT_US);
+	uint16_t pcpu_id;
+
+	do {
+		bool active = false;
+
+		cpu_read_memory_barrier();
+		for (pcpu_id = 0U; pcpu_id < get_pcpu_nums(); pcpu_id++) {
+			if (trace_rings[pcpu_id].writer_active) {
+				active = true;
+				break;
+			}
+		}
+		if (!active) {
+			return 0;
+		}
+		cpu_relax();
+	} while (cpu_ticks() < deadline);
+
+	return -ETIMEDOUT;
+}
+
+bool trace_is_running(void)
+{
+	return trace_running;
+}
+
+uint64_t trace_get_mask(void)
+{
+	return trace_event_mask;
+}
+
+uint32_t trace_get_capacity(void)
+{
+	return CONFIG_TRACE_RECORDS_PER_CPU;
+}
+
+int32_t trace_clear(void)
+{
+	int32_t ret;
+
+	if (trace_running) {
+		return -EBUSY;
+	}
+
+	ret = trace_wait_writers();
+	if (ret == 0) {
+		(void)memset(trace_rings, 0U, sizeof(trace_rings));
+	}
+
+	return ret;
+}
+
+int32_t trace_start(uint64_t event_mask)
+{
+	int32_t ret;
+
+	if ((event_mask == 0UL) || ((event_mask & ~TRACE_MASK_ALL) != 0UL)) {
+		return -EINVAL;
+	}
+	if (trace_running) {
+		return -EBUSY;
+	}
+
+	ret = trace_clear();
+	if (ret == 0) {
+		trace_event_mask = event_mask;
+		cpu_write_memory_barrier();
+		trace_running = true;
+	}
+
+	return ret;
+}
+
+int32_t trace_stop(void)
+{
+	trace_running = false;
+	cpu_memory_barrier();
+
+	return trace_wait_writers();
+}
+
+void trace_get_cpu_status(uint16_t pcpu_id, struct trace_cpu_status *status)
+{
+	if (status == NULL) {
+		return;
+	}
+
+	(void)memset(status, 0U, sizeof(*status));
+	if (pcpu_id < get_pcpu_nums()) {
+		status->count = trace_rings[pcpu_id].count;
+		status->overwritten = trace_rings[pcpu_id].overwritten;
+		status->writer_active = trace_rings[pcpu_id].writer_active;
+	}
+}
+
+bool trace_get_record(uint16_t pcpu_id, uint32_t index, struct trace_record *record)
+{
+	const struct trace_cpu_ring *ring;
+	uint32_t oldest;
+	uint32_t slot;
+
+	if (trace_running || (record == NULL) || (pcpu_id >= get_pcpu_nums())) {
+		return false;
+	}
+
+	ring = &trace_rings[pcpu_id];
+	if (index >= ring->count) {
+		return false;
+	}
+
+	oldest = (ring->count == CONFIG_TRACE_RECORDS_PER_CPU) ? ring->head : 0U;
+	slot = oldest + index;
+	if (slot >= CONFIG_TRACE_RECORDS_PER_CPU) {
+		slot -= CONFIG_TRACE_RECORDS_PER_CPU;
+	}
+	cpu_read_memory_barrier();
+	*record = ring->records[slot];
+
+	return true;
 }
 
 void TRACE_2L(uint32_t evid, uint64_t e, uint64_t f)
 {
-	struct trace_entry entry;
-	uint16_t cpu_id = get_pcpu_id();
+	struct trace_record record;
 
-	if (!trace_check(cpu_id)) {
+	if (!trace_event_enabled(evid)) {
 		return;
 	}
-
-	entry.payload.fields_64.e = e;
-	entry.payload.fields_64.f = f;
-	trace_put(cpu_id, evid, 2U, &entry);
+	record.payload.fields_64.e = e;
+	record.payload.fields_64.f = f;
+	trace_put(evid, 2U, &record);
 }
 
 void TRACE_4I(uint32_t evid, uint32_t a, uint32_t b, uint32_t c, uint32_t d)
 {
-	struct trace_entry entry;
-	uint16_t cpu_id = get_pcpu_id();
+	struct trace_record record;
 
-	if (!trace_check(cpu_id)) {
+	if (!trace_event_enabled(evid)) {
 		return;
 	}
-
-	entry.payload.fields_32.a = a;
-	entry.payload.fields_32.b = b;
-	entry.payload.fields_32.c = c;
-	entry.payload.fields_32.d = d;
-	trace_put(cpu_id, evid, 4U, &entry);
+	record.payload.fields_32.a = a;
+	record.payload.fields_32.b = b;
+	record.payload.fields_32.c = c;
+	record.payload.fields_32.d = d;
+	trace_put(evid, 4U, &record);
 }
 
 void TRACE_16STR(uint32_t evid, const char name[])
 {
-	struct trace_entry entry;
-	uint16_t cpu_id = get_pcpu_id();
-	size_t len, i;
+	struct trace_record record;
+	size_t len;
 
-	if (!trace_check(cpu_id)) {
+	if (!trace_event_enabled(evid) || (name == NULL)) {
 		return;
 	}
 
-	entry.payload.fields_64.e = 0UL;
-	entry.payload.fields_64.f = 0UL;
-
-	len = strnlen_s(name, 20U);
-	len = (len > 16U) ? 16U : len;
-	for (i = 0U; i < len; i++) {
-		entry.payload.str[i] = name[i];
+	(void)memset(record.payload.str, 0U, sizeof(record.payload.str));
+	len = strnlen_s(name, sizeof(record.payload.str) - 1U);
+	if (len != 0U) {
+		(void)memcpy_s(record.payload.str, sizeof(record.payload.str), name, len);
 	}
-
-	entry.payload.str[15] = 0;
-	trace_put(cpu_id, evid, 16U, &entry);
+	trace_put(evid, 16U, &record);
 }
 
 #else
 
+bool trace_is_running(void)
+{
+	return false;
+}
+
+uint64_t trace_get_mask(void)
+{
+	return 0UL;
+}
+
+uint32_t trace_get_capacity(void)
+{
+	return 0U;
+}
+
+int32_t trace_start(__unused uint64_t event_mask)
+{
+	return -ENODEV;
+}
+
+int32_t trace_stop(void)
+{
+	return -ENODEV;
+}
+
+int32_t trace_clear(void)
+{
+	return -ENODEV;
+}
+
+void trace_get_cpu_status(__unused uint16_t pcpu_id, struct trace_cpu_status *status)
+{
+	if (status != NULL) {
+		(void)memset(status, 0U, sizeof(*status));
+	}
+}
+
+bool trace_get_record(__unused uint16_t pcpu_id, __unused uint32_t index,
+	__unused struct trace_record *record)
+{
+	return false;
+}
+
 void TRACE_2L(__unused uint32_t evid, __unused uint64_t e, __unused uint64_t f) {}
 
 void TRACE_4I(__unused uint32_t evid, __unused uint32_t a, __unused uint32_t b,
-		__unused uint32_t c, __unused uint32_t d)
+	__unused uint32_t c, __unused uint32_t d)
 {
 }
 

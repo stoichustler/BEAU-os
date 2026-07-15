@@ -20,8 +20,12 @@
 #include <vm_wdt.h>
 #include <host_pm.h>
 #include <schedule.h>
+#include <spinlock.h>
 #include <ticks.h>
+#include <timer.h>
+#include <trace.h>
 #include <console.h>
+#include <debug/shell.h>
 #include <acrn_hv_defs.h>
 #include <virtio_console.h>
 #include <virtio_proxy.h>
@@ -34,6 +38,7 @@
 #include <asm/irq.h>
 #include <asm/cache.h>
 #include <asm/platform.h>
+#include <asm/guest/stage2.h>
 #include <asm/guest/vcpu.h>
 #include <asm/guest/vmpu.h>
 #include <asm/guest/vgicv3.h>
@@ -42,9 +47,15 @@
 #include <asm/vtd.h>
 #include "../shell_priv.h"
 
-#define SHELL_CMD_MEM_MAP		"mmap"
+#define SHELL_CMD_MEM_MAP		"devmap"
 #define SHELL_CMD_MEM_MAP_PARAM		NULL
 #define SHELL_CMD_MEM_MAP_HELP		"list arm64 host stage-1 and vm stage-2 memory mappings"
+#define SHELL_CMD_MEM_STAT		"memstat"
+#define SHELL_CMD_MEM_STAT_PARAM	NULL
+#define SHELL_CMD_MEM_STAT_HELP		"list ARM64 page-table pool and stage-2 ownership statistics"
+#define SHELL_CMD_HEALTH		"health"
+#define SHELL_CMD_HEALTH_PARAM		NULL
+#define SHELL_CMD_HEALTH_HELP		"summarize current host and VM operational health"
 #define SHELL_CMD_DUMPSTAT		"dumpstat"
 #define SHELL_CMD_DUMPSTAT_PARAM	"[vm id]"
 #define SHELL_CMD_DUMPSTAT_HELP		"dump arm64 vcpu stats and vgic/vtimer diagnostics"
@@ -69,6 +80,12 @@
 #define SHELL_CMD_CPUFREQ		"cpufreq"
 #define SHELL_CMD_CPUFREQ_PARAM		NULL
 #define SHELL_CMD_CPUFREQ_HELP		"list host CPU frequency policy state"
+#define SHELL_CMD_RTTEST		"rttest"
+#define SHELL_CMD_RTTEST_PARAM		NULL
+#define SHELL_CMD_RTTEST_HELP		"run local EL2 timer latency tests on every pCPU"
+#define SHELL_CMD_TRACE			"trace"
+#define SHELL_CMD_TRACE_PARAM		"<status|start|stop|clear|dump> [category|count]"
+#define SHELL_CMD_TRACE_HELP		"capture and dump per-pCPU EL2 trace events"
 #define SHELL_CMD_RESET			"reset"
 #define SHELL_CMD_RESET_PARAM		"<vm id>"
 #define SHELL_CMD_RESET_HELP		"reset a non-service VM by id"
@@ -81,8 +98,20 @@
 #define DUMPSTAT_REGS_PER_LINE_MAX	4U
 #define VMSTAT_CPU_WAIT_WARN_US		20000UL
 #define PCISTAT_MAX_STREAMS		64U
+#define RTTEST_INTERVAL_US		1000U
+#define RTTEST_SAMPLE_COUNT		1000U
+#define RTTEST_CBS_PERIOD_US		10000U
+#define RTTEST_CBS_BUDGET_US		500U
+#define RTTEST_LINE_SIZE		112U
+#define RTTEST_OUTPUT_SIZE		((MAX_PCPU_NUM * RTTEST_LINE_SIZE) + 1U)
+#define TRACE_DUMP_DEFAULT_COUNT	64U
+#define SHELL_MEM_KB_BYTES		1024UL
+#define SHELL_MEM_MB_BYTES		(SHELL_MEM_KB_BYTES * 1024UL)
+#define SHELL_MEM_GB_BYTES		(SHELL_MEM_MB_BYTES * 1024UL)
 
 static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv);
+static int32_t shell_memstat(int32_t argc, __unused char **argv);
+static int32_t shell_health(int32_t argc, __unused char **argv);
 static int32_t shell_dumpstat(int32_t argc, char **argv);
 static int32_t shell_vmstat(int32_t argc, __unused char **argv);
 static int32_t shell_cachestat(int32_t argc, __unused char **argv);
@@ -91,9 +120,12 @@ static int32_t shell_virtiostat(int32_t argc, char **argv);
 static int32_t shell_smmustat(int32_t argc, __unused char **argv);
 static int32_t shell_pcistat(int32_t argc, char **argv);
 static int32_t shell_cpufreq(int32_t argc, __unused char **argv);
+static int32_t shell_rttest(int32_t argc, __unused char **argv);
+static int32_t shell_trace(int32_t argc, char **argv);
 static int32_t shell_reset_vm(int32_t argc, char **argv);
 static int32_t shell_reboot(__unused int32_t argc, __unused char **argv);
 static const char *shell_yes_no(bool value);
+static const char *shell_vm_state_to_str(enum vm_state state);
 
 struct shell_cmd arch_shell_cmds[] = {
 	{
@@ -101,6 +133,18 @@ struct shell_cmd arch_shell_cmds[] = {
 		.cmd_param	= SHELL_CMD_MEM_MAP_PARAM,
 		.help_str	= SHELL_CMD_MEM_MAP_HELP,
 		.fcn		= shell_list_mem,
+	},
+	{
+		.str		= SHELL_CMD_MEM_STAT,
+		.cmd_param	= SHELL_CMD_MEM_STAT_PARAM,
+		.help_str	= SHELL_CMD_MEM_STAT_HELP,
+		.fcn		= shell_memstat,
+	},
+	{
+		.str		= SHELL_CMD_HEALTH,
+		.cmd_param	= SHELL_CMD_HEALTH_PARAM,
+		.help_str	= SHELL_CMD_HEALTH_HELP,
+		.fcn		= shell_health,
 	},
 	{
 		.str		= SHELL_CMD_DUMPSTAT,
@@ -151,6 +195,18 @@ struct shell_cmd arch_shell_cmds[] = {
 		.fcn		= shell_cpufreq,
 	},
 	{
+		.str		= SHELL_CMD_RTTEST,
+		.cmd_param	= SHELL_CMD_RTTEST_PARAM,
+		.help_str	= SHELL_CMD_RTTEST_HELP,
+		.fcn		= shell_rttest,
+	},
+	{
+		.str		= SHELL_CMD_TRACE,
+		.cmd_param	= SHELL_CMD_TRACE_PARAM,
+		.help_str	= SHELL_CMD_TRACE_HELP,
+		.fcn		= shell_trace,
+	},
+	{
 		.str		= SHELL_CMD_RESET,
 		.cmd_param	= SHELL_CMD_RESET_PARAM,
 		.help_str	= SHELL_CMD_RESET_HELP,
@@ -167,29 +223,41 @@ uint32_t arch_shell_cmds_sz = ARRAY_SIZE(arch_shell_cmds);
 
 static void shell_print_mem_header(void)
 {
-	shell_puts("domain      type       attr       va/ipa start        pa start           size\r\n");
-	shell_puts("──────────  ─────────  ─────────  ──────────────────  ──────────────────  ──────────────────\r\n");
+	shell_puts("domain      type       attr       address range (size)\r\n");
+	shell_puts("──────────  ─────────  ─────────  ─────────────────────────────────────────────────────\r\n");
 }
 
-static void shell_print_mem_map(const char *domain, const char *type, const char *attr,
-	uint64_t addr, uint64_t paddr, uint64_t size)
+static uint64_t shell_mem_range_end(uint64_t start, uint64_t size)
 {
-	char temp_str[MAX_STR_SIZE];
-
-	snprintf(temp_str, MAX_STR_SIZE,
-		"%-10s  %-9s  %-9s  0x%016lx  0x%016lx  0x%016lx\r\n",
-		domain, type, attr, addr, paddr, size);
-	shell_puts(temp_str);
+	return (size == 0UL) ? start : (start + size - 1UL);
 }
 
-static void shell_print_mem_special(const char *domain, const char *type, const char *attr,
-	uint64_t addr, uint64_t size)
+static void shell_print_mem_map(const char *domain, const char *type,
+	const char *attr, uint64_t addr, uint64_t size)
 {
 	char temp_str[MAX_STR_SIZE];
+	uint64_t unit_bytes;
+	uint64_t size_whole;
+	uint64_t size_fraction;
+	const char *unit;
+
+	if (size >= SHELL_MEM_GB_BYTES) {
+		unit_bytes = SHELL_MEM_GB_BYTES;
+		unit = "GB";
+	} else if (size >= SHELL_MEM_MB_BYTES) {
+		unit_bytes = SHELL_MEM_MB_BYTES;
+		unit = "MB";
+	} else {
+		unit_bytes = SHELL_MEM_KB_BYTES;
+		unit = "KB";
+	}
+	size_whole = size / unit_bytes;
+	size_fraction = ((size % unit_bytes) * 1000UL) / unit_bytes;
 
 	snprintf(temp_str, MAX_STR_SIZE,
-		"%-10s  %-9s  %-9s  0x%016lx  %-18s  0x%016lx\r\n",
-		domain, type, attr, addr, "-", size);
+		"%-10s  %-9s  %-9s  [0x%016lx,0x%016lx] (%04lu.%03lu %s)\r\n",
+		domain, type, attr, addr, shell_mem_range_end(addr, size),
+		size_whole, size_fraction, unit);
 	shell_puts(temp_str);
 }
 
@@ -204,18 +272,18 @@ static void shell_print_host_maps(void)
 
 	mmio_regions = arm64_get_platform_mmio_regions(&mmio_count);
 	for (idx = 0U; idx < mmio_count; idx++) {
-		shell_print_mem_map("host s1", "mmio", "device",
-			mmio_regions[idx].base, mmio_regions[idx].base, mmio_regions[idx].size);
+		shell_print_mem_map("host s1", "MMIO", "device",
+			mmio_regions[idx].base, mmio_regions[idx].size);
 	}
 
-	shell_print_mem_map("host s1", "ram", "normal",
-		arm64_get_phys_mem_start(), arm64_get_phys_mem_start(), arm64_get_phys_mem_size());
-	shell_print_mem_map("host s1", "hv_image", "normal-x",
-		hv_base, hv_base, get_hv_image_size());
+	shell_print_mem_map("host s1", "RAM", "normal",
+		arm64_get_phys_mem_start(), arm64_get_phys_mem_size());
+	shell_print_mem_map("host s1", "HV", "normal-x",
+		hv_base, get_hv_image_size());
 
 	rsvd_regions = arm64_get_reserved_mem_regions(&rsvd_count);
 	for (idx = 0U; idx < rsvd_count; idx++) {
-		shell_print_mem_special("host s1", "rsvd", "unmapped",
+		shell_print_mem_map("host s1", "RSVD", "unmapped",
 			rsvd_regions[idx].addr, rsvd_regions[idx].size);
 	}
 }
@@ -228,28 +296,27 @@ static void shell_print_vm_stage2_maps(const struct acrn_vm *vm)
 	snprintf(domain, sizeof(domain), "vm-%u s2", vm->vm_id);
 	shell_print_mem_map(domain, "RAM", "normal",
 		arch_config->guest_ram_start,
-		arch_config->guest_ram_hpa,
 		arch_config->guest_ram_size);
-	shell_print_mem_special(domain, "vGICD", "vio",
+	shell_print_mem_map(domain, "vGICD", "vio",
 		arch_config->guest_gicd_base,
 		arch_config->guest_gicd_size);
-	shell_print_mem_special(domain, "vGICR", "vio",
+	shell_print_mem_map(domain, "vGICR", "vio",
 		arch_config->guest_gicr_base,
 		arch_config->guest_gicr_size);
-	shell_print_mem_special(domain, "vPL011", "vio",
+	shell_print_mem_map(domain, "vPL011", "vio",
 		arch_config->guest_uart_base,
 		arch_config->guest_uart_size);
 }
 
-/* [20260630] mmap monitor:
+/* [20260630] devmap monitor:
  *
- * mmap is the quick ownership map for ARM64 address translation. It prints the
+ * devmap is the quick ownership map for ARM64 address translation. It prints the
  * EL2 stage-1 host view first, then each VM's stage-2 view. RAM rows are leaf
  * mappings; vio rows are intentionally unmapped stage-2 device IPAs that exit
  * to EL2 through MMIO emulation.
  *
- *   host VA -> EL2 stage-1 -> HPA
- *   guest IPA -> VM stage-2 -> HPA, or vio data abort
+ *   host VA range -> EL2 stage-1 -> identity HPA range
+ *   guest IPA range -> VM stage-2 -> identity RAM HPA, or vio data abort
  */
 static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv)
 {
@@ -270,10 +337,639 @@ static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv)
 	return 0;
 }
 
+static void shell_memstat_format_usage(char *buf, size_t size,
+	const struct page_pool_stats *stats)
+{
+	uint64_t permille = 0UL;
+
+	if ((stats != NULL) && (stats->total_pages != 0UL)) {
+		permille = (stats->used_pages * 1000UL) / stats->total_pages;
+	}
+	(void)snprintf(buf, size, "%lu.%01lu%%", permille / 10UL, permille % 10UL);
+}
+
+static void shell_memstat_print_pool(const char *name,
+	const struct page_pool_stats *stats)
+{
+	char usage[16U];
+
+	shell_memstat_format_usage(usage, sizeof(usage), stats);
+	shell_item_line("%-6s  %-5lu  %-5lu  %-5lu  %s",
+		name, stats->total_pages, stats->used_pages, stats->free_pages, usage);
+}
+
+static bool shell_memstat_print_vm(uint16_t vm_id, uint64_t *accounted,
+	uint64_t *malformed)
+{
+	struct acrn_vm *vm = get_vm_from_vmid(vm_id);
+	struct arm64_stage2_vm_stats stats;
+
+	if (!arm64_get_stage2_vm_stats(vm, &stats)) {
+		return false;
+	}
+
+	shell_item_line("vm%-2hu  %-9s  0x%016lx  %-3lu  %-3lu  %-3lu  %-3lu  %-5lu  %-9lu",
+		vm_id, shell_vm_state_to_str(vm->state), stats.root_address,
+		stats.level3_pages, stats.level2_pages, stats.level1_pages,
+		stats.level0_pages, stats.total_pages, stats.malformed_entries);
+	*accounted += stats.total_pages;
+	*malformed += stats.malformed_entries;
+	return true;
+}
+
+/*
+ * memstat reports fixed page-table memory, not a general heap. hv-s1 is the
+ * EL2 translation-table pool; vm-s2 is shared by all VM stage-2 roots. The
+ * ownership walk counts only table pages reachable from each VM root, making
+ * the all-VM difference useful for spotting orphaned allocations.
+ */
+static int32_t shell_memstat(int32_t argc, __unused char **argv)
+{
+	struct page_pool_stats hv_s1 = { 0U };
+	struct page_pool_stats vm_s2 = { 0U };
+	uint64_t accounted = 0UL;
+	uint64_t malformed = 0UL;
+	uint64_t unowned;
+	uint64_t overaccounted;
+	bool found = false;
+
+	if (argc != 1) {
+		shell_puts("usage: memstat\r\n");
+		return -EINVAL;
+	}
+
+	arm64_get_hv_s1_page_pool_stats(&hv_s1);
+	arm64_get_stage2_page_pool_stats(&vm_s2);
+
+	shell_item_begin("memstat");
+	shell_item_line("page-size:%uB hv-image:0x%016lx+0x%016lx",
+		PAGE_SIZE, get_hv_image_base(), get_hv_image_size());
+	shell_item_section("Page-table pools");
+	shell_item_line("pool    total  used   free   usage");
+	shell_item_line("──────  ─────  ─────  ─────  ──────");
+	shell_memstat_print_pool("hv-s1", &hv_s1);
+	shell_memstat_print_pool("vm-s2", &vm_s2);
+
+	shell_item_section("Stage-2 ownership");
+	shell_item_line("vm    state      root                L3   L2   L1   L0   total  malformed");
+	shell_item_line("────  ─────────  ──────────────────  ───  ───  ───  ───  ─────  ─────────");
+	for (uint16_t vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
+		found |= shell_memstat_print_vm(vm_id, &accounted, &malformed);
+	}
+
+	if (!found) {
+		shell_item_line("no stage-2 roots");
+		shell_item_end();
+		return 0;
+	}
+
+	unowned = (vm_s2.used_pages > accounted) ?
+		(vm_s2.used_pages - accounted) : 0UL;
+	overaccounted = (accounted > vm_s2.used_pages) ?
+		(accounted - vm_s2.used_pages) : 0UL;
+
+	shell_item_line("accounted:%lu unowned:%lu overaccounted:%lu malformed:%lu",
+		accounted, unowned, overaccounted, malformed);
+	shell_item_end();
+
+	return 0;
+}
+
 static int32_t shell_cpufreq(__unused int32_t argc, __unused char **argv)
 {
 	cpufreq_dump();
 	return 0;
+}
+
+struct rttest_cpu_context {
+	struct hv_timer timer;
+	struct thread_object thread;
+	uint8_t stack[CONFIG_STACK_SIZE] __aligned(16);
+	uint16_t pcpu_id;
+	volatile bool pending;
+	volatile bool wait_ready;
+	volatile bool complete;
+	volatile bool failed;
+	uint32_t count;
+	uint64_t min_ticks;
+	uint64_t act_ticks;
+	uint64_t sum_ticks;
+	uint64_t max_ticks;
+};
+
+struct rttest_run_context {
+	spinlock_t lock;
+	bool initialized;
+	bool running;
+	uint16_t pcpu_num;
+	uint32_t completed;
+};
+
+static struct rttest_cpu_context rttest_cpus[MAX_PCPU_NUM];
+static struct rttest_run_context rttest_run = { .lock = { .head = 0U, .tail = 0U } };
+static char rttest_output[RTTEST_OUTPUT_SIZE];
+
+/*
+ * rttest measures each pCPU's local EL2 CNTHP deadline to SOFTIRQ_TIMER
+ * callback path while that CPU retains its configured partition scheduler.
+ * It does not migrate vCPUs, change BVT/CBS policy, or measure a Linux
+ * user-thread wakeup. The rt-tests-shaped summary fields are:
+ * T = test index, (...) = pCPU, P = EL2 priority placeholder, I = interval in
+ * microseconds, C = completed samples, and Min/Act/Avg/Max = minimum, last,
+ * mean, and worst positive lateness in microseconds.
+ *
+ * C must reach RTTEST_SAMPLE_COUNT for a valid result. Lower Avg and Max
+ * are better; a run passes only when Max is within the platform workload's
+ * latency budget. The budget is product-specific and is not hard-coded here.
+ */
+
+static void rttest_append_result(const struct rttest_cpu_context *ctx, size_t *offset)
+{
+	uint64_t min_ticks = ctx->min_ticks == UINT64_MAX ? 0UL : ctx->min_ticks;
+	uint64_t avg_ticks = ctx->count == 0U ? 0UL : ctx->sum_ticks / ctx->count;
+	size_t remaining = RTTEST_OUTPUT_SIZE - *offset;
+
+	if (remaining > 1U) {
+		(void)snprintf(&rttest_output[*offset], remaining,
+			"T:%2hu (%5hu) P:%2u I:%4u C:%7u Min:%7lu Act:%7lu Avg:%7lu Max:%7lu\r\n",
+			ctx->pcpu_id, ctx->pcpu_id, 0U, RTTEST_INTERVAL_US, ctx->count,
+			ticks_to_us(min_ticks), ticks_to_us(ctx->act_ticks), ticks_to_us(avg_ticks),
+			ticks_to_us(ctx->max_ticks));
+		*offset += strnlen_s(&rttest_output[*offset], remaining);
+	}
+}
+
+static void rttest_print_results(void)
+{
+	size_t offset = 0U;
+	uint16_t pcpu_id;
+
+	rttest_output[0] = '\0';
+	for (pcpu_id = 0U; pcpu_id < rttest_run.pcpu_num; pcpu_id++) {
+		rttest_append_result(&rttest_cpus[pcpu_id], &offset);
+	}
+	(void)shell_async_puts(rttest_output);
+}
+
+static void rttest_complete(struct rttest_cpu_context *ctx)
+{
+	uint64_t rflags;
+	bool print_results = false;
+
+	spinlock_irqsave_obtain(&rttest_run.lock, &rflags);
+	if (!ctx->complete) {
+		ctx->complete = true;
+		rttest_run.completed++;
+		print_results = rttest_run.completed == rttest_run.pcpu_num;
+	}
+	spinlock_irqrestore_release(&rttest_run.lock, rflags);
+
+	if (print_results) {
+		rttest_print_results();
+		spinlock_irqsave_obtain(&rttest_run.lock, &rflags);
+		rttest_run.running = false;
+		spinlock_irqrestore_release(&rttest_run.lock, rflags);
+	}
+}
+
+static void rttest_timer(void *data)
+{
+	struct rttest_cpu_context *ctx = (struct rttest_cpu_context *)data;
+	uint64_t now = cpu_ticks();
+	uint64_t deadline = ctx->timer.timeout;
+	uint64_t latency = now > deadline ? now - deadline : 0UL;
+
+	if (latency < ctx->min_ticks) {
+		ctx->min_ticks = latency;
+	}
+	if (latency > ctx->max_ticks) {
+		ctx->max_ticks = latency;
+	}
+	ctx->act_ticks = latency;
+	if (ctx->sum_ticks <= (UINT64_MAX - latency)) {
+		ctx->sum_ticks += latency;
+	} else {
+		ctx->sum_ticks = UINT64_MAX;
+	}
+	ctx->count++;
+
+	if (ctx->count == RTTEST_SAMPLE_COUNT) {
+		/* timer_softirq() sees this after the callback and does not reinsert it. */
+		ctx->timer.mode = TICK_MODE_ONESHOT;
+		rttest_complete(ctx);
+		if (ctx->wait_ready) {
+			wake_thread(&ctx->thread);
+		}
+	}
+}
+
+static bool rttest_start_local(struct rttest_cpu_context *ctx)
+{
+	uint64_t now = cpu_ticks();
+	int32_t ret;
+
+	initialize_timer(&ctx->timer, rttest_timer, ctx,
+		now + us_to_ticks(RTTEST_INTERVAL_US), us_to_ticks(RTTEST_INTERVAL_US));
+	ret = add_timer(&ctx->timer);
+	if (ret != 0) {
+		ctx->failed = true;
+		rttest_complete(ctx);
+	}
+
+	return ret == 0;
+}
+
+static void rttest_worker(struct thread_object *thread)
+{
+	struct rttest_cpu_context *ctx = &rttest_cpus[get_pcpu_id()];
+
+	ASSERT(thread == &ctx->thread, "rttest worker on wrong pCPU\n");
+	while (true) {
+		if (ctx->pending) {
+			ctx->pending = false;
+			if (rttest_start_local(ctx)) {
+				sleep_thread(thread);
+				ctx->wait_ready = true;
+				if (ctx->complete) {
+					wake_thread(thread);
+				}
+				schedule();
+			}
+		}
+		sleep_thread(thread);
+		schedule();
+	}
+}
+
+void arm64_rttest_init(void)
+{
+	struct sched_params params = {
+		.prio = PRIO_LOW,
+		.bvt_weight = 1U,
+		.cbs_period_us = RTTEST_CBS_PERIOD_US,
+		.cbs_budget_us = RTTEST_CBS_BUDGET_US,
+	};
+	uint16_t pcpu_id;
+
+	if (rttest_run.initialized) {
+		return;
+	}
+
+	rttest_run.pcpu_num = get_pcpu_nums();
+	for (pcpu_id = 0U; pcpu_id < rttest_run.pcpu_num; pcpu_id++) {
+		struct rttest_cpu_context *ctx = &rttest_cpus[pcpu_id];
+
+		ctx->pcpu_id = pcpu_id;
+		(void)snprintf(ctx->thread.name, sizeof(ctx->thread.name), "rttest-%02hu", pcpu_id);
+		ctx->thread.pcpu_id = pcpu_id;
+		ctx->thread.sched_ctl = &per_cpu(sched_ctl, pcpu_id);
+		ctx->thread.thread_entry = rttest_worker;
+		ctx->thread.switch_out = NULL;
+		ctx->thread.switch_in = NULL;
+		ctx->thread.host_sp = arch_setup_thread_stack(&ctx->thread, ctx->stack,
+			CONFIG_STACK_SIZE);
+		init_thread_data(&ctx->thread, &params);
+	}
+	rttest_run.initialized = true;
+}
+
+static int32_t shell_rttest(int32_t argc, __unused char **argv)
+{
+	uint64_t rflags;
+	uint16_t pcpu_id;
+
+	if (argc != 1) {
+		return -EINVAL;
+	}
+
+	spinlock_irqsave_obtain(&rttest_run.lock, &rflags);
+	if (!rttest_run.initialized || rttest_run.running) {
+		spinlock_irqrestore_release(&rttest_run.lock, rflags);
+		return -EBUSY;
+	}
+	rttest_run.running = true;
+	rttest_run.completed = 0U;
+	spinlock_irqrestore_release(&rttest_run.lock, rflags);
+
+	for (pcpu_id = 0U; pcpu_id < rttest_run.pcpu_num; pcpu_id++) {
+		struct rttest_cpu_context *ctx = &rttest_cpus[pcpu_id];
+
+		ctx->pending = true;
+		ctx->wait_ready = false;
+		ctx->complete = false;
+		ctx->failed = false;
+		ctx->count = 0U;
+		ctx->min_ticks = UINT64_MAX;
+		ctx->act_ticks = 0UL;
+		ctx->sum_ticks = 0UL;
+		ctx->max_ticks = 0UL;
+	}
+	for (pcpu_id = 0U; pcpu_id < rttest_run.pcpu_num; pcpu_id++) {
+		wake_thread(&rttest_cpus[pcpu_id].thread);
+	}
+
+	/* Console input may execute from a timer softirq, so completion is asynchronous. */
+	return 0;
+}
+
+struct shell_trace_cursor {
+	struct trace_record record;
+	uint32_t index;
+	bool valid;
+};
+
+static uint64_t shell_trace_category_mask(const char *category)
+{
+	uint64_t mask = 0UL;
+
+	if (strcmp(category, "all") == 0) {
+		mask = TRACE_MASK_ALL;
+	} else if (strcmp(category, "timer") == 0) {
+		mask = TRACE_MASK_TIMER;
+	} else if (strcmp(category, "sched") == 0) {
+		mask = TRACE_MASK_SCHED;
+	} else if (strcmp(category, "hcall") == 0) {
+		mask = TRACE_MASK_HCALL;
+	} else if (strcmp(category, "vm") == 0) {
+		mask = TRACE_MASK_VM;
+	}
+
+	return mask;
+}
+
+static void shell_trace_append_category(char *buf, size_t size, const char *category)
+{
+	size_t len = strnlen_s(buf, size);
+
+	if (len != 0U) {
+		(void)strncat_s(buf, size, ",", 1U);
+	}
+	(void)strncat_s(buf, size, category, strnlen_s(category, size));
+}
+
+static void shell_trace_format_mask(uint64_t mask, char *buf, size_t size)
+{
+	buf[0] = '\0';
+	if (mask == TRACE_MASK_ALL) {
+		(void)strncpy_s(buf, size, "all", size - 1U);
+		return;
+	}
+	if ((mask & TRACE_MASK_TIMER) != 0UL) {
+		shell_trace_append_category(buf, size, "timer");
+	}
+	if ((mask & TRACE_MASK_SCHED) != 0UL) {
+		shell_trace_append_category(buf, size, "sched");
+	}
+	if ((mask & TRACE_MASK_HCALL) != 0UL) {
+		shell_trace_append_category(buf, size, "hcall");
+	}
+	if ((mask & TRACE_MASK_VM) != 0UL) {
+		shell_trace_append_category(buf, size, "vm");
+	}
+	if (buf[0] == '\0') {
+		(void)strncpy_s(buf, size, "none", size - 1U);
+	}
+}
+
+static const char *shell_trace_event_name(uint32_t event_id)
+{
+	const char *name;
+
+	switch (event_id) {
+	case TRACE_TIMER_ACTION_ADDED:
+		name = "timer-add";
+		break;
+	case TRACE_TIMER_ACTION_PCKUP:
+		name = "timer-fire";
+		break;
+	case TRACE_TIMER_ACTION_UPDAT:
+		name = "timer-update";
+		break;
+	case TRACE_TIMER_IRQ:
+		name = "timer-irq";
+		break;
+	case TRACE_SCHED_NEXT:
+		name = "sched-switch";
+		break;
+	case TRACE_VMEXIT_VMCALL:
+		name = "hcall";
+		break;
+	case TRACE_VM_ENTER:
+		name = "vm-enter";
+		break;
+	case TRACE_VM_EXIT:
+		name = "vm-exit";
+		break;
+	default:
+		name = "unknown";
+		break;
+	}
+
+	return name;
+}
+
+static void shell_trace_print_record(uint32_t sequence, uint64_t base_tsc,
+	const struct trace_record *record)
+{
+	uint32_t event_id = (uint32_t)record->id;
+	uint64_t delta_us = (record->tsc >= base_tsc) ?
+		ticks_to_us(record->tsc - base_tsc) : 0UL;
+	const char *name = shell_trace_event_name(event_id);
+
+	switch (event_id) {
+	case TRACE_TIMER_ACTION_ADDED:
+	case TRACE_TIMER_ACTION_PCKUP:
+	case TRACE_TIMER_ACTION_UPDAT:
+	case TRACE_TIMER_IRQ:
+		shell_item_line("[%04u] +%8luus cpu:%u %-12s deadline:0x%016lx data:0x%016lx",
+			sequence, delta_us, record->cpu, name,
+			record->payload.fields_64.e, record->payload.fields_64.f);
+		break;
+	case TRACE_SCHED_NEXT:
+		shell_item_line("[%04u] +%8luus cpu:%u %-12s %s", sequence, delta_us,
+			record->cpu, name, record->payload.str);
+		break;
+	case TRACE_VMEXIT_VMCALL:
+		shell_item_line("[%04u] +%8luus cpu:%u %-12s vm:%lu id:0x%016lx",
+			sequence, delta_us, record->cpu, name,
+			record->payload.fields_64.e, record->payload.fields_64.f);
+		break;
+	case TRACE_VM_ENTER:
+	case TRACE_VM_EXIT:
+		shell_item_line("[%04u] +%8luus cpu:%u %-12s vm:%u vcpu:%u src:0x%x status:%d",
+			sequence, delta_us, record->cpu, name,
+			record->payload.fields_32.a, record->payload.fields_32.b,
+			record->payload.fields_32.c,
+			(int32_t)record->payload.fields_32.d);
+		break;
+	default:
+		shell_item_line("[%04u] +%8luus cpu:%u %-12s id:0x%lx data:0x%016lx/0x%016lx",
+			sequence, delta_us, record->cpu, name, record->id,
+			record->payload.fields_64.e, record->payload.fields_64.f);
+		break;
+	}
+}
+
+static void shell_trace_status(void)
+{
+	char mask[64U];
+	uint16_t pcpu_id;
+
+	shell_trace_format_mask(trace_get_mask(), mask, sizeof(mask));
+	shell_item_begin("trace");
+	shell_item_line("state:%s mask:%s capacity:%u/pCPU record-size:%uB",
+		trace_is_running() ? "running" : "stopped", mask,
+		trace_get_capacity(), (uint32_t)sizeof(struct trace_record));
+	shell_item_line("pCPU  records  overwritten  writer");
+	for (pcpu_id = 0U; pcpu_id < get_pcpu_nums(); pcpu_id++) {
+		struct trace_cpu_status status;
+
+		trace_get_cpu_status(pcpu_id, &status);
+		shell_item_line("%4hu  %7u  %11lu  %-6s", pcpu_id,
+			status.count, status.overwritten,
+			status.writer_active ? "active" : "idle");
+	}
+	shell_item_end();
+}
+
+static int32_t shell_trace_start(int32_t argc, char **argv)
+{
+	uint64_t mask = TRACE_MASK_ALL;
+	int32_t idx;
+
+	if (argc > 2) {
+		mask = 0UL;
+		for (idx = 2; idx < argc; idx++) {
+			uint64_t category = shell_trace_category_mask(argv[idx]);
+
+			if (category == 0UL) {
+				shell_puts("usage: trace start [all|timer|sched|hcall|vm]...\r\n");
+				return -EINVAL;
+			}
+			mask |= category;
+		}
+	}
+
+	return trace_start(mask);
+}
+
+static int32_t shell_trace_dump(int32_t argc, char **argv)
+{
+	struct shell_trace_cursor cursors[MAX_PCPU_NUM];
+	uint32_t total = 0U;
+	uint32_t requested = TRACE_DUMP_DEFAULT_COUNT;
+	uint32_t skipped;
+	uint32_t consumed = 0U;
+	uint32_t printed = 0U;
+	uint64_t base_tsc = 0UL;
+	uint16_t pcpu_id;
+
+	if (trace_is_running()) {
+		shell_puts("trace dump requires stopped capture\r\n");
+		return -EBUSY;
+	}
+	if ((argc < 2) || (argc > 3)) {
+		return -EINVAL;
+	}
+	if (argc == 3) {
+		int64_t value = strtol_deci(argv[2]);
+		uint32_t max_records = trace_get_capacity() * get_pcpu_nums();
+
+		if ((value <= 0) || ((uint64_t)value > max_records)) {
+			shell_puts("usage: trace dump [count]\r\n");
+			return -EINVAL;
+		}
+		requested = (uint32_t)value;
+	}
+
+	(void)memset(cursors, 0U, sizeof(cursors));
+	for (pcpu_id = 0U; pcpu_id < get_pcpu_nums(); pcpu_id++) {
+		struct trace_cpu_status status;
+
+		trace_get_cpu_status(pcpu_id, &status);
+		cursors[pcpu_id].valid = trace_get_record(pcpu_id, 0U,
+			&cursors[pcpu_id].record);
+		total += status.count;
+	}
+	if (requested > total) {
+		requested = total;
+	}
+	skipped = total - requested;
+
+	shell_item_begin("trace dump");
+	shell_item_line("records:%u shown:%u", total, requested);
+	while (consumed < total) {
+		uint16_t best = INVALID_CPU_ID;
+
+		for (pcpu_id = 0U; pcpu_id < get_pcpu_nums(); pcpu_id++) {
+			if (cursors[pcpu_id].valid &&
+				((best == INVALID_CPU_ID) ||
+				(cursors[pcpu_id].record.tsc < cursors[best].record.tsc))) {
+				best = pcpu_id;
+			}
+		}
+		if (best == INVALID_CPU_ID) {
+			break;
+		}
+
+		if (consumed >= skipped) {
+			if (printed == 0U) {
+				base_tsc = cursors[best].record.tsc;
+			}
+			shell_trace_print_record(printed, base_tsc, &cursors[best].record);
+			printed++;
+		}
+		consumed++;
+		cursors[best].index++;
+		cursors[best].valid = trace_get_record(best, cursors[best].index,
+			&cursors[best].record);
+	}
+	shell_item_end();
+
+	return 0;
+}
+
+static int32_t shell_trace(int32_t argc, char **argv)
+{
+	int32_t ret;
+
+	if (argc < 2) {
+		shell_puts("usage: trace <status|start|stop|clear|dump> [category|count]\r\n");
+		return -EINVAL;
+	}
+
+	if (strcmp(argv[1], "status") == 0) {
+		if (argc != 2) {
+			return -EINVAL;
+		}
+		shell_trace_status();
+		ret = 0;
+	} else if (strcmp(argv[1], "start") == 0) {
+		ret = shell_trace_start(argc, argv);
+	} else if (strcmp(argv[1], "stop") == 0) {
+		if (argc != 2) {
+			return -EINVAL;
+		}
+		ret = trace_stop();
+		if (ret == 0) {
+			shell_trace_status();
+		}
+	} else if (strcmp(argv[1], "clear") == 0) {
+		if (argc != 2) {
+			return -EINVAL;
+		}
+		ret = trace_clear();
+		if (ret == 0) {
+			shell_trace_status();
+		}
+	} else if (strcmp(argv[1], "dump") == 0) {
+		ret = shell_trace_dump(argc, argv);
+	} else {
+		shell_puts("usage: trace <status|start|stop|clear|dump> [category|count]\r\n");
+		ret = -EINVAL;
+	}
+
+	return ret;
 }
 
 /* [20260709] SMMU monitor:
@@ -1685,33 +2381,494 @@ static const char *shell_vmstat_wdt_status_to_str(enum vm_wdt_status status)
 	return str;
 }
 
-static const char *shell_vmstat_wdt_reason_to_str(enum vm_wdt_reason reason)
+static const char *shell_vmstat_wdt_cause_to_str(enum vm_wdt_cause cause)
 {
 	const char *str;
 
-	switch (reason) {
-	case VM_WDT_REASON_HEARTBEAT:
+	switch (cause) {
+	case VM_WDT_CAUSE_HEARTBEAT:
 		str = "heartbeat";
 		break;
-	case VM_WDT_REASON_VCPU_STALL:
+	case VM_WDT_CAUSE_TIMEOUT:
+		str = "timeout";
+		break;
+	case VM_WDT_CAUSE_VCPU_STALL:
 		str = "vcpustall";
 		break;
-	case VM_WDT_REASON_IRQ_STORM:
+	case VM_WDT_CAUSE_IRQ_STORM:
 		str = "irqstorm";
 		break;
-	case VM_WDT_REASON_CONSOLE_STUCK:
+	case VM_WDT_CAUSE_CONSOLE_STUCK:
 		str = "console";
 		break;
-	case VM_WDT_REASON_VIRTIO_STUCK:
+	case VM_WDT_CAUSE_VIRTIO_STUCK:
 		str = "virtio";
 		break;
-	case VM_WDT_REASON_NONE:
+	case VM_WDT_CAUSE_NONE:
 	default:
 		str = "N/A";
 		break;
 	}
 
 	return str;
+}
+
+static const char *shell_vmstat_wdt_recovery_to_str(enum vm_wdt_recovery_state state)
+{
+	const char *str;
+
+	switch (state) {
+	case VM_WDT_RECOVERY_QUIESCING:
+		str = "quiescing";
+		break;
+	case VM_WDT_RECOVERY_VERIFYING:
+		str = "verifying";
+		break;
+	case VM_WDT_RECOVERY_IDLE:
+	default:
+		str = "idle";
+		break;
+	}
+
+	return str;
+}
+
+enum shell_health_level {
+	SHELL_HEALTH_PASS = 0U,
+	SHELL_HEALTH_WARN,
+	SHELL_HEALTH_FAIL,
+};
+
+#define SHELL_HEALTH_HOST_PCPU_INACTIVE		(1UL << 0U)
+#define SHELL_HEALTH_HOST_NO_CURRENT		(1UL << 1U)
+#define SHELL_HEALTH_HOST_HV_S1_FULL		(1UL << 2U)
+#define SHELL_HEALTH_HOST_VM_S2_FULL		(1UL << 3U)
+#define SHELL_HEALTH_HOST_S2_OWNERSHIP		(1UL << 4U)
+#define SHELL_HEALTH_HOST_S2_MALFORMED		(1UL << 5U)
+
+#define SHELL_HEALTH_VM_STATE			(1UL << 0U)
+#define SHELL_HEALTH_VM_VCPU_COUNT		(1UL << 1U)
+#define SHELL_HEALTH_VM_VCPU_STATE		(1UL << 2U)
+#define SHELL_HEALTH_VM_WDT_UNKNOWN		(1UL << 3U)
+#define SHELL_HEALTH_VM_WDT_STUCK		(1UL << 4U)
+#define SHELL_HEALTH_VM_WDT_RECOVERY		(1UL << 5U)
+#define SHELL_HEALTH_VM_WDT_RESTART_FAIL	(1UL << 6U)
+#define SHELL_HEALTH_VM_VIRTIO_NOT_READY	(1UL << 7U)
+#define SHELL_HEALTH_VM_VIRTIO_LOST		(1UL << 8U)
+#define SHELL_HEALTH_VM_VIRTIO_TIMEOUT		(1UL << 9U)
+
+struct shell_health_host {
+	enum shell_health_level level;
+	uint64_t reasons;
+	uint16_t pcpu_total;
+	uint16_t pcpu_active;
+	uint16_t pcpu_current;
+	struct page_pool_stats hv_s1;
+	struct page_pool_stats vm_s2;
+	uint64_t stage2_accounted;
+	uint64_t stage2_unowned;
+	uint64_t stage2_overaccounted;
+	uint64_t stage2_malformed;
+};
+
+struct shell_health_vm {
+	enum shell_health_level level;
+	uint64_t reasons;
+	const char *name;
+	enum vm_state state;
+	uint16_t vm_id;
+	uint16_t configured_vcpus;
+	uint16_t created_vcpus;
+	bool present;
+	bool wdt_valid;
+	struct vm_wdt_snapshot wdt;
+	bool console_valid;
+	uint32_t console_queued;
+	uint32_t console_capacity;
+	uint64_t console_dropped;
+	uint16_t virtio_total;
+	uint16_t virtio_ready;
+	uint16_t virtio_lost;
+	uint64_t virtio_timeouts;
+};
+
+static enum shell_health_level shell_health_max(enum shell_health_level left,
+	enum shell_health_level right)
+{
+	return left > right ? left : right;
+}
+
+static void shell_health_raise(enum shell_health_level *level,
+	enum shell_health_level requested)
+{
+	if ((level != NULL) && (requested > *level)) {
+		*level = requested;
+	}
+}
+
+static const char *shell_health_level_to_str(enum shell_health_level level)
+{
+	const char *str;
+
+	switch (level) {
+	case SHELL_HEALTH_FAIL:
+		str = "FAIL";
+		break;
+	case SHELL_HEALTH_WARN:
+		str = "WARN";
+		break;
+	case SHELL_HEALTH_PASS:
+	default:
+		str = "PASS";
+		break;
+	}
+
+	return str;
+}
+
+static void shell_health_collect_host(struct shell_health_host *health)
+{
+	uint16_t pcpu_id;
+	uint16_t vm_id;
+
+	(void)memset(health, 0U, sizeof(*health));
+	health->level = SHELL_HEALTH_PASS;
+	health->pcpu_total = get_pcpu_nums();
+	for (pcpu_id = 0U; pcpu_id < health->pcpu_total; pcpu_id++) {
+		if (is_pcpu_active(pcpu_id)) {
+			health->pcpu_active++;
+		} else {
+			health->reasons |= SHELL_HEALTH_HOST_PCPU_INACTIVE;
+			shell_health_raise(&health->level, SHELL_HEALTH_FAIL);
+		}
+		if (sched_get_current(pcpu_id) != NULL) {
+			health->pcpu_current++;
+		} else {
+			health->reasons |= SHELL_HEALTH_HOST_NO_CURRENT;
+			shell_health_raise(&health->level, SHELL_HEALTH_FAIL);
+		}
+	}
+
+	arm64_get_hv_s1_page_pool_stats(&health->hv_s1);
+	arm64_get_stage2_page_pool_stats(&health->vm_s2);
+	if ((health->hv_s1.total_pages != 0UL) && (health->hv_s1.free_pages == 0UL)) {
+		health->reasons |= SHELL_HEALTH_HOST_HV_S1_FULL;
+		shell_health_raise(&health->level, SHELL_HEALTH_FAIL);
+	}
+	if ((health->vm_s2.total_pages != 0UL) && (health->vm_s2.free_pages == 0UL)) {
+		health->reasons |= SHELL_HEALTH_HOST_VM_S2_FULL;
+		shell_health_raise(&health->level, SHELL_HEALTH_FAIL);
+	}
+
+	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
+		struct arm64_stage2_vm_stats stats;
+
+		if (arm64_get_stage2_vm_stats(get_vm_from_vmid(vm_id), &stats)) {
+			health->stage2_accounted += stats.total_pages;
+			health->stage2_malformed += stats.malformed_entries;
+		}
+	}
+	health->stage2_unowned = (health->vm_s2.used_pages > health->stage2_accounted) ?
+		(health->vm_s2.used_pages - health->stage2_accounted) : 0UL;
+	health->stage2_overaccounted =
+		(health->stage2_accounted > health->vm_s2.used_pages) ?
+		(health->stage2_accounted - health->vm_s2.used_pages) : 0UL;
+	if ((health->stage2_unowned != 0UL) ||
+		(health->stage2_overaccounted != 0UL)) {
+		health->reasons |= SHELL_HEALTH_HOST_S2_OWNERSHIP;
+		shell_health_raise(&health->level, SHELL_HEALTH_FAIL);
+	}
+	if (health->stage2_malformed != 0UL) {
+		health->reasons |= SHELL_HEALTH_HOST_S2_MALFORMED;
+		shell_health_raise(&health->level, SHELL_HEALTH_FAIL);
+	}
+}
+
+static void shell_health_collect_virtio(struct shell_health_vm *health, bool grade)
+{
+	uint16_t count = virtio_proxy_device_count(health->vm_id);
+	uint16_t index;
+
+	for (index = 0U; index < count; index++) {
+		struct virtio_proxy_stats stats;
+
+		if (!virtio_proxy_get_stats(health->vm_id, index, &stats)) {
+			continue;
+		}
+		health->virtio_total++;
+		health->virtio_timeouts += stats.timeout_count;
+		if ((stats.state == VIRTIO_PROXY_STATE_RUNNING) && stats.backend_healthy) {
+			health->virtio_ready++;
+		} else if ((stats.state == VIRTIO_PROXY_STATE_BACKEND_LOST) ||
+			(stats.state == VIRTIO_PROXY_STATE_BACKEND_STALE)) {
+			health->virtio_lost++;
+			if (grade) {
+				health->reasons |= SHELL_HEALTH_VM_VIRTIO_LOST;
+				shell_health_raise(&health->level, SHELL_HEALTH_FAIL);
+			}
+		} else if (grade) {
+			health->reasons |= SHELL_HEALTH_VM_VIRTIO_NOT_READY;
+			shell_health_raise(&health->level, SHELL_HEALTH_WARN);
+		}
+	}
+	if (grade && (health->virtio_timeouts != 0UL)) {
+		health->reasons |= SHELL_HEALTH_VM_VIRTIO_TIMEOUT;
+		shell_health_raise(&health->level, SHELL_HEALTH_WARN);
+	}
+}
+
+static void shell_health_collect_vm(uint16_t vm_id, struct shell_health_vm *health)
+{
+	struct acrn_vm_config *vm_config = get_vm_config(vm_id);
+	struct acrn_vm *vm = get_vm_from_vmid(vm_id);
+	struct console_vm_ring_stats console = { 0U };
+	uint16_t vcpu_id;
+	bool must_run;
+
+	(void)memset(health, 0U, sizeof(*health));
+	health->level = SHELL_HEALTH_PASS;
+	health->vm_id = vm_id;
+	health->present = shell_vm_config_present(vm_config) ||
+		(vm->hw.created_vcpus != 0U) || (vm->root_stg2ptp != NULL) ||
+		!is_poweroff_vm(vm);
+	if (!health->present) {
+		return;
+	}
+
+	health->name = (vm->name[0] != '\0') ? vm->name : vm_config->name;
+	health->state = vm->state;
+	health->configured_vcpus = (uint16_t)shell_cpu_bitmap_weight(vm_config->cpu_affinity);
+	health->created_vcpus = vm->hw.created_vcpus;
+	/* A created post-launched VM is valid until its device model starts it. */
+	must_run = is_static_configured_vm(vm) ||
+		((vm->state != VM_POWERED_OFF) && (vm->state != VM_CREATED));
+	if (must_run && (vm->state != VM_RUNNING)) {
+		health->reasons |= SHELL_HEALTH_VM_STATE;
+		shell_health_raise(&health->level, SHELL_HEALTH_FAIL);
+	}
+	if (must_run && (health->configured_vcpus != health->created_vcpus)) {
+		health->reasons |= SHELL_HEALTH_VM_VCPU_COUNT;
+		shell_health_raise(&health->level, SHELL_HEALTH_FAIL);
+	}
+	if (vm->state == VM_RUNNING) {
+		for (vcpu_id = 0U; vcpu_id < vm->hw.created_vcpus; vcpu_id++) {
+			struct acrn_vcpu *vcpu = vcpu_from_vid(vm, vcpu_id);
+
+			if ((vcpu == NULL) || (vcpu->state != VCPU_RUNNING)) {
+				health->reasons |= SHELL_HEALTH_VM_VCPU_STATE;
+				shell_health_raise(&health->level, SHELL_HEALTH_FAIL);
+				break;
+			}
+		}
+	}
+
+	health->wdt_valid = vm_wdt_get_snapshot(vm_id, &health->wdt) == 0;
+	if (health->wdt_valid && must_run) {
+		if (health->wdt.status == VM_WDT_STATUS_STUCK) {
+			health->reasons |= SHELL_HEALTH_VM_WDT_STUCK;
+			shell_health_raise(&health->level, SHELL_HEALTH_FAIL);
+		} else if ((vm->state == VM_RUNNING) &&
+			((health->wdt.status == VM_WDT_STATUS_UNKNOWN) ||
+			(health->wdt.status == VM_WDT_STATUS_OFFLINE))) {
+			health->reasons |= SHELL_HEALTH_VM_WDT_UNKNOWN;
+			shell_health_raise(&health->level, SHELL_HEALTH_WARN);
+		}
+		if (health->wdt.restart_pending ||
+			(health->wdt.recovery_state != VM_WDT_RECOVERY_IDLE)) {
+			health->reasons |= SHELL_HEALTH_VM_WDT_RECOVERY;
+			shell_health_raise(&health->level, SHELL_HEALTH_WARN);
+		}
+		if (health->wdt.restart_fail_count != 0UL) {
+			health->reasons |= SHELL_HEALTH_VM_WDT_RESTART_FAIL;
+			shell_health_raise(&health->level, SHELL_HEALTH_WARN);
+		}
+	}
+
+	health->console_valid = console_vm_ring_get_stats(vm_id, &console);
+	if (health->console_valid) {
+		health->console_queued = console.queued;
+		health->console_capacity = console.capacity;
+		health->console_dropped = console.dropped_bytes;
+	}
+	shell_health_collect_virtio(health, vm->state == VM_RUNNING);
+}
+
+static void shell_health_print_vm(const struct shell_health_vm *health)
+{
+	char wdt_age[16U];
+	char console[32U];
+	char virtio[16U];
+	const char *wdt_status = "-";
+
+	if (health->wdt_valid) {
+		wdt_status = shell_vmstat_wdt_status_to_str(health->wdt.status);
+		(void)snprintf(wdt_age, sizeof(wdt_age), "%lums", health->wdt.last_ms);
+	} else {
+		(void)snprintf(wdt_age, sizeof(wdt_age), "-");
+	}
+	if (health->console_valid) {
+		(void)snprintf(console, sizeof(console), "%u/%u d:%lu",
+			health->console_queued, health->console_capacity,
+			health->console_dropped);
+	} else {
+		(void)snprintf(console, sizeof(console), "-");
+	}
+	if (health->virtio_total != 0U) {
+		(void)snprintf(virtio, sizeof(virtio), "%hu/%hu",
+			health->virtio_ready, health->virtio_total);
+	} else {
+		(void)snprintf(virtio, sizeof(virtio), "-");
+	}
+
+	shell_item_line("vm%-2hu %-10s %-9s %2hu/%-2hu %-7s %-10s %-20s %-6s result:%s",
+		health->vm_id, health->name, shell_vm_state_to_str(health->state),
+		health->created_vcpus, health->configured_vcpus,
+		wdt_status, wdt_age, console, virtio,
+		shell_health_level_to_str(health->level));
+}
+
+static void shell_health_print_findings(const struct shell_health_host *host,
+	const struct shell_health_vm *vms)
+{
+	bool printed = false;
+	uint16_t vm_id;
+
+	if ((host->reasons & SHELL_HEALTH_HOST_PCPU_INACTIVE) != 0UL) {
+		shell_item_line("host: inactive pCPU detected");
+		printed = true;
+	}
+	if ((host->reasons & SHELL_HEALTH_HOST_NO_CURRENT) != 0UL) {
+		shell_item_line("host: pCPU without current scheduler thread");
+		printed = true;
+	}
+	if ((host->reasons & SHELL_HEALTH_HOST_HV_S1_FULL) != 0UL) {
+		shell_item_line("host: hv-s1 page-table pool exhausted");
+		printed = true;
+	}
+	if ((host->reasons & SHELL_HEALTH_HOST_VM_S2_FULL) != 0UL) {
+		shell_item_line("host: vm-s2 page-table pool exhausted");
+		printed = true;
+	}
+	if ((host->reasons & SHELL_HEALTH_HOST_S2_OWNERSHIP) != 0UL) {
+		shell_item_line("host: vm-s2 ownership mismatch unowned:%lu over:%lu",
+			host->stage2_unowned, host->stage2_overaccounted);
+		printed = true;
+	}
+	if ((host->reasons & SHELL_HEALTH_HOST_S2_MALFORMED) != 0UL) {
+		shell_item_line("host: malformed stage-2 links:%lu", host->stage2_malformed);
+		printed = true;
+	}
+
+	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
+		const struct shell_health_vm *health = &vms[vm_id];
+
+		if (!health->present || (health->reasons == 0UL)) {
+			continue;
+		}
+		if ((health->reasons & SHELL_HEALTH_VM_STATE) != 0UL) {
+			shell_item_line("vm%hu:%s expected running, state:%s", vm_id,
+				health->name, shell_vm_state_to_str(health->state));
+			printed = true;
+		}
+		if ((health->reasons & SHELL_HEALTH_VM_VCPU_COUNT) != 0UL) {
+			shell_item_line("vm%hu:%s vCPU count created:%hu configured:%hu", vm_id,
+				health->name, health->created_vcpus, health->configured_vcpus);
+			printed = true;
+		}
+		if ((health->reasons & SHELL_HEALTH_VM_VCPU_STATE) != 0UL) {
+			shell_item_line("vm%hu:%s has non-running vCPU", vm_id, health->name);
+			printed = true;
+		}
+		if ((health->reasons & SHELL_HEALTH_VM_WDT_UNKNOWN) != 0UL) {
+			shell_item_line("vm%hu:%s watchdog has no live heartbeat", vm_id, health->name);
+			printed = true;
+		}
+		if ((health->reasons & SHELL_HEALTH_VM_WDT_STUCK) != 0UL) {
+			shell_item_line("vm%hu:%s watchdog stuck cause:%s age:%lums", vm_id,
+				health->name, shell_vmstat_wdt_cause_to_str(health->wdt.cause),
+				health->wdt.last_ms);
+			printed = true;
+		}
+		if ((health->reasons & SHELL_HEALTH_VM_WDT_RECOVERY) != 0UL) {
+			shell_item_line("vm%hu:%s watchdog recovery:%s pending:%s", vm_id,
+				health->name,
+				shell_vmstat_wdt_recovery_to_str(health->wdt.recovery_state),
+				shell_yes_no(health->wdt.restart_pending));
+			printed = true;
+		}
+		if ((health->reasons & SHELL_HEALTH_VM_WDT_RESTART_FAIL) != 0UL) {
+			shell_item_line("vm%hu:%s watchdog restart failures:%lu", vm_id,
+				health->name, health->wdt.restart_fail_count);
+			printed = true;
+		}
+		if ((health->reasons & SHELL_HEALTH_VM_VIRTIO_NOT_READY) != 0UL) {
+			shell_item_line("vm%hu:%s virtio ready:%hu/%hu", vm_id, health->name,
+				health->virtio_ready, health->virtio_total);
+			printed = true;
+		}
+		if ((health->reasons & SHELL_HEALTH_VM_VIRTIO_LOST) != 0UL) {
+			shell_item_line("vm%hu:%s virtio backend lost/stale:%hu", vm_id,
+				health->name, health->virtio_lost);
+			printed = true;
+		}
+		if ((health->reasons & SHELL_HEALTH_VM_VIRTIO_TIMEOUT) != 0UL) {
+			shell_item_line("vm%hu:%s virtio historical timeouts:%lu", vm_id,
+				health->name, health->virtio_timeouts);
+			printed = true;
+		}
+	}
+
+	if (!printed) {
+		shell_item_line("none");
+	}
+}
+
+static int32_t shell_health(int32_t argc, __unused char **argv)
+{
+	struct shell_health_host host;
+	struct shell_health_vm vms[CONFIG_MAX_VM_NUM];
+	enum shell_health_level overall;
+	uint16_t vm_id;
+
+	if (argc != 1) {
+		shell_puts("usage: health\r\n");
+		return -EINVAL;
+	}
+
+	shell_health_collect_host(&host);
+	overall = host.level;
+	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
+		shell_health_collect_vm(vm_id, &vms[vm_id]);
+		if (vms[vm_id].present) {
+			overall = shell_health_max(overall, vms[vm_id].level);
+		}
+	}
+
+	shell_item_begin("health");
+	shell_item_line("overall:%s uptime:%lums",
+		shell_health_level_to_str(overall), ticks_to_ms(cpu_ticks()));
+	shell_item_section("Host");
+	shell_item_line("pcpus:active:%hu/%hu current:%hu/%hu result:%s",
+		host.pcpu_active, host.pcpu_total, host.pcpu_current, host.pcpu_total,
+		shell_health_level_to_str(host.level));
+	shell_item_line("pages:hv-s1:%lu/%lu vm-s2:%lu/%lu accounted:%lu unowned:%lu over:%lu malformed:%lu",
+		host.hv_s1.used_pages, host.hv_s1.total_pages,
+		host.vm_s2.used_pages, host.vm_s2.total_pages,
+		host.stage2_accounted, host.stage2_unowned,
+		host.stage2_overaccounted, host.stage2_malformed);
+	shell_item_section("Virtual machines");
+	shell_item_line("vm   name       state     vcpus wdt     age        console              virtio result");
+	shell_item_line("──── ────────── ───────── ───── ─────── ────────── ──────────────────── ────── ───────────");
+	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
+		if (vms[vm_id].present) {
+			shell_health_print_vm(&vms[vm_id]);
+		}
+	}
+	shell_item_section("Findings");
+	shell_health_print_findings(&host, vms);
+	shell_item_end();
+
+	return 0;
 }
 
 static int64_t shell_vmstat_ticks_delta_us(int64_t delta)
@@ -1828,10 +2985,13 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 		uint64_t last_sec = wdt.last_ms / 1000UL;
 		uint64_t last_msec = wdt.last_ms % 1000UL;
 
-		shell_item_line("wdt:status:%7s reason:%12s (%02lu.%03lu) kick:%08lu timeout:%02lu token:0x%016lx",
+		shell_item_line("HWT:status:%7s cause:%12s (%02lu.%03lu) kick:%08lu timeout:%02lu restart:%02lu fail:%02lu pending:%s recovery:%10s wait:0x%02lx token:0x%016lx",
 			shell_vmstat_wdt_status_to_str(wdt.status),
-			shell_vmstat_wdt_reason_to_str(wdt.reason), last_sec, last_msec,
-			wdt.kick_count, wdt.timeout_count, wdt.last_token);
+			shell_vmstat_wdt_cause_to_str(wdt.cause), last_sec, last_msec,
+			wdt.kick_count, wdt.timeout_count, wdt.restart_count,
+			wdt.restart_fail_count, shell_yes_no(wdt.restart_pending),
+			shell_vmstat_wdt_recovery_to_str(wdt.recovery_state),
+			wdt.recovery_wait_vcpus, wdt.last_token);
 	}
 	shell_item_line("console:selected:%s bound:%s ring:%u/%u drain:%u pending:%s",
 		shell_yes_no(console_vmid == vm_id), shell_yes_no(ring.vuart_bound),
@@ -1945,18 +3105,14 @@ static void shell_vmstat_vcpu_diag(const struct acrn_vcpu *vcpu,
 	}
 }
 
-static const char *shell_vmstat_scheduler_label(uint16_t pcpu_id, bool has_bvt,
-	bool has_rtds, bool has_cbs)
+static const char *shell_vmstat_scheduler_label(bool has_bvt, bool has_rtds,
+	bool has_cbs)
 {
-	const struct sched_cpupool_config *pool;
-
 	if (has_rtds) {
 		return "rtds";
 	}
 	if (has_cbs) {
-		pool = sched_get_pcpu_pool_config(pcpu_id);
-		return ((pool != NULL) && (pool->policy == SCHED_POLICY_CBS_PLUS)) ?
-			"cbs+" : "cbs";
+		return "cbs";
 	}
 	if (has_bvt) {
 		return "bvt";
@@ -2054,8 +3210,7 @@ static void shell_vmstat_vcpus(const struct acrn_vm *vm)
 		has_bvt = sched_get_bvt_stats(&vcpu->thread_obj, &bvt);
 		has_rtds = sched_get_rtds_stats(&vcpu->thread_obj, &rtds);
 		has_cbs = sched_get_cbs_stats(&vcpu->thread_obj, &cbs);
-		sched_label = shell_vmstat_scheduler_label(vcpu->thread_obj.pcpu_id,
-			has_bvt, has_rtds, has_cbs);
+		sched_label = shell_vmstat_scheduler_label(has_bvt, has_rtds, has_cbs);
 		shell_vmstat_vcpu_diag(vcpu, current, &latency, &rtds, has_rtds,
 			&cbs, has_cbs,
 			diag, sizeof(diag));

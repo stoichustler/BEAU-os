@@ -217,8 +217,8 @@ static void init_pcpu_comm_post(void)
 	init_debug_post(pcpu_id);
 
 	pcpu_set_current_state(pcpu_id, PCPU_STATE_RUNNING);
-	LOG_INF("MP:     cpu%hu is running", pcpu_id);
-	LOG_INF("GICv3:  cpu%hu redistributor 0x%016lx",
+	LOG_INF("MP:     CPU%hu up and running", pcpu_id);
+	LOG_INF("GICv3:  CPU%hu redistributor 0x%016lx",
 		pcpu_id, arm64_gicv3_redist_base(pcpu_id));
 
 	if (pcpu_id == BSP_CPU_ID) {
@@ -229,6 +229,7 @@ static void init_pcpu_comm_post(void)
 			panic("failed to initialize all secondary cores!");
 		}
 		cpufreq_init();
+		arm64_rttest_init();
 		shell_start();
 		vm_wdt_start();
 		arm64_release_vm_launch();

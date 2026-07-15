@@ -10,6 +10,17 @@
 #include <types.h>
 
 struct acrn_vm;
+struct page_pool_stats;
+
+struct arm64_stage2_vm_stats {
+	uint64_t root_address;
+	uint64_t level3_pages;
+	uint64_t level2_pages;
+	uint64_t level1_pages;
+	uint64_t level0_pages;
+	uint64_t total_pages;
+	uint64_t malformed_entries;
+};
 
 #define ARM64_STAGE2_VMID_SHIFT		48U
 #define ARM64_STAGE2_VMID_MASK		0xffUL
@@ -20,6 +31,9 @@ struct acrn_vm;
 #define ARM64_STAGE2_MAP_NORMAL		(1U << 3U)
 
 uint64_t arm64_stage2_vttbr(const struct acrn_vm *vm);
+void arm64_get_stage2_page_pool_stats(struct page_pool_stats *stats);
+bool arm64_get_stage2_vm_stats(struct acrn_vm *vm,
+	struct arm64_stage2_vm_stats *stats);
 void arm64_stage2_map(struct acrn_vm *vm, uint64_t hpa, uint64_t ipa,
 	uint64_t size, uint32_t flags);
 void arm64_stage2_unmap(struct acrn_vm *vm, uint64_t ipa, uint64_t size);

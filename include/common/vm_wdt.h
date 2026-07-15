@@ -21,6 +21,26 @@
 #define CONFIG_VM_WDT_TIMEOUT_MS	15000U
 #endif
 
+/*
+ * A bit set for VM n permits watchdog recovery for that VM.  A VM must opt in
+ * only when its guest image includes a periodic HC_VM_WDT_KICK source.
+ */
+#ifndef CONFIG_VM_WDT_RESTART_VM_MASK
+#define CONFIG_VM_WDT_RESTART_VM_MASK	0UL
+#endif
+
+#ifndef CONFIG_VM_WDT_RESTART_MAX
+#define CONFIG_VM_WDT_RESTART_MAX	3U
+#endif
+
+#ifndef CONFIG_VM_WDT_RESTART_QUIESCE_TIMEOUT_MS
+#define CONFIG_VM_WDT_RESTART_QUIESCE_TIMEOUT_MS	1000U
+#endif
+
+#ifndef CONFIG_VM_WDT_RESTART_POLL_MS
+#define CONFIG_VM_WDT_RESTART_POLL_MS	20U
+#endif
+
 struct acrn_vm;
 
 enum vm_wdt_status {
@@ -31,22 +51,34 @@ enum vm_wdt_status {
 	VM_WDT_STATUS_STUCK,
 };
 
-enum vm_wdt_reason {
-	VM_WDT_REASON_NONE = 0U,
-	VM_WDT_REASON_HEARTBEAT,
-	VM_WDT_REASON_VCPU_STALL,
-	VM_WDT_REASON_IRQ_STORM,
-	VM_WDT_REASON_CONSOLE_STUCK,
-	VM_WDT_REASON_VIRTIO_STUCK,
+enum vm_wdt_cause {
+	VM_WDT_CAUSE_NONE = 0U,
+	VM_WDT_CAUSE_HEARTBEAT,
+	VM_WDT_CAUSE_TIMEOUT,
+	VM_WDT_CAUSE_VCPU_STALL,
+	VM_WDT_CAUSE_IRQ_STORM,
+	VM_WDT_CAUSE_CONSOLE_STUCK,
+	VM_WDT_CAUSE_VIRTIO_STUCK,
+};
+
+enum vm_wdt_recovery_state {
+	VM_WDT_RECOVERY_IDLE = 0U,
+	VM_WDT_RECOVERY_QUIESCING,
+	VM_WDT_RECOVERY_VERIFYING,
 };
 
 struct vm_wdt_snapshot {
 	enum vm_wdt_status status;
-	enum vm_wdt_reason reason;
+	enum vm_wdt_cause cause;
+	enum vm_wdt_recovery_state recovery_state;
 	uint64_t last_ms;
 	uint64_t kick_count;
 	uint64_t timeout_count;
+	uint64_t restart_count;
+	uint64_t restart_fail_count;
 	uint64_t last_token;
+	uint64_t recovery_wait_vcpus;
+	bool restart_pending;
 };
 
 void vm_wdt_start(void);

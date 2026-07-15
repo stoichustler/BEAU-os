@@ -499,6 +499,38 @@ void pause_vm(struct acrn_vm *vm)
 	}
 }
 
+uint64_t pause_vm_async(struct acrn_vm *vm)
+{
+	uint16_t i;
+	uint64_t pending_vcpus = 0UL;
+	struct acrn_vcpu *vcpu = NULL;
+
+	if (vm == NULL) {
+		return ~0UL;
+	}
+	if (is_paused_vm(vm)) {
+		return 0UL;
+	}
+	if (!(((is_severity_pass(vm->vm_id)) && (vm->state == VM_RUNNING)) ||
+		(vm->state == VM_READY_TO_POWEROFF) || (vm->state == VM_CREATED))) {
+		return ~0UL;
+	}
+
+	foreach_vcpu(i, vm, vcpu) {
+		pause_vcpu(vcpu);
+	}
+	foreach_vcpu(i, vm, vcpu) {
+		if (!is_vcpu_paused(vcpu)) {
+			bitmap_set_non_atomic(vcpu->vcpu_id, &pending_vcpus);
+		}
+	}
+	if (pending_vcpus == 0UL) {
+		vm->state = VM_PAUSED;
+	}
+
+	return pending_vcpus;
+}
+
 int32_t destroy_vm(struct acrn_vm *vm)
 {
 	int32_t ret = 0;
@@ -585,7 +617,7 @@ int32_t reset_vm(struct acrn_vm *vm)
 	return ret;
 }
 
-static int32_t restart_vm_locked(struct acrn_vm *vm)
+static int32_t restart_vm_locked(struct acrn_vm *vm, bool reload_image)
 {
 	int32_t ret = -EINVAL;
 
@@ -596,30 +628,30 @@ static int32_t restart_vm_locked(struct acrn_vm *vm)
 	pause_vm(vm);
 	if (is_paused_vm(vm)) {
 		ret = reset_vm(vm);
-		if (ret == 0) {
+		if ((ret == 0) && reload_image) {
 			/*
-			 * Warm-resetting vCPU/device state is not enough for Linux. The
-			 * previous kernel instance may have dirtied its loaded image, FDT,
-			 * ramdisk, and data sections. Re-run the boot image copy before
-			 * waking the BSP so reset behaves like a VM reboot, not just a
-			 * register restart.
+			 * A cold management reset reloads the boot payload before waking the
+			 * BSP. Watchdog recovery deliberately skips this copy: arch_reset_vm()
+			 * has already reset vCPU/device state, while the guest RAM image remains
+			 * mapped and is used as the warm-reset boot payload.
 			 */
 			ret = prepare_os_image(vm);
 		}
 		if (ret == 0) {
 			start_vm(vm);
-			LOG_INF("vm%u reset complete", vm->vm_id);
+			LOG_INF("VM%u: %s reset complete", vm->vm_id,
+				reload_image ? "cold" : "warm");
 		}
 	}
 
 	if (ret != 0) {
-		LOG_ERR("vm%u reset failed: state=%d", vm->vm_id, vm->state);
+		LOG_ERR("VM%u: reset failed: state=%d", vm->vm_id, vm->state);
 	}
 
 	return ret;
 }
 
-int32_t restart_vm(struct acrn_vm *vm)
+static int32_t restart_vm_with_mode(struct acrn_vm *vm, bool reload_image)
 {
 	int32_t ret;
 
@@ -634,10 +666,20 @@ int32_t restart_vm(struct acrn_vm *vm)
 	}
 
 	get_vm_lock(vm);
-	ret = restart_vm_locked(vm);
+	ret = restart_vm_locked(vm, reload_image);
 	put_vm_lock(vm);
 
 	return ret;
+}
+
+int32_t restart_vm(struct acrn_vm *vm)
+{
+	return restart_vm_with_mode(vm, true);
+}
+
+int32_t restart_vm_warm(struct acrn_vm *vm)
+{
+	return restart_vm_with_mode(vm, false);
 }
 
 int32_t make_reset_vm_request(uint16_t pcpu_id, uint16_t vm_id)
@@ -686,7 +728,7 @@ void reset_vm_from_idle(uint16_t pcpu_id)
 	for (vm_id = fls64(*vms); vm_id < CONFIG_MAX_VM_NUM; vm_id = fls64(*vms)) {
 		vm = get_vm_from_vmid(vm_id);
 		get_vm_lock(vm);
-		(void)restart_vm_locked(vm);
+		(void)restart_vm_locked(vm, true);
 		put_vm_lock(vm);
 		bitmap_clear_non_atomic(vm_id, vms);
 	}

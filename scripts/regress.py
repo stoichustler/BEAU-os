@@ -2,6 +2,7 @@
 import argparse
 import codecs
 import os
+import re
 import selectors
 import shlex
 import shutil
@@ -99,6 +100,11 @@ def parse_args():
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
+        "--wdt-restart-smoke",
+        action="store_true",
+        help="Trigger one VM3 missed heartbeat and verify bounded cold watchdog recovery.",
+    )
+    parser.add_argument(
         "--stress-vsh-switch",
         action="store_true",
         help="Run the VM console switch/Enter pressure sequence after the standard smoke checks.",
@@ -141,7 +147,7 @@ def qemu_cmd(args):
     return [
         args.qemu,
         "-machine",
-        "virt,virtualization=on,gic-version=3,its=on",
+        "virt,virtualization=on,gic-version=3,its=on,iommu=smmuv3",
         "-cpu",
         "cortex-a57",
         "-smp",
@@ -159,6 +165,12 @@ def qemu_cmd(args):
         f"loader,file={args.linux_vm3_image},addr={LINUX_VM3_IMAGE_STAGE_ADDR},force-raw=on",
         "-device",
         f"loader,file={args.linux_initramfs},addr={LINUX_INITRAMFS_STAGE_ADDR},force-raw=on",
+        "-device",
+        "edu,addr=0x1",
+        "-netdev",
+        "user,id=beau_vm2_net",
+        "-device",
+        "virtio-net-pci-non-transitional,netdev=beau_vm2_net,addr=0x2,mac=52:54:00:be:02:00",
         *args.extra,
     ]
 
@@ -385,6 +397,26 @@ def vsh_return(qemu, name, vmid=None):
         raise
 
 
+def run_wdt_restart_smoke(qemu):
+    """Delay VM3's next kick and verify the watchdog recovers it end to end."""
+    vsh_enter(qemu, 3, LINUX_PROMPT, "WDT smoke: VM3 Linux shell", timeout=60.0)
+    vm3_command(
+        qemu,
+        "test -w /sys/module/vwdt/parameters/period_ms && echo 60000 > /sys/module/vwdt/parameters/period_ms",
+        "WDT smoke: delay VM3 heartbeat",
+    )
+    vsh_return(qemu, "WDT smoke: return from VM3", vmid=3)
+
+    qemu.expect("HWT: VM3 restart cause:timeout", "WDT smoke: timeout detected", timeout=45.0)
+    qemu.expect("HWT: VM3 quiesced; cold restart", "WDT smoke: vCPUs quiesced", timeout=5.0)
+    qemu.expect("VM3: load KERNEL", "WDT smoke: kernel reloaded", timeout=5.0)
+    qemu.expect("HWT: VM3 restart launched; wait-kick", "WDT smoke: restart launched", timeout=10.0)
+    qemu.expect("HWT: VM3 restart verified", "WDT smoke: restart verified", timeout=45.0)
+    vsh_enter(qemu, 3, LINUX_PROMPT, "WDT smoke: VM3 shell after recovery", timeout=60.0)
+    vsh_return(qemu, "WDT smoke: return from recovered VM3", vmid=3)
+    print("[pass] watchdog cold-restart smoke complete", flush=True)
+
+
 def send_enter_burst(qemu, count, delay, name, vmid=None):
     print(f"[regress] stress: {name}: {count} Enter keys", flush=True)
     try:
@@ -409,7 +441,7 @@ def expect_linux_id(qemu, vmid, name):
     # makes this check wait for fresh command output instead of stale "gid=0".
     qemu.send_slow(f"id; echo {token}_done" + ENTER)
     try:
-        text = qemu.expect(f"[vmid {vmid}] {token}_done", name, timeout=20.0, keepalive=ENTER)
+        text = qemu.expect(f"{token}_done", name, timeout=20.0, keepalive=ENTER)
         if "gid=0" not in text:
             raise RuntimeError(f"{name}: id output missing gid=0")
         qemu.expect(LINUX_PROMPT, f"{name}: prompt", timeout=5.0, keepalive=ENTER)
@@ -445,7 +477,7 @@ def vm_command(qemu, vmid, command, name, patterns=None, timeout=20.0, expect_rc
         f"t={token}; {command}; rc=$?; printf '\\n%s:%s\\n' \"$t\" \"$rc\"" + ENTER,
         delay=0.005,
     )
-    text = qemu.expect(f"[vmid {vmid}] {token}:", name, timeout=timeout)
+    text = qemu.expect(f"{token}:", name, timeout=timeout)
     if f"{token}:{expect_rc}" not in text:
         raise RuntimeError(f"{name}: command returned non-zero")
     for pattern in patterns:
@@ -549,6 +581,24 @@ def expect_vm3_virtio_proxy_smoke(qemu):
     expect_vm3_virtioi2c(qemu, "VM3 virtio-i2c detect/transfer")
 
 
+def expect_rttest(qemu, command, pcpu_count):
+    start_len = len(qemu.output)
+
+    qemu.send(command + ENTER)
+    qemu.expect(PROMPT, f"{command} starts", timeout=3.0)
+    qemu.expect(f"T:{pcpu_count - 1:2d}", f"{command} summary", timeout=15.0)
+    qemu.drain_for(0.2)
+    output = qemu.output[start_len:]
+
+    for pcpu_id in range(pcpu_count):
+        pattern = f"T:{pcpu_id:2d} ({pcpu_id:5d}) P: 0 I:1000"
+        if pattern not in output:
+            raise RuntimeError(f"{command} output missing {pattern!r}")
+    if len(re.findall(r"C:\s+1000(?:\s|$)", output)) != pcpu_count:
+        raise RuntimeError(f"{command} output does not contain {pcpu_count} completed samples")
+    print(f"[pass] {command}: per-pCPU output found", flush=True)
+
+
 def run_guest_help(qemu, vmid, prompt, name, timeout):
     print(f"[regress] stress: {name}: help", flush=True)
     qemu.send("help" + ENTER)
@@ -633,6 +683,9 @@ def run_qemu(args, cmd):
     with QemuSession(cmd, args.log, args.timeout) as qemu:
         qemu.disable_terminal_replies = args.no_terminal_replies
         qemu.expect(PROMPT, "BEAU shell prompt", keepalive=ENTER)
+        if args.wdt_restart_smoke:
+            run_wdt_restart_smoke(qemu)
+            return
         qemu.command_retry("vcpus", [
             "vcpu",
             "pcpu_mode",
@@ -665,6 +718,8 @@ def run_qemu(args, cmd):
             "BVT stats:",
             "CBS stats:",
         ])
+        pcpu_count = int(args.smp)
+        expect_rttest(qemu, "rttest", pcpu_count)
         qemu.command_retry(
             "vmstat",
             [
@@ -690,8 +745,16 @@ def run_qemu(args, cmd):
             ],
             ["assertion failed", "stack check fails", "fatal error"],
         )
-        qemu.command_retry("mmap", ["arm64 memory mappings", "vm-0 s2", "vm-1 s2", "vm-2 s2", "vm-3 s2"])
-        qemu.command_retry("irqstat", ["irqstat:"])
+        qemu.command_retry("devmap", ["arm64 memory mappings", "vm-0 s2", "vm-1 s2", "vm-2 s2", "vm-3 s2"])
+        qemu.command_retry(
+            "memstat",
+            ["Page-table pools", "hv-s1", "vm-s2", "Stage-2 ownership", "accounted:"],
+        )
+        qemu.command_retry(
+            "health",
+            ["overall:", "Host", "Virtual machines", "Findings", "vm0", "vm1", "vm2", "vm3"],
+        )
+        qemu.command_retry("irqstat", ["host pirq:", "guest virq:"])
         qemu.command_retry(
             "virtiostat",
             [
@@ -788,11 +851,13 @@ def main():
         if not args.no_build:
             print(render(build, args.toolchains))
         print(quote(qemu))
-        checks = "prompt, vcpus, schedstat, vmstat, mmap, irqstat, virtiostat, vsh 0, ctrl-d, vsh 1, RT-Thread shell, ctrl-d, vsh 2, Linux-2 backend shell, ctrl-d, vsh 3, Linux-3 frontend shell"
+        checks = "prompt, vcpus, schedstat, vmstat, devmap, irqstat, virtiostat, vsh 0, ctrl-d, vsh 1, RT-Thread shell, ctrl-d, vsh 2, Linux-2 backend shell, ctrl-d, vsh 3, Linux-3 frontend shell"
         if args.stress_vsh_switch:
             checks += ", VM console switch/Enter stress"
         if args.stress_vsh_help:
             checks += f", VM console help stress x{args.stress_help_rounds}"
+        if args.wdt_restart_smoke:
+            checks = "VM3 watchdog timeout, quiesce, cold restart, verification kick, VM3 shell"
         print(f"checks: {checks}")
         return 0
 

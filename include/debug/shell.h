@@ -22,6 +22,7 @@
 
 void shell_init(void);
 void shell_start(void);
+void arm64_rttest_init(void);
 void shell_kick(void);
 bool shell_is_open(void);
 bool shell_async_puts(const char *string_ptr);

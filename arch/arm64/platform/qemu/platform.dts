@@ -274,10 +274,9 @@
 			};
 			shared-cpupool {
 				pcpus = <4 5 6 7>;
-				policy = "cbs+";
+				policy = "cbs";
 				period = <2000>;
 				budget = <1000>;
-				gang-skew-us = <450>;
 			};
 		};
 	};

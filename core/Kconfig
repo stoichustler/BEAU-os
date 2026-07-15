@@ -82,6 +82,23 @@ config SCHED_PRIO
 	help
 	  Internal compatibility symbol selecting priority scheduler code.
 
+config ACRNTRACE_ENABLED
+	bool "Enable BEAU runtime trace capture"
+	default y
+	help
+	  Compile the low-overhead per-pCPU trace producer and shell capture
+	  controls. Capture remains stopped at boot until the trace shell command
+	  starts it.
+
+config TRACE_RECORDS_PER_CPU
+	int "Trace records retained per pCPU"
+	default 256
+	range 32 4096
+	depends on ACRNTRACE_ENABLED
+	help
+	  Number of fixed 32-byte records retained in each pCPU trace ring. Full
+	  rings overwrite their oldest records and account the overwrite count.
+
 config MAX_EMULATED_MMIO_REGIONS
 	int "Maximum emulated MMIO regions per VM"
 	default 8
@@ -111,5 +128,21 @@ config VM_WDT_TIMEOUT_MS
 	default 15000
 	help
 	  VM heartbeat age that is considered timed out by the watchdog.
+
+config VM_WDT_RESTART_VM_MASK
+	hex "VM watchdog auto-restart VM mask"
+	default 0
+	help
+	  Bit n enables automatic restart of VM n after its watchdog heartbeat
+	  times out. Enable only guests that include an HC_VM_WDT_KICK source.
+	  Service VMs are never restarted by the watchdog.
+
+config VM_WDT_RESTART_MAX
+	int "Maximum watchdog recovery attempts per VM boot"
+	default 3
+	help
+	  Limits automatic restarts after a VM watchdog timeout. The count survives
+	  VM restarts for the lifetime of one VM instance, preventing a guest that
+	  cannot boot from entering an infinite watchdog reset loop.
 
 endmenu

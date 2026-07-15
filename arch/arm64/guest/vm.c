@@ -75,6 +75,11 @@ static uint8_t stage2_zero_page[PAGE_SIZE] __aligned(PAGE_SIZE);
 static bool stage2_page_pool_initialized;
 static bool arm64_boot_vdev_logged;
 
+struct arm64_stage2_walk_context {
+	struct arm64_stage2_vm_stats *stats;
+	uint64_t visited[(ARM64_STAGE2_PAGE_NUM + 63UL) >> 6U];
+};
+
 static bool arm64_vm_boot_log_enabled(uint16_t vm_id)
 {
 	return vm_id <= 2U;
@@ -186,6 +191,105 @@ static void init_stage2_page_pool(void)
 			(uint64_t *)stage2_pages_bitmap, ARM64_STAGE2_PAGE_NUM);
 		stage2_page_pool_initialized = true;
 	}
+}
+
+void arm64_get_stage2_page_pool_stats(struct page_pool_stats *stats)
+{
+	page_pool_get_stats(&stage2_page_pool, stats);
+}
+
+static bool arm64_stage2_page_index(const uint64_t *page, uint64_t *page_index)
+{
+	uint64_t address = (uint64_t)page;
+	uint64_t pool_start = (uint64_t)stage2_pages;
+	uint64_t pool_end = pool_start + sizeof(stage2_pages);
+	bool allocated;
+
+	if ((page == NULL) || (page_index == NULL) ||
+		((address & (PAGE_SIZE - 1UL)) != 0UL) ||
+		(address < pool_start) || (address >= pool_end)) {
+		return false;
+	}
+
+	*page_index = (address - pool_start) / PAGE_SIZE;
+	spinlock_obtain(&stage2_page_pool.lock);
+	allocated = bitmap_test(*page_index, stage2_page_pool.bitmap);
+	spinlock_release(&stage2_page_pool.lock);
+	return allocated;
+}
+
+static void arm64_stage2_count_table(struct arm64_stage2_walk_context *context,
+	uint64_t *table, enum _page_table_level level)
+{
+	uint64_t page_index;
+	uint64_t entry_index;
+
+	if ((context == NULL) || (context->stats == NULL) ||
+		(level > PGT_LVL0) ||
+		!arm64_stage2_page_index(table, &page_index)) {
+		if ((context != NULL) && (context->stats != NULL)) {
+			context->stats->malformed_entries++;
+		}
+		return;
+	}
+	if (bitmap_test(page_index, context->visited)) {
+		context->stats->malformed_entries++;
+		return;
+	}
+	bitmap_set_non_atomic(page_index & 0x3fUL,
+		&context->visited[page_index >> 6U]);
+
+	switch (level) {
+	case PGT_LVL3:
+		context->stats->level3_pages++;
+		break;
+	case PGT_LVL2:
+		context->stats->level2_pages++;
+		break;
+	case PGT_LVL1:
+		context->stats->level1_pages++;
+		break;
+	case PGT_LVL0:
+		context->stats->level0_pages++;
+		break;
+	default:
+		break;
+	}
+	context->stats->total_pages++;
+
+	if (level == PGT_LVL0) {
+		return;
+	}
+	for (entry_index = 0UL; entry_index < PTRS_PER_PGTL0E; entry_index++) {
+		uint64_t entry = table[entry_index];
+
+		if (!stage2_pgentry_present(entry) || (is_pgtl_large(entry) != 0UL)) {
+			continue;
+		}
+		arm64_stage2_count_table(context, page_addr(entry),
+			(enum _page_table_level)((uint32_t)level + 1U));
+	}
+}
+
+bool arm64_get_stage2_vm_stats(struct acrn_vm *vm,
+	struct arm64_stage2_vm_stats *stats)
+{
+	struct arm64_stage2_walk_context context;
+
+	if ((vm == NULL) || (stats == NULL) || (vm->root_stg2ptp == NULL)) {
+		return false;
+	}
+
+	(void)memset(&context, 0U, sizeof(context));
+	(void)memset(stats, 0U, sizeof(*stats));
+	context.stats = stats;
+	stats->root_address = (uint64_t)vm->root_stg2ptp;
+
+	spinlock_obtain(&vm->stg2pt_lock);
+	arm64_stage2_count_table(&context, vm->root_stg2ptp, PGT_LVL3);
+	spinlock_release(&vm->stg2pt_lock);
+
+	return stats->total_pages != 0UL;
 }
 
 static bool arm64_vm_uses_virtio_console(const struct acrn_vm_config *vm_config)

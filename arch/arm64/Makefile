@@ -107,8 +107,8 @@ VP_S_OBJS := $(patsubst %.S,$(HV_OBJDIR)/%.o,$(VP_S_SRCS))
 VM_CFG_C_OBJS := $(patsubst %.c,$(HV_OBJDIR)/%.o,$(VM_CFG_C_SRCS))
 VM_CFG_S_OBJS := $(patsubst %.S,$(HV_OBJDIR)/%.o,$(VM_CFG_S_SRCS))
 
-HOST_MOD := $(HV_MODDIR)/host_mod.a
-VP_MOD := $(HV_MODDIR)/vp_mod.a
+HOST_MOD := $(HV_MODDIR)/arch.a
+VP_MOD := $(HV_MODDIR)/libvmm.a
 
 MODULES += $(HOST_MOD)
 MODULES += $(VP_MOD)

@@ -30,7 +30,6 @@
 #define ARM64_DTS_GIC_SPI		0U
 #define ARM64_DTS_IRQ_TYPE_EDGE_RISING	1U
 #define ARM64_DTS_IRQ_TYPE_LEVEL_HIGH	4U
-#define ARM64_DTS_CBS_GANG_SKEW_US_DEFAULT	500U
 #define ARM64_DTS_STRICT_SHARED_PCPU_VM_MAX	3U
 
 static const struct arm64_platform_dts_vm_storage *dts_storage;
@@ -1579,8 +1578,6 @@ static enum sched_policy_id dts_parse_sched_policy(const char *policy)
 		sched_policy = SCHED_POLICY_RTDS;
 	} else if (strcmp(policy, "cbs") == 0) {
 		sched_policy = SCHED_POLICY_CBS;
-	} else if (strcmp(policy, "cbs+") == 0) {
-		sched_policy = SCHED_POLICY_CBS_PLUS;
 	} else if (strcmp(policy, "prio") == 0) {
 		sched_policy = SCHED_POLICY_PRIO;
 	} else {
@@ -1655,20 +1652,10 @@ static void dts_parse_sched_cpupool(const void *fdt, int32_t sched,
 		dts_u32_prop(fdt, node, "cbs-budget-us",
 		dts_u32_prop(fdt, node, "rtds-budget-us", 0U)));
 	dts_validate_budget_pair(node_name, pool->period_us, pool->budget_us);
-	/*
-	 * A boolean gang knob hides which scheduler semantics are active. Fail closed
-	 * and require policy = "cbs+" so CBS and CBS+ remain distinguishable in DTS,
-	 * shell output, and regression logs.
-	 */
-	if (fdt_getprop(fdt, node, "gang", NULL) != NULL) {
-		panic("arm64 dts scheduler gang property is obsolete; use policy \"cbs+\"");
+	if ((fdt_getprop(fdt, node, "gang", NULL) != NULL) ||
+		(fdt_getprop(fdt, node, "gang-skew-us", NULL) != NULL)) {
+		panic("arm64 dts scheduler CBS gang properties are not supported");
 	}
-	/*
-	 * Parsed for every pool so the config snapshot is complete; sched_cbs consumes
-	 * the value only when the selected pool policy is cbs+.
-	 */
-	pool->gang_skew_us = dts_u32_prop(fdt, node, "gang-skew-us",
-		ARM64_DTS_CBS_GANG_SKEW_US_DEFAULT);
 }
 
 static void dts_validate_sched_config(const struct sched_platform_config *config)

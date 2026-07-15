@@ -25,6 +25,12 @@ for mixed RTOS and Linux guests.
 └──────────────┴───────────────┘
 ```
 
+### Quick Run
+
+```sh
+./scripts/kick.sh --build
+```
+
 ## Learning Path
 
 Start with [walkthrough.md](sdk/beau/walkthrough.md) for the ARM64

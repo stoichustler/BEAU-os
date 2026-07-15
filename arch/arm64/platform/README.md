@@ -18,10 +18,9 @@ hypervisor {
 		};
 		shared-cpupool {
 			pcpus = <4 5 6 7>;
-			policy = "cbs+";
+			policy = "cbs";
 			period = <2000>;
 			budget = <1000>;
-			gang-skew-us = <450>;
 		};
 	};
 };
@@ -57,7 +56,7 @@ shared-cpupool
     +--> 多 VM 共享 pCPU
     +--> 承载 secondary vCPU，或 exclusive 不足时承载剩余 vcpu0
     +--> 每个 shared pCPU 的 VM/vCPU fan-in 有上限
-    +--> 推荐 policy = "cbs+"
+    +--> 推荐 policy = "cbs"
 ```
 
 ## Strict Placement 规则
@@ -155,8 +154,8 @@ create_vm() / create_vcpu()
 4. 统计每个 shared pCPU：
    - vCPU 数量不能超过 3；
    - VM 数量不能超过 3。
-5. 确认 shared pool policy 使用 `cbs` 或 `cbs+`，并设置 `period/budget`。
-6. QEMU 4OS 场景优先使用 `cbs+`，让同 VM sibling vCPU 在 bounded skew 内获得轻量 gang 偏好。
+5. 确认 shared pool policy 使用 `cbs`，并设置 `period/budget`。
+6. CBS 始终按本地 EDF deadline 选择 runnable server。
 7. 改完后至少执行：
 
 ```sh

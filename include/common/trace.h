@@ -11,7 +11,7 @@
 
 #ifndef TRACE_H
 #define TRACE_H
-#include <asm/per_cpu.h>
+#include <types.h>
 
 /*
  * Common trace event ID layout:
@@ -62,8 +62,47 @@
 
 #define TRACE_VMEXIT_UNHANDLED		0x20000U
 
+#define TRACE_MASK_TIMER		(1UL << 0U)
+#define TRACE_MASK_SCHED		(1UL << 1U)
+#define TRACE_MASK_HCALL		(1UL << 2U)
+#define TRACE_MASK_VM			(1UL << 3U)
+#define TRACE_MASK_ALL			(TRACE_MASK_TIMER | TRACE_MASK_SCHED | \
+					 TRACE_MASK_HCALL | TRACE_MASK_VM)
+
+/* Fixed 32-byte record shared by all trace producers and shell decoders. */
+struct trace_record {
+	uint64_t tsc;
+	uint64_t id:48;
+	uint8_t n_data;
+	uint8_t cpu;
+	union {
+		struct {
+			uint32_t a, b, c, d;
+		} fields_32;
+		struct {
+			uint64_t e, f;
+		} fields_64;
+		char str[16];
+	} payload;
+} __aligned(8);
+
+struct trace_cpu_status {
+	uint32_t count;
+	uint64_t overwritten;
+	bool writer_active;
+};
+
 void TRACE_2L(uint32_t evid, uint64_t e, uint64_t f);
 void TRACE_4I(uint32_t evid, uint32_t a, uint32_t b, uint32_t c, uint32_t d);
 void TRACE_16STR(uint32_t evid, const char name[]);
+
+bool trace_is_running(void);
+uint64_t trace_get_mask(void);
+uint32_t trace_get_capacity(void);
+int32_t trace_start(uint64_t event_mask);
+int32_t trace_stop(void);
+int32_t trace_clear(void);
+void trace_get_cpu_status(uint16_t pcpu_id, struct trace_cpu_status *status);
+bool trace_get_record(uint16_t pcpu_id, uint32_t index, struct trace_record *record);
 
 #endif /* TRACE_H */

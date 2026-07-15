@@ -185,6 +185,14 @@ void launch_vcpu(struct acrn_vcpu *vcpu);
  */
 void reset_vcpu(struct acrn_vcpu *vcpu);
 
+/*
+ * Request a vCPU to leave the scheduler without waiting for a remote pCPU.
+ * Callers that need a completed stop must use is_vcpu_paused() before touching
+ * the vCPU's architecture state.
+ */
+void pause_vcpu(struct acrn_vcpu *vcpu);
+bool is_vcpu_paused(const struct acrn_vcpu *vcpu);
+
 /**
  * @brief pause the vcpu and set new state
  *

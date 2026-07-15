@@ -223,15 +223,6 @@ static struct acrn_scheduler *scheduler_from_policy(enum sched_policy_id policy)
 	 *   Main parameters: cpupool period/budget, or per-VM
 	 *   sched_params.cbs_period_us and cbs_budget_us when provided.
 	 *
-	 * cbs+:
-	 *   Fit: shared pCPUs running SMP guests where sibling vCPUs benefit from
-	 *   co-scheduling. It uses the CBS backend with a relaxed gang overlay.
-	 *   Principle: CBS still owns budget and EDF deadlines. The overlay may
-	 *   select a same-VM candidate within gang-skew-us when a sibling vCPU is
-	 *   already running on another cbs+ pCPU. If no candidate is eligible, it
-	 *   falls back to the EDF head and never waits for a full gang.
-	 *   Main parameters: CBS period/budget plus cpupool gang-skew-us.
-	 *
 	 * rtds:
 	 *   Fit: shared pCPUs with periodic real-time style load where fixed period
 	 *   boundaries are more important than burst absorption.
@@ -263,7 +254,6 @@ static struct acrn_scheduler *scheduler_from_policy(enum sched_policy_id policy)
 		scheduler = &sched_rtds;
 		break;
 	case SCHED_POLICY_CBS:
-	case SCHED_POLICY_CBS_PLUS:
 		scheduler = &sched_cbs;
 		break;
 	case SCHED_POLICY_PRIO:
@@ -479,30 +469,12 @@ struct thread_object *sched_get_current(uint16_t pcpu_id)
 const char *sched_get_scheduler_name(uint16_t pcpu_id)
 {
 	struct sched_control *ctl = &per_cpu(sched_ctl, pcpu_id);
-	const struct sched_cpupool_config *pool = sched_get_pcpu_pool_config(pcpu_id);
-
-	/*
-	 * CBS and CBS+ intentionally share the sched_cbs backend. Report the DTS
-	 * policy name here so shell/regression output can tell the overlay apart from
-	 * plain CBS without duplicating scheduler code.
-	 */
-	if ((pool != NULL) && (pool->policy == SCHED_POLICY_CBS_PLUS)) {
-		return "sched_cbs+";
-	}
-
 	return (ctl->scheduler != NULL) ? ctl->scheduler->name : "none";
 }
 
 const char *sched_get_scheduler_stat_desc(uint16_t pcpu_id)
 {
 	struct sched_control *ctl = &per_cpu(sched_ctl, pcpu_id);
-	const struct sched_cpupool_config *pool = sched_get_pcpu_pool_config(pcpu_id);
-
-	/* Keep the stat description aligned with the policy name override above. */
-	if ((pool != NULL) && (pool->policy == SCHED_POLICY_CBS_PLUS)) {
-		return "partitioned-edf-cbs:relaxed-gang";
-	}
-
 	return (ctl->scheduler != NULL) ? ctl->scheduler->stat_desc : "";
 }
 

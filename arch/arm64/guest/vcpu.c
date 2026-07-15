@@ -12,6 +12,7 @@
 #include <logmsg.h>
 #include <schedule.h>
 #include <ticks.h>
+#include <trace.h>
 #include <asm/irq.h>
 #include <asm/cpu.h>
 #include <asm/sysreg.h>
@@ -175,6 +176,14 @@ uint64_t arm64_vcpu_trace_guest_boundary(struct acrn_vcpu *vcpu, uint8_t event,
 	trace->head = idx;
 	if (trace->count < ARM64_VCPU_GUEST_TRACE_NUM) {
 		trace->count++;
+	}
+
+	if (event == ARM64_VCPU_GUEST_TRACE_ENTER) {
+		TRACE_4I(TRACE_VM_ENTER, vcpu->vm->vm_id, vcpu->vcpu_id, source,
+			(uint32_t)status);
+	} else if (event == ARM64_VCPU_GUEST_TRACE_EXIT) {
+		TRACE_4I(TRACE_VM_EXIT, vcpu->vm->vm_id, vcpu->vcpu_id, source,
+			(uint32_t)status);
 	}
 
 	return now;

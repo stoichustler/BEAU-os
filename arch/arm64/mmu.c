@@ -91,6 +91,11 @@ const struct mem_region *arm64_get_reserved_mem_regions(uint32_t *count)
 	return rsvd_regions;
 }
 
+void arm64_get_hv_s1_page_pool_stats(struct page_pool_stats *stats)
+{
+	page_pool_get_stats(&ppt_page_pool, stats);
+}
+
 #define PPT_PGTL3_PAGE_NUM	1UL
 #define PPT_PGTL2_PAGE_NUM	1UL
 #define PPT_PGTL1_PAGE_NUM	8UL

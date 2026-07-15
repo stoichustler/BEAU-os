@@ -71,7 +71,7 @@ struct shell {
 #define SHELL_CMD_LOG_LVL_PARAM		"[<console_loglevel> [<mem_loglevel> [npk_loglevel]]]"
 #define SHELL_CMD_LOG_LVL_HELP		"loglevel {0-6}"
 
-#define SHELL_CMD_DUMP_HOST_MEM		"memscan"
+#define SHELL_CMD_DUMP_HOST_MEM		"hmm"
 #define SHELL_CMD_DUMP_HOST_MEM_PARAM	"<addr, length>"
 #define SHELL_CMD_DUMP_HOST_MEM_HELP	"dump host memory: address(hex), size(dec in bytes)"
 

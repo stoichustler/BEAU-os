@@ -104,6 +104,25 @@ void free_page(struct page_pool *pool, struct page *page)
 	spinlock_release(&pool->lock);
 }
 
+void page_pool_get_stats(struct page_pool *pool, struct page_pool_stats *stats)
+{
+	uint64_t used_pages = 0UL;
+	uint64_t idx;
+
+	if ((pool == NULL) || (stats == NULL)) {
+		return;
+	}
+
+	spinlock_obtain(&pool->lock);
+	for (idx = 0UL; idx < pool->bitmap_size; idx++) {
+		used_pages += bitmap_weight(pool->bitmap[idx]);
+	}
+	stats->total_pages = pool->bitmap_size << 6U;
+	stats->used_pages = used_pages;
+	stats->free_pages = stats->total_pages - used_pages;
+	spinlock_release(&pool->lock);
+}
+
 static uint64_t sanitized_page_hpa;
 
 void sanitize_pte_entry(uint64_t *ptep, const struct pgtable *table)

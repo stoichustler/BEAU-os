@@ -364,7 +364,8 @@ static void shell_set_input_active(bool active)
 static void shell_item_vprint(const char *prefix, const char *fmt, va_list args)
 {
 	char body[MAX_STR_SIZE];
-	char line[MAX_STR_SIZE];
+	/* Leave room for the UTF-8 item prefix, CRLF and string terminator. */
+	char line[MAX_STR_SIZE + 16U];
 
 	(void)vsnprintf(body, sizeof(body), fmt, args);
 	(void)snprintf(line, sizeof(line), "%s%s\r\n", prefix, body);

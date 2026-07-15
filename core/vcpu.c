@@ -262,7 +262,7 @@ void launch_vcpu(struct acrn_vcpu *vcpu)
 
 	if (vcpu_boot_log_enabled(vcpu)) {
 		kick_us = ticks_to_us(cpu_ticks() - kick_tsc);
-		LOG_INF("VM%u: kick vcpu%hu on pcpu%hu   0x%016lx +%6luus",
+		LOG_INF("VM%u: kick vCPU%hu on pCPU%hu   0x%016lx +%6luus",
 			vcpu->vm->vm_id, vcpu->vcpu_id, pcpuid_from_vcpu(vcpu),
 			arch_vcpu_get_entry(vcpu), kick_us);
 	}
@@ -284,24 +284,51 @@ void reset_vcpu(struct acrn_vcpu *vcpu)
 	vcpu_set_state(vcpu, VCPU_INIT);
 }
 
-void zombie_vcpu(struct acrn_vcpu *vcpu)
+static bool vcpu_pause(struct acrn_vcpu *vcpu)
 {
-	enum vcpu_state prev_state;
-	uint16_t pcpu_id = pcpuid_from_vcpu(vcpu);
+	bool was_running = false;
 
-	LOG_DBG("vcpu%hu paused", vcpu->vcpu_id);
+	if (vcpu == NULL) {
+		return false;
+	}
 
 	if ((vcpu->state == VCPU_RUNNING) || (vcpu->state == VCPU_INIT)) {
-		prev_state = vcpu->state;
+		was_running = vcpu->state == VCPU_RUNNING;
 
 		vcpu_set_state(vcpu, VCPU_ZOMBIE);
+		sleep_thread(&vcpu->thread_obj);
+	}
 
-		if (prev_state == VCPU_RUNNING) {
-			if (pcpu_id == get_pcpu_id()) {
-				sleep_thread(&vcpu->thread_obj);
-			} else {
-				sleep_thread_sync(&vcpu->thread_obj);
-			}
+	return was_running;
+}
+
+void pause_vcpu(struct acrn_vcpu *vcpu)
+{
+	(void)vcpu_pause(vcpu);
+}
+
+bool is_vcpu_paused(const struct acrn_vcpu *vcpu)
+{
+	return (vcpu != NULL) && (vcpu->state == VCPU_ZOMBIE) &&
+		(vcpu->thread_obj.status == THREAD_STS_BLOCKED);
+}
+
+void zombie_vcpu(struct acrn_vcpu *vcpu)
+{
+	uint16_t pcpu_id;
+	bool was_running;
+
+	if (vcpu == NULL) {
+		return;
+	}
+
+	pcpu_id = pcpuid_from_vcpu(vcpu);
+	LOG_DBG("vcpu%hu paused", vcpu->vcpu_id);
+	was_running = vcpu_pause(vcpu);
+
+	if (was_running && (pcpu_id != get_pcpu_id())) {
+		while (!is_vcpu_paused(vcpu)) {
+			asm_pause();
 		}
 	}
 }
