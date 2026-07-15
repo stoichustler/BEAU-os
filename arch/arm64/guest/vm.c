@@ -671,7 +671,7 @@ void arch_trigger_level_intr(struct acrn_vm *vm, uint32_t irq, bool assert)
 
 	if (assert) {
 		vcpu = vcpu_from_vid(vm, BSP_CPU_ID);
-		if ((vcpu != NULL) && (vcpu->state != VCPU_OFFLINE)) {
+		if ((vcpu != NULL) && (vcpu_get_state(vcpu) != VCPU_OFFLINE)) {
 			(void)arm64_vgicv3_inject_irq(vcpu, irq, true);
 		}
 	} else {

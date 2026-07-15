@@ -79,6 +79,7 @@ static int32_t shell_irqstat(int32_t argc, char **argv);
 static int32_t shell_to_vm_console(int32_t argc, char **argv);
 static int32_t shell_vm_log(int32_t argc, char **argv);
 static const char *thread_state_str(enum thread_object_state state);
+static const char *thread_lifecycle_str(const struct thread_object *thread);
 
 static struct shell_cmd shell_cmds[] = {
 	{
@@ -1296,8 +1297,8 @@ static int32_t shell_list_vcpu(__unused int32_t argc, __unused char **argv)
 	uint16_t i;
 	uint16_t idx;
 
-	shell_puts("\r\nvcpu       pcpu  pcpu_mode  state     switches  lastwait.us  maxwait.us  since.us\r\n");
-	shell_puts("─────────  ────  ─────────  ────────  ────────  ───────────  ──────────  ────────\r\n");
+	shell_puts("\r\nvcpu       pcpu  pcpu_mode  lifecycle  thread    switches  lastwait.us  maxwait.us  since.us\r\n");
+	shell_puts("─────────  ────  ─────────  ─────────  ────────  ────────  ───────────  ──────────  ────────\r\n");
 
 	for (idx = 0U; idx < CONFIG_MAX_VM_NUM; idx++) {
 		vm = get_vm_from_vmid(idx);
@@ -1319,10 +1320,11 @@ static int32_t shell_list_vcpu(__unused int32_t argc, __unused char **argv)
 				snprintf(since_us, sizeof(since_us), "-");
 			}
 			snprintf(temp_str, MAX_STR_SIZE,
-				"%-9s  %-4hu  %-9s  %-8s  %-8lu  %-11lu  %-10lu  %-8s\r\n",
+				"%-9s  %-4hu  %-9s  %-9s  %-8s  %-8lu  %-11lu  %-10lu  %-8s\r\n",
 				vcpu->thread_obj.name,
 				pcpu_id,
 				shared_pcpu ? "shared" : "exclusive",
+				vcpu_state_to_str(vcpu_get_state(vcpu)),
 				thread_state_str(vcpu->thread_obj.status),
 				stats.switches,
 				ticks_to_us(stats.last_wait_ticks),
@@ -1357,6 +1359,24 @@ static const char *thread_state_str(enum thread_object_state state)
 	return str;
 }
 
+static const char *thread_lifecycle_str(const struct thread_object *thread)
+{
+	const char *state = "-";
+
+	if ((thread != NULL) && thread->is_vcpu &&
+		(thread->vm_id < CONFIG_MAX_VM_NUM)) {
+		struct acrn_vm *vm = get_vm_from_vmid(thread->vm_id);
+
+		if ((vm != NULL) && (thread->vcpu_id < vm->hw.created_vcpus)) {
+			struct acrn_vcpu *vcpu = vcpu_from_vid(vm, thread->vcpu_id);
+
+			state = vcpu_state_to_str(vcpu_get_state(vcpu));
+		}
+	}
+
+	return state;
+}
+
 /* [20260630] threads monitor:
  *
  * This is the scheduler-wide inventory behind the VM-centric commands. It
@@ -1375,16 +1395,17 @@ static int32_t shell_list_threads(__unused int32_t argc, __unused char **argv)
 
 	snprintf(temp_str, MAX_STR_SIZE, "\r\nthreads: %u\r\n", sched_get_thread_count());
 	shell_puts(temp_str);
-	shell_puts("name             pcpu    state       current    entry\r\n");
-	shell_puts("───────────────  ────    ────────    ───────    ────────────────\r\n");
+	shell_puts("name             pcpu  lifecycle  thread    current  entry\r\n");
+	shell_puts("───────────────  ────  ─────────  ────────  ───────  ────────────────\r\n");
 
 	list_for_each(pos, head) {
 		thread = container_of(pos, struct thread_object, node);
 		current = sched_get_current(thread->pcpu_id);
 		snprintf(temp_str, MAX_STR_SIZE,
-			"%-15s  %-4hu    %-8s    %-7s    0x%014lx\r\n",
+			"%-15s  %-4hu  %-9s  %-8s  %-7s  0x%014lx\r\n",
 			thread->name,
 			thread->pcpu_id,
+			thread_lifecycle_str(thread),
 			thread_state_str(thread->status),
 			(current == thread) ? "Y" : "N",
 			(uint64_t)thread->thread_entry);
@@ -1558,8 +1579,8 @@ static void shell_schedstat_print_cpu_usage(const struct list_head *head, uint64
 	 *          runtime[N] ----------------> runtime[N] + run_delta
 	 */
 	shell_puts("\r\nCPU usage since previous schedstat:\r\n\r\n");
-	shell_puts("name             pcpu  state     cpu%   run.us\r\n");
-	shell_puts("───────────────  ────  ────────  ─────  ─────────\r\n");
+	shell_puts("name             pcpu  lifecycle  thread    cpu%   run.us\r\n");
+	shell_puts("───────────────  ────  ─────────  ────────  ─────  ─────────\r\n");
 
 	list_for_each(pos, head) {
 		struct thread_object *thread = container_of(pos, struct thread_object, node);
@@ -1583,9 +1604,10 @@ static void shell_schedstat_print_cpu_usage(const struct list_head *head, uint64
 		}
 
 		snprintf(temp_str, MAX_STR_SIZE,
-			"%-15s  %-4hu  %-8s  %-5s  %-9lu\r\n",
+			"%-15s  %-4hu  %-9s  %-8s  %-5s  %-9lu\r\n",
 			thread->name,
 			thread->pcpu_id,
+			thread_lifecycle_str(thread),
 			thread_state_str(thread->status),
 			percent,
 			ticks_to_us(run_delta));

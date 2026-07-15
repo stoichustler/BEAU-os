@@ -100,7 +100,7 @@ int32_t hcall_service_vm_offline_cpu(struct acrn_vcpu *vcpu, __unused struct acr
 				ret = -1;
 				break;
 			}
-			zombie_vcpu(target_vcpu);
+			pause_vcpu_sync(target_vcpu);
 			destroy_vcpu(target_vcpu);
 		}
 	}
@@ -290,7 +290,7 @@ int32_t hcall_set_vcpu_regs(struct acrn_vcpu *vcpu, struct acrn_vm *target_vm,
 			LOG_ERR("%s: invalid vcpu_id for set_vcpu_regs\n", __func__);
 		} else {
 			target_vcpu = vcpu_from_vid(target_vm, vcpu_regs.vcpu_id);
-			if (target_vcpu->state != VCPU_OFFLINE) {
+			if (vcpu_get_state(target_vcpu) != VCPU_OFFLINE) {
 				if (is_valid_cr0_cr4(vcpu_regs.vcpu_regs.cr0, vcpu_regs.vcpu_regs.cr4)) {
 					set_vcpu_regs(target_vcpu, &(vcpu_regs.vcpu_regs));
 					ret = 0;

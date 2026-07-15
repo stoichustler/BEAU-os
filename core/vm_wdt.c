@@ -254,7 +254,7 @@ static bool vm_wdt_detect_vcpu_stall(const struct acrn_vm *vm)
 		const struct acrn_vcpu *vcpu = vcpu_from_vid((struct acrn_vm *)vm, vcpu_id);
 		struct sched_latency_stats latency = { 0U };
 
-		if ((vcpu == NULL) || (vcpu->state == VCPU_OFFLINE)) {
+		if ((vcpu == NULL) || (vcpu_get_state(vcpu) == VCPU_OFFLINE)) {
 			continue;
 		}
 		sched_get_latency(&vcpu->thread_obj, &latency);

@@ -233,7 +233,7 @@ static void cntp_timer_handler(void *data)
 	uint32_t ctl;
 	uint64_t cval;
 
-	if ((vcpu == NULL) || (vcpu->vm == NULL) || (vcpu->state != VCPU_RUNNING)) {
+	if ((vcpu == NULL) || (vcpu->vm == NULL) || !is_vcpu_running(vcpu)) {
 		return;
 	}
 
@@ -822,7 +822,7 @@ static void cntv_timer_handler(void *data)
 	uint64_t cval;
 	uint64_t now;
 
-	if ((vcpu == NULL) || (vcpu->vm == NULL) || (vcpu->state != VCPU_RUNNING)) {
+	if ((vcpu == NULL) || (vcpu->vm == NULL) || !is_vcpu_running(vcpu)) {
 		return;
 	}
 

@@ -382,10 +382,10 @@ static int32_t vits_inject_event_locked(struct acrn_vm *vm, struct arm64_vgicv3 
 		(uint8_t)target_vcpu_id;
 	target_vcpu = vcpu_from_vid(vm, target_vcpu_id);
 	ret = arm64_vgicv3_inject_irq_locked(vgic, target_vcpu, event->lpi, false);
-	if ((ret == 0) && (target_vcpu->state != VCPU_OFFLINE)) {
+	if ((ret == 0) && (vcpu_get_state(target_vcpu) != VCPU_OFFLINE)) {
 		vcpu_make_request(target_vcpu, ARM64_VCPU_REQUEST_EVENT);
 		signal_event(&target_vcpu->events[ARM64_VCPU_EVENT_VIRTUAL_INTERRUPT]);
-		if (target_vcpu->state == VCPU_RUNNING) {
+		if (is_vcpu_running(target_vcpu)) {
 			kick_vcpu(target_vcpu);
 		}
 	}

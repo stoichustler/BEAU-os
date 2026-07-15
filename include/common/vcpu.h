@@ -47,7 +47,8 @@ enum vcpu_state {
 	VCPU_OFFLINE = 0U,
 	VCPU_INIT,
 	VCPU_RUNNING,
-	VCPU_ZOMBIE,
+	VCPU_PAUSED,
+	VCPU_POWERED_OFF,
 };
 
 struct acrn_vm;
@@ -96,7 +97,12 @@ struct guest_mem_dump {
 
  * @pre (vcpu != NULL)
  */
-void vcpu_set_state(struct acrn_vcpu *vcpu, enum vcpu_state new_state);
+enum vcpu_state vcpu_get_state(const struct acrn_vcpu *vcpu);
+bool vcpu_try_transition_state(struct acrn_vcpu *vcpu,
+	enum vcpu_state old_state, enum vcpu_state new_state);
+const char *vcpu_state_to_str(enum vcpu_state state);
+bool is_vcpu_running(const struct acrn_vcpu *vcpu);
+bool is_vcpu_powered_off(const struct acrn_vcpu *vcpu);
 
 uint16_t pcpuid_from_vcpu(const struct acrn_vcpu *vcpu);
 int32_t arch_init_vcpu(struct acrn_vcpu *vcpu);
@@ -159,7 +165,7 @@ int32_t create_vcpu(struct acrn_vm *vm, uint16_t pcpu_id);
  *
  * @param[inout] vcpu pointer to vcpu data structure
  * @pre vcpu != NULL
- * @pre vcpu->state == VCPU_ZOMBIE
+ * @pre vcpu->state == VCPU_PAUSED
  */
 void destroy_vcpu(struct acrn_vcpu *vcpu);
 
@@ -172,7 +178,7 @@ void destroy_vcpu(struct acrn_vcpu *vcpu);
  * @pre vcpu != NULL
  * @pre vcpu->state == VCPU_INIT
  */
-void launch_vcpu(struct acrn_vcpu *vcpu);
+bool launch_vcpu(struct acrn_vcpu *vcpu);
 
 /**
  * @brief reset vcpu state and values
@@ -181,7 +187,7 @@ void launch_vcpu(struct acrn_vcpu *vcpu);
  *
  * @param[inout] vcpu pointer to vcpu data structure
  * @pre vcpu != NULL
- * @pre vcpu->state == VCPU_ZOMBIE
+ * @pre vcpu->state == VCPU_PAUSED or VCPU_OFFLINE during initialization
  */
 void reset_vcpu(struct acrn_vcpu *vcpu);
 
@@ -191,16 +197,19 @@ void reset_vcpu(struct acrn_vcpu *vcpu);
  * the vCPU's architecture state.
  */
 void pause_vcpu(struct acrn_vcpu *vcpu);
+void pause_vcpu_sync(struct acrn_vcpu *vcpu);
 bool is_vcpu_paused(const struct acrn_vcpu *vcpu);
 
 /**
- * @brief pause the vcpu and set new state
+ * @brief power off a vCPU in response to guest PSCI CPU_OFF
  *
- * Change a vCPU state to VCPU_ZOMBIE, and make a reschedule request for it.
+ * Change a running vCPU state to VCPU_POWERED_OFF and make a reschedule
+ * request for it. The vCPU object and scheduler thread remain reusable by
+ * PSCI CPU_ON.
  *
  * @param[inout] vcpu pointer to vcpu data structure
  */
-void zombie_vcpu(struct acrn_vcpu *vcpu);
+bool poweroff_vcpu(struct acrn_vcpu *vcpu);
 
 /**
  * @brief kick the vcpu and let it handle pending events

@@ -429,7 +429,7 @@ static void prepare_current_guest_resume(struct acrn_vcpu *vcpu)
 static struct acrn_vcpu *schedule_without_guest_resume(uint16_t pcpu_id,
 	struct acrn_vcpu *vcpu)
 {
-	if ((vcpu->state != VCPU_RUNNING) || vcpu->thread_obj.be_blocking) {
+	if (!is_vcpu_running(vcpu) || vcpu->thread_obj.be_blocking) {
 		schedule();
 		return get_exit_vcpu(pcpu_id);
 	}
@@ -713,14 +713,18 @@ static int64_t handle_psci_cpu_on(struct acrn_vcpu *vcpu)
 	int64_t ret = PSCI_RET_INVALID_PARAMS;
 
 	if (target != NULL) {
-		if (target->state == VCPU_RUNNING) {
+		get_vm_lock(vcpu->vm);
+		if (is_vcpu_running(target)) {
 			ret = PSCI_RET_DENIED;
-		} else {
+		} else if ((vcpu_get_state(target) == VCPU_INIT) ||
+			is_vcpu_powered_off(target)) {
 			arm64_prepare_linux_vcpu_context(target,
 				vcpu->arch.regs.x2, vcpu->arch.regs.x3);
-			launch_vcpu(target);
-			ret = PSCI_RET_SUCCESS;
+			ret = launch_vcpu(target) ? PSCI_RET_SUCCESS : PSCI_RET_DENIED;
+		} else {
+			ret = PSCI_RET_DENIED;
 		}
+		put_vm_lock(vcpu->vm);
 	}
 	record_psci_call(vcpu, (uint32_t)vcpu->arch.regs.x0, target, ret);
 
@@ -772,13 +776,12 @@ static int32_t handle_psci64(struct acrn_vcpu *vcpu, bool advance_elr)
 		ret = handle_psci_cpu_on(vcpu);
 		break;
 	case PSCI_0_2_FN_CPU_OFF:
-		zombie_vcpu(vcpu);
-		ret = PSCI_RET_SUCCESS;
+		ret = poweroff_vcpu(vcpu) ? PSCI_RET_SUCCESS : PSCI_RET_DENIED;
 		break;
 	case PSCI_0_2_FN_AFFINITY_INFO:
 	case PSCI_0_2_FN64_AFFINITY_INFO:
 		target = psci_target_vcpu(vcpu->vm, vcpu->arch.regs.x1);
-		ret = ((target != NULL) && (target->state == VCPU_RUNNING)) ?
+		ret = ((target != NULL) && is_vcpu_running(target)) ?
 			PSCI_AFFINITY_LEVEL_ON : PSCI_AFFINITY_LEVEL_OFF;
 		record_psci_call(vcpu, fn, target, ret);
 		break;
@@ -1086,7 +1089,7 @@ void dispatch_vcpu_trap(struct cpu_regs *regs)
 	if (ret < 0) {
 		LOG_ERR("failed to handle arm64 vcpu exit. ret=%d", ret);
 		get_vm_lock(vcpu->vm);
-		zombie_vcpu(vcpu);
+		pause_vcpu(vcpu);
 		put_vm_lock(vcpu->vm);
 	}
 
@@ -1102,7 +1105,7 @@ void dispatch_vcpu_trap(struct cpu_regs *regs)
 	if (ret < 0) {
 		LOG_FTL("failed to process arm64 vcpu requests");
 		get_vm_lock(vcpu->vm);
-		zombie_vcpu(vcpu);
+		pause_vcpu(vcpu);
 		put_vm_lock(vcpu->vm);
 		schedule();
 	}
@@ -1147,7 +1150,7 @@ void dispatch_vcpu_irq(struct cpu_regs *regs)
 	if (ret < 0) {
 		LOG_FTL("failed to process arm64 vcpu requests");
 		get_vm_lock(vcpu->vm);
-		zombie_vcpu(vcpu);
+		pause_vcpu(vcpu);
 		put_vm_lock(vcpu->vm);
 		schedule();
 	}

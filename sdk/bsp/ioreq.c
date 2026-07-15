@@ -587,11 +587,9 @@ static void dm_emulate_mmio_complete(struct acrn_vcpu *vcpu)
 static void dm_emulate_io_complete(struct acrn_vcpu *vcpu)
 {
 	if (get_io_req_state(vcpu->vm, vcpu->vcpu_id) == ACRN_IOREQ_STATE_COMPLETE) {
-		/*
-		 * If vcpu is in Zombie state and will be destroyed soon. Just
-		 * mark ioreq done and don't resume vcpu.
-		 */
-		if (vcpu->state == VCPU_ZOMBIE) {
+		/* A management-paused or PSCI-powered-off vCPU cannot consume the
+		 * completion. Retire the slot without making its thread runnable. */
+		if (!is_vcpu_running(vcpu)) {
 			complete_ioreq(vcpu, NULL);
 		} else {
 			switch (vcpu->req.io_type) {

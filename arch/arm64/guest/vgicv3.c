@@ -2684,7 +2684,7 @@ static void vgic_record_sgi_target(struct acrn_vcpu *source_vcpu,
 	last->local_active = active;
 	last->used_lrs = target_vcpu->arch.vgic.used_lrs;
 	last->request_pending = vcpu_has_pending_request(target_vcpu);
-	last->target_running = (target_vcpu->state == VCPU_RUNNING);
+	last->target_running = is_vcpu_running(target_vcpu);
 	last->target_current = target_current;
 	last->desc_enabled = (desc != NULL) && desc->enabled;
 	last->desc_pending = (desc != NULL) && desc->pending;
@@ -2729,14 +2729,14 @@ int32_t arm64_vgicv3_handle_sgi1r(struct acrn_vcpu *vcpu, uint64_t value)
 		if (sgi1r_targets_vcpu(value, vcpu->vcpu_id, target_vcpu->vcpu_id)) {
 			target_mask |= BIT32(target_vcpu->vcpu_id);
 		}
-		if ((target_vcpu->state != VCPU_OFFLINE) &&
+		if ((vcpu_get_state(target_vcpu) != VCPU_OFFLINE) &&
 			((target_mask & BIT32(target_vcpu->vcpu_id)) != 0U)) {
 			last_status = arm64_vgicv3_inject_irq_to(vcpu, target_vcpu, intid, false);
 			vgic_record_sgi_target(vcpu, target_vcpu, value, intid, last_status);
 			if (last_status == 0) {
 				delivered_mask |= BIT32(target_vcpu->vcpu_id);
 			}
-			if (target_vcpu->state == VCPU_RUNNING) {
+			if (is_vcpu_running(target_vcpu)) {
 				kick_vcpu(target_vcpu);
 			}
 		}

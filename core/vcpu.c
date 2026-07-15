@@ -13,6 +13,7 @@
 #include <schedule.h>
 #include <notify.h>
 #include <ticks.h>
+#include <atomic.h>
 
 #include <asm/notify.h>
 
@@ -148,9 +149,94 @@ static void init_vcpu_thread(struct acrn_vcpu *vcpu, uint16_t pcpu_id)
 	init_thread_data(&vcpu->thread_obj, &get_vm_config(vm->vm_id)->sched_params);
 }
 
-void vcpu_set_state(struct acrn_vcpu *vcpu, enum vcpu_state new_state)
+static bool vcpu_transition_allowed(enum vcpu_state old_state,
+	enum vcpu_state new_state)
 {
-	vcpu->state = new_state;
+	bool allowed = false;
+
+	switch (old_state) {
+	case VCPU_OFFLINE:
+		allowed = new_state == VCPU_INIT;
+		break;
+	case VCPU_INIT:
+		allowed = (new_state == VCPU_RUNNING) ||
+			(new_state == VCPU_PAUSED);
+		break;
+	case VCPU_RUNNING:
+		allowed = (new_state == VCPU_PAUSED) ||
+			(new_state == VCPU_POWERED_OFF);
+		break;
+	case VCPU_PAUSED:
+		allowed = (new_state == VCPU_INIT) ||
+			(new_state == VCPU_OFFLINE);
+		break;
+	case VCPU_POWERED_OFF:
+		allowed = (new_state == VCPU_RUNNING) ||
+			(new_state == VCPU_PAUSED);
+		break;
+	default:
+		break;
+	}
+
+	return allowed;
+}
+
+enum vcpu_state vcpu_get_state(const struct acrn_vcpu *vcpu)
+{
+	return (vcpu != NULL) ?
+		(enum vcpu_state)__atomic_load_n((const volatile uint32_t *)&vcpu->state,
+			__ATOMIC_ACQUIRE) : VCPU_OFFLINE;
+}
+
+bool vcpu_try_transition_state(struct acrn_vcpu *vcpu,
+	enum vcpu_state old_state, enum vcpu_state new_state)
+{
+	bool transitioned = false;
+
+	if ((vcpu != NULL) && vcpu_transition_allowed(old_state, new_state)) {
+		transitioned = atomic_cmpxchg32((volatile uint32_t *)&vcpu->state,
+			(uint32_t)old_state, (uint32_t)new_state) == (uint32_t)old_state;
+	}
+
+	return transitioned;
+}
+
+const char *vcpu_state_to_str(enum vcpu_state state)
+{
+	const char *name;
+
+	switch (state) {
+	case VCPU_OFFLINE:
+		name = "offline";
+		break;
+	case VCPU_INIT:
+		name = "init";
+		break;
+	case VCPU_RUNNING:
+		name = "running";
+		break;
+	case VCPU_PAUSED:
+		name = "paused";
+		break;
+	case VCPU_POWERED_OFF:
+		name = "poweroff";
+		break;
+	default:
+		name = "unknown";
+		break;
+	}
+
+	return name;
+}
+
+bool is_vcpu_running(const struct acrn_vcpu *vcpu)
+{
+	return vcpu_get_state(vcpu) == VCPU_RUNNING;
+}
+
+bool is_vcpu_powered_off(const struct acrn_vcpu *vcpu)
+{
+	return vcpu_get_state(vcpu) == VCPU_POWERED_OFF;
 }
 
 void kick_vcpu(struct acrn_vcpu *vcpu)
@@ -228,8 +314,8 @@ int32_t create_vcpu(struct acrn_vm *vm, uint16_t pcpu_id)
 
 		ret = arch_init_vcpu(vcpu);
 
-		if (ret == 0) {
-			vcpu->state = VCPU_INIT;
+		if ((ret == 0) && (vcpu_get_state(vcpu) != VCPU_INIT)) {
+			ret = -EINVAL;
 		}
 	} else {
 		LOG_ERR("%s, vcpu id is invalid!\n", __func__);
@@ -241,22 +327,31 @@ int32_t create_vcpu(struct acrn_vm *vm, uint16_t pcpu_id)
 
 void destroy_vcpu(struct acrn_vcpu *vcpu)
 {
+	if (!vcpu_try_transition_state(vcpu, VCPU_PAUSED, VCPU_OFFLINE)) {
+		LOG_ERR("VM%u: vCPU%hu destroy from %s denied", vcpu->vm->vm_id,
+			vcpu->vcpu_id, vcpu_state_to_str(vcpu_get_state(vcpu)));
+		return;
+	}
+
 	arch_deinit_vcpu(vcpu);
 
 	per_cpu(ever_run_vcpu, pcpuid_from_vcpu(vcpu)) = NULL;
 
 	/* This operation must be atomic to avoid contention with posted interrupt handler */
 	per_cpu(vcpu_array, pcpuid_from_vcpu(vcpu))[vcpu->vm->vm_id] = NULL;
-
-	vcpu_set_state(vcpu, VCPU_OFFLINE);
 }
 
-void launch_vcpu(struct acrn_vcpu *vcpu)
+bool launch_vcpu(struct acrn_vcpu *vcpu)
 {
 	uint64_t kick_tsc = cpu_ticks();
 	uint64_t kick_us;
+	enum vcpu_state state = vcpu_get_state(vcpu);
+	bool launched;
 
-	vcpu_set_state(vcpu, VCPU_RUNNING);
+	launched = vcpu_try_transition_state(vcpu, state, VCPU_RUNNING);
+	if (!launched) {
+		return false;
+	}
 
 	wake_thread(&vcpu->thread_obj);
 
@@ -266,11 +361,22 @@ void launch_vcpu(struct acrn_vcpu *vcpu)
 			vcpu->vm->vm_id, vcpu->vcpu_id, pcpuid_from_vcpu(vcpu),
 			arch_vcpu_get_entry(vcpu), kick_us);
 	}
+
+	return true;
 }
 
 void reset_vcpu(struct acrn_vcpu *vcpu)
 {
 	int i;
+	bool claimed;
+
+	claimed = vcpu_try_transition_state(vcpu, VCPU_PAUSED, VCPU_INIT) ||
+		vcpu_try_transition_state(vcpu, VCPU_OFFLINE, VCPU_INIT);
+	if (!claimed) {
+		LOG_ERR("VM%u: vCPU%hu reset from %s denied", vcpu->vm->vm_id,
+			vcpu->vcpu_id, vcpu_state_to_str(vcpu_get_state(vcpu)));
+		return;
+	}
 
 	vcpu->launched = false;
 	vcpu->pending_req = 0UL;
@@ -280,8 +386,6 @@ void reset_vcpu(struct acrn_vcpu *vcpu)
 	}
 
 	arch_reset_vcpu(vcpu);
-
-	vcpu_set_state(vcpu, VCPU_INIT);
 }
 
 static bool vcpu_pause(struct acrn_vcpu *vcpu)
@@ -292,11 +396,23 @@ static bool vcpu_pause(struct acrn_vcpu *vcpu)
 		return false;
 	}
 
-	if ((vcpu->state == VCPU_RUNNING) || (vcpu->state == VCPU_INIT)) {
-		was_running = vcpu->state == VCPU_RUNNING;
+	while (true) {
+		enum vcpu_state state = vcpu_get_state(vcpu);
 
-		vcpu_set_state(vcpu, VCPU_ZOMBIE);
+		if (state == VCPU_PAUSED) {
+			break;
+		}
+		if ((state == VCPU_OFFLINE) ||
+			!vcpu_try_transition_state(vcpu, state, VCPU_PAUSED)) {
+			if (state == VCPU_OFFLINE) {
+				break;
+			}
+			continue;
+		}
+
+		was_running = state == VCPU_RUNNING;
 		sleep_thread(&vcpu->thread_obj);
+		break;
 	}
 
 	return was_running;
@@ -307,13 +423,7 @@ void pause_vcpu(struct acrn_vcpu *vcpu)
 	(void)vcpu_pause(vcpu);
 }
 
-bool is_vcpu_paused(const struct acrn_vcpu *vcpu)
-{
-	return (vcpu != NULL) && (vcpu->state == VCPU_ZOMBIE) &&
-		(vcpu->thread_obj.status == THREAD_STS_BLOCKED);
-}
-
-void zombie_vcpu(struct acrn_vcpu *vcpu)
+void pause_vcpu_sync(struct acrn_vcpu *vcpu)
 {
 	uint16_t pcpu_id;
 	bool was_running;
@@ -323,12 +433,43 @@ void zombie_vcpu(struct acrn_vcpu *vcpu)
 	}
 
 	pcpu_id = pcpuid_from_vcpu(vcpu);
-	LOG_DBG("vcpu%hu paused", vcpu->vcpu_id);
 	was_running = vcpu_pause(vcpu);
-
 	if (was_running && (pcpu_id != get_pcpu_id())) {
 		while (!is_vcpu_paused(vcpu)) {
 			asm_pause();
 		}
 	}
+}
+
+bool is_vcpu_paused(const struct acrn_vcpu *vcpu)
+{
+	return (vcpu != NULL) && (vcpu_get_state(vcpu) == VCPU_PAUSED) &&
+		(vcpu->thread_obj.status == THREAD_STS_BLOCKED);
+}
+
+bool poweroff_vcpu(struct acrn_vcpu *vcpu)
+{
+	uint16_t pcpu_id;
+	bool powered_off;
+
+	if (vcpu == NULL) {
+		return false;
+	}
+
+	pcpu_id = pcpuid_from_vcpu(vcpu);
+	powered_off = vcpu_try_transition_state(vcpu, VCPU_RUNNING,
+		VCPU_POWERED_OFF);
+	if (powered_off) {
+		LOG_DBG("vcpu%hu powered off", vcpu->vcpu_id);
+		sleep_thread(&vcpu->thread_obj);
+	}
+
+	if (pcpu_id != get_pcpu_id()) {
+		while (is_vcpu_powered_off(vcpu) &&
+			(vcpu->thread_obj.status != THREAD_STS_BLOCKED)) {
+			asm_pause();
+		}
+	}
+
+	return powered_off;
 }

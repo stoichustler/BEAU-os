@@ -436,10 +436,10 @@ def send_enter_burst(qemu, count, delay, name, vmid=None):
 def expect_linux_id(qemu, vmid, name):
     token = f"__beau_vm{vmid}_id_{int(time.monotonic() * 1000000)}__"
 
-    # The VM console can replay old output and echo the command line before the
-    # guest has executed it. A unique token plus the "[vmid N]" output marker
-    # makes this check wait for fresh command output instead of stale "gid=0".
-    qemu.send_slow(f"id; echo {token}_done" + ENTER)
+    # Keep the concrete completion marker out of the echoed command line. The
+    # guest expands $t only after executing id, so observing "_done" proves the
+    # fresh id output has crossed the console before the marker.
+    qemu.send_slow(f"t={token}; id; echo ${{t}}_done" + ENTER)
     try:
         text = qemu.expect(f"{token}_done", name, timeout=20.0, keepalive=ENTER)
         if "gid=0" not in text:
@@ -597,6 +597,23 @@ def expect_rttest(qemu, command, pcpu_count):
     if len(re.findall(r"C:\s+1000(?:\s|$)", output)) != pcpu_count:
         raise RuntimeError(f"{command} output does not contain {pcpu_count} completed samples")
     print(f"[pass] {command}: per-pCPU output found", flush=True)
+
+
+def expect_vm2_cpu1_lifecycle(qemu):
+    online = "/sys/devices/system/cpu/cpu1/online"
+
+    vm_command(qemu, 2, f"test -w {online} && echo 0 > {online}",
+               "VM2 CPU1 offline", timeout=30.0)
+    vsh_return(qemu, "return from VM2 after CPU1 offline", vmid=2)
+
+    for command in ("vcpus", "ps", "schedstat", "vmstat", "dumpstat 2"):
+        vcpu_name = "vm2/vcpu1" if command.startswith("dumpstat") else "vm2:vcpu1"
+        qemu.command_retry(command, [vcpu_name, "poweroff"])
+
+    vsh_enter(qemu, 2, LINUX_PROMPT, "VM2 shell for CPU1 online", timeout=30.0)
+    vm_command(qemu, 2, f"echo 1 > {online} && test \"$(cat {online})\" = 1",
+               "VM2 CPU1 online", timeout=30.0)
+    print("[pass] VM2 CPU1 lifecycle poweroff -> running", flush=True)
 
 
 def run_guest_help(qemu, vmid, prompt, name, timeout):
@@ -820,6 +837,7 @@ def run_qemu(args, cmd):
             raise
         expect_vm2_id(qemu, "VM2 Linux root identity")
         expect_vm2_kbe_backends(qemu, "VM2 BEAU KBE backend startup")
+        expect_vm2_cpu1_lifecycle(qemu)
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM2 shell")
 

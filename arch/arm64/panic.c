@@ -30,7 +30,7 @@ void panic_dump_context(void)
 
 	if ((vcpu != NULL) && (vcpu->vm != NULL)) {
 		LOG_FTL("vcpu: vm:%hu vcpu:%hu state:%u pcpu:%hu pending:0x%lx",
-			vcpu->vm->vm_id, vcpu->vcpu_id, vcpu->state,
+			vcpu->vm->vm_id, vcpu->vcpu_id, vcpu_get_state(vcpu),
 			pcpuid_from_vcpu(vcpu), vcpu->pending_req);
 	} else {
 		LOG_FTL("vcpu: none");

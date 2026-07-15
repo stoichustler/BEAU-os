@@ -535,22 +535,20 @@ void arch_vcpu_thread(struct thread_object *obj)
 	 * temporary stack frame so scheduler context switches stay independent from
 	 * guest register save/restore.
 	 */
-	while (vcpu->state == VCPU_RUNNING) {
+	while (true) {
+		while (!is_vcpu_running(vcpu)) {
+			sleep_thread(obj);
+			schedule();
+		}
+
 		ret = arm64_process_vcpu_requests(vcpu);
 		if (ret < 0) {
-			break;
+			pause_vcpu(vcpu);
+			continue;
 		}
 		arm64_vcpu_trace_guest_boundary(vcpu, ARM64_VCPU_GUEST_TRACE_ENTER,
 			ARM64_VCPU_DEBUG_EXIT_NONE, 0);
 		arm64_run_vcpu(&vcpu->arch);
-	}
-
-	vcpu_set_state(vcpu, VCPU_ZOMBIE);
-	sleep_thread(obj);
-	schedule();
-
-	while (true) {
-		cpu_relax();
 	}
 }
 

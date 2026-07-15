@@ -480,8 +480,12 @@ void start_vm(struct acrn_vm *vm)
 
 	vm_wdt_reset(vm);
 	arch_vm_prepare_bsp(vcpu);
-	launch_vcpu(vcpu);
-	vm->state = VM_RUNNING;
+	if (launch_vcpu(vcpu)) {
+		vm->state = VM_RUNNING;
+	} else {
+		LOG_ERR("VM%u: BSP launch from %s denied", vm->vm_id,
+			vcpu_state_to_str(vcpu_get_state(vcpu)));
+	}
 }
 
 void pause_vm(struct acrn_vm *vm)
@@ -493,7 +497,7 @@ void pause_vm(struct acrn_vm *vm)
 			(vm->state == VM_READY_TO_POWEROFF) ||
 			(vm->state == VM_CREATED)) {
 		foreach_vcpu(i, vm, vcpu) {
-			zombie_vcpu(vcpu);
+			pause_vcpu_sync(vcpu);
 		}
 		vm->state = VM_PAUSED;
 	}

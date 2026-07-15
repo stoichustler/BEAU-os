@@ -1408,7 +1408,7 @@ static const char *thread_state_to_str(enum thread_object_state state)
 
 static const char *vcpu_sched_state_to_str(const struct acrn_vcpu *vcpu)
 {
-	return (vcpu->state == VCPU_OFFLINE) ?
+	return (vcpu_get_state(vcpu) == VCPU_OFFLINE) ?
 		"offline" : thread_state_to_str(vcpu->thread_obj.status);
 }
 
@@ -1851,7 +1851,7 @@ static const struct cpu_regs *shell_dumpstat_get_regs(struct acrn_vcpu *vcpu,
 	snapshot->has_live_timer = false;
 	snapshot->captured = false;
 
-	if ((vcpu->state == VCPU_RUNNING) &&
+	if (is_vcpu_running(vcpu) &&
 		(sched_get_current(pcpu_id) == &vcpu->thread_obj) &&
 		(pcpu_id != get_pcpu_id())) {
 		(void)smp_call_function_timeout(1UL << pcpu_id, shell_dumpstat_capture,
@@ -1982,7 +1982,7 @@ static int32_t shell_dumpstat_vcpu(struct acrn_vcpu *vcpu)
 	const struct cpu_regs *regs;
 	const struct arm64_vcpu_debug_info *debug;
 
-	current = (vcpu->state == VCPU_OFFLINE) ?
+	current = (vcpu_get_state(vcpu) == VCPU_OFFLINE) ?
 		NULL : sched_get_current(vcpu->thread_obj.pcpu_id);
 	regs = shell_dumpstat_get_regs(vcpu, &snapshot);
 	debug = snapshot.captured ? &snapshot.debug : &vcpu->arch.debug;
@@ -1996,6 +1996,9 @@ static int32_t shell_dumpstat_vcpu(struct acrn_vcpu *vcpu)
 		vcpu_sched_state_to_str(vcpu),
 		shell_yes_no(current == &vcpu->thread_obj),
 		shell_yes_no(snapshot.captured));
+	shell_item_line("lifecycle:%s thread:%s",
+		vcpu_state_to_str(vcpu_get_state(vcpu)),
+		thread_state_to_str(vcpu->thread_obj.status));
 	shell_item_line("requests:pending:0x%016lx arch-irqs:0x%016lx mask:0x%016lx",
 		snapshot.pending_req, snapshot.irqs_pending,
 		snapshot.irqs_pending_mask);
@@ -2007,7 +2010,7 @@ static int32_t shell_dumpstat_vcpu(struct acrn_vcpu *vcpu)
 	shell_item_line("guest regs:");
 	shell_dumpstat_regs(regs);
 	shell_dumpstat_guest_trace(&debug->guest_trace);
-	if (vcpu->state != VCPU_OFFLINE) {
+	if (vcpu_get_state(vcpu) != VCPU_OFFLINE) {
 		shell_item_line("vcpu stack:");
 		shell_dumpstat_vm_stack(vcpu, regs);
 		shell_item_line("pcpu stack:");
@@ -2076,31 +2079,6 @@ static const char *shell_vm_state_to_str(enum vm_state state)
 		break;
 	case VM_PAUSED:
 		str = "paused";
-		break;
-	default:
-		str = "N/A";
-		break;
-	}
-
-	return str;
-}
-
-static const char *shell_vcpu_state_to_str(enum vcpu_state state)
-{
-	const char *str;
-
-	switch (state) {
-	case VCPU_OFFLINE:
-		str = "offline";
-		break;
-	case VCPU_INIT:
-		str = "init";
-		break;
-	case VCPU_RUNNING:
-		str = "running";
-		break;
-	case VCPU_ZOMBIE:
-		str = "zombie";
 		break;
 	default:
 		str = "N/A";
@@ -2654,7 +2632,7 @@ static void shell_health_collect_vm(uint16_t vm_id, struct shell_health_vm *heal
 		for (vcpu_id = 0U; vcpu_id < vm->hw.created_vcpus; vcpu_id++) {
 			struct acrn_vcpu *vcpu = vcpu_from_vid(vm, vcpu_id);
 
-			if ((vcpu == NULL) || (vcpu->state != VCPU_RUNNING)) {
+			if ((vcpu == NULL) || !is_vcpu_running(vcpu)) {
 				health->reasons |= SHELL_HEALTH_VM_VCPU_STATE;
 				shell_health_raise(&health->level, SHELL_HEALTH_FAIL);
 				break;
@@ -3217,7 +3195,7 @@ static void shell_vmstat_vcpus(const struct acrn_vm *vm)
 		shell_item_line("%-9s  %-4hu  %-5s  %-7s  %-8s  %-3s  0x%016lx  %s",
 			vcpu->thread_obj.name, vcpu->thread_obj.pcpu_id,
 			sched_label,
-			shell_vcpu_state_to_str(vcpu->state),
+			vcpu_state_to_str(vcpu_get_state(vcpu)),
 			thread_state_to_str(vcpu->thread_obj.status),
 			shell_yes_no(current == &vcpu->thread_obj),
 			vcpu->pending_req, diag);

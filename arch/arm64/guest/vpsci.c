@@ -45,7 +45,9 @@ int64_t arm64_vpsci_system_off(struct acrn_vcpu *vcpu)
 	}
 
 	LOG_INF("vm%u:vcpu%u psci system off", vcpu->vm->vm_id, vcpu->vcpu_id);
-	zombie_vcpu(vcpu);
+	if (!poweroff_vcpu(vcpu)) {
+		return PSCI_RET_DENIED;
+	}
 
 	return PSCI_RET_SUCCESS;
 }
@@ -76,7 +78,7 @@ int64_t arm64_vpsci_system_reset(struct acrn_vcpu *vcpu)
 
 	LOG_INF("vm%u:vcpu%u psci system reset queued", vcpu->vm->vm_id,
 		vcpu->vcpu_id);
-	zombie_vcpu(vcpu);
+	pause_vcpu(vcpu);
 
 	return PSCI_RET_SUCCESS;
 }
