@@ -9,6 +9,8 @@
 #include <hv_pm.h>
 #include <rtl.h>
 #include <ticks.h>
+#include <vm.h>
+#include <asm/guest/vm_reset.h>
 
 /* [20260715] Coordinated guest STR transaction
  *
@@ -212,6 +214,87 @@ int32_t hv_pm_record_wake(uint32_t wake_source, uint16_t source_index)
 		data->wake_bitmap |= 1UL << source_index;
 	}
 	spinlock_irqrestore_release(&pm_transaction.lock, flags);
+
+	return status;
+}
+
+int32_t hv_pm_mark_vm_suspended(uint16_t vmid, uint64_t epoch,
+	uint64_t resume_entry, uint64_t resume_context)
+{
+	struct beau_pm_snapshot *data = &pm_transaction.data;
+	struct beau_vm_pm_record *record;
+	uint64_t vm_mask;
+	uint64_t flags;
+	int32_t status = 0;
+
+	if ((vmid >= CONFIG_MAX_VM_NUM) || (epoch == 0UL)) {
+		return -EINVAL;
+	}
+
+	vm_mask = 1UL << vmid;
+	spinlock_irqsave_obtain(&pm_transaction.lock, &flags);
+	record = &data->vm[vmid];
+	if ((data->state != PM_PREPARING) || (data->epoch != epoch) ||
+		((data->required_vm_mask & vm_mask) == 0UL) ||
+		((data->ready_vm_mask & vm_mask) != 0UL) ||
+		(record->epoch != epoch) ||
+		((record->state != VM_PM_PREPARE_SENT) &&
+		 (record->state != VM_PM_SUSPEND_PENDING))) {
+		status = -EINVAL;
+	} else {
+		record->resume_entry = resume_entry;
+		record->context_id = resume_context;
+		record->status = 0;
+		record->state = VM_PM_SUSPENDED;
+		data->ready_vm_mask |= vm_mask;
+		data->resume_pending_vm_mask |= vm_mask;
+	}
+	spinlock_irqrestore_release(&pm_transaction.lock, flags);
+
+	return status;
+}
+
+int32_t hv_pm_resume_vm(uint16_t vmid, uint64_t epoch)
+{
+	struct beau_pm_snapshot *data = &pm_transaction.data;
+	struct beau_vm_pm_record *record;
+	uint64_t resume_entry = 0UL;
+	uint64_t resume_context = 0UL;
+	uint64_t vm_mask;
+	uint64_t flags;
+	int32_t status = 0;
+
+	if ((vmid >= CONFIG_MAX_VM_NUM) || (epoch == 0UL)) {
+		return -EINVAL;
+	}
+
+	vm_mask = 1UL << vmid;
+	spinlock_irqsave_obtain(&pm_transaction.lock, &flags);
+	record = &data->vm[vmid];
+	if ((data->epoch != epoch) ||
+		((data->state != PM_RESUMING_GUESTS) &&
+		 (data->state != PM_ABORTING)) ||
+		((data->resume_pending_vm_mask & vm_mask) == 0UL) ||
+		(record->epoch != epoch) || (record->state != VM_PM_SUSPENDED)) {
+		status = -EINVAL;
+	} else {
+		resume_entry = record->resume_entry;
+		resume_context = record->context_id;
+		data->resume_pending_vm_mask &= ~vm_mask;
+		record->state = VM_PM_RESUMING;
+	}
+	spinlock_irqrestore_release(&pm_transaction.lock, flags);
+
+	if (status == 0) {
+		status = arm64_vpsci_resume_vm(get_vm_from_vmid(vmid), epoch,
+			resume_entry, resume_context);
+		if (status != 0) {
+			spinlock_irqsave_obtain(&pm_transaction.lock, &flags);
+			record->state = VM_PM_FAILED;
+			record->status = status;
+			spinlock_irqrestore_release(&pm_transaction.lock, flags);
+		}
+	}
 
 	return status;
 }

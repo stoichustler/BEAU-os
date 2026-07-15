@@ -95,6 +95,19 @@ class HvPmContractTest(unittest.TestCase):
             self.assertIn(text, vpsci)
         self.assertIn("handle_psci_features", exit_c)
 
+    def test_system_suspend_requires_bsp_and_offline_aps(self):
+        vpsci = source("arch/arm64/guest/vpsci.c")
+        for text in ("arm64_vpsci_system_suspend", "is_vcpu_bsp",
+                     "VCPU_POWERED_OFF", "PSCI_RET_DENIED",
+                     "resume_entry", "resume_context"):
+            self.assertIn(text, vpsci)
+
+    def test_system_resume_rebuilds_entry_and_x0(self):
+        pm = source("core/pm.c")
+        self.assertIn("arm64_vpsci_resume_vm", pm)
+        self.assertIn("resume_entry", pm)
+        self.assertIn("resume_context", pm)
+
 
 if __name__ == "__main__":
     unittest.main()

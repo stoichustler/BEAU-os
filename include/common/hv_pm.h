@@ -122,6 +122,9 @@ void hv_pm_get_snapshot(struct beau_pm_snapshot *snapshot);
 bool hv_pm_io_is_gated(void);
 int32_t hv_pm_set_policy(const struct beau_pm_policy *policy);
 int32_t hv_pm_record_wake(uint32_t wake_source, uint16_t source_index);
+int32_t hv_pm_mark_vm_suspended(uint16_t vmid, uint64_t epoch,
+	uint64_t resume_entry, uint64_t resume_context);
+int32_t hv_pm_resume_vm(uint16_t vmid, uint64_t epoch);
 int32_t hv_pm_register_hook(const struct beau_pm_ops *ops);
 void hv_pm_finalize_hooks(void);
 int32_t hv_pm_run_prepare(uint64_t epoch);

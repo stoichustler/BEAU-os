@@ -73,11 +73,13 @@
 #define PSCI_0_2_FN_SYSTEM_OFF		0x84000008U
 #define PSCI_0_2_FN_SYSTEM_RESET	0x84000009U
 #define PSCI_1_0_FN_PSCI_FEATURES	0x8400000aU
+#define PSCI_1_0_FN_SYSTEM_SUSPEND	0x8400000eU
 #define PSCI_1_1_FN_SYSTEM_RESET2	0x84000012U
 #define ARM_SMCCC_VERSION_FUNC_ID	0x80000000U
 #define PSCI_0_2_FN64_CPU_SUSPEND	0xc4000001U
 #define PSCI_0_2_FN64_CPU_ON		0xc4000003U
 #define PSCI_0_2_FN64_AFFINITY_INFO	0xc4000004U
+#define PSCI_1_0_FN64_SYSTEM_SUSPEND	0xc400000eU
 #define PSCI_0_2_TOS_MP		2L
 
 #define PSCI_RET_SUCCESS		0L
@@ -758,10 +760,12 @@ static int64_t handle_psci_features(uint32_t fn)
 	case PSCI_0_2_FN_MIGRATE_INFO_TYPE:
 	case PSCI_0_2_FN_SYSTEM_OFF:
 	case PSCI_0_2_FN_SYSTEM_RESET:
+	case PSCI_1_0_FN_SYSTEM_SUSPEND:
 	case PSCI_1_0_FN_PSCI_FEATURES:
 	case PSCI_0_2_FN64_CPU_SUSPEND:
 	case PSCI_0_2_FN64_CPU_ON:
 	case PSCI_0_2_FN64_AFFINITY_INFO:
+	case PSCI_1_0_FN64_SYSTEM_SUSPEND:
 		return PSCI_RET_SUCCESS;
 	default:
 		return PSCI_RET_NOT_SUPPORTED;
@@ -827,6 +831,16 @@ static int32_t handle_psci64(struct acrn_vcpu *vcpu, bool advance_elr)
 	case PSCI_0_2_FN_SYSTEM_RESET:
 		ret = arm64_vpsci_system_reset(vcpu);
 		record_psci_call(vcpu, fn, vcpu, ret);
+		break;
+	case PSCI_1_0_FN_SYSTEM_SUSPEND:
+	case PSCI_1_0_FN64_SYSTEM_SUSPEND:
+		entry_point = (fn == PSCI_1_0_FN64_SYSTEM_SUSPEND) ?
+			vcpu->arch.regs.x1 : (uint64_t)(uint32_t)vcpu->arch.regs.x1;
+		context_id = (fn == PSCI_1_0_FN64_SYSTEM_SUSPEND) ?
+			vcpu->arch.regs.x2 : (uint64_t)(uint32_t)vcpu->arch.regs.x2;
+		ret = arm64_vpsci_system_suspend(vcpu, entry_point, context_id);
+		record_psci_suspend_call(vcpu, fn, 0UL, entry_point, context_id, ret);
+		response_prepared = (ret == PSCI_RET_SUCCESS);
 		break;
 	default:
 		LOG_WRN("vm%u:vcpu%u unsupported psci call 0x%x",

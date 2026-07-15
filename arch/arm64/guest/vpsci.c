@@ -13,6 +13,7 @@
 #include <vm.h>
 #include <event.h>
 #include <guest_memory.h>
+#include <hv_pm.h>
 #include <logmsg.h>
 #include <schedule.h>
 #include <asm/sysreg.h>
@@ -134,6 +135,67 @@ int64_t arm64_vpsci_cpu_suspend(struct acrn_vcpu *vcpu, uint64_t power_state,
 	if (powerdown) {
 		vpsci_prepare_powerdown_resume(vcpu, entry_point, context_id);
 	}
+
+	return PSCI_RET_SUCCESS;
+}
+
+int64_t arm64_vpsci_system_suspend(struct acrn_vcpu *vcpu,
+	uint64_t entry_point, uint64_t context_id)
+{
+	struct beau_pm_snapshot snapshot;
+	struct arm64_vm_pm_state *pm;
+	struct acrn_vcpu *target;
+	uint16_t idx;
+	int32_t status;
+
+	if ((vcpu == NULL) || (vcpu->vm == NULL)) {
+		return PSCI_RET_INVALID_PARAMS;
+	}
+	if (!is_vcpu_bsp(vcpu)) {
+		return PSCI_RET_DENIED;
+	}
+	if (!vpsci_resume_entry_is_valid(vcpu, entry_point)) {
+		return PSCI_RET_INVALID_ADDRESS;
+	}
+
+	hv_pm_get_snapshot(&snapshot);
+	if ((snapshot.state != PM_PREPARING) || (snapshot.epoch == 0UL) ||
+		((snapshot.required_vm_mask & (1UL << vcpu->vm->vm_id)) == 0UL)) {
+		return PSCI_RET_DENIED;
+	}
+
+	get_vm_lock(vcpu->vm);
+	foreach_vcpu(idx, vcpu->vm, target) {
+		if ((target != vcpu) &&
+			(vcpu_get_state(target) != VCPU_POWERED_OFF)) {
+			put_vm_lock(vcpu->vm);
+			return PSCI_RET_DENIED;
+		}
+	}
+
+	pm = &vcpu->vm->arch_vm.pm;
+	if (pm->valid) {
+		put_vm_lock(vcpu->vm);
+		return PSCI_RET_DENIED;
+	}
+	pm->epoch = snapshot.epoch;
+	pm->resume_entry = entry_point;
+	pm->resume_context = context_id;
+	pm->valid = true;
+
+	status = hv_pm_mark_vm_suspended(vcpu->vm->vm_id, snapshot.epoch,
+		entry_point, context_id);
+	if (status != 0) {
+		(void)memset(pm, 0U, sizeof(*pm));
+	}
+	put_vm_lock(vcpu->vm);
+	if (status != 0) {
+		return PSCI_RET_DENIED;
+	}
+
+	LOG_INF("vm%u:vcpu%u psci system suspend epoch=%lu entry=0x%lx",
+		vcpu->vm->vm_id, vcpu->vcpu_id, snapshot.epoch, entry_point);
+	sleep_thread(&vcpu->thread_obj);
 
 	return PSCI_RET_SUCCESS;
 }

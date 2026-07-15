@@ -18,6 +18,7 @@
 #include <asm/sysreg.h>
 #include <asm/trap.h>
 #include <asm/guest/vcpu_priv.h>
+#include <asm/guest/vm_reset.h>
 #include <asm/guest/vmpu.h>
 #include <asm/guest/virq.h>
 #include <asm/guest/stage2.h>
@@ -128,6 +129,47 @@ void arm64_prepare_linux_vcpu_context(struct acrn_vcpu *vcpu, uint64_t entry, ui
 	arm64_init_guest_regs(&vcpu->arch.regs, entry, x0);
 	arm64_init_guest_control_context(vcpu);
 	arm64_vgicv3_reset_vcpu_boot_state(vcpu);
+}
+
+int32_t arm64_vpsci_resume_vm(struct acrn_vm *vm, uint64_t epoch,
+	uint64_t resume_entry, uint64_t resume_context)
+{
+	struct arm64_vm_pm_state *pm;
+	struct acrn_vcpu *bsp;
+	struct acrn_vcpu *vcpu;
+	uint16_t idx;
+	int32_t status = 0;
+
+	if ((vm == NULL) || (epoch == 0UL)) {
+		return -EINVAL;
+	}
+
+	get_vm_lock(vm);
+	pm = &vm->arch_vm.pm;
+	bsp = vcpu_from_vid(vm, BSP_CPU_ID);
+	if (!pm->valid || (pm->epoch != epoch) ||
+		(pm->resume_entry != resume_entry) ||
+		(pm->resume_context != resume_context) || !is_vcpu_running(bsp)) {
+		status = -EINVAL;
+	} else {
+		foreach_vcpu(idx, vm, vcpu) {
+			if ((vcpu != bsp) &&
+				(vcpu_get_state(vcpu) != VCPU_POWERED_OFF)) {
+				status = -EBUSY;
+				break;
+			}
+		}
+	}
+
+	if (status == 0) {
+		/* Consume before waking: the same epoch can never replay this context. */
+		(void)memset(pm, 0U, sizeof(*pm));
+		arm64_prepare_linux_vcpu_context(bsp, resume_entry, resume_context);
+		wake_thread(&bsp->thread_obj);
+	}
+	put_vm_lock(vm);
+
+	return status;
 }
 
 uint64_t arch_vcpu_get_entry(const struct acrn_vcpu *vcpu)
