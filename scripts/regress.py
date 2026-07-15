@@ -1090,6 +1090,15 @@ def run_qemu(args, cmd):
 
         qemu.send("vsh 1" + ENTER)
         qemu.expect(RTTHREAD_PROMPT, "VM1 RT-Thread shell", timeout=60.0, keepalive=ENTER)
+        qemu.send("beau_str status" + ENTER)
+        qemu.expect("beau_str:ready:Y vm:1", "VM1 BEAU STR agent status",
+                    timeout=15.0)
+        qemu.expect(RTTHREAD_PROMPT, "VM1 shell after BEAU STR status", keepalive=ENTER)
+        qemu.send("beau_str suspend" + ENTER)
+        qemu.expect("beau_str:suspend denied:no-prepare",
+                    "VM1 BEAU STR rejects uncoordinated suspend", timeout=15.0)
+        qemu.expect(RTTHREAD_PROMPT, "VM1 shell after denied BEAU STR suspend",
+                    keepalive=ENTER)
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM1 shell")
 

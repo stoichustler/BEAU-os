@@ -1068,8 +1068,8 @@ git commit -m "guest: add Linux and Zephyr STR agents"
 **Files:**
 - Create: `/home/beau/nebula/rt-thread/bsp/qemu-virt64-aarch64/applications/beau_str.c`
 - Copy after validation: `sdk/image/rtthread.bin`
-- Retain source after validation: `sdk/rtthread/beau_str.c`
-- Create: `sdk/rtthread/README.md`
+- Retain source after validation: `sdk/rsh/beau_str.c`
+- Create: `sdk/rsh/README.md`
 
 **Step 1: Write the failing RT-Thread shell test**
 
@@ -1091,7 +1091,7 @@ reason.
 
 Build the existing BEAU QEMU RT-Thread target, update the stable image only
 after its standalone tests pass, and copy the exact reviewed source into
-`sdk/rtthread` for reproducibility.
+`sdk/rsh` for reproducibility.
 
 The BSP `applications/SConscript` already includes every application `*.c`, so
 no build-file change is required. Preserve the current local `.config`,
@@ -1121,7 +1121,7 @@ git commit -m "arm64: add BEAU coordinated STR agent"
 In BEAU:
 
 ```sh
-git add sdk/rtthread sdk/image/rtthread.bin scripts/regress.py
+git add sdk/rsh sdk/image/rtthread.bin scripts/regress.py
 git commit -m "sdk: retain validated RT-Thread STR agent"
 ```
 
