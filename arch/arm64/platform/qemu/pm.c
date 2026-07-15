@@ -98,6 +98,7 @@ static int32_t qemu_pm_simulated_wait(uint64_t epoch)
 	if (status != 0) {
 		return status;
 	}
+	LOG_INF("PM_SUSPENDED epoch:%lu", epoch);
 	do {
 		asm_wfi();
 		hv_pm_get_snapshot(&snapshot);
@@ -109,10 +110,14 @@ static int32_t qemu_pm_simulated_wait(uint64_t epoch)
 		0 : -EIO;
 }
 
-static int32_t qemu_pm_strict_enter(struct arm64_host_pm_context *context)
+static int32_t qemu_pm_strict_enter(uint64_t epoch,
+	struct arm64_host_pm_context *context)
 {
+	int64_t ret;
+
 	/* arm64_suspend_enter saves callee state before issuing psci_system_suspend. */
-	int64_t ret = arm64_suspend_enter(&context->callee,
+	LOG_INF("PM_SUSPENDED epoch:%lu", epoch);
+	ret = arm64_suspend_enter(&context->callee,
 		hva2hpa(arm64_suspend_resume), hva2hpa(context));
 
 	if (ret == 0L) {
@@ -137,7 +142,7 @@ int32_t qemu_platform_pm_enter(uint64_t epoch,
 	case QEMU_PM_SIMULATED:
 		return qemu_pm_simulated_wait(epoch);
 	case QEMU_PM_STRICT:
-		return qemu_pm_strict_enter(context);
+		return qemu_pm_strict_enter(epoch, context);
 	default:
 		return -ENOSYS;
 	}

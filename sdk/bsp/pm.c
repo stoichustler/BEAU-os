@@ -35,6 +35,9 @@ static uint16_t bsp_pm_wakeup_irq_count;
 static uint32_t bsp_pm_event_virq;
 static bool bsp_pm_retention_hooks_registered;
 
+static int32_t bsp_pm_publish_prepare_events(
+	const struct beau_pm_snapshot *snapshot);
+
 typedef int32_t (*bsp_pm_vm_hook_fn)(struct acrn_vm *vm, uint64_t epoch);
 
 static int32_t bsp_pm_run_required_vm_hook(uint64_t epoch,
@@ -247,9 +250,19 @@ int32_t bsp_pm_set_event_virq(uint32_t virq)
 int32_t bsp_pm_request_suspend(void)
 {
 	struct beau_pm_snapshot snapshot;
+	int32_t status;
 
 	hv_pm_get_snapshot(&snapshot);
-	return hv_pm_request_suspend(snapshot.controller_vmid);
+	status = hv_pm_request_suspend(snapshot.controller_vmid);
+	if (status == 0) {
+		hv_pm_get_snapshot(&snapshot);
+		status = bsp_pm_publish_prepare_events(&snapshot);
+		if (status != 0) {
+			(void)hv_pm_abort(snapshot.epoch, status);
+		}
+	}
+
+	return status;
 }
 
 int32_t bsp_pm_abort(int32_t reason)
@@ -385,14 +398,7 @@ int32_t bsp_pm_control_hcall(struct acrn_vcpu *vcpu, uint64_t ioc_gpa)
 		} else if (ioc.epoch != 0UL) {
 			status = -EINVAL;
 		} else {
-			status = hv_pm_request_suspend(caller_vmid);
-			if (status == 0) {
-				hv_pm_get_snapshot(&snapshot);
-				status = bsp_pm_publish_prepare_events(&snapshot);
-				if (status != 0) {
-					(void)hv_pm_abort(snapshot.epoch, status);
-				}
-			}
+			status = bsp_pm_request_suspend();
 		}
 		break;
 	case ACRN_PM_GET_EVENT:

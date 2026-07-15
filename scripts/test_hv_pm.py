@@ -181,6 +181,14 @@ class HvPmContractTest(unittest.TestCase):
         self.assertIn("psci_system_suspend", qemu)
         self.assertIn("asm_wfi", qemu)
 
+    def test_regression_uses_separate_qmp_and_checks_full_cycle(self):
+        regress = source("scripts/regress.py")
+        for text in ("--str-cycles", "--qmp-socket", "qmp_capabilities",
+                     '"execute": "stop"', '"execute": "cont"',
+                     "PM_SUSPENDED", "PM_RESUMING", "wake_reason",
+                     "pm status"):
+            self.assertIn(text, regress)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,6 +14,7 @@
 #include <schedule.h>
 #include <ticks.h>
 #include <vm.h>
+#include <logmsg.h>
 #include <asm/guest/vm_reset.h>
 
 /* [20260715] Coordinated guest STR transaction
@@ -278,6 +279,7 @@ int32_t hv_pm_mark_vm_suspended(uint16_t vmid, uint64_t epoch,
 	uint64_t flags;
 	int32_t status = 0;
 	bool queue_idle = false;
+	bool marked_ready = false;
 
 	if ((vmid >= CONFIG_MAX_VM_NUM) || (epoch == 0UL)) {
 		return -EINVAL;
@@ -300,12 +302,16 @@ int32_t hv_pm_mark_vm_suspended(uint16_t vmid, uint64_t epoch,
 		record->state = VM_PM_SUSPENDED;
 		data->ready_vm_mask |= vm_mask;
 		data->resume_pending_vm_mask |= vm_mask;
+		marked_ready = true;
 		if (data->ready_vm_mask == data->required_vm_mask) {
 			hv_pm_transition_locked(data, PM_GUESTS_QUIESCED);
 			queue_idle = true;
 		}
 	}
 	spinlock_irqrestore_release(&pm_transaction.lock, flags);
+	if (marked_ready) {
+		LOG_INF("PM_GUEST_READY vm:%hu epoch:%lu", vmid, epoch);
+	}
 	if (queue_idle) {
 		make_system_suspend_request(BSP_CPU_ID);
 	}
@@ -365,6 +371,8 @@ int32_t hv_pm_guest_resume_complete(uint16_t vmid, uint64_t epoch)
 	uint64_t vm_mask;
 	uint64_t flags;
 	int32_t status = 0;
+	bool resumed = false;
+	bool running = false;
 
 	if ((vmid >= CONFIG_MAX_VM_NUM) || (epoch == 0UL)) {
 		return -EINVAL;
@@ -381,16 +389,25 @@ int32_t hv_pm_guest_resume_complete(uint16_t vmid, uint64_t epoch)
 		record->state = VM_PM_RUNNING;
 		record->status = 0;
 		data->ready_vm_mask &= ~vm_mask;
+		resumed = true;
 		if ((data->ready_vm_mask == 0UL) &&
 			(data->resume_pending_vm_mask == 0UL)) {
 			data->last_epoch = epoch;
 			data->last_state = PM_RESUMING_GUESTS;
 			data->last_status = 0;
 			data->io_gated = 0U;
+			data->required_vm_mask = 0UL;
 			hv_pm_transition_locked(data, PM_RUNNING);
+			running = true;
 		}
 	}
 	spinlock_irqrestore_release(&pm_transaction.lock, flags);
+	if (resumed) {
+		LOG_INF("PM_GUEST_RESUMED vm:%hu epoch:%lu", vmid, epoch);
+	}
+	if (running) {
+		LOG_INF("PM_RUNNING epoch:%lu", epoch);
+	}
 
 	return status;
 }
@@ -925,6 +942,13 @@ void hv_pm_process_from_idle(uint16_t pcpu_id)
 	if (status == 0) {
 		status = hv_pm_set_epoch_state(epoch, PM_RESTORING_HOST,
 			PM_RESUMING_GUESTS);
+		if (status == 0) {
+			struct beau_pm_snapshot snapshot;
+
+			hv_pm_get_snapshot(&snapshot);
+			LOG_INF("PM_RESUMING epoch:%lu wake_reason:%lu",
+				epoch, snapshot.wake_reason);
+		}
 	}
 	if (status == 0) {
 		status = hv_pm_resume_guests(epoch);

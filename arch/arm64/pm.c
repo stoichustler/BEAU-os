@@ -219,7 +219,6 @@ int32_t platform_pm_enter(uint64_t epoch)
 	arm64_host_pm_context.epoch = epoch;
 	arm64_save_el2_context(&arm64_host_pm_context.el2);
 	arm64_host_pm_context.valid = true;
-	LOG_INF("PM: epoch %lu host suspended", epoch);
 	suspend_console();
 
 	status = arch_pm_suspend_secondary_cpus(epoch);

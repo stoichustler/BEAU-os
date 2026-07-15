@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import argparse
 import codecs
+import json
 import os
 import re
 import selectors
 import shlex
 import shutil
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -45,6 +47,16 @@ FATAL_PATTERNS = (
     "fatal error",
 )
 FATAL_DRAIN_TIMEOUT = 1.0
+STR_READY_MARKERS = tuple(f"PM_GUEST_READY vm:{vmid}" for vmid in range(4))
+STR_RESUME_MARKERS = tuple(f"PM_GUEST_RESUMED vm:{vmid}" for vmid in range(4))
+STR_FAULT_OPTIONS = (
+    "prepare-timeout",
+    "pending-wake",
+    "hook-failure",
+    "platform-failure",
+    "duplicate-wake",
+    "resume-timeout",
+)
 
 
 def relpath(path):
@@ -97,6 +109,19 @@ def parse_args():
     )
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--log", default=ROOT / "out/qemu_out/regress.log", type=relpath)
+    parser.add_argument("--str-cycles", type=int, default=0)
+    parser.add_argument(
+        "--qmp-socket",
+        default=ROOT / "out/qemu_out/regress-qmp.sock",
+        type=relpath,
+    )
+    parser.add_argument("--str-suspend-seconds", type=float, default=1.0)
+    for fault in STR_FAULT_OPTIONS:
+        parser.add_argument(
+            f"--str-fault-{fault}",
+            action="store_true",
+            help=f"Run the STR {fault} fault case (requires the QEMU fault-injection build).",
+        )
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
@@ -130,6 +155,17 @@ def parse_args():
     if args.linux_image is not None:
         args.linux_vm2_image = args.linux_image
         args.linux_vm3_image = args.linux_image
+    if args.str_cycles < 0:
+        parser.error("--str-cycles must not be negative")
+    if args.str_suspend_seconds < 0.0:
+        parser.error("--str-suspend-seconds must not be negative")
+    selected_faults = [
+        fault for fault in STR_FAULT_OPTIONS
+        if getattr(args, f"str_fault_{fault.replace('-', '_')}")
+    ]
+    if len(selected_faults) > 1:
+        parser.error("select at most one --str-fault-* option")
+    args.str_fault = selected_faults[0] if selected_faults else None
     return args
 
 
@@ -154,9 +190,14 @@ def qemu_cmd(args):
         args.smp,
         "-m",
         args.memory,
-        "-nographic",
+        "-display",
+        "none",
         "-serial",
-        "mon:stdio",
+        "stdio",
+        "-monitor",
+        "none",
+        "-qmp",
+        f"unix:{args.qmp_socket},server=on,wait=off",
         "-kernel",
         str(args.kernel),
         "-device",
@@ -186,6 +227,92 @@ def run_build(args, cmd):
 
     print(f"[regress] build: {quote(cmd)}", flush=True)
     subprocess.run(cmd, cwd=ROOT, env=env, check=True)
+
+
+class QmpClient:
+    """Minimal newline-delimited JSON QMP client with bounded I/O."""
+
+    def __init__(self, path, timeout):
+        self.path = Path(path)
+        self.timeout = timeout
+        self.sock = None
+        self.buffer = b""
+
+    def __enter__(self):
+        deadline = time.monotonic() + self.timeout
+        last_error = None
+
+        while time.monotonic() < deadline:
+            candidate = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            candidate.settimeout(max(0.05, deadline - time.monotonic()))
+            try:
+                candidate.connect(str(self.path))
+                self.sock = candidate
+                break
+            except (FileNotFoundError, ConnectionRefusedError, socket.timeout) as err:
+                last_error = err
+                candidate.close()
+                time.sleep(0.05)
+        if self.sock is None:
+            raise TimeoutError(f"timed out connecting to QMP socket {self.path}: {last_error}")
+
+        greeting = self._read_message(deadline)
+        if "QMP" not in greeting:
+            raise RuntimeError(f"invalid QMP greeting: {greeting!r}")
+        self._request({"execute": "qmp_capabilities"})
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self.sock is not None:
+            self.sock.close()
+            self.sock = None
+
+    def _read_message(self, deadline):
+        while time.monotonic() < deadline:
+            if b"\n" in self.buffer:
+                line, self.buffer = self.buffer.split(b"\n", 1)
+                if line.strip():
+                    return json.loads(line)
+                continue
+
+            remaining = deadline - time.monotonic()
+            self.sock.settimeout(max(0.05, remaining))
+            try:
+                data = self.sock.recv(4096)
+            except socket.timeout as err:
+                raise TimeoutError("timed out reading a QMP response") from err
+            if not data:
+                raise RuntimeError("QMP socket closed while waiting for a response")
+            self.buffer += data
+
+        raise TimeoutError("timed out reading a QMP response")
+
+    def _request(self, request):
+        deadline = time.monotonic() + self.timeout
+        payload = json.dumps(request, separators=(",", ":")).encode() + b"\n"
+        self.sock.settimeout(self.timeout)
+        try:
+            self.sock.sendall(payload)
+        except socket.timeout as err:
+            raise TimeoutError(f"timed out sending QMP request {request!r}") from err
+
+        while True:
+            response = self._read_message(deadline)
+            if "event" in response:
+                continue
+            if "error" in response:
+                raise RuntimeError(f"QMP request failed: {request!r}: {response['error']!r}")
+            if "return" in response:
+                return response["return"]
+
+    def stop(self):
+        self._request({"execute": "stop"})
+
+    def cont(self):
+        self._request({"execute": "cont"})
+
+    def query_status(self):
+        return self._request({"execute": "query-status"})
 
 
 class QemuSession:
@@ -333,6 +460,28 @@ class QemuSession:
 
         tail = self.output[-3000:]
         raise TimeoutError(f"timed out waiting for {name}: {pattern!r}\n--- output tail ---\n{tail}")
+
+    def expect_all(self, patterns, name, start_offset=None, timeout=None):
+        patterns = tuple(patterns)
+        start_offset = len(self.output) if start_offset is None else start_offset
+        deadline = time.monotonic() + (timeout or self.timeout)
+        print(f"[regress] wait: {name}", flush=True)
+
+        while time.monotonic() < deadline:
+            if self.proc.poll() is not None:
+                raise RuntimeError(f"QEMU exited early with status {self.proc.returncode}")
+            self.read_some(deadline)
+            text = self.output[start_offset:]
+            missing = [pattern for pattern in patterns if pattern not in text]
+            if not missing:
+                print(f"[pass] {name}", flush=True)
+                return text
+
+        tail = self.output[-3000:]
+        raise TimeoutError(
+            f"timed out waiting for {name}; missing {missing!r}\n"
+            f"--- output tail ---\n{tail}"
+        )
 
     def command(self, line, patterns, rejects=None):
         rejects = [] if rejects is None else rejects
@@ -684,6 +833,93 @@ def run_vsh_switch_stress(qemu, args):
     print("[pass] VM console switch stress complete", flush=True)
 
 
+def assert_qmp_status(qmp, expected, name):
+    status = qmp.query_status()
+    if status.get("status") != expected:
+        raise RuntimeError(f"{name}: expected QMP status {expected!r}, got {status!r}")
+    print(f"[pass] {name}: QMP status {expected}", flush=True)
+
+
+def check_str_guest_heartbeats(qemu, cycle):
+    label = f"STR cycle {cycle}"
+    vsh_enter(qemu, 0, ZEPHYR_PROMPT, f"{label}: VM0 heartbeat")
+    run_guest_help(qemu, 0, ZEPHYR_PROMPT, f"{label}: VM0", 15.0)
+    vsh_return(qemu, f"{label}: return from VM0", vmid=0)
+
+    vsh_enter(qemu, 1, RTTHREAD_PROMPT, f"{label}: VM1 heartbeat", timeout=30.0)
+    run_guest_help(qemu, 1, RTTHREAD_PROMPT, f"{label}: VM1", 15.0)
+    vsh_return(qemu, f"{label}: return from VM1", vmid=1)
+
+    vsh_enter(qemu, 2, LINUX_PROMPT, f"{label}: VM2 heartbeat", timeout=30.0)
+    expect_linux_id(qemu, 2, f"{label}: VM2 identity")
+    vsh_return(qemu, f"{label}: return from VM2", vmid=2)
+
+    vsh_enter(qemu, 3, LINUX_PROMPT, f"{label}: VM3 heartbeat", timeout=30.0)
+    expect_linux_id(qemu, 3, f"{label}: VM3 identity")
+    vsh_return(qemu, f"{label}: return from VM3", vmid=3)
+
+
+def run_str_cycle(qemu, qmp, args, cycle):
+    label = f"STR cycle {cycle}"
+    if args.str_fault not in (None, "pending-wake", "duplicate-wake"):
+        raise RuntimeError(
+            f"{label}: {args.str_fault} requires the QEMU fault-injection hooks"
+        )
+
+    start_offset = len(qemu.output)
+    qemu.send("pm suspend" + ENTER)
+    if args.str_fault == "pending-wake":
+        qemu.send(b"\r")
+    qemu.expect_all(
+        (*STR_READY_MARKERS, "PM_SUSPENDED"),
+        f"{label}: all guests ready and host suspended",
+        start_offset=start_offset,
+    )
+
+    qmp.stop()
+    assert_qmp_status(qmp, "paused", f"{label}: QEMU stopped")
+    time.sleep(args.str_suspend_seconds)
+
+    resume_offset = len(qemu.output)
+    qmp.cont()
+    assert_qmp_status(qmp, "running", f"{label}: QEMU continued")
+    qemu.send(b"\r\r" if args.str_fault == "duplicate-wake" else b"\r")
+    qemu.expect_all(
+        ("PM_RESUMING", *STR_RESUME_MARKERS, "PM_RUNNING"),
+        f"{label}: host and all guests resumed",
+        start_offset=resume_offset,
+    )
+    qemu.send(ENTER)
+    qemu.expect(PROMPT, f"{label}: BEAU shell responsive after resume")
+
+    wake_reason = 33
+    qemu.command_retry("pm status", [
+        f"pm epoch:{cycle}",
+        "phase:running",
+        "masks:policy:0x000000000000000f required:0x0000000000000000",
+        f"wake:reason:{wake_reason}",
+    ])
+    qemu.command_retry(
+        "health",
+        ["overall:", "Host", "Virtual machines", "vm0", "vm1", "vm2", "vm3"],
+    )
+    qemu.command_retry("irqstat", ["host pirq:", "guest virq:"])
+    qemu.command_retry("virtiostat", ["virtio-fs vm3:0", "virtio-rng vm3:1"])
+    qemu.command_retry("pcistat", ["pcistat:"])
+    check_str_guest_heartbeats(qemu, cycle)
+    print(f"[pass] {label}: complete", flush=True)
+
+
+def run_str_cycles(qemu, args):
+    if args.str_cycles == 0:
+        return
+
+    with QmpClient(args.qmp_socket, min(args.timeout, 10.0)) as qmp:
+        assert_qmp_status(qmp, "running", "QMP connected")
+        for cycle in range(1, args.str_cycles + 1):
+            run_str_cycle(qemu, qmp, args, cycle)
+
+
 def run_qemu(args, cmd):
     if not args.kernel.is_file():
         raise SystemExit(f"Kernel image not found: {args.kernel}")
@@ -696,6 +932,8 @@ def run_qemu(args, cmd):
     if shutil.which(args.qemu) is None:
         raise SystemExit(f"QEMU binary not found: {args.qemu}")
 
+    args.qmp_socket.parent.mkdir(parents=True, exist_ok=True)
+    args.qmp_socket.unlink(missing_ok=True)
     print(f"[regress] qemu: {quote(cmd)}", flush=True)
     with QemuSession(cmd, args.log, args.timeout) as qemu:
         qemu.disable_terminal_replies = args.no_terminal_replies
@@ -871,6 +1109,9 @@ def run_qemu(args, cmd):
             run_vsh_switch_stress(qemu, args)
         if args.stress_vsh_help:
             run_vsh_help_stress(qemu, args)
+        run_str_cycles(qemu, args)
+
+    args.qmp_socket.unlink(missing_ok=True)
 
     print(f"[pass] regression complete; log: {args.log}", flush=True)
 
