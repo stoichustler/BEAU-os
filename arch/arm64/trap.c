@@ -9,7 +9,7 @@
 #include <cpu.h>
 #include <logmsg.h>
 #include <notify.h>
-#include <host_pm.h>
+#include <hv_pm.h>
 #include <debug/dump.h>
 
 #include <asm/trap.h>

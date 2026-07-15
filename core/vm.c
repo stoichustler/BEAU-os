@@ -17,7 +17,7 @@
 #include <ticks.h>
 #include <vm_wdt.h>
 #include <asm/notify.h>
-#include <host_pm.h>
+#include <hv_pm.h>
 
 #ifndef CONFIG_AUTOSTART_VM
 #define CONFIG_AUTOSTART_VM		1

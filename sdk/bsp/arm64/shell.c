@@ -18,7 +18,7 @@
 #include <vcpu.h>
 #include <vm_config.h>
 #include <vm_wdt.h>
-#include <host_pm.h>
+#include <hv_pm.h>
 #include <schedule.h>
 #include <spinlock.h>
 #include <ticks.h>

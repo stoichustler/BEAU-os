@@ -5,7 +5,7 @@
  */
 
 #include <types.h>
-#include <host_pm.h>
+#include <hv_pm.h>
 #include <asm/psci.h>
 
 void arch_shutdown_host(void)

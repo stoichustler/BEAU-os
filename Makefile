@@ -249,6 +249,7 @@ endif
 
 COMMON_C_SRCS += core/vcpu.c
 COMMON_C_SRCS += core/vm.c
+COMMON_C_SRCS += core/pm.c
 COMMON_C_SRCS += core/vm_wdt.c
 
 COMMON_C_SRCS += core/notify.c
