@@ -131,6 +131,21 @@ struct arm64_vcpu_trap_info {
 	uint64_t far;
 };
 
+enum arm64_vcpu_suspend_mode {
+	ARM64_VCPU_SUSPEND_NONE = 0U,
+	ARM64_VCPU_SUSPEND_STANDBY,
+	ARM64_VCPU_SUSPEND_POWERDOWN,
+};
+
+/* CPU_SUSPEND is orthogonal to the management lifecycle in enum vcpu_state. */
+struct arm64_vcpu_pm_state {
+	uint64_t resume_entry;
+	uint64_t resume_context;
+	uint32_t power_state;
+	enum arm64_vcpu_suspend_mode mode;
+	bool blocked;
+};
+
 struct arm64_vcpu_last_exit {
 	uint64_t tsc;
 	uint64_t esr;
@@ -458,6 +473,7 @@ struct acrn_vcpu_arch {
 	struct arm64_vcpu_sve_state sve;
 	struct arm64_vgicv3_vcpu_ctx vgic;
 	struct arm64_vcpu_trap_info trap;
+	struct arm64_vcpu_pm_state pm;
 	struct arm64_vcpu_debug_info debug;
 	/* [20260708] bounded IRQ forward progress:
 	 *
@@ -482,6 +498,7 @@ int32_t arm64_process_vcpu_requests(struct acrn_vcpu *vcpu);
 bool arm64_is_acrn_hypercall(uint64_t hcall_id);
 int32_t arm64_dispatch_hypercall(struct acrn_vcpu *vcpu);
 void arm64_prepare_linux_vcpu_context(struct acrn_vcpu *vcpu, uint64_t entry, uint64_t x0);
+bool arm64_vcpu_has_pending_event(struct acrn_vcpu *vcpu);
 uint64_t arch_vcpu_get_entry(const struct acrn_vcpu *vcpu);
 uint64_t arm64_vcpu_trace_guest_boundary(struct acrn_vcpu *vcpu, uint8_t event,
 	uint32_t source, int32_t status);

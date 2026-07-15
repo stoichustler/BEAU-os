@@ -75,6 +75,7 @@
 #define PSCI_1_0_FN_PSCI_FEATURES	0x8400000aU
 #define PSCI_1_1_FN_SYSTEM_RESET2	0x84000012U
 #define ARM_SMCCC_VERSION_FUNC_ID	0x80000000U
+#define PSCI_0_2_FN64_CPU_SUSPEND	0xc4000001U
 #define PSCI_0_2_FN64_CPU_ON		0xc4000003U
 #define PSCI_0_2_FN64_AFFINITY_INFO	0xc4000004U
 #define PSCI_0_2_TOS_MP		2L
@@ -707,6 +708,21 @@ static void record_psci_call(struct acrn_vcpu *vcpu, uint32_t fn,
 	last->tsc = cpu_ticks();
 }
 
+static void record_psci_suspend_call(struct acrn_vcpu *vcpu, uint32_t fn,
+	uint64_t power_state, uint64_t entry_point, uint64_t context_id, int64_t ret)
+{
+	struct arm64_vcpu_last_psci *last = &vcpu->arch.debug.last_psci;
+
+	last->fn = fn;
+	last->target_mpidr = power_state;
+	last->entry = entry_point;
+	last->context = context_id;
+	last->ret = ret;
+	last->source_vcpu_id = vcpu->vcpu_id;
+	last->target_vcpu_id = vcpu->vcpu_id;
+	last->tsc = cpu_ticks();
+}
+
 static int64_t handle_psci_cpu_on(struct acrn_vcpu *vcpu)
 {
 	struct acrn_vcpu *target = psci_target_vcpu(vcpu->vm, vcpu->arch.regs.x1);
@@ -735,6 +751,7 @@ static int64_t handle_psci_features(uint32_t fn)
 {
 	switch (fn) {
 	case PSCI_0_2_FN_PSCI_VERSION:
+	case PSCI_0_2_FN_CPU_SUSPEND:
 	case PSCI_0_2_FN_CPU_OFF:
 	case PSCI_0_2_FN_CPU_ON:
 	case PSCI_0_2_FN_AFFINITY_INFO:
@@ -742,6 +759,7 @@ static int64_t handle_psci_features(uint32_t fn)
 	case PSCI_0_2_FN_SYSTEM_OFF:
 	case PSCI_0_2_FN_SYSTEM_RESET:
 	case PSCI_1_0_FN_PSCI_FEATURES:
+	case PSCI_0_2_FN64_CPU_SUSPEND:
 	case PSCI_0_2_FN64_CPU_ON:
 	case PSCI_0_2_FN64_AFFINITY_INFO:
 		return PSCI_RET_SUCCESS;
@@ -754,7 +772,11 @@ static int32_t handle_psci64(struct acrn_vcpu *vcpu, bool advance_elr)
 {
 	uint32_t fn = (uint32_t)vcpu->arch.regs.x0;
 	struct acrn_vcpu *target;
+	uint64_t power_state;
+	uint64_t entry_point;
+	uint64_t context_id;
 	int64_t ret;
+	bool response_prepared = false;
 
 	/*
 	 * PSCI is the guest-visible CPU power-management ABI. The current QEMU
@@ -770,6 +792,19 @@ static int32_t handle_psci64(struct acrn_vcpu *vcpu, bool advance_elr)
 		break;
 	case PSCI_0_2_FN_MIGRATE_INFO_TYPE:
 		ret = PSCI_0_2_TOS_MP;
+		break;
+	case PSCI_0_2_FN_CPU_SUSPEND:
+	case PSCI_0_2_FN64_CPU_SUSPEND:
+		power_state = (uint64_t)(uint32_t)vcpu->arch.regs.x1;
+		entry_point = (fn == PSCI_0_2_FN64_CPU_SUSPEND) ?
+			vcpu->arch.regs.x2 : (uint64_t)(uint32_t)vcpu->arch.regs.x2;
+		context_id = (fn == PSCI_0_2_FN64_CPU_SUSPEND) ?
+			vcpu->arch.regs.x3 : (uint64_t)(uint32_t)vcpu->arch.regs.x3;
+		ret = arm64_vpsci_cpu_suspend(vcpu, power_state, entry_point,
+			context_id, advance_elr);
+		record_psci_suspend_call(vcpu, fn, power_state, entry_point,
+			context_id, ret);
+		response_prepared = (ret == PSCI_RET_SUCCESS);
 		break;
 	case PSCI_0_2_FN_CPU_ON:
 	case PSCI_0_2_FN64_CPU_ON:
@@ -801,9 +836,11 @@ static int32_t handle_psci64(struct acrn_vcpu *vcpu, bool advance_elr)
 		break;
 	}
 
-	vcpu->arch.regs.x0 = (uint64_t)ret;
-	if (advance_elr) {
-		advance_vcpu_elr(vcpu);
+	if (!response_prepared) {
+		vcpu->arch.regs.x0 = (uint64_t)ret;
+		if (advance_elr) {
+			advance_vcpu_elr(vcpu);
+		}
 	}
 	return 0;
 }

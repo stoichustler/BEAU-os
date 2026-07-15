@@ -84,6 +84,17 @@ class HvPmContractTest(unittest.TestCase):
                      '"suspend"', '"status"', '"abort"', '"wake"'):
             self.assertIn(text, shell)
 
+    def test_vpsci_cpu_suspend_supports_standby_and_powerdown(self):
+        vpsci = source("arch/arm64/guest/vpsci.c")
+        exit_c = source("arch/arm64/guest/vcpu_exit.c")
+        for text in ("PSCI_0_2_FN_CPU_SUSPEND",
+                     "PSCI_0_2_FN64_CPU_SUSPEND"):
+            self.assertIn(text, exit_c)
+        for text in ("arm64_vpsci_cpu_suspend", "power_state",
+                     "entry_point", "context_id", "PSCI_RET_DENIED"):
+            self.assertIn(text, vpsci)
+        self.assertIn("handle_psci_features", exit_c)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -104,3 +104,17 @@ bool vcpu_inject_pending_intr(struct acrn_vcpu *vcpu)
 
 	return injected;
 }
+
+bool arm64_vcpu_has_pending_event(struct acrn_vcpu *vcpu)
+{
+	if (vcpu == NULL) {
+		return false;
+	}
+
+	/* Materialize an expired guest timer before deciding to block in PSCI. */
+	arm64_vgicv3_poll_current_vtimer(vcpu);
+	arm64_vgicv3_update_current_vtimer(vcpu);
+
+	return vcpu_has_pending_request(vcpu) ||
+		arm64_vgicv3_has_pending_irq(vcpu);
+}
