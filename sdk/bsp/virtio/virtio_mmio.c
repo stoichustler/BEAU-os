@@ -6,6 +6,7 @@
 
 #include <types.h>
 #include <errno.h>
+#include <hv_pm.h>
 #include <vm.h>
 #include <guest_memory.h>
 #include <bsp/io_req.h>
@@ -436,7 +437,8 @@ static void virtio_mmio_write_reg(struct virtio_mmio_dev *dev,
 		}
 		break;
 	case VIRTIO_MMIO_QUEUE_NOTIFY:
-		if ((dev->ops != NULL) && (dev->ops->notify_queue != NULL)) {
+		if (!dev->pm_suspended && !hv_pm_io_is_gated() &&
+			(dev->ops != NULL) && (dev->ops->notify_queue != NULL)) {
 			dev->ops->notify_queue(dev, (uint16_t)value);
 		}
 		break;
@@ -491,4 +493,35 @@ int32_t virtio_mmio_handler(struct io_request *io_req,
 	}
 
 	return ret;
+}
+
+int32_t virtio_mmio_pm_suspend(struct virtio_mmio_dev *dev, uint64_t epoch)
+{
+	if ((dev == NULL) || (epoch == 0UL)) {
+		return -EINVAL;
+	}
+	if (dev->pm_suspended) {
+		return (dev->pm_epoch == epoch) ? 0 : -EBUSY;
+	}
+
+	dev->pm_epoch = epoch;
+	dev->pm_suspended = true;
+	return 0;
+}
+
+int32_t virtio_mmio_pm_resume(struct virtio_mmio_dev *dev, uint64_t epoch)
+{
+	if ((dev == NULL) || (epoch == 0UL)) {
+		return -EINVAL;
+	}
+	if (!dev->pm_suspended) {
+		return 0;
+	}
+	if (dev->pm_epoch != epoch) {
+		return -EINVAL;
+	}
+
+	dev->pm_epoch = 0UL;
+	dev->pm_suspended = false;
+	return 0;
 }

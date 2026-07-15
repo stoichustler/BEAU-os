@@ -43,6 +43,23 @@
 #include <atomic.h>
 #include "vpci_internal.h"
 
+struct vpci_pm_vdev_state {
+	uint16_t command;
+	uint16_t msi_control;
+	uint16_t msix_control;
+	bool has_msi;
+	bool has_msix;
+	bool valid;
+};
+
+struct vpci_pm_vm_state {
+	uint64_t suspend_epoch;
+	struct vpci_pm_vdev_state vdev[CONFIG_MAX_PCI_DEV_NUM];
+	bool valid;
+};
+
+static struct vpci_pm_vm_state vpci_pm_state[CONFIG_MAX_VM_NUM];
+
 /* [20260712] arm64 vPCI framework
  *
  *              +---------------- guest VM ----------------+
@@ -338,6 +355,109 @@ int32_t init_vpci(struct acrn_vm *vm)
 void deinit_vpci(struct acrn_vm *vm)
 {
 	vpci_cleanup_vm_resources(vm, true);
+}
+
+int32_t vpci_pm_suspend(struct acrn_vm *vm, uint64_t epoch)
+{
+	struct vpci_pm_vm_state *state;
+	uint64_t flags;
+	uint32_t id;
+
+	if ((vm == NULL) || (vm->vm_id >= CONFIG_MAX_VM_NUM) || (epoch == 0UL)) {
+		return -EINVAL;
+	}
+	state = &vpci_pm_state[vm->vm_id];
+	if (state->valid) {
+		return (state->suspend_epoch == epoch) ? 0 : -EBUSY;
+	}
+
+	spinlock_irqsave_obtain(&vm->vpci.lock, &flags);
+	state->suspend_epoch = epoch;
+	for (id = 0U; id < CONFIG_MAX_PCI_DEV_NUM; id++) {
+		struct pci_vdev *vdev = &vm->vpci.pci_vdevs[id];
+		struct vpci_pm_vdev_state *saved = &state->vdev[id];
+		uint16_t command;
+
+		if ((vdev->vdev_ops == NULL) || (vdev->pdev == NULL) ||
+			(vdev->user != vdev)) {
+			continue;
+		}
+		command = (uint16_t)pci_pdev_read_cfg(vdev->pdev->bdf,
+			PCIR_COMMAND, 2U);
+		saved->command = command;
+		saved->has_msi = has_msi_cap(vdev);
+		saved->has_msix = has_msix_cap(vdev);
+		if (saved->has_msi) {
+			saved->msi_control = (uint16_t)pci_pdev_read_cfg(vdev->pdev->bdf,
+				vdev->msi.capoff + PCIR_MSI_CTRL, 2U);
+			pci_pdev_write_cfg(vdev->pdev->bdf,
+				vdev->msi.capoff + PCIR_MSI_CTRL, 2U,
+				saved->msi_control & ~PCIM_MSICTRL_MSI_ENABLE);
+		}
+		if (saved->has_msix) {
+			saved->msix_control = (uint16_t)pci_pdev_read_cfg(vdev->pdev->bdf,
+				vdev->msix.capoff + PCIR_MSIX_CTRL, 2U);
+			pci_pdev_write_cfg(vdev->pdev->bdf,
+				vdev->msix.capoff + PCIR_MSIX_CTRL, 2U,
+				saved->msix_control | PCIM_MSIXCTRL_FUNCTION_MASK);
+		}
+		pci_pdev_write_cfg(vdev->pdev->bdf, PCIR_COMMAND, 2U,
+			(command | PCIM_CMD_INTxDIS) & ~PCIM_CMD_BUSEN);
+		saved->valid = true;
+	}
+	state->valid = true;
+	spinlock_irqrestore_release(&vm->vpci.lock, flags);
+
+	return 0;
+}
+
+int32_t vpci_pm_resume(struct acrn_vm *vm, uint64_t epoch)
+{
+	struct vpci_pm_vm_state *state;
+	uint64_t flags;
+	uint32_t id;
+
+	if ((vm == NULL) || (vm->vm_id >= CONFIG_MAX_VM_NUM) || (epoch == 0UL)) {
+		return -EINVAL;
+	}
+	state = &vpci_pm_state[vm->vm_id];
+	if (!state->valid) {
+		return 0;
+	}
+	if (state->suspend_epoch != epoch) {
+		return -EINVAL;
+	}
+
+	spinlock_irqsave_obtain(&vm->vpci.lock, &flags);
+	for (id = 0U; id < CONFIG_MAX_PCI_DEV_NUM; id++) {
+		struct pci_vdev *vdev = &vm->vpci.pci_vdevs[id];
+		struct vpci_pm_vdev_state *saved = &state->vdev[id];
+
+		if (!saved->valid || (vdev->pdev == NULL)) {
+			continue;
+		}
+		/* Enable DMA while every interrupt mechanism is still masked. */
+		pci_pdev_write_cfg(vdev->pdev->bdf, PCIR_COMMAND, 2U,
+			saved->command | PCIM_CMD_INTxDIS);
+		if (saved->has_msi) {
+			pci_pdev_write_cfg(vdev->pdev->bdf,
+				vdev->msi.capoff + PCIR_MSI_CTRL, 2U,
+				saved->msi_control);
+		}
+		if (saved->has_msix) {
+			pci_pdev_write_cfg(vdev->pdev->bdf,
+				vdev->msix.capoff + PCIR_MSIX_CTRL, 2U,
+				saved->msix_control);
+		}
+		pci_pdev_write_cfg(vdev->pdev->bdf, PCIR_COMMAND, 2U,
+			saved->command);
+		saved->valid = false;
+	}
+	state->suspend_epoch = 0UL;
+	state->valid = false;
+	spinlock_irqrestore_release(&vm->vpci.lock, flags);
+
+	return 0;
 }
 
 static void vpci_release_vdevs(struct acrn_vm *vm, bool restore_parent)

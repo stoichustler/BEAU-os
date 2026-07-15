@@ -145,6 +145,9 @@ int32_t arm_smmu_assign_stream(struct iommu_domain *domain, uint32_t stream_id);
 int32_t arm_smmu_unassign_stream(struct iommu_domain *domain, uint32_t stream_id);
 bool arm_smmu_domain_valid(const struct iommu_domain *domain);
 bool arm_smmu_ready(void);
+int32_t arm_smmu_cmdq_sync(void);
+int32_t arm_smmu_pm_suspend(uint64_t epoch);
+int32_t arm_smmu_pm_resume(uint64_t epoch);
 
 bool is_pi_capable(const struct acrn_vm *vm);
 int32_t ptirq_prepare_msi_remap(struct acrn_vm *vm, uint16_t virt_bdf,

@@ -45,6 +45,7 @@ struct bsp_pt_device {
 	enum bsp_pt_owner owner;
 	bool valid;
 	bool writable;
+	bool pm_irq_masked;
 	struct bsp_pt_mmio_res mmio[BSP_PT_MMIO_RES_NUM];
 	struct bsp_pt_irq_res irq_res;
 };
@@ -121,6 +122,8 @@ struct bsp_pt_device {
  */
 static spinlock_t bsp_pt_lock = { .head = 0U, .tail = 0U };
 static struct bsp_pt_device bsp_pt_devices[BSP_PT_MAX_DEVICES];
+static uint64_t bsp_pt_suspend_epoch;
+static bool bsp_pt_suspended;
 
 static bool bsp_pt_valid_stream(uint32_t stream_id)
 {
@@ -502,4 +505,72 @@ void passthrough_deassign_vm(struct acrn_vm *vm)
 			(void)passthrough_deassign_device(vm, stream_id);
 		}
 	}
+}
+
+int32_t passthrough_pm_suspend(uint64_t epoch, uint64_t required_vm_mask)
+{
+	uint64_t flags;
+	uint32_t i;
+
+	if ((epoch == 0UL) || (required_vm_mask == 0UL)) {
+		return -EINVAL;
+	}
+
+	spinlock_irqsave_obtain(&bsp_pt_lock, &flags);
+	if (bsp_pt_suspended) {
+		int32_t status = (bsp_pt_suspend_epoch == epoch) ? 0 : -EBUSY;
+
+		spinlock_irqrestore_release(&bsp_pt_lock, flags);
+		return status;
+	}
+	for (i = 0U; i < ARRAY_SIZE(bsp_pt_devices); i++) {
+		struct bsp_pt_device *dev = &bsp_pt_devices[i];
+
+		if (!dev->valid || (dev->owner != BSP_PT_OWNER_VM) ||
+			(dev->owner_vmid >= 64U) ||
+			((required_vm_mask & (1UL << dev->owner_vmid)) == 0UL) ||
+			!dev->irq_res.valid) {
+			continue;
+		}
+		arm64_gicv3_disable_irq(dev->irq_res.phys_spi);
+		dev->pm_irq_masked = true;
+	}
+	bsp_pt_suspend_epoch = epoch;
+	bsp_pt_suspended = true;
+	spinlock_irqrestore_release(&bsp_pt_lock, flags);
+
+	return 0;
+}
+
+int32_t passthrough_pm_resume(uint64_t epoch)
+{
+	uint64_t flags;
+	uint32_t i;
+
+	if (epoch == 0UL) {
+		return -EINVAL;
+	}
+
+	spinlock_irqsave_obtain(&bsp_pt_lock, &flags);
+	if (!bsp_pt_suspended) {
+		spinlock_irqrestore_release(&bsp_pt_lock, flags);
+		return 0;
+	}
+	if (bsp_pt_suspend_epoch != epoch) {
+		spinlock_irqrestore_release(&bsp_pt_lock, flags);
+		return -EINVAL;
+	}
+	for (i = 0U; i < ARRAY_SIZE(bsp_pt_devices); i++) {
+		struct bsp_pt_device *dev = &bsp_pt_devices[i];
+
+		if (dev->pm_irq_masked) {
+			arm64_gicv3_unmask_irq(dev->irq_res.phys_spi);
+			dev->pm_irq_masked = false;
+		}
+	}
+	bsp_pt_suspend_epoch = 0UL;
+	bsp_pt_suspended = false;
+	spinlock_irqrestore_release(&bsp_pt_lock, flags);
+
+	return 0;
 }

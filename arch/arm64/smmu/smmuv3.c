@@ -276,6 +276,20 @@ static uint64_t arm_smmu_evtq[ARM_SMMU_QUEUE_ENTRIES][ARM_SMMU_EVT_DWORDS]
 	__aligned(PAGE_SIZE);
 static uint32_t arm_smmu_cmdq_prod;
 
+struct arm_smmu_pm_state {
+	uint64_t suspend_epoch;
+	uint64_t strtab_base;
+	uint64_t cmdq_base;
+	uint64_t evtq_base;
+	uint32_t strtab_base_cfg;
+	uint32_t cr0;
+	uint32_t irq_ctrl;
+	bool hardware_active;
+	bool valid;
+};
+
+static struct arm_smmu_pm_state arm_smmu_pm_state;
+
 static struct arm_smmu_stream_state *arm_smmu_find_stream(uint32_t stream_id);
 static struct arm_smmu_stream_state *arm_smmu_alloc_stream(uint32_t stream_id);
 
@@ -512,6 +526,23 @@ static int32_t arm_smmu_cmdq_sync_locked(void)
 	if (ret == 0) {
 		arm_smmu_hw.cmdq_syncs++;
 	}
+
+	return ret;
+}
+
+int32_t arm_smmu_cmdq_sync(void)
+{
+	uint64_t flags;
+	int32_t ret;
+
+	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);
+	if (!arm_smmu_hw.ready || !arm_smmu_hw.cmdq_enabled ||
+		(arm_smmu_hw.base == 0UL)) {
+		ret = -ENODEV;
+	} else {
+		ret = arm_smmu_cmdq_sync_locked();
+	}
+	spinlock_irqrestore_release(&arm_smmu_lock, flags);
 
 	return ret;
 }
@@ -989,6 +1020,167 @@ void arm_smmu_probe(uint64_t base, uint64_t size)
 		LOG_ERR("SMMUv3: discovered at 0x%lx but abort-default init failed: %d",
 			base, ret);
 	}
+}
+
+int32_t arm_smmu_pm_suspend(uint64_t epoch)
+{
+	uint64_t flags;
+	int32_t ret;
+
+	if (epoch == 0UL) {
+		return -EINVAL;
+	}
+
+	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);
+	if (arm_smmu_pm_state.valid) {
+		ret = (arm_smmu_pm_state.suspend_epoch == epoch) ? 0 : -EBUSY;
+		spinlock_irqrestore_release(&arm_smmu_lock, flags);
+		return ret;
+	}
+	if (!arm_smmu_hw.discovered || !arm_smmu_hw.ready ||
+		(arm_smmu_hw.base == 0UL)) {
+		arm_smmu_pm_state.suspend_epoch = epoch;
+		arm_smmu_pm_state.hardware_active = false;
+		arm_smmu_pm_state.valid = true;
+		spinlock_irqrestore_release(&arm_smmu_lock, flags);
+		return 0;
+	}
+	spinlock_irqrestore_release(&arm_smmu_lock, flags);
+
+	ret = arm_smmu_cmdq_sync();
+	if (ret != 0) {
+		return ret;
+	}
+
+	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);
+	arm_smmu_pm_state.suspend_epoch = epoch;
+	arm_smmu_pm_state.strtab_base = mmio_read64(arm_smmu_reg(
+		arm_smmu_hw.base, ARM_SMMU_STRTAB_BASE));
+	arm_smmu_pm_state.strtab_base_cfg = mmio_read32(arm_smmu_reg(
+		arm_smmu_hw.base, ARM_SMMU_STRTAB_BASE_CFG));
+	arm_smmu_pm_state.cmdq_base = mmio_read64(arm_smmu_reg(
+		arm_smmu_hw.base, ARM_SMMU_CMDQ_BASE));
+	arm_smmu_pm_state.evtq_base = arm_smmu_hw.evtq_enabled ?
+		mmio_read64(arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_EVTQ_BASE)) : 0UL;
+	arm_smmu_pm_state.cr0 = mmio_read32(arm_smmu_reg(
+		arm_smmu_hw.base, ARM_SMMU_CR0));
+	arm_smmu_pm_state.irq_ctrl = mmio_read32(arm_smmu_reg(
+		arm_smmu_hw.base, ARM_SMMU_IRQ_CTRL));
+	arm_smmu_pm_state.hardware_active = true;
+	arm_smmu_pm_state.valid = true;
+
+	ret = arm_smmu_update_gbpa(ARM_SMMU_GBPA_ABORT, 0U);
+	if (ret == 0) {
+		mmio_write32(0U, arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CR0));
+		ret = arm_smmu_wait_reg32(ARM_SMMU_CR0ACK,
+			ARM_SMMU_CR0_SMMUEN | ARM_SMMU_CR0_EVTQEN |
+			ARM_SMMU_CR0_CMDQEN, 0U);
+	}
+	if (ret == 0) {
+		arm_smmu_assignment_hw_ready = false;
+		arm_smmu_hw.cmdq_enabled = false;
+		arm_smmu_hw.evtq_enabled = false;
+		arm_smmu_hw.aborted = true;
+	}
+	spinlock_irqrestore_release(&arm_smmu_lock, flags);
+
+	return ret;
+}
+
+int32_t arm_smmu_pm_resume(uint64_t epoch)
+{
+	uint64_t flags;
+	uint32_t cr0;
+	uint32_t i;
+	int32_t ret = 0;
+
+	if (epoch == 0UL) {
+		return -EINVAL;
+	}
+
+	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);
+	if (!arm_smmu_pm_state.valid) {
+		spinlock_irqrestore_release(&arm_smmu_lock, flags);
+		return 0;
+	}
+	if (arm_smmu_pm_state.suspend_epoch != epoch) {
+		spinlock_irqrestore_release(&arm_smmu_lock, flags);
+		return -EINVAL;
+	}
+	if (!arm_smmu_pm_state.hardware_active) {
+		arm_smmu_pm_state.suspend_epoch = 0UL;
+		arm_smmu_pm_state.valid = false;
+		spinlock_irqrestore_release(&arm_smmu_lock, flags);
+		return 0;
+	}
+
+	mmio_write32(0U, arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CR0));
+	ret = arm_smmu_wait_reg32(ARM_SMMU_CR0ACK,
+		ARM_SMMU_CR0_SMMUEN | ARM_SMMU_CR0_EVTQEN |
+		ARM_SMMU_CR0_CMDQEN, 0U);
+	if (ret == 0) {
+		flush_cache_range(arm_smmu_strtab,
+			(1U << arm_smmu_hw.strtab_log2_entries) * ARM_SMMU_STE_SIZE);
+		flush_cache_range(arm_smmu_cmdq, sizeof(arm_smmu_cmdq));
+		flush_cache_range(arm_smmu_evtq, sizeof(arm_smmu_evtq));
+		mmio_write64(arm_smmu_pm_state.strtab_base,
+			arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_STRTAB_BASE));
+		mmio_write32(arm_smmu_pm_state.strtab_base_cfg,
+			arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_STRTAB_BASE_CFG));
+		mmio_write64(arm_smmu_pm_state.cmdq_base,
+			arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CMDQ_BASE));
+		arm_smmu_cmdq_prod = 0U;
+		mmio_write32(0U, arm_smmu_reg(arm_smmu_hw.base,
+			ARM_SMMU_CMDQ_PROD));
+		mmio_write32(0U, arm_smmu_reg(arm_smmu_hw.base,
+			ARM_SMMU_CMDQ_CONS));
+		if (arm_smmu_pm_state.evtq_base != 0UL) {
+			mmio_write64(arm_smmu_pm_state.evtq_base,
+				arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_EVTQ_BASE));
+			mmio_write32(0U, arm_smmu_page1_reg(arm_smmu_hw.base,
+				ARM_SMMU_EVTQ_PROD));
+			mmio_write32(0U, arm_smmu_page1_reg(arm_smmu_hw.base,
+				ARM_SMMU_EVTQ_CONS));
+		}
+		ret = arm_smmu_update_gbpa(ARM_SMMU_GBPA_ABORT, 0U);
+	}
+	if (ret == 0) {
+		mmio_write32(arm_smmu_pm_state.irq_ctrl,
+			arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_IRQ_CTRL));
+		ret = arm_smmu_wait_reg32(ARM_SMMU_IRQ_CTRLACK, UINT32_MAX,
+			arm_smmu_pm_state.irq_ctrl);
+	}
+	cr0 = arm_smmu_pm_state.cr0;
+	if (ret == 0) {
+		mmio_write32(cr0, arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CR0));
+		ret = arm_smmu_wait_reg32(ARM_SMMU_CR0ACK, cr0, cr0);
+	}
+	if (ret == 0) {
+		arm_smmu_hw.cmdq_enabled = (cr0 & ARM_SMMU_CR0_CMDQEN) != 0U;
+		arm_smmu_hw.evtq_enabled = (cr0 & ARM_SMMU_CR0_EVTQEN) != 0U;
+		arm_smmu_assignment_hw_ready =
+			((cr0 & (ARM_SMMU_CR0_SMMUEN | ARM_SMMU_CR0_CMDQEN)) ==
+			 (ARM_SMMU_CR0_SMMUEN | ARM_SMMU_CR0_CMDQEN));
+		for (i = 0U; i < ARRAY_SIZE(arm_smmu_streams); i++) {
+			const struct arm_smmu_stream_state *stream = &arm_smmu_streams[i];
+
+			if (stream->used && arm_smmu_stream_in_strtab(stream->stream_id)) {
+				ret = arm_smmu_sync_ste_locked(stream->stream_id);
+				if (ret != 0) {
+					break;
+				}
+			}
+		}
+	}
+	if (ret == 0) {
+		arm_smmu_hw.aborted = true;
+		arm_smmu_pm_state.suspend_epoch = 0UL;
+		arm_smmu_pm_state.hardware_active = false;
+		arm_smmu_pm_state.valid = false;
+	}
+	spinlock_irqrestore_release(&arm_smmu_lock, flags);
+
+	return ret;
 }
 
 static void arm_smmu_poll_events_locked(void)

@@ -152,6 +152,17 @@ class HvPmContractTest(unittest.TestCase):
         for text in ("arm64_vgicv3_suspend_vm", "arm64_vgicv3_resume_vm"):
             self.assertIn(text, vgic)
 
+    def test_io_pm_hooks_gate_requests_before_dma(self):
+        proxy = source("sdk/bsp/virtio/virtio_proxy.c")
+        vpci = source("sdk/bsp/vpci/vpci_core.c")
+        smmu = source("arch/arm64/smmu/smmuv3.c")
+        self.assertIn("virtio_proxy_pm_suspend", proxy)
+        self.assertIn("hv_pm_io_is_gated", proxy)
+        self.assertIn("vpci_pm_suspend", vpci)
+        self.assertIn("arm_smmu_pm_suspend", smmu)
+        self.assertIn("ARM_SMMU_GBPA_ABORT", smmu)
+        self.assertIn("arm_smmu_cmdq_sync", smmu)
+
 
 if __name__ == "__main__":
     unittest.main()

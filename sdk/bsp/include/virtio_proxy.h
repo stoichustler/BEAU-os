@@ -165,5 +165,7 @@ int32_t virtio_proxy_backend_hcall(struct acrn_vcpu *vcpu, uint64_t ioc_gpa);
 uint16_t virtio_proxy_device_count(uint16_t vm_id);
 bool virtio_proxy_get_stats(uint16_t vm_id, uint16_t index,
 	struct virtio_proxy_stats *stats);
+int32_t virtio_proxy_pm_suspend(uint64_t epoch);
+int32_t virtio_proxy_pm_resume(uint64_t epoch);
 
 #endif /* VIRTIO_PROXY_H */

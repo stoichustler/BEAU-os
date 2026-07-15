@@ -92,7 +92,9 @@ struct virtio_mmio_dev {
 	uint32_t queue_sel;
 	uint32_t interrupt_status;
 	uint32_t status;
+	uint64_t pm_epoch;
 	bool irq_asserted;
+	bool pm_suspended;
 };
 
 void virtio_mmio_init(struct virtio_mmio_dev *dev,
@@ -118,5 +120,7 @@ bool virtio_mmio_write_gpa(struct virtio_mmio_dev *dev, uint64_t gpa,
 	void *buf, uint32_t size);
 void *virtio_mmio_priv(struct virtio_mmio_dev *dev);
 struct acrn_vm *virtio_mmio_vm(struct virtio_mmio_dev *dev);
+int32_t virtio_mmio_pm_suspend(struct virtio_mmio_dev *dev, uint64_t epoch);
+int32_t virtio_mmio_pm_resume(struct virtio_mmio_dev *dev, uint64_t epoch);
 
 #endif /* VIRTIO_MMIO_H */
