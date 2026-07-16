@@ -62,15 +62,22 @@ class VmStrShellReturnTest(unittest.TestCase):
 
         self.assertEqual(PROMPT, matched)
 
-    def test_console_timer_only_publishes_shell_work(self) -> None:
+    def test_console_timer_keeps_vm_io_on_bounded_fast_path(self) -> None:
         console = source("sdk/bsp/console.c")
         callback = function_body(
             console,
             "static void console_timer_callback(__unused void *data)\n{",
         )
 
+        self.assertRegex(
+            callback,
+            re.compile(
+                r"if\s*\(!console_vm_kick\(\)\)\s*\{\s*"
+                r"shell_kick\(\);",
+                re.DOTALL,
+            ),
+        )
         self.assertIn("shell_kick();", callback)
-        self.assertNotIn("console_vm_kick", callback)
 
     def test_public_kick_only_prioritizes_shell_thread(self) -> None:
         shell = source("sdk/bsp/shell.c")
@@ -95,7 +102,14 @@ class VmStrShellReturnTest(unittest.TestCase):
             "static void shell_thread_main(__unused struct thread_object *obj)\n{",
         )
 
-        self.assertIn("console_vm_kick()", worker)
+        self.assertNotIn("console_vm_kick", worker)
+        self.assertRegex(
+            worker,
+            re.compile(
+                r"if\s*\(!console_is_hv\(\)\)\s*\{\s*return;",
+                re.DOTALL,
+            ),
+        )
         self.assertRegex(
             worker,
             re.compile(
@@ -114,6 +128,57 @@ class VmStrShellReturnTest(unittest.TestCase):
         self.assertLess(kick_index, yield_index)
         self.assertLess(yield_index, schedule_index)
         self.assertNotIn("sleep_thread", thread)
+
+    def test_vm_console_binding_precedes_ownership_publication(self) -> None:
+        shell = source("sdk/bsp/shell.c")
+        switch = function_body(
+            shell,
+            "static int32_t shell_to_vm_console(int32_t argc, char **argv)\n{",
+        )
+
+        bind_index = switch.index("console_vm_vuart_bind(vm_id)")
+        publish_index = switch.index("console_vmid = vm_id")
+        self.assertLess(bind_index, publish_index)
+
+    def test_vm_console_attach_primes_guest_prompt_without_blocking(self) -> None:
+        shell = source("sdk/bsp/shell.c")
+        switch = function_body(
+            shell,
+            "static int32_t shell_to_vm_console(int32_t argc, char **argv)\n{",
+        )
+
+        publish_index = switch.index("console_vmid = vm_id")
+        prime_index = switch.index("vuart_try_putchar(vu, VM_CONSOLE_PROMPT_KEY)")
+        notify_index = switch.index("vuart_notify_rx(vu)")
+        self.assertLess(publish_index, prime_index)
+        self.assertLess(prime_index, notify_index)
+        self.assertRegex(
+            switch,
+            re.compile(
+                r"if\s*\(vuart_try_putchar\(vu, VM_CONSOLE_PROMPT_KEY\)\)\s*"
+                r"\{\s*vuart_notify_rx\(vu\);",
+                re.DOTALL,
+            ),
+        )
+
+    def test_vm_console_normalizes_backspace_for_guest_terminal(self) -> None:
+        console = source("sdk/bsp/console.c")
+        collect = function_body(
+            console,
+            "static bool console_vm_input_collect(uint16_t target_vmid)\n{",
+        )
+
+        normalize_index = collect.index("ch = VM_CONSOLE_ASCII_DEL")
+        queue_index = collect.index("console_vm_input_put(ch)")
+        self.assertLess(normalize_index, queue_index)
+        self.assertRegex(
+            collect,
+            re.compile(
+                r"if\s*\(ch\s*==\s*VM_CONSOLE_ASCII_BS\)\s*"
+                r"\{\s*ch\s*=\s*VM_CONSOLE_ASCII_DEL;",
+                re.DOTALL,
+            ),
+        )
 
     def test_boot_quiet_waits_for_enter(self) -> None:
         shell = source("sdk/bsp/shell.c")

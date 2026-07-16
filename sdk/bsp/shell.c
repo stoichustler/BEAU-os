@@ -32,21 +32,20 @@
  * VM console switching. It runs as a low-priority scheduler thread on the BSP
  * and consumes the same physical console that VM consoles use through vsh.
  *
- *   console timer softirq              shell thread
- *          |                                 |
- *          v                                 |
- *   shell_kick()                             |
- *          |                                 |
- *          +-- priority/reschedule --------->|
- *                                            v
- *                                   route console ownership
- *                                            |
- *                                   edit -> dispatch -> prompt
- *                                            |
- *                                   yield -> schedule -> loop
+ *   console timer softirq                 shell thread
+ *          |                                   |
+ *          +-- VM selected -> bounded I/O      |
+ *          |                                   |
+ *          +-- BEAU selected -> shell_kick() ->| priority/reschedule
+ *                                              |
+ *                                              v
+ *                                     edit -> dispatch -> prompt
+ *                                              |
+ *                                     yield -> schedule -> loop
  *
  * Key rules:
- *   - the timer only publishes work; the shell thread owns input and dispatch;
+ *   - the timer owns bounded selected-VM I/O; the shell thread never drains it;
+ *   - only the shell thread owns BEAU input editing and command dispatch;
  *   - the low-priority loop remains a fallback if timer publication is absent;
  *   - command completion publishes the next prompt before yielding the pCPU;
  *   - guest ownership suppresses that prompt until BEAU owns the console again.
@@ -59,6 +58,7 @@
 #define SHELL_ASCII_BS		'\b'
 #define SHELL_ASCII_TAB		'\t'
 #define SHELL_ASCII_DEL		0x7fU
+#define VM_CONSOLE_PROMPT_KEY	'\r'
 #define SHELL_VT100_CLEAR_LINE	"\033[2K"
 #define SHELL_VLOG_CHUNK_SIZE	128U
 #define SHELL_VLOG_CPR_QUERY_LEN	4U
@@ -947,7 +947,7 @@ static int32_t shell_process(void)
 
 static void shell_thread_kick(void)
 {
-	if (console_vm_kick()) {
+	if (!console_is_hv()) {
 		return;
 	}
 
@@ -2371,22 +2371,29 @@ static int32_t shell_to_vm_console(int32_t argc, char **argv)
 		return 0;
 	}
 
-	/*
-	 * Bind vsh as the single host vuart for this VM console. Guest output has
-	 * already been staged in the per-VM vuart receive FIFO; binding marks that
-	 * backlog pending for the periodic drain without adding a second command
-	 * path or a separate log viewer.
+	/* [20260716] VM console attach transaction:
+	 *
+	 *   validate -> bind -> publish owner -> non-blocking prompt key
+	 *
+	 * Binding must succeed before BEAU input is disabled. The prompt key mirrors
+	 * a physical serial attach: it reveals a quiet guest prompt immediately, but
+	 * a full guest RX FIFO must never stall or fail the vsh command.
 	 */
+	if (!console_vm_vuart_bind(vm_id)) {
+		return -ENODEV;
+	}
+	if ((console_vmid != ACRN_INVALID_VMID) && (console_vmid != vm_id)) {
+		console_vm_vuart_unbind(console_vmid);
+	}
 	snprintf(temp_str, TEMP_STR_SIZE,
 		"\r\n%s──────── [switch to VM-%d console] ────────%s\r\n",
 		SHELL_COLOR_YELLOW, vm_id, SHELL_COLOR_RESET);
 	shell_puts(temp_str);
 	shell_set_input_active(false);
-	if (console_vmid != ACRN_INVALID_VMID) {
-		console_vm_vuart_unbind(console_vmid);
-	}
 	console_vmid = vm_id;
-	(void)console_vm_vuart_bind(vm_id);
+	if (vuart_try_putchar(vu, VM_CONSOLE_PROMPT_KEY)) {
+		vuart_notify_rx(vu);
+	}
 
 	return 0;
 }

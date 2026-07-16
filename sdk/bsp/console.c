@@ -148,6 +148,8 @@ static bool console_pm_suspended;
 #define VM_CONSOLE_TX_BACKPRESSURE_LOW_WATER CONFIG_VM_CONSOLE_TX_BACKPRESSURE_LOW_WATER
 /* Switching key combinations for shell and uart console */
 #define GUEST_CONSOLE_TO_HV_SWITCH_KEY  0x4U /* Ctrl-D */
+#define VM_CONSOLE_ASCII_BS             '\b'
+#define VM_CONSOLE_ASCII_DEL            0x7fU
 uint16_t console_vmid = CONFIG_CONSOLE_DEFAULT_VM;
 
 uint16_t console_loglevel = CONFIG_CONSOLE_LOGLEVEL_DEFAULT;
@@ -582,6 +584,10 @@ static bool console_vm_input_collect(uint16_t target_vmid)
 				SHELL_COLOR_YELLOW, SHELL_COLOR_RESET);
 			shell_puts(temp_str);
 			break;
+		}
+		/* Match guest terminal line disciplines that use DEL for erase. */
+		if (ch == VM_CONSOLE_ASCII_BS) {
+			ch = VM_CONSOLE_ASCII_DEL;
 		}
 		(void)console_vm_input_put(ch);
 		collected = true;
@@ -1218,34 +1224,32 @@ bool console_vm_kick(void)
 	return handled;
 }
 
-/* [20260716] Console polling handoff
+/* [20260716] Console polling ownership
  *
- *   timer softirq -> shell_kick() -> scheduler request
- *                                      |
- *                                      v
- *                              shell thread
- *                                      |
- *                                      v
- *                              console_vm_kick()
+ *   timer softirq
+ *        |
+ *        +-- selected VM -> bounded collect / RX push / TX drain
+ *        |
+ *        +-- BEAU shell  -> shell_kick() -> shell thread
  *
  * Key rule:
- *   - the timer never routes console bytes or mutates shell input state;
- *   - all potentially slow console work runs in the shell thread;
- *   - the shell fallback loop preserves diagnostics if the timer is unavailable.
+ *   - selected-VM I/O stays on the fixed-period path so low-priority shell
+ *     scheduling cannot add interactive latency;
+ *   - collect and drain budgets bound the work performed in timer softirq;
+ *   - BEAU input editing and command dispatch remain shell-thread-owned.
  */
 static void console_timer_callback(__unused void *data)
 {
-	shell_kick();
+	if (!console_vm_kick()) {
+		shell_kick();
+	}
 }
 
 void console_setup_timer(void)
 {
 	uint64_t period_in_cycle, fire_tsc;
 
-	/*
-	 * Periodic priority publication keeps vsh input/output responsive without
-	 * executing console routing in timer softirq context.
-	 */
+	/* Fixed-period bounded polling keeps vsh input/output latency predictable. */
 	period_in_cycle = TICKS_PER_MS * CONSOLE_KICK_TIMER_TIMEOUT;
 	fire_tsc = cpu_ticks() + period_in_cycle;
 	initialize_timer(&console_timer,

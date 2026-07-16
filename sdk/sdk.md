@@ -106,6 +106,23 @@ publish ownership
    `rtthread.bin`, and `zephyr.bin`, into `sdk/image` so VM boot and regression
    validation can find stable guest image inputs.
 
+## Commit Spec
+
+Every commit message must use the following structure:
+
+```text
+[beau 0007] (xx)
+
+description
+```
+
+- `0007` is the BEAU OS version number. Replace it with the version number of
+  the release being developed.
+- `xx` is the two-digit commit count within that version and must increase for
+  each subsequent commit.
+- Keep one blank line between the header and the description. The description
+  must state the purpose of the change.
+
 ## BEAU OS Architecture
 
 ```text
