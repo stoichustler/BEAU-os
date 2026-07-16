@@ -9,6 +9,8 @@
 #include <asm/cpu.h>
 #include <per_cpu.h>
 #include <softirq.h>
+#include <cpu.h>
+#include <notify.h>
 
 /*
  * Deferred interrupt-work principle:
@@ -49,7 +51,23 @@ void register_softirq(uint16_t nr, softirq_handler handler)
 
 void fire_softirq(uint16_t nr)
 {
-	bitmap_set(nr, &per_cpu(softirq_pending, get_pcpu_id()));
+	fire_softirq_on(nr, get_pcpu_id());
+}
+
+void fire_softirq_on(uint16_t nr, uint16_t pcpu_id)
+{
+	/* [20260716] Target-pCPU deferred work
+	 *
+	 * A vSMMU MMIO exit can occur on any owner-VM pCPU, while its bounded
+	 * command worker is pinned by static policy. Atomically publish the target
+	 * softirq bit before the SGI so the remote exit path observes complete work.
+	 */
+	if ((nr < NR_SOFTIRQS) && (pcpu_id < get_pcpu_nums())) {
+		bitmap_set(nr, &per_cpu(softirq_pending, pcpu_id));
+		if (pcpu_id != get_pcpu_id()) {
+			arch_smp_call_kick_pcpu(pcpu_id);
+		}
+	}
 }
 
 static void do_softirq_internal(uint16_t cpu_id)

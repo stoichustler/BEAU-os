@@ -132,6 +132,11 @@ def parse_args():
         help="Verify that an SMMUv3 without Stage-2 support remains fail closed.",
     )
     parser.add_argument(
+        "--smmu-passthrough-smoke",
+        action="store_true",
+        help="Verify VM2 EDU and virtio-net PCI passthrough behind SMMUv3 Stage-2.",
+    )
+    parser.add_argument(
         "--wdt-restart-smoke",
         action="store_true",
         help="Trigger one VM3 missed heartbeat and verify bounded cold watchdog recovery.",
@@ -192,6 +197,25 @@ def parse_args():
         if incompatible:
             parser.error(
                 "--smmu-no-s2-smoke cannot be combined with " + ", ".join(incompatible)
+            )
+    if args.smmu_passthrough_smoke:
+        incompatible = []
+        if args.smmu_no_s2_smoke:
+            incompatible.append("--smmu-no-s2-smoke")
+        if args.wdt_restart_smoke:
+            incompatible.append("--wdt-restart-smoke")
+        if args.stress_vsh_switch:
+            incompatible.append("--stress-vsh-switch")
+        if args.stress_vsh_help:
+            incompatible.append("--stress-vsh-help")
+        if args.str_cycles > 0:
+            incompatible.append("--str-cycles")
+        if args.str_fault is not None:
+            incompatible.append(f"--str-fault-{args.str_fault}")
+        if incompatible:
+            parser.error(
+                "--smmu-passthrough-smoke cannot be combined with " +
+                ", ".join(incompatible)
             )
     return args
 
@@ -533,8 +557,7 @@ class QemuSession:
 
         for attempt in range(attempts):
             try:
-                self.command(line, patterns, rejects=rejects)
-                return
+                return self.command(line, patterns, rejects=rejects)
             except RuntimeError as err:
                 last_error = err
                 if attempt + 1 >= attempts:
@@ -651,6 +674,79 @@ def expect_vm2_kbe_backends(qemu, name):
         raise
 
 
+def run_smmu_passthrough_smoke(qemu):
+    qemu.command_retry("pcistat", [
+        "stream:0x0008 smmu:owned",
+        "stream:0x0010 smmu:owned",
+        "owner:vm2 ipa:44",
+    ])
+    net_watchdog = False
+    qemu.send("vsh 2" + ENTER)
+    try:
+        qemu.expect(LINUX_PROMPT, "VM2 passthrough Linux shell", timeout=60.0,
+                    keepalive=ENTER)
+        expect_vm2_id(qemu, "VM2 passthrough root identity")
+        vm_command(
+            qemu,
+            2,
+            "beau-edu-test",
+            "VM2 EDU PCI BAR passthrough",
+            patterns=[
+                "vendor:0x1234 device:0x11e8",
+                "mmio: alive",
+                "PASS",
+            ],
+            timeout=30.0,
+        )
+        vm_command(
+            qemu,
+            2,
+            "p=/sys/bus/pci/devices/0000:00:02.0; "
+            "echo vendor=$(cat $p/vendor 2>/dev/null); "
+            "echo driver=$(basename $(readlink $p/driver) 2>/dev/null); "
+            "echo netdev=$(readlink -f /sys/class/net/eth0/device); "
+            "test \"$(cat $p/vendor)\" = 0x1af4 && "
+            "readlink -f /sys/class/net/eth0/device | grep -q '0000:00:02.0'",
+            "VM2 virtio-net PCI passthrough",
+            patterns=["vendor=0x1af4", "driver=virtio-pci", "0000:00:02.0/virtio"],
+            timeout=30.0,
+        )
+        net_text = vm_command(
+            qemu,
+            2,
+            "sleep 7; dmesg | tail -n 80",
+            "VM2 virtio-net TX watchdog sample",
+            timeout=20.0,
+        )
+        net_watchdog = "NETDEV WATCHDOG" in net_text
+    except Exception:
+        qemu.capture_vm_diagnostics("VM2 SMMU passthrough smoke", 2)
+        raise
+    qemu.send(CTRL_D)
+    qemu.expect(PROMPT, "return from VM2 passthrough shell")
+    smmu_patterns = ["smmustat:"]
+    if not net_watchdog:
+        smmu_patterns.extend([
+            "events:0 err:0 overflow:0 quarantine:0",
+            "stream[0x0008] sw-owner:vm2 ste-vm:vm2 assigned:Y quarantine:N",
+            "stream[0x0010] sw-owner:vm2 ste-vm:vm2 assigned:Y quarantine:N",
+            "s2:ipa:44",
+            "ste:valid:Y cfg:s2(6)",
+        ])
+    smmu_text = qemu.command_retry("smmustat", smmu_patterns)
+    if net_watchdog:
+        smmu_snapshot = last_complete_smmu_snapshot(smmu_text)
+        diagnostic = "\n".join(
+            line for line in smmu_snapshot.splitlines()
+            if ("evtq" in line) or ("stream[" in line) or ("fault:" in line)
+        )
+        raise RuntimeError(
+            "VM2 virtio-net TX watchdog observed; physical SMMU snapshot:\n" +
+            diagnostic
+        )
+    print("[pass] VM2 SMMUv3 EDU/virtio-net passthrough smoke", flush=True)
+
+
 def vm_command(qemu, vmid, command, name, patterns=None, timeout=20.0, expect_rc=0):
     qemu.vm_command_seq += 1
     token = f"__b{vmid}_{qemu.vm_command_seq}__"
@@ -661,7 +757,7 @@ def vm_command(qemu, vmid, command, name, patterns=None, timeout=20.0, expect_rc
     )
     text = qemu.expect(f"{token}:", name, timeout=timeout)
     if f"{token}:{expect_rc}" not in text:
-        raise RuntimeError(f"{name}: command returned non-zero")
+        raise RuntimeError(f"{name}: command returned non-zero\n{text[-2000:]}")
     for pattern in patterns:
         if pattern not in text:
             raise RuntimeError(f"{name}: output missing {pattern!r}")
@@ -1097,6 +1193,7 @@ def run_qemu(args, cmd):
             qemu.disable_terminal_replies = args.no_terminal_replies
             qemu.expect(PROMPT, "BEAU shell prompt", keepalive=ENTER)
             expect_smmu_contract(qemu, True)
+            qemu.command_retry("vsmmustat", ["vsmmustat:", "instances:none"])
         finish_qemu_regression(args)
         return
 
@@ -1104,6 +1201,10 @@ def run_qemu(args, cmd):
         qemu.disable_terminal_replies = args.no_terminal_replies
         qemu.expect(PROMPT, "BEAU shell prompt", keepalive=ENTER)
         expect_smmu_contract(qemu, False)
+        if args.smmu_passthrough_smoke:
+            run_smmu_passthrough_smoke(qemu)
+            finish_qemu_regression(args)
+            return
         if args.wdt_restart_smoke:
             run_wdt_restart_smoke(qemu)
             return
@@ -1301,6 +1402,8 @@ def main():
             checks = "VM3 watchdog timeout, quiesce, cold restart, verification kick, VM3 shell"
         if args.smmu_no_s2_smoke:
             checks = "SMMUv3 no-S2 fail-closed state"
+        if args.smmu_passthrough_smoke:
+            checks = "SMMUv3 Stage-2, VM2 EDU BAR and virtio-net PCI passthrough"
         print(f"checks: {checks}")
         return 0
 

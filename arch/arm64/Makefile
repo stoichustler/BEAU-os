@@ -100,7 +100,8 @@ HOST_C_SRCS += arch/arm64/security.c
 HOST_C_SRCS += arch/arm64/pm.c
 HOST_C_SRCS += arch/arm64/sve.c
 HOST_C_SRCS += arch/arm64/mpu.c
-HOST_C_SRCS += arch/arm64/smmu/smmuv3.c
+HOST_C_SRCS += arch/arm64/smmu/smmu.c
+HOST_C_SRCS += arch/arm64/smmu/iommu.c
 ifeq ($(PLATFORM),qemu)
 HOST_C_SRCS += arch/arm64/platform/qemu/pm.c
 endif
@@ -124,6 +125,7 @@ VP_C_SRCS += arch/arm64/guest/vgicv3.c
 VP_C_SRCS += arch/arm64/guest/vgicv3_its.c
 VP_C_SRCS += arch/arm64/guest/vtimer.c
 VP_C_SRCS += arch/arm64/guest/vpl011.c
+VP_C_SRCS += arch/arm64/guest/vsmmu.c
 ifeq ($(STATIC_ARM64_PLATFORM),y)
 VM_CFG_S_SRCS += arch/arm64/platform/$(PLATFORM)/platform.S
 else

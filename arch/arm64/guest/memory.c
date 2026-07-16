@@ -31,21 +31,29 @@
  * non-identity work one place to audit before relaxing the stage-2 identity
  * check.
  */
-static bool gpa_range_is_valid(struct acrn_vm *vm, uint64_t gpa, uint32_t size)
+bool arm64_guest_gpa_range_valid(const struct acrn_vm *vm, uint64_t gpa,
+	uint64_t size)
 {
-	const struct arch_vm_config *arch_config = &get_vm_config(vm->vm_id)->arch;
-	uint64_t ram_start = arch_config->guest_ram_start;
-	uint64_t ram_size = arch_config->guest_ram_size;
-	uint64_t ram_end = ram_start + ram_size;
-	uint64_t gpa_end = gpa + size;
-	bool ret = false;
+	const struct arch_vm_config *arch_config;
+	uint64_t ram_start;
+	uint64_t ram_size;
+	uint64_t ram_end;
+	uint64_t gpa_end;
 
-	if ((size > 0U) && (gpa_end >= gpa) && (ram_end >= ram_start) &&
-		(gpa >= ram_start) && (gpa_end <= ram_end)) {
-		ret = true;
+	if ((vm == NULL) || (vm->vm_id >= CONFIG_MAX_VM_NUM) || (size == 0UL)) {
+		return false;
 	}
+	arch_config = &get_vm_config(vm->vm_id)->arch;
+	ram_start = arch_config->guest_ram_start;
+	ram_size = arch_config->guest_ram_size;
+	if ((ram_size == 0UL) || (ram_start > (UINT64_MAX - ram_size)) ||
+		(gpa > (UINT64_MAX - size))) {
+		return false;
+	}
+	ram_end = ram_start + ram_size;
+	gpa_end = gpa + size;
 
-	return ret;
+	return (gpa >= ram_start) && (gpa_end <= ram_end);
 }
 
 int32_t gva2gpa(struct acrn_vcpu *vcpu, uint64_t gva, uint64_t *gpa, uint32_t *err_code)
@@ -61,10 +69,9 @@ uint64_t gpa2hpa(struct acrn_vm *vm, uint64_t gpa)
 {
 	const struct arch_vm_config *arch_config = &get_vm_config(vm->vm_id)->arch;
 	uint64_t ram_start = arch_config->guest_ram_start;
-	uint64_t ram_size = arch_config->guest_ram_size;
 	uint64_t hpa = INVALID_HPA;
 
-	if ((gpa >= ram_start) && (gpa < (ram_start + ram_size))) {
+	if (arm64_guest_gpa_range_valid(vm, gpa, 1UL)) {
 		hpa = arch_config->guest_ram_hpa + (gpa - ram_start);
 	}
 
@@ -91,7 +98,7 @@ int32_t copy_from_gpa(struct acrn_vm *vm, void *h_ptr, uint64_t gpa, uint32_t si
 
 	if (size == 0U) {
 		ret = 0;
-	} else if (gpa_range_is_valid(vm, gpa, size)) {
+	} else if (arm64_guest_gpa_range_valid(vm, gpa, size)) {
 		hva = gpa2hva(vm, gpa);
 		memcpy(h_ptr, hva, size);
 		ret = 0;
@@ -107,7 +114,7 @@ int32_t copy_to_gpa(struct acrn_vm *vm, void *h_ptr, uint64_t gpa, uint32_t size
 
 	if (size == 0U) {
 		ret = 0;
-	} else if (gpa_range_is_valid(vm, gpa, size)) {
+	} else if (arm64_guest_gpa_range_valid(vm, gpa, size)) {
 		hva = gpa2hva(vm, gpa);
 		memcpy(hva, h_ptr, size);
 		ret = 0;

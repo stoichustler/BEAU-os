@@ -194,7 +194,8 @@ PCIe passthrough
     -> platform.dts passthrough policy
     -> sdk/bsp/passthrough.c ownership checks
     -> sdk/bsp/vpci config/BAR/MSI virtualization
-    -> arch/arm64/smmu/smmuv3.c StreamID -> VM SMMU domain
+    -> arch/arm64/smmu/iommu.c StreamID -> immutable VM S2 domain request
+    -> arch/arm64/smmu/smmu.c physical STE/CMDQ transaction
     -> arch/arm64/gic ITS/LPI remap for MSI/MSI-X
 
 watchdog and observability

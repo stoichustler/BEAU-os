@@ -168,6 +168,8 @@ def main():
         args.qemu,
         "-machine",
         "virt,virtualization=on,gic-version=3,its=on,iommu=smmuv3",
+        "-global",
+        "arm-smmuv3.stage=2",
         "-cpu",
         "cortex-a57",
         "-smp",

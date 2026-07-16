@@ -49,6 +49,7 @@ enum arm_smmu_state {
 	ARM_SMMU_STATE_UNDISCOVERED = 0U,
 	ARM_SMMU_STATE_ABORT,
 	ARM_SMMU_STATE_READY,
+	ARM_SMMU_STATE_DEGRADED,
 	ARM_SMMU_STATE_FAILED,
 };
 
@@ -68,6 +69,7 @@ enum arm_smmu_state {
 #define ARM_SMMU_CAP_FAIL_VMID			(1UL << 13U)
 #define ARM_SMMU_CAP_FAIL_SID			(1UL << 14U)
 #define ARM_SMMU_CAP_FAIL_REG_CONFIG		(1UL << 15U)
+#define ARM_SMMU_CAP_FAIL_POLICY_SID		(1UL << 16U)
 
 struct arm_smmu_hw_info {
 	uint64_t base;
@@ -86,8 +88,10 @@ struct arm_smmu_hw_info {
 	uint32_t gbpa;
 	uint32_t sid_bits;
 	uint32_t oas_bits;
+	uint32_t effective_oas_bits;
 	uint32_t vmid_bits;
 	uint32_t required_oas_bits;
+	uint32_t policy_max_sid;
 	uint64_t cap_fail;
 	enum arm_smmu_state state;
 	uint32_t strtab_log2_entries;
@@ -128,6 +132,7 @@ struct arm_smmu_hw_info {
 	bool ready;
 	bool strict;
 	bool caps_valid;
+	bool policy_present;
 };
 
 struct arm_smmu_stream_config {

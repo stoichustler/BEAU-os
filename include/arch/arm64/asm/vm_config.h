@@ -73,6 +73,13 @@ struct arch_vm_config {
 	uint64_t guest_virtio_console_size;
 	uint32_t guest_virtio_console_irq;
 
+	uint64_t guest_smmu_base;
+	uint64_t guest_smmu_size;
+	uint32_t guest_smmu_irq;
+	uint16_t guest_smmu_worker_pcpu;
+	uint8_t guest_smmu_cmdq_log2;
+	uint8_t guest_smmu_evtq_log2;
+
 	uint64_t guest_feature_mask;
 	uint32_t guest_sve_vl_bits;
 

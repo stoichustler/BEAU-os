@@ -363,6 +363,32 @@ bool passthrough_irq_affinity(uint16_t vm_id, uint32_t phys_spi,
 	return ret;
 }
 
+bool passthrough_get_max_stream_id(uint32_t *max_stream_id)
+{
+	uint64_t flags;
+	uint32_t maximum = 0U;
+	uint32_t i;
+	bool found = false;
+
+	if (max_stream_id == NULL) {
+		return false;
+	}
+
+	spinlock_irqsave_obtain(&bsp_pt_lock, &flags);
+	for (i = 0U; i < ARRAY_SIZE(bsp_pt_devices); i++) {
+		if (bsp_pt_devices[i].valid) {
+			if (!found || (bsp_pt_devices[i].stream_id > maximum)) {
+				maximum = bsp_pt_devices[i].stream_id;
+			}
+			found = true;
+		}
+	}
+	spinlock_irqrestore_release(&bsp_pt_lock, flags);
+
+	*max_stream_id = maximum;
+	return found;
+}
+
 int32_t passthrough_assign_device(struct acrn_vm *vm, uint32_t stream_id,
 	bool writable)
 {

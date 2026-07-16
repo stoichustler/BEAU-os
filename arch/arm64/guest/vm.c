@@ -24,6 +24,8 @@
 #include <asm/guest/stage2.h>
 #include <asm/guest/vpl011.h>
 #include <asm/guest/vipc.h>
+#include <asm/guest/vsmmu.h>
+#include <asm/vtd.h>
 #include <virtio_console.h>
 #include <virtio_proxy.h>
 
@@ -491,6 +493,7 @@ static void register_arm64_vio_mmio(struct acrn_vm *vm)
 	uint64_t its_size = arch_config->guest_its_size;
 	uint64_t uart_base = arch_config->guest_uart_base;
 	uint64_t virtio_console_base = arch_config->guest_virtio_console_base;
+	uint64_t smmu_base = arch_config->guest_smmu_base;
 
 	/*
 	 * The common IO request layer owns dispatch by GPA range. ARM64 registers
@@ -520,6 +523,11 @@ static void register_arm64_vio_mmio(struct acrn_vm *vm)
 	if (its_size != 0UL) {
 		register_mmio_emulation_handler(vm, arm64_vgicv3_mmio_handler,
 			its_base, its_base + its_size, &vm->arch_vm.vgic, false);
+	}
+	if (arm64_vsmmu_available(vm)) {
+		register_mmio_emulation_handler(vm, arm64_vsmmu_mmio_handler,
+			smmu_base, smmu_base + arch_config->guest_smmu_size,
+			vm, false);
 	}
 	if (arm64_vm_uses_virtio_console(get_vm_config(vm->vm_id))) {
 		register_mmio_emulation_handler(vm, virtio_console_mmio_handler,
@@ -570,6 +578,13 @@ int32_t arch_init_vm(struct acrn_vm *vm, struct acrn_vm_config *vm_config)
 	 */
 	init_stage2_identity_map(vm);
 	arm64_vgicv3_init_vm(vm, vm_config->cpu_affinity);
+	if ((vm_config->arch.guest_smmu_size == 0UL) ||
+		arm_smmu_assignment_ready()) {
+		arm64_vsmmu_init_vm(vm);
+	} else {
+		LOG_WRN("vSMMUv3: hide vm%u instance: physical S2 isolation unavailable",
+			vm->vm_id);
+	}
 	arm64_vipc_init_vm(vm);
 	if (arm64_vm_uses_virtio_console(vm_config)) {
 		virtio_console_init_vm(vm);
@@ -595,6 +610,7 @@ int32_t arch_init_vm(struct acrn_vm *vm, struct acrn_vm_config *vm_config)
 
 int32_t arch_deinit_vm(struct acrn_vm *vm)
 {
+	arm64_vsmmu_deinit_vm(vm);
 	if (arm64_vm_uses_vpci(get_vm_config(vm->vm_id))) {
 		deinit_vpci(vm);
 	}
@@ -629,6 +645,12 @@ int32_t arch_reset_vm(struct acrn_vm *vm)
 	virtio_proxy_release_vm(vm);
 	reset_vm_ioreqs(vm);
 	arm64_vgicv3_init_vm(vm, vm_config->cpu_affinity);
+	if ((vm_config->arch.guest_smmu_size == 0UL) ||
+		arm_smmu_assignment_ready()) {
+		arm64_vsmmu_reset_vm(vm);
+	} else {
+		arm64_vsmmu_deinit_vm(vm);
+	}
 	if (arm64_vm_uses_virtio_console(vm_config)) {
 		virtio_console_reset_vm(vm);
 	} else {

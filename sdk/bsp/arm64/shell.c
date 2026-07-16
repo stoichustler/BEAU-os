@@ -44,6 +44,7 @@
 #include <asm/guest/vmpu.h>
 #include <asm/guest/vgicv3.h>
 #include <asm/guest/vipc.h>
+#include <asm/guest/vsmmu.h>
 #include <asm/sysreg.h>
 #include <asm/vtd.h>
 #include "../shell_priv.h"
@@ -75,6 +76,9 @@
 #define SHELL_CMD_SMMUSTAT		"smmustat"
 #define SHELL_CMD_SMMUSTAT_PARAM	NULL
 #define SHELL_CMD_SMMUSTAT_HELP		"list ARM SMMUv3 and ITS passthrough state"
+#define SHELL_CMD_VSMMUSTAT		"vsmmustat"
+#define SHELL_CMD_VSMMUSTAT_PARAM	"[vm id]"
+#define SHELL_CMD_VSMMUSTAT_HELP	"list guest-visible synthetic SMMUv3 state"
 #define SHELL_CMD_PCISTAT		"pcistat"
 #define SHELL_CMD_PCISTAT_PARAM		NULL
 #define SHELL_CMD_PCISTAT_HELP		"list PCI passthrough and SMMU stream state"
@@ -125,6 +129,7 @@ static int32_t shell_cachestat(int32_t argc, __unused char **argv);
 static int32_t shell_ipcstat(int32_t argc, __unused char **argv);
 static int32_t shell_virtiostat(int32_t argc, char **argv);
 static int32_t shell_smmustat(int32_t argc, __unused char **argv);
+static int32_t shell_vsmmustat(int32_t argc, char **argv);
 static int32_t shell_pcistat(int32_t argc, char **argv);
 static int32_t shell_cpufreq(int32_t argc, __unused char **argv);
 static int32_t shell_rttest(int32_t argc, __unused char **argv);
@@ -191,6 +196,12 @@ struct shell_cmd arch_shell_cmds[] = {
 		.cmd_param	= SHELL_CMD_SMMUSTAT_PARAM,
 		.help_str	= SHELL_CMD_SMMUSTAT_HELP,
 		.fcn		= shell_smmustat,
+	},
+	{
+		.str		= SHELL_CMD_VSMMUSTAT,
+		.cmd_param	= SHELL_CMD_VSMMUSTAT_PARAM,
+		.help_str	= SHELL_CMD_VSMMUSTAT_HELP,
+		.fcn		= shell_vsmmustat,
 	},
 	{
 		.str		= SHELL_CMD_PCISTAT,
@@ -1063,6 +1074,9 @@ static const char *shell_smmu_state_to_str(enum arm_smmu_state state)
 	case ARM_SMMU_STATE_READY:
 		str = "ready";
 		break;
+	case ARM_SMMU_STATE_DEGRADED:
+		str = "degraded";
+		break;
 	case ARM_SMMU_STATE_FAILED:
 		str = "failed";
 		break;
@@ -1114,8 +1128,11 @@ static int32_t shell_smmustat(int32_t argc, __unused char **argv)
 	shell_item_line("caps:sid.bits:%u oas.bits:%u streams:%u s2p:%s",
 		info.sid_bits, info.oas_bits, 1U << info.strtab_log2_entries,
 		shell_yes_no((info.idr0 & 0x1U) != 0U));
-	shell_item_line("caps:vmid.bits:%u required.oas.bits:%u fail:0x%016lx",
-		info.vmid_bits, info.required_oas_bits, info.cap_fail);
+	shell_item_line("caps:vmid.bits:%u oas.effective:%u required:%u fail:0x%016lx",
+		info.vmid_bits, info.effective_oas_bits, info.required_oas_bits,
+		info.cap_fail);
+	shell_item_line("policy:sid.present:%s max:0x%x",
+		shell_yes_no(info.policy_present), info.policy_max_sid);
 	shell_item_line("regs:cr0:0x%08x cr1:0x%08x cr2:0x%08x gbpa:0x%08x",
 		info.cr0, info.cr1, info.cr2, info.gbpa);
 	shell_item_line("strtab:0x%016lx cmdq:0x%016lx evtq:0x%016lx",
@@ -1190,6 +1207,74 @@ static int32_t shell_smmustat(int32_t argc, __unused char **argv)
 		}
 	}
 	shell_item_end();
+
+	return 0;
+}
+
+static void shell_vsmmustat_one(uint16_t vm_id,
+	const struct arm64_vsmmu_debug *debug)
+{
+	shell_item_begin("vm%hu vsmmu", vm_id);
+	shell_item_line("configured:%s available:%s mmio:0x%016lx+0x%016lx",
+		shell_yes_no(debug->size != 0UL), shell_yes_no(debug->available),
+		debug->base, debug->size);
+	if (!debug->available) {
+		shell_item_line("state:hidden");
+		shell_item_end();
+		return;
+	}
+	shell_item_line("regs:cr0:0x%08x irq.ctrl:0x%08x gerror:0x%08x/%08x",
+		debug->cr0, debug->irq_ctrl, debug->gerror, debug->gerrorn);
+	shell_item_line("tables:strtab:0x%016lx cmdq:0x%016lx evtq:0x%016lx",
+		debug->strtab_base, debug->cmdq_base, debug->evtq_base);
+	shell_item_line("cmdq:prod:0x%08x cons:0x%08x processed:%lu rejected:%lu",
+		debug->cmdq_prod, debug->cmdq_cons, debug->commands_processed,
+		debug->commands_rejected);
+	shell_item_line("evtq:prod:0x%08x cons:0x%08x", debug->evtq_prod,
+		debug->evtq_cons);
+	shell_item_line("worker:cpu%hu pending:%s budget:%lu generation:%lu irq:%s",
+		debug->worker_pcpu, shell_yes_no(debug->worker_pending),
+		debug->budget_exhausted, debug->generation,
+		shell_yes_no(debug->irq_asserted));
+	shell_item_line("sid-map:none broker:S1+S2-pending");
+	shell_item_end();
+}
+
+static int32_t shell_vsmmustat(int32_t argc, char **argv)
+{
+	struct arm64_vsmmu_debug debug;
+	int64_t param;
+	uint16_t first = 0U;
+	uint16_t last = CONFIG_MAX_VM_NUM;
+	uint16_t vm_id;
+	bool found = false;
+
+	if (argc > 2) {
+		shell_puts("usage: vsmmustat [vm id]\r\n");
+		return -EINVAL;
+	}
+	if (argc == 2) {
+		param = strtol_deci(argv[1]);
+		if ((param < 0L) || (param >= CONFIG_MAX_VM_NUM)) {
+			shell_puts("invalid vm id\r\n");
+			return -EINVAL;
+		}
+		first = (uint16_t)param;
+		last = first + 1U;
+	}
+
+	shell_puts("\r\nvsmmustat:\r\n");
+	for (vm_id = first; vm_id < last; vm_id++) {
+		if (arm64_vsmmu_get_debug(vm_id, &debug)) {
+			shell_vsmmustat_one(vm_id, &debug);
+			found = true;
+		}
+	}
+	if (!found) {
+		shell_item_begin("vsmmu");
+		shell_item_line("instances:none");
+		shell_item_end();
+	}
 
 	return 0;
 }

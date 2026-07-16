@@ -1042,6 +1042,34 @@ void vpci_deinit_vdev(struct pci_vdev *vdev)
 	memset(vdev, 0U, sizeof(struct pci_vdev));
 }
 
+static void vpci_hide_ptdev_without_iommu(const struct acrn_vm *vm,
+	const struct acrn_vm_pci_dev_config *dev_config, uint16_t index)
+{
+	uint16_t command;
+	uint16_t readback;
+
+	if ((vm == NULL) || (dev_config == NULL)) {
+		return;
+	}
+	if (dev_config->pdev != NULL) {
+		command = (uint16_t)pci_pdev_read_cfg(dev_config->pdev->bdf,
+			PCIR_COMMAND, 2U);
+		command = (command | PCIM_CMD_INTxDIS) & ~PCIM_CMD_BUSEN;
+		pci_pdev_write_cfg(dev_config->pdev->bdf, PCIR_COMMAND, 2U, command);
+		readback = (uint16_t)pci_pdev_read_cfg(dev_config->pdev->bdf,
+			PCIR_COMMAND, 2U);
+		if ((readback & PCIM_CMD_BUSEN) != 0U) {
+			LOG_ERR("vm%u ptdev %02x:%02x.%x failed to clear bus master cmd=0x%x",
+				vm->vm_id, dev_config->pbdf.bits.b, dev_config->pbdf.bits.d,
+				dev_config->pbdf.bits.f, readback);
+		}
+	}
+
+	LOG_WRN("vm%u hide ptdev[%hu] %02x:%02x.%x: SMMU isolation unavailable",
+		vm->vm_id, index, dev_config->pbdf.bits.b, dev_config->pbdf.bits.d,
+		dev_config->pbdf.bits.f);
+}
+
 /**
  * @pre vm != NULL
  */
@@ -1053,9 +1081,28 @@ static int32_t vpci_init_vdevs(struct acrn_vm *vm)
 	const struct acrn_vm_config *vm_config = get_vm_config(vpci2vm(vpci)->vm_id);
 	int32_t ret = 0;
 
+	/* [20260716] vPCI fail-closed visibility gate
+	 *
+	 *   static PTDEV policy
+	 *       -> SMMU assignment gate closed
+	 *       -> clear physical BME + mask INTx
+	 *       -> omit vdev from guest config/BAR space
+	 *       -> continue VM creation with an empty/partial vPCI bus
+	 *
+	 * Key rule:
+	 *   - the host must remain available when optional DMA isolation is absent;
+	 *   - a hidden device cannot be programmed by the guest;
+	 *   - ordinary vdev/config errors still fail mandatory-device creation.
+	 */
+
 	for (idx = 0U; idx < vm_config->pci_dev_num; idx++) {
 		/* the vdev whose vBDF is unassigned will be created by hypercall */
 		if ((!is_postlaunched_vm(vm)) || (vm_config->pci_devs[idx].vbdf.value != UNASSIGNED_VBDF)) {
+			if ((vm_config->pci_devs[idx].emu_type == PCI_DEV_TYPE_PTDEV) &&
+				!arm_smmu_assignment_ready()) {
+				vpci_hide_ptdev_without_iommu(vm, &vm_config->pci_devs[idx], idx);
+				continue;
+			}
 			vdev = vpci_init_vdev(vpci, &vm_config->pci_devs[idx], NULL);
 			if (vdev == NULL) {
 				if (vm_config->pci_devs[idx].optional) {

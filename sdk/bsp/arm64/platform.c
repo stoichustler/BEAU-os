@@ -18,6 +18,7 @@
 #include <sprintf.h>
 #include <asm/platform.h>
 #include <asm/vtd.h>
+#include <asm/guest/vsmmu.h>
 #include <arm64_platform_dts.h>
 
 #define ARM64_FDT_PHANDLE_GIC		1U
@@ -27,6 +28,7 @@
 #define ARM64_FDT_PHANDLE_ITS		5U
 #define ARM64_FDT_PHANDLE_VIRTIO_CONSOLE 6U
 #define ARM64_FDT_PHANDLE_VIRTIO_PROXY_BASE 7U
+#define ARM64_FDT_PHANDLE_VSMMU		39U
 
 #define ARM64_FDT_GIC_SPI		0U
 #define ARM64_FDT_GIC_PPI		1U
@@ -305,6 +307,41 @@ static void fdt_add_its(void *fdt, struct acrn_vm *vm)
 	fdt_check_ret(fdt_end_node(fdt), "its end");
 }
 
+static void fdt_add_vsmmu(void *fdt, struct acrn_vm *vm)
+{
+	const struct arch_vm_config *arch_config = &get_vm_config(vm->vm_id)->arch;
+	static const char compatibles[] =
+		"beau,guest-smmuv3\0arm,smmu-v3";
+	uint32_t interrupts[] = {
+		ARM64_FDT_GIC_SPI, 0U, ARM64_FDT_IRQ_TYPE_LEVEL,
+	};
+	char name[40];
+
+	if (!arm64_vsmmu_available(vm)) {
+		return;
+	}
+	interrupts[1] = arch_config->guest_smmu_irq - 32U;
+	snprintf(name, sizeof(name), "iommu@%lx", arch_config->guest_smmu_base);
+	fdt_check_ret(fdt_begin_node(fdt, name), "vsmmu");
+	fdt_check_ret(fdt_property(fdt, "compatible", compatibles,
+		sizeof(compatibles)), "vsmmu compatible");
+	fdt_property_reg64(fdt, "reg", arch_config->guest_smmu_base,
+		arch_config->guest_smmu_size);
+	fdt_property_irq(fdt, "interrupts", interrupts, ARRAY_SIZE(interrupts));
+	fdt_check_ret(fdt_property_string(fdt, "interrupt-names", "combined"),
+		"vsmmu interrupt name");
+	fdt_check_ret(fdt_property(fdt, "dma-coherent", NULL, 0),
+		"vsmmu dma coherent");
+	fdt_check_ret(fdt_property_u32(fdt, "#iommu-cells", 1U),
+		"vsmmu iommu cells");
+	fdt_check_ret(fdt_property_u32(fdt, "phandle", ARM64_FDT_PHANDLE_VSMMU),
+		"vsmmu phandle");
+	fdt_check_ret(fdt_property_string(fdt, "status", "okay"), "vsmmu status");
+	fdt_check_ret(fdt_end_node(fdt), "vsmmu end");
+
+	/* No PCI iommu-map is emitted before virtual SID and S1+S2 broker support. */
+}
+
 static void fdt_add_timer(void *fdt)
 {
 	static const char timer_compat[] = "arm,armv8-timer\0arm,armv7-timer";
@@ -452,6 +489,7 @@ void arch_init_service_vm_vfdt(struct acrn_vm *vm)
 	fdt_add_memory(fdt, vm);
 	fdt_add_gic(fdt, vm);
 	fdt_add_its(fdt, vm);
+	fdt_add_vsmmu(fdt, vm);
 	fdt_add_timer(fdt);
 	if (fdt_vm_uses_virtio_console(get_vm_config(vm->vm_id))) {
 		fdt_add_virtio_console(fdt, vm);

@@ -12,13 +12,15 @@
 #define SOFTIRQ_TIMER		0U
 #define SOFTIRQ_PTDEV		1U
 #define SOFTIRQ_THERMAL		2U
-#define NR_SOFTIRQS             3U
+#define SOFTIRQ_VSMMU		3U
+#define NR_SOFTIRQS		4U
 
 typedef void (*softirq_handler)(uint16_t cpu_id);
 
 void init_softirq(void);
 void register_softirq(uint16_t nr, softirq_handler handler);
 void fire_softirq(uint16_t nr);
+void fire_softirq_on(uint16_t nr, uint16_t pcpu_id);
 void do_softirq(void);
 void do_softirq_no_irqenable(void);
 #endif /* SOFTIRQ_H */

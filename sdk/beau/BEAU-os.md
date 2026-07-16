@@ -234,6 +234,7 @@ make ARCH=arm64 PLATFORM=qemu CROSS_COMPILE=aarch64-none-elf- -j"$(getconf _NPRO
 
 ```text
 -machine virt,virtualization=on,gic-version=3,its=on,iommu=smmuv3
+-global arm-smmuv3.stage=2
 -cpu cortex-a57 -smp 8 -m 1024M
 -kernel out/qemu_out/beau.debug.out
 ```
@@ -945,7 +946,11 @@ Stage-2 device mapping 后才对客体有效；客体写入的 MSI message 被�
 
 ### 14.3 SMMUv3
 
-**定位**：`arch/arm64/smmu/smmuv3.c`。
+**定位**：
+
+- `arch/arm64/smmu/iommu.c`：domain 生命周期、StreamID ownership broker。
+- `arch/arm64/smmu/smmu.c`：物理 SMMUv3、STE/CMDQ/EVTQ、故障 containment。
+- `arch/arm64/guest/vsmmu.c`：guest synthetic registers/queues；不访问物理寄存器。
 
 **能力**：
 
@@ -1457,7 +1462,9 @@ sdk/kbe/virtio-proxy-backend.c
 sdk/bsp/pci/pci.c
 sdk/bsp/vpci/*
 sdk/bsp/passthrough.c
-arch/arm64/smmu/smmuv3.c
+arch/arm64/smmu/iommu.c
+arch/arm64/smmu/smmu.c
+arch/arm64/guest/vsmmu.c
 ```
 
 目标：能分别解释 CPU MMIO、DMA、MSI 三条所有权链。

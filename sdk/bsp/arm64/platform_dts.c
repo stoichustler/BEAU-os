@@ -32,6 +32,9 @@
 #define ARM64_DTS_IRQ_TYPE_LEVEL_HIGH	4U
 #define ARM64_DTS_STRICT_SHARED_PCPU_VM_MAX	3U
 #define ARM64_DTS_PM_TIMEOUT_MAX_MS	600000U
+#define ARM64_DTS_GUEST_SMMU_SIZE	0x20000UL
+#define ARM64_DTS_GUEST_SMMU_ALIGN	0x10000UL
+#define ARM64_DTS_GUEST_SMMU_MAX_QUEUE_LOG2	6U
 
 static const struct arm64_platform_dts_vm_storage *dts_storage;
 static uint16_t dts_bare_boot_option_count;
@@ -1411,6 +1414,124 @@ static void dts_parse_vm_mpu(const void *fdt, int32_t vm_node,
 	vm_config->arch.guest_sve_vl_bits = vl_bits;
 }
 
+static void dts_validate_guest_smmu_range(const struct acrn_vm_config *vm_config)
+{
+	const struct arch_vm_config *arch = &vm_config->arch;
+	uint16_t i;
+
+	if (dts_ranges_overlap(arch->guest_smmu_base, arch->guest_smmu_size,
+		arch->guest_ram_start, arch->guest_ram_size) ||
+		dts_ranges_overlap(arch->guest_smmu_base, arch->guest_smmu_size,
+			arch->guest_gicd_base, arch->guest_gicd_size) ||
+		dts_ranges_overlap(arch->guest_smmu_base, arch->guest_smmu_size,
+			arch->guest_gicr_base, arch->guest_gicr_size) ||
+		dts_ranges_overlap(arch->guest_smmu_base, arch->guest_smmu_size,
+			arch->guest_its_base, arch->guest_its_size) ||
+		dts_ranges_overlap(arch->guest_smmu_base, arch->guest_smmu_size,
+			arch->guest_uart_base, arch->guest_uart_size) ||
+		dts_ranges_overlap(arch->guest_smmu_base, arch->guest_smmu_size,
+			arch->guest_virtio_console_base,
+			arch->guest_virtio_console_size)) {
+		arm64_dts_panic("guest-smmuv3 mmio overlap", -EINVAL);
+	}
+	for (i = 0U; i < arch->guest_virtio_proxy_num; i++) {
+		if (dts_ranges_overlap(arch->guest_smmu_base, arch->guest_smmu_size,
+			arch->guest_virtio_proxy[i].base,
+			arch->guest_virtio_proxy[i].size)) {
+			arm64_dts_panic("guest-smmuv3 virtio overlap", -EINVAL);
+		}
+	}
+}
+
+static void dts_parse_guest_smmu(const void *fdt, int32_t generic,
+	uint16_t vm_id, struct acrn_vm_config *vm_config)
+{
+	int32_t node = dts_child_compatible(fdt, generic, "beau,guest-smmuv3");
+	const fdt32_t *irq_prop;
+	uint64_t range_end;
+	uint32_t owner;
+	uint32_t irq_type;
+	uint32_t irq_number;
+	uint32_t irq_flags;
+	uint32_t worker_pcpu;
+	uint32_t cmdq_log2;
+	uint32_t evtq_log2;
+	int32_t irq_len;
+
+	if (node < 0) {
+		return;
+	}
+	owner = dts_u32_prop(fdt, node, "beau,owner-vm",
+		ACRN_INVALID_VMID);
+	if (owner == ACRN_INVALID_VMID) {
+		arm64_dts_panic("guest-smmuv3 owner vm", -EINVAL);
+	}
+	if (owner != vm_id) {
+		return;
+	}
+	if (vm_config->os_config.os_family != VM_OS_LINUX) {
+		arm64_dts_panic("guest-smmuv3 linux owner", -EINVAL);
+	}
+
+	dts_reg_by_index(fdt, node, 0U, &vm_config->arch.guest_smmu_base,
+		&vm_config->arch.guest_smmu_size);
+	if ((vm_config->arch.guest_smmu_size != ARM64_DTS_GUEST_SMMU_SIZE) ||
+		!mem_aligned_check(vm_config->arch.guest_smmu_base,
+			ARM64_DTS_GUEST_SMMU_ALIGN) ||
+		!dts_range_end(vm_config->arch.guest_smmu_base,
+			vm_config->arch.guest_smmu_size, &range_end)) {
+		arm64_dts_panic("guest-smmuv3 reg", -EINVAL);
+	}
+
+	irq_prop = fdt_getprop(fdt, node, "interrupts", &irq_len);
+	if ((irq_prop == NULL) ||
+		(irq_len != (int32_t)(3U * sizeof(fdt32_t)))) {
+		arm64_dts_panic("guest-smmuv3 interrupts", -EINVAL);
+	}
+	irq_type = fdt32_to_cpu(irq_prop[0]);
+	irq_number = fdt32_to_cpu(irq_prop[1]);
+	irq_flags = fdt32_to_cpu(irq_prop[2]);
+	if ((irq_type != ARM64_DTS_GIC_SPI) ||
+		(irq_flags != ARM64_DTS_IRQ_TYPE_LEVEL_HIGH) ||
+		(irq_number > (ARM64_GIC_SPURIOUS_INTID - 33U))) {
+		arm64_dts_panic("guest-smmuv3 irq", -EINVAL);
+	}
+	vm_config->arch.guest_smmu_irq = irq_number + 32U;
+
+	cmdq_log2 = dts_u32_prop(fdt, node, "beau,max-cmdq-log2",
+		ARM64_DTS_GUEST_SMMU_MAX_QUEUE_LOG2);
+	evtq_log2 = dts_u32_prop(fdt, node, "beau,max-evtq-log2",
+		ARM64_DTS_GUEST_SMMU_MAX_QUEUE_LOG2);
+	if ((cmdq_log2 == 0U) ||
+		(cmdq_log2 > ARM64_DTS_GUEST_SMMU_MAX_QUEUE_LOG2) ||
+		(evtq_log2 == 0U) ||
+		(evtq_log2 > ARM64_DTS_GUEST_SMMU_MAX_QUEUE_LOG2)) {
+		arm64_dts_panic("guest-smmuv3 queue limit", -EINVAL);
+	}
+	vm_config->arch.guest_smmu_cmdq_log2 = (uint8_t)cmdq_log2;
+	vm_config->arch.guest_smmu_evtq_log2 = (uint8_t)evtq_log2;
+
+	worker_pcpu = dts_u32_prop(fdt, node, "beau,worker-pcpu",
+		UINT32_MAX);
+	if ((worker_pcpu >= get_pcpu_nums()) ||
+		((vm_config->cpu_affinity & AFFINITY_CPU(worker_pcpu)) == 0UL)) {
+		arm64_dts_panic("guest-smmuv3 worker pcpu", -EINVAL);
+	}
+	vm_config->arch.guest_smmu_worker_pcpu = (uint16_t)worker_pcpu;
+	dts_validate_guest_smmu_range(vm_config);
+}
+
+/* [20260716] vSMMU static exposure contract
+ *
+ *   generic DTS guest-smmuv3 node
+ *       -> one explicit Linux owner VM
+ *       -> non-overlapping 128 KiB trapped MMIO window
+ *       -> one combined level SPI and one owner-VM worker pCPU
+ *       -> bounded queue limits in arch_vm_config
+ *
+ * The parser creates policy only. vsmmu.c creates synthetic state later, and
+ * platform.c deliberately omits iommu-map until the S1+S2 broker is complete.
+ */
 static void dts_parse_arch(const void *fdt, int32_t generic, uint16_t vm_id,
 	struct acrn_vm_config *vm_config)
 {
@@ -1538,6 +1659,7 @@ static void dts_parse_arch(const void *fdt, int32_t generic, uint16_t vm_id,
 		proxy_count++;
 	}
 	vm_config->arch.guest_virtio_proxy_num = proxy_count;
+	dts_parse_guest_smmu(fdt, generic, vm_id, vm_config);
 }
 
 static uint16_t dts_vm_id_from_node(const void *fdt, int32_t node)
