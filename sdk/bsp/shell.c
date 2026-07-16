@@ -26,24 +26,28 @@
 #include <asm/guest/vgicv3.h>
 #endif
 
-/* [20260710] BEAU shell service principle:
+/* [20260716] BEAU shell service ownership:
  *
  * The shell is the interactive OS-service front end for BEAU diagnostics and
  * VM console switching. It runs as a low-priority scheduler thread on the BSP
  * and consumes the same physical console that VM consoles use through vsh.
  *
- *   host serial input
- *          |
- *          v
- *   console ownership
- *      |
- *      +-- BEAU shell selected -> shell input editor -> shell_cmd table
- *      |
- *      +-- VM selected         -> vsh forwards bytes to that VM console
+ *   console timer softirq          shell thread
+ *          |                            |
+ *          +-- shell_kick() ---------->| wake
+ *                                       |
+ *                                       v
+ *                              route console ownership
+ *                                       |
+ *                              edit -> dispatch -> prompt
  *
- * Shell output may race with asynchronous logs. The shell redraw path preserves
- * the user's current input line while allowing logs and monitor output to stay
- * visible on the host console.
+ * Key rules:
+ *   - the timer only publishes work; the shell thread owns input and dispatch;
+ *   - command completion publishes the next prompt before the thread sleeps;
+ *   - guest ownership suppresses that prompt until BEAU owns the console again.
+ *
+ * Asynchronous logs still serialize terminal redraw through shell_tx_lock so
+ * they can borrow and restore the active input row without owning shell state.
  */
 
 #define SHELL_PROMPT_STR	"console:\\> "
@@ -936,11 +940,8 @@ static int32_t shell_process(void)
 	return status;
 }
 
-
-void shell_kick(void)
+static void shell_thread_kick(void)
 {
-	static bool is_cmd_cmplt = false;
-
 	if (console_vm_kick()) {
 		return;
 	}
@@ -957,30 +958,29 @@ void shell_kick(void)
 		if ((ch == '\r') || (ch == '\n')) {
 			shell_prompt_enabled = true;
 			shell_show_banner_prompt();
-			is_cmd_cmplt = false;
 		}
 		return;
 	}
 
-	/* At any given instance, UART may be owned by the HV
-	 * OR by the guest that has enabled the vUart.
-	 * Show HV shell prompt ONLY when HV owns the
-	 * serial port.
+	/* A guest-console command leaves the BEAU input row inactive. Restore it
+	 * when Ctrl-D has returned ownership to the hypervisor.
 	 */
-	/* Prompt the user for a selection. */
-	if (is_cmd_cmplt) {
+	if (console_is_hv() && !shell_input_active) {
 		shell_show_prompt(false);
 	}
 
-	/* Get user's input */
-	is_cmd_cmplt = shell_input_line();
-
-	/* If user has pressed the ENTER then process
-	 * the command
-	 */
-	if (is_cmd_cmplt) {
-		/* Process current input line. */
+	if (shell_input_line()) {
 		(void)shell_process();
+		if (console_is_hv()) {
+			shell_show_prompt(false);
+		}
+	}
+}
+
+void shell_kick(void)
+{
+	if (shell_started) {
+		wake_thread(&shell_thread);
 	}
 }
 
@@ -1045,9 +1045,9 @@ bool shell_async_puts_raw(const char *string_ptr)
 static void shell_thread_main(__unused struct thread_object *obj)
 {
 	while (true) {
-		shell_kick();
-		yield_current();
+		sleep_thread(&shell_thread);
 		schedule();
+		shell_thread_kick();
 	}
 }
 
