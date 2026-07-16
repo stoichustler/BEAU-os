@@ -106,6 +106,11 @@ publish ownership
    `rtthread.bin`, and `zephyr.bin`, into `sdk/image` so VM boot and regression
    validation can find stable guest image inputs.
 
+10. Do not commit temporary test scripts matching `scripts/test_*.py`. Move any
+    regression coverage that must be retained into `scripts/regress.py`, and
+    include the corresponding `scripts/regress.py` changes in the submitted
+    change.
+
 ## Commit Spec
 
 Every commit message must use the following structure:
