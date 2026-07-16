@@ -130,13 +130,167 @@ static int32_t bsp_pm_vpci_resume(uint64_t epoch)
 	return bsp_pm_run_required_vm_resume_hook(epoch, vpci_pm_resume);
 }
 
+static int32_t bsp_pm_get_epoch_snapshot(uint64_t epoch,
+	struct beau_pm_snapshot *snapshot)
+{
+	if ((epoch == 0UL) || (snapshot == NULL)) {
+		return -EINVAL;
+	}
+
+	hv_pm_get_snapshot(snapshot);
+	return (snapshot->epoch == epoch) ? 0 : -EINVAL;
+}
+
+static int32_t bsp_pm_get_vm_target(uint64_t epoch,
+	struct beau_pm_snapshot *snapshot, uint16_t *target_vmid)
+{
+	int32_t status = bsp_pm_get_epoch_snapshot(epoch, snapshot);
+
+	if (status != 0) {
+		return status;
+	}
+	if ((snapshot->scope != HV_PM_SCOPE_VM) ||
+		(snapshot->target_vmid >= CONFIG_MAX_VM_NUM) ||
+		((snapshot->required_vm_mask & (1UL << snapshot->target_vmid)) == 0UL)) {
+		return -EINVAL;
+	}
+	if (target_vmid != NULL) {
+		*target_vmid = snapshot->target_vmid;
+	}
+
+	return 0;
+}
+
+static int32_t bsp_pm_wdt_suspend(uint64_t epoch)
+{
+	struct beau_pm_snapshot snapshot;
+	uint16_t target_vmid;
+	int32_t status = bsp_pm_get_epoch_snapshot(epoch, &snapshot);
+
+	if (status != 0) {
+		return status;
+	}
+	if (snapshot.scope == HV_PM_SCOPE_VM) {
+		status = bsp_pm_get_vm_target(epoch, &snapshot, &target_vmid);
+		return (status == 0) ?
+			vm_wdt_pm_suspend_vm(target_vmid, epoch) : status;
+	}
+
+	return vm_wdt_pm_suspend(epoch);
+}
+
+static int32_t bsp_pm_wdt_resume(uint64_t epoch)
+{
+	struct beau_pm_snapshot snapshot;
+	uint16_t target_vmid;
+	int32_t status = bsp_pm_get_epoch_snapshot(epoch, &snapshot);
+
+	if (status != 0) {
+		return status;
+	}
+	if (snapshot.scope == HV_PM_SCOPE_VM) {
+		status = bsp_pm_get_vm_target(epoch, &snapshot, &target_vmid);
+		return (status == 0) ?
+			vm_wdt_pm_resume_vm(target_vmid, epoch) : status;
+	}
+
+	return vm_wdt_pm_resume(epoch);
+}
+
+static int32_t bsp_pm_virtio_suspend(uint64_t epoch)
+{
+	struct beau_pm_snapshot snapshot;
+	uint16_t target_vmid;
+	int32_t status = bsp_pm_get_epoch_snapshot(epoch, &snapshot);
+
+	if (status != 0) {
+		return status;
+	}
+	if (snapshot.scope == HV_PM_SCOPE_VM) {
+		status = bsp_pm_get_vm_target(epoch, &snapshot, &target_vmid);
+		return (status == 0) ?
+			virtio_proxy_pm_suspend_vm(target_vmid, epoch) : status;
+	}
+
+	return virtio_proxy_pm_suspend(epoch);
+}
+
+static int32_t bsp_pm_virtio_resume(uint64_t epoch)
+{
+	struct beau_pm_snapshot snapshot;
+	uint16_t target_vmid;
+	int32_t status = bsp_pm_get_epoch_snapshot(epoch, &snapshot);
+
+	if (status != 0) {
+		return status;
+	}
+	if (snapshot.scope == HV_PM_SCOPE_VM) {
+		status = bsp_pm_get_vm_target(epoch, &snapshot, &target_vmid);
+		return (status == 0) ?
+			virtio_proxy_pm_resume_vm(target_vmid, epoch) : status;
+	}
+
+	return virtio_proxy_pm_resume(epoch);
+}
+
 static int32_t bsp_pm_passthrough_suspend(uint64_t epoch)
 {
 	struct beau_pm_snapshot snapshot;
+	uint16_t target_vmid;
+	int32_t status = bsp_pm_get_epoch_snapshot(epoch, &snapshot);
 
-	hv_pm_get_snapshot(&snapshot);
-	return (snapshot.epoch == epoch) ?
-		passthrough_pm_suspend(epoch, snapshot.required_vm_mask) : -EINVAL;
+	if (status != 0) {
+		return status;
+	}
+	if (snapshot.scope == HV_PM_SCOPE_VM) {
+		status = bsp_pm_get_vm_target(epoch, &snapshot, &target_vmid);
+		if (status != 0) {
+			return status;
+		}
+		return passthrough_vm_has_owned_devices(target_vmid) ?
+			-ENOTSUP : 0;
+	}
+
+	return passthrough_pm_suspend(epoch, snapshot.required_vm_mask);
+}
+
+static int32_t bsp_pm_passthrough_resume(uint64_t epoch)
+{
+	struct beau_pm_snapshot snapshot;
+	int32_t status = bsp_pm_get_epoch_snapshot(epoch, &snapshot);
+
+	if (status != 0) {
+		return status;
+	}
+
+	return (snapshot.scope == HV_PM_SCOPE_VM) ? 0 :
+		passthrough_pm_resume(epoch);
+}
+
+static int32_t bsp_pm_smmu_suspend(uint64_t epoch)
+{
+	struct beau_pm_snapshot snapshot;
+	int32_t status = bsp_pm_get_epoch_snapshot(epoch, &snapshot);
+
+	if (status != 0) {
+		return status;
+	}
+
+	return (snapshot.scope == HV_PM_SCOPE_VM) ? 0 :
+		arm_smmu_pm_suspend(epoch);
+}
+
+static int32_t bsp_pm_smmu_resume(uint64_t epoch)
+{
+	struct beau_pm_snapshot snapshot;
+	int32_t status = bsp_pm_get_epoch_snapshot(epoch, &snapshot);
+
+	if (status != 0) {
+		return status;
+	}
+
+	return (snapshot.scope == HV_PM_SCOPE_VM) ? 0 :
+		arm_smmu_pm_resume(epoch);
 }
 
 static int32_t bsp_pm_register_retention_hooks(void)
@@ -145,23 +299,23 @@ static int32_t bsp_pm_register_retention_hooks(void)
 		{
 			.name = "vm-wdt",
 			.priority = BSP_PM_HOOK_PRIO_WDT,
-			.suspend = vm_wdt_pm_suspend,
-			.resume = vm_wdt_pm_resume,
-			.abort = vm_wdt_pm_resume,
+			.suspend = bsp_pm_wdt_suspend,
+			.resume = bsp_pm_wdt_resume,
+			.abort = bsp_pm_wdt_resume,
 		},
 		{
 			.name = "virtio-proxy",
 			.priority = BSP_PM_HOOK_PRIO_VIRTIO,
-			.prepare = virtio_proxy_pm_suspend,
-			.resume = virtio_proxy_pm_resume,
-			.abort = virtio_proxy_pm_resume,
+			.prepare = bsp_pm_virtio_suspend,
+			.resume = bsp_pm_virtio_resume,
+			.abort = bsp_pm_virtio_resume,
 		},
 		{
 			.name = "passthrough-irqs",
 			.priority = BSP_PM_HOOK_PRIO_PTIRQ,
 			.suspend = bsp_pm_passthrough_suspend,
-			.resume = passthrough_pm_resume,
-			.abort = passthrough_pm_resume,
+			.resume = bsp_pm_passthrough_resume,
+			.abort = bsp_pm_passthrough_resume,
 		},
 		{
 			.name = "vpci",
@@ -173,9 +327,9 @@ static int32_t bsp_pm_register_retention_hooks(void)
 		{
 			.name = "arm-smmuv3",
 			.priority = BSP_PM_HOOK_PRIO_SMMU,
-			.suspend = arm_smmu_pm_suspend,
-			.resume = arm_smmu_pm_resume,
-			.abort = arm_smmu_pm_resume,
+			.suspend = bsp_pm_smmu_suspend,
+			.resume = bsp_pm_smmu_resume,
+			.abort = bsp_pm_smmu_resume,
 		},
 		{
 			.name = "arm64-vtimer",
@@ -233,9 +387,57 @@ int32_t bsp_pm_set_wakeup_irqs(const uint32_t *irqs, uint16_t count)
 int32_t bsp_pm_request_suspend(void)
 {
 	struct beau_pm_snapshot snapshot;
+	int32_t status = bsp_pm_register_retention_hooks();
 
+	if (status != 0) {
+		return status;
+	}
 	hv_pm_get_snapshot(&snapshot);
 	return hv_pm_request_suspend(snapshot.controller_vmid);
+}
+
+int32_t bsp_pm_suspend_vm(uint16_t vmid)
+{
+	int32_t status;
+
+	if (vmid >= CONFIG_MAX_VM_NUM) {
+		return -EINVAL;
+	}
+	status = bsp_pm_register_retention_hooks();
+	if (status != 0) {
+		return status;
+	}
+
+	/*
+	 * VM STR is transparent and EL2-owned. Refuse topologies that cannot be
+	 * proven isolated without guest/backend cooperation:
+	 *
+	 *   target owns passthrough DMA  -> no VM-only quiesce proof
+	 *   target serves other frontend -> backend freeze breaks a running VM
+	 */
+	if (passthrough_vm_has_owned_devices(vmid)) {
+		return -ENOTSUP;
+	}
+	if (virtio_proxy_vm_has_backend_dependents(vmid)) {
+		return -EBUSY;
+	}
+
+	return hv_pm_request_vm_suspend(vmid);
+}
+
+int32_t bsp_pm_resume_vm(uint16_t vmid)
+{
+	int32_t status;
+
+	if (vmid >= CONFIG_MAX_VM_NUM) {
+		return -EINVAL;
+	}
+	status = bsp_pm_register_retention_hooks();
+	if (status != 0) {
+		return status;
+	}
+
+	return hv_pm_request_vm_resume(vmid);
 }
 
 int32_t bsp_pm_abort(int32_t reason)

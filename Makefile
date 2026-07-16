@@ -4,7 +4,7 @@
 
 API_MAJOR_VERSION=1
 API_MINOR_VERSION=0
-BEAU_OS_VERSION ?= 0.0.6
+BEAU_OS_VERSION ?= 0.0.7
 
 GCC_MAJOR=$(shell echo __GNUC__ | $(CC) -E -x c - | tail -n 1)
 GCC_MINOR=$(shell echo __GNUC_MINOR__ | $(CC) -E -x c - | tail -n 1)

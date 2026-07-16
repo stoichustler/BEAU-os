@@ -167,5 +167,8 @@ bool virtio_proxy_get_stats(uint16_t vm_id, uint16_t index,
 	struct virtio_proxy_stats *stats);
 int32_t virtio_proxy_pm_suspend(uint64_t epoch);
 int32_t virtio_proxy_pm_resume(uint64_t epoch);
+int32_t virtio_proxy_pm_suspend_vm(uint16_t vm_id, uint64_t epoch);
+int32_t virtio_proxy_pm_resume_vm(uint16_t vm_id, uint64_t epoch);
+bool virtio_proxy_vm_has_backend_dependents(uint16_t vm_id);
 
 #endif /* VIRTIO_PROXY_H */

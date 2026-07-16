@@ -26,6 +26,12 @@ enum beau_pm_system_state {
 
 #define HV_PM_PHASE_COUNT		((uint32_t)PM_FAILED + 1U)
 
+enum beau_pm_scope {
+	HV_PM_SCOPE_NONE = 0U,
+	HV_PM_SCOPE_SYSTEM,
+	HV_PM_SCOPE_VM,
+};
+
 enum beau_vm_pm_state {
 	VM_PM_RUNNING = 0U,
 	VM_PM_FROZEN,
@@ -77,6 +83,7 @@ struct beau_pm_snapshot {
 	uint64_t wake_reason;
 	uint64_t wake_bitmap;
 	uint64_t topology_change_vm_mask;
+	uint64_t io_gated_vm_mask;
 	uint64_t phase_start_ticks[HV_PM_PHASE_COUNT];
 	uint64_t phase_duration_ticks[HV_PM_PHASE_COUNT];
 	struct beau_vm_pm_record vm[CONFIG_MAX_VM_NUM];
@@ -86,6 +93,9 @@ struct beau_pm_snapshot {
 	int32_t last_status;
 	uint16_t initiator_vmid;
 	uint16_t controller_vmid;
+	uint16_t target_vmid;
+	uint8_t scope;
+	uint8_t reserved0;
 	uint32_t prepare_timeout_ms;
 	uint32_t resume_timeout_ms;
 	uint64_t policy_required_vm_mask;
@@ -113,10 +123,14 @@ struct beau_pm_ops {
 };
 
 const char *hv_pm_state_to_str(enum beau_pm_system_state state);
+const char *hv_pm_scope_to_str(enum beau_pm_scope scope);
 int32_t hv_pm_request_suspend(uint16_t initiator_vmid);
+int32_t hv_pm_request_vm_suspend(uint16_t vmid);
+int32_t hv_pm_request_vm_resume(uint16_t vmid);
 int32_t hv_pm_abort(uint64_t epoch, int32_t reason);
 void hv_pm_get_snapshot(struct beau_pm_snapshot *snapshot);
 bool hv_pm_io_is_gated(void);
+bool hv_pm_vm_io_is_gated(uint16_t vmid);
 int32_t hv_pm_set_policy(const struct beau_pm_policy *policy);
 int32_t hv_pm_record_wake(uint32_t wake_source, uint16_t source_index);
 int32_t hv_pm_begin_vm_topology_change(uint16_t vmid);

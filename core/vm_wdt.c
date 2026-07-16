@@ -94,6 +94,7 @@ struct vm_wdt_entry {
 	uint64_t recovery_wait_vcpus;
 	uint64_t remaining_ticks;
 	uint64_t suspend_epoch;
+	uint64_t suspend_ticks;
 	bool timeout_active;
 	bool restart_pending;
 	bool pm_suspended;
@@ -140,6 +141,22 @@ static bool vm_wdt_is_pm_suspended(void)
 
 	spinlock_irqsave_obtain(&vm_wdt_lock, &rflags);
 	suspended = vm_wdt_pm_suspended;
+	spinlock_irqrestore_release(&vm_wdt_lock, rflags);
+
+	return suspended;
+}
+
+static bool vm_wdt_vm_is_pm_suspended(uint16_t vm_id)
+{
+	uint64_t rflags;
+	bool suspended = false;
+
+	if (vm_id >= CONFIG_MAX_VM_NUM) {
+		return false;
+	}
+
+	spinlock_irqsave_obtain(&vm_wdt_lock, &rflags);
+	suspended = vm_wdt_entries[vm_id].pm_suspended;
 	spinlock_irqrestore_release(&vm_wdt_lock, rflags);
 
 	return suspended;
@@ -754,6 +771,7 @@ int32_t vm_wdt_pm_suspend(uint64_t epoch)
 			entry->remaining_ticks = (age_ticks < timeout_ticks) ?
 				(timeout_ticks - age_ticks) : 0UL;
 			entry->suspend_epoch = epoch;
+			entry->suspend_ticks = now;
 			entry->pm_suspended = true;
 		}
 	}
@@ -829,6 +847,7 @@ int32_t vm_wdt_pm_resume(uint64_t epoch)
 		}
 		entry->remaining_ticks = 0UL;
 		entry->suspend_epoch = 0UL;
+		entry->suspend_ticks = 0UL;
 		entry->pm_suspended = false;
 	}
 	vm_wdt_suspend_epoch = 0UL;
@@ -850,6 +869,105 @@ int32_t vm_wdt_pm_resume(uint64_t epoch)
 	return status;
 }
 
+static void vm_wdt_resume_entry_locked(struct vm_wdt_entry *entry, uint64_t now)
+{
+	const uint64_t timeout_ticks =
+		(uint64_t)CONFIG_VM_WDT_TIMEOUT_MS * TICKS_PER_MS;
+	uint64_t age_ticks = (entry->remaining_ticks == 0UL) ?
+		(timeout_ticks + 1UL) : (timeout_ticks - entry->remaining_ticks);
+	uint64_t heartbeat_base = (now > age_ticks) ? (now - age_ticks) : 0UL;
+	uint64_t sleep_ticks = vm_wdt_elapsed_ticks(now, entry->suspend_ticks);
+
+	if (entry->kick_count == 0UL) {
+		entry->start_tsc = heartbeat_base;
+	} else {
+		entry->last_kick_tsc = heartbeat_base;
+	}
+	entry->last_irq_total = vm_wdt_irq_total();
+	entry->last_irq_sample_tsc = now;
+	if (entry->restart_pending && (entry->recovery_start_tsc != 0UL)) {
+		entry->recovery_start_tsc += sleep_ticks;
+	}
+	entry->remaining_ticks = 0UL;
+	entry->suspend_epoch = 0UL;
+	entry->suspend_ticks = 0UL;
+	entry->pm_suspended = false;
+}
+
+int32_t vm_wdt_pm_suspend_vm(uint16_t vm_id, uint64_t epoch)
+{
+	const uint64_t timeout_ticks =
+		(uint64_t)CONFIG_VM_WDT_TIMEOUT_MS * TICKS_PER_MS;
+	struct vm_wdt_entry *entry;
+	uint64_t now;
+	uint64_t age_ticks;
+	uint64_t rflags;
+	int32_t status = 0;
+
+	if ((vm_id >= CONFIG_MAX_VM_NUM) || (epoch == 0UL)) {
+		return -EINVAL;
+	}
+	if (!vm_wdt_is_monitored(vm_id)) {
+		return 0;
+	}
+
+	now = cpu_ticks();
+	spinlock_irqsave_obtain(&vm_wdt_lock, &rflags);
+	entry = &vm_wdt_entries[vm_id];
+	if (vm_wdt_pm_suspended) {
+		status = -EBUSY;
+	} else if (entry->pm_suspended) {
+		status = (entry->suspend_epoch == epoch) ? 0 : -EBUSY;
+	} else if (entry->restart_pending) {
+		status = -EBUSY;
+	} else {
+		/*
+		 * VM STR is transparent to guest watchdog drivers. Freeze only
+		 * the target VM's timeout basis; the global watchdog timer keeps
+		 * scanning other VMs during the BEAU-owned suspend window.
+		 */
+		age_ticks = vm_wdt_heartbeat_age_ticks(now, entry);
+		entry->remaining_ticks = (age_ticks < timeout_ticks) ?
+			(timeout_ticks - age_ticks) : 0UL;
+		entry->suspend_epoch = epoch;
+		entry->suspend_ticks = now;
+		entry->pm_suspended = true;
+	}
+	spinlock_irqrestore_release(&vm_wdt_lock, rflags);
+
+	return status;
+}
+
+int32_t vm_wdt_pm_resume_vm(uint16_t vm_id, uint64_t epoch)
+{
+	struct vm_wdt_entry *entry;
+	uint64_t now;
+	uint64_t rflags;
+
+	if ((vm_id >= CONFIG_MAX_VM_NUM) || (epoch == 0UL)) {
+		return -EINVAL;
+	}
+	if (!vm_wdt_is_monitored(vm_id)) {
+		return 0;
+	}
+
+	now = cpu_ticks();
+	spinlock_irqsave_obtain(&vm_wdt_lock, &rflags);
+	entry = &vm_wdt_entries[vm_id];
+	if (!entry->pm_suspended) {
+		spinlock_irqrestore_release(&vm_wdt_lock, rflags);
+		return 0;
+	}
+	if (entry->suspend_epoch != epoch) {
+		spinlock_irqrestore_release(&vm_wdt_lock, rflags);
+		return -EINVAL;
+	}
+	vm_wdt_resume_entry_locked(entry, now);
+	spinlock_irqrestore_release(&vm_wdt_lock, rflags);
+
+	return 0;
+}
+
 static void vm_wdt_check_timeouts(void)
 {
 	struct vm_wdt_snapshot snapshot;
@@ -859,6 +977,9 @@ static void vm_wdt_check_timeouts(void)
 		CONFIG_VM_WDT_MONITOR_VM_NUM : CONFIG_MAX_VM_NUM;
 
 	for (vm_id = 0U; vm_id < max_vm_id; vm_id++) {
+		if (vm_wdt_vm_is_pm_suspended(vm_id)) {
+			continue;
+		}
 		if (vm_wdt_get_snapshot(vm_id, &snapshot) != 0) {
 			continue;
 		}
@@ -983,6 +1104,7 @@ void vm_wdt_reset(const struct acrn_vm *vm)
 	vm_wdt_entries[vm->vm_id].recovery_wait_vcpus = recovery_wait_vcpus;
 	vm_wdt_entries[vm->vm_id].remaining_ticks = 0UL;
 	vm_wdt_entries[vm->vm_id].suspend_epoch = 0UL;
+	vm_wdt_entries[vm->vm_id].suspend_ticks = 0UL;
 	vm_wdt_entries[vm->vm_id].timeout_active = false;
 	vm_wdt_entries[vm->vm_id].restart_pending = restart_pending;
 	vm_wdt_entries[vm->vm_id].pm_suspended = false;
@@ -1073,6 +1195,27 @@ int32_t vm_wdt_get_snapshot(uint16_t vm_id, struct vm_wdt_snapshot *snapshot)
 	}
 
 	now = cpu_ticks();
+	if (entry.pm_suspended) {
+		const uint64_t timeout_ticks =
+			(uint64_t)CONFIG_VM_WDT_TIMEOUT_MS * TICKS_PER_MS;
+
+		age_ticks = (entry.remaining_ticks == 0UL) ?
+			(timeout_ticks + 1UL) : (timeout_ticks - entry.remaining_ticks);
+		snapshot->status = vm_wdt_heartbeat_started(&entry) ?
+			VM_WDT_STATUS_ALIVE : VM_WDT_STATUS_UNKNOWN;
+		snapshot->cause = vm_wdt_heartbeat_started(&entry) ?
+			VM_WDT_CAUSE_HEARTBEAT : VM_WDT_CAUSE_NONE;
+		snapshot->last_ms = ticks_to_ms(age_ticks);
+		snapshot->kick_count = entry.kick_count;
+		snapshot->timeout_count = entry.timeout_count;
+		snapshot->restart_count = entry.restart_count;
+		snapshot->restart_fail_count = entry.restart_fail_count;
+		snapshot->last_token = entry.last_token;
+		snapshot->recovery_state = entry.recovery_state;
+		snapshot->recovery_wait_vcpus = entry.recovery_wait_vcpus;
+		snapshot->restart_pending = entry.restart_pending;
+		return 0;
+	}
 	/*
 	 * A hypercall kick is the explicit guest heartbeat. Normal VM-exits can
 	 * continue while the guest watchdog worker is stuck, so they must not

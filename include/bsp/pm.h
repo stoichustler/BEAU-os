@@ -11,6 +11,8 @@
 
 int32_t bsp_pm_set_wakeup_irqs(const uint32_t *irqs, uint16_t count);
 int32_t bsp_pm_request_suspend(void);
+int32_t bsp_pm_suspend_vm(uint16_t vmid);
+int32_t bsp_pm_resume_vm(uint16_t vmid);
 int32_t bsp_pm_abort(int32_t reason);
 int32_t bsp_pm_request_wake(uint32_t wake_source);
 

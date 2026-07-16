@@ -47,7 +47,7 @@ FATAL_PATTERNS = (
     "fatal error",
 )
 FATAL_DRAIN_TIMEOUT = 1.0
-STR_FREEZE_MARKERS = ("PM_GUESTS_FROZEN", "PM_SUSPENDED")
+STR_FREEZE_MARKERS = ("PM_GUESTS_FROZEN", "PM_VM_SUSPENDED")
 STR_THAW_MARKERS = ("PM_RESUMING", "PM_GUESTS_THAWED", "PM_RUNNING")
 STR_FAULT_OPTIONS = (
     "prepare-timeout",
@@ -110,6 +110,7 @@ def parse_args():
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--log", default=ROOT / "out/qemu_out/regress.log", type=relpath)
     parser.add_argument("--str-cycles", type=int, default=0)
+    parser.add_argument("--str-vmid", type=int, default=0)
     parser.add_argument(
         "--qmp-socket",
         default=ROOT / "out/qemu_out/regress-qmp.sock",
@@ -157,6 +158,10 @@ def parse_args():
         args.linux_vm3_image = args.linux_image
     if args.str_cycles < 0:
         parser.error("--str-cycles must not be negative")
+    if args.str_vmid < 0:
+        parser.error("--str-vmid must not be negative")
+    if args.str_vmid > 3:
+        parser.error("--str-vmid must be 0..3 for the QEMU static topology")
     if args.str_suspend_seconds < 0.0:
         parser.error("--str-suspend-seconds must not be negative")
     selected_faults = [
@@ -867,45 +872,39 @@ def check_str_guest_heartbeats(qemu, cycle):
     vsh_return(qemu, f"{label}: return from VM3", vmid=3)
 
 
-def run_str_cycle(qemu, qmp, args, cycle):
-    label = f"STR cycle {cycle}"
-    if args.str_fault not in (None, "pending-wake", "duplicate-wake"):
+def run_str_cycle(qemu, args, cycle):
+    vmid = args.str_vmid
+    label = f"VM STR cycle {cycle} vm{vmid}"
+    if args.str_fault is not None:
         raise RuntimeError(
-            f"{label}: {args.str_fault} requires the QEMU fault-injection hooks"
+            f"{label}: {args.str_fault} is a system STR fault-injection case"
         )
 
     start_offset = len(qemu.output)
-    qemu.send("pm suspend" + ENTER)
-    if args.str_fault == "pending-wake":
-        qemu.send(b"\r")
+    qemu.send(f"pm suspend {vmid}" + ENTER)
     qemu.expect_all(
         STR_FREEZE_MARKERS,
-        f"{label}: BEAU froze guests and suspended the host",
+        f"{label}: BEAU froze target VM",
         start_offset=start_offset,
     )
 
-    qmp.stop()
-    assert_qmp_status(qmp, "paused", f"{label}: QEMU stopped")
     time.sleep(args.str_suspend_seconds)
 
     resume_offset = len(qemu.output)
-    qmp.cont()
-    assert_qmp_status(qmp, "running", f"{label}: QEMU continued")
-    qemu.send(b"\r\r" if args.str_fault == "duplicate-wake" else b"\r")
+    qemu.send(f"pm resume {vmid}" + ENTER)
     qemu.expect_all(
         STR_THAW_MARKERS,
-        f"{label}: BEAU restored the host and thawed guests",
+        f"{label}: BEAU thawed target VM",
         start_offset=resume_offset,
     )
     qemu.send(ENTER)
     qemu.expect(PROMPT, f"{label}: BEAU shell responsive after resume")
 
-    wake_reason = 33
     qemu.command_retry("pm status", [
         f"pm epoch:{cycle}",
         "phase:running",
         "masks:policy:0x000000000000000f required:0x0000000000000000",
-        f"wake:reason:{wake_reason}",
+        "wake:reason:0",
     ])
     qemu.command_retry(
         "health",
@@ -922,10 +921,8 @@ def run_str_cycles(qemu, args):
     if args.str_cycles == 0:
         return
 
-    with QmpClient(args.qmp_socket, min(args.timeout, 10.0)) as qmp:
-        assert_qmp_status(qmp, "running", "QMP connected")
-        for cycle in range(1, args.str_cycles + 1):
-            run_str_cycle(qemu, qmp, args, cycle)
+    for cycle in range(1, args.str_cycles + 1):
+        run_str_cycle(qemu, args, cycle)
 
 
 def run_qemu(args, cmd):

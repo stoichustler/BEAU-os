@@ -17,27 +17,29 @@
 #include <vm.h>
 #include <logmsg.h>
 
-/* [20260716] BEAU-owned transparent system suspend
+/* [20260716] BEAU-owned transparent suspend
  *
- * Host shell        PM transaction       schedulers          retention/platform
- *     | suspend            |                  |                       |
- *     +------------------->| gate I/O         |                       |
- *     |                    | prepare/drain -------------------------->|
- *     |                    | freeze(epoch) -->| block every VM thread |
- *     |                    |<-- switch-out ACK|                       |
- *     |                    | suspend devices ------------------------>|
- *     |                    | park APs / retain EL2 / wait for wake -->|
- *     |                    |<----------------------- restore Host EL2 |
- *     |                    | resume devices ------------------------->|
- *     |                    | clear I/O gate   |                       |
- *     |                    | thaw(epoch) ---->| replay deferred wakes |
- *     |                    | RUNNING          |                       |
+ * request       PM transaction       schedulers          retention/platform
+ *    |                 |                  |                       |
+ *    +---------------->| gate target I/O  |                       |
+ *    |                 | prepare/drain -------------------------->|
+ *    |                 | freeze(epoch) -->| block target threads  |
+ *    |                 |<-- switch-out ACK|                       |
+ *    |                 | suspend target devices ----------------->|
+ *    |                 |                                         |
+ *    |                 +-- VM scope: wait for explicit resume     |
+ *    |                 +-- system: retain EL2 / wait for wake --->|
+ *    |                 |<----------------------- restore Host EL2 |
+ *    |                 | resume devices ------------------------->|
+ *    |                 | thaw(epoch) ---->| replay deferred wakes |
+ *    |                 | clear I/O gate   |                       |
  *
  * Key rules:
  *   - Guest software never participates in the transaction and sees no PM ABI;
+ *   - one transaction owns either one VM or the policy-defined system VM set;
  *   - scheduler epoch gates preserve vCPU lifecycle states and serialize wakes;
  *   - device retention starts only after every gated vCPU has switched out;
- *   - restore hooks finish before I/O is ungated and vCPUs are thawed;
+ *   - restore hooks and vCPU thaw finish before target I/O is ungated;
  *   - an unprovable restore leaves PM_FAILED with guests and I/O still frozen.
  */
 static struct beau_pm_transaction pm_transaction = {
@@ -45,6 +47,8 @@ static struct beau_pm_transaction pm_transaction = {
 		.state = PM_RUNNING,
 		.last_state = PM_RUNNING,
 		.controller_vmid = HV_PM_DEFAULT_CONTROLLER_VM,
+		.target_vmid = CONFIG_MAX_VM_NUM,
+		.scope = HV_PM_SCOPE_NONE,
 	},
 };
 
@@ -105,7 +109,7 @@ static void hv_pm_fail_epoch(uint64_t epoch, int32_t status)
 	}
 	spinlock_irqrestore_release(&pm_transaction.lock, flags);
 	if (failed) {
-		LOG_ERR("PM_FAILED epoch:%lu status:%d", epoch, status);
+		LOG_ERR("STR: PM_FAILED epoch:%lu status:%d", epoch, status);
 	}
 }
 
@@ -130,16 +134,20 @@ static bool hv_pm_required_vms_running(uint64_t required_vm_mask)
 }
 
 static void hv_pm_reset_epoch_locked(struct beau_pm_snapshot *data,
-	uint16_t initiator_vmid)
+	uint16_t initiator_vmid, uint64_t required_vm_mask,
+	enum beau_pm_scope scope, uint16_t target_vmid)
 {
 	uint16_t vmid;
 
 	data->epoch = hv_pm_next_epoch(data->epoch);
-	data->required_vm_mask = data->policy_required_vm_mask;
+	data->required_vm_mask = required_vm_mask;
 	data->completed_hook_mask = 0UL;
 	data->wake_reason = 0UL;
 	data->wake_bitmap = 0UL;
 	data->initiator_vmid = initiator_vmid;
+	data->target_vmid = target_vmid;
+	data->scope = scope;
+	data->io_gated_vm_mask = required_vm_mask;
 	data->io_gated = 1U;
 	(void)memset(data->phase_start_ticks, 0U, sizeof(data->phase_start_ticks));
 	(void)memset(data->phase_duration_ticks, 0U,
@@ -217,7 +225,68 @@ int32_t hv_pm_request_suspend(uint16_t initiator_vmid)
 	} else if (!hv_pm_required_vms_running(data->policy_required_vm_mask)) {
 		status = -ENODEV;
 	} else {
-		hv_pm_reset_epoch_locked(data, initiator_vmid);
+		hv_pm_reset_epoch_locked(data, initiator_vmid,
+			data->policy_required_vm_mask, HV_PM_SCOPE_SYSTEM,
+			CONFIG_MAX_VM_NUM);
+	}
+	spinlock_irqrestore_release(&pm_transaction.lock, flags);
+	if (status == 0) {
+		make_system_suspend_request(BSP_CPU_ID);
+	}
+
+	return status;
+}
+
+int32_t hv_pm_request_vm_suspend(uint16_t vmid)
+{
+	struct beau_pm_snapshot *data = &pm_transaction.data;
+	uint64_t flags;
+	int32_t status = 0;
+
+	if (vmid >= CONFIG_MAX_VM_NUM) {
+		return -EINVAL;
+	}
+
+	hv_pm_finalize_hooks();
+	spinlock_irqsave_obtain(&pm_transaction.lock, &flags);
+	if (data->enabled == 0U) {
+		status = -ENODEV;
+	} else if (data->state != PM_RUNNING) {
+		status = -EBUSY;
+	} else if (data->topology_change_vm_mask != 0UL) {
+		status = -EBUSY;
+	} else if (!hv_pm_required_vms_running(1UL << vmid)) {
+		status = -ENODEV;
+	} else {
+		hv_pm_reset_epoch_locked(data, vmid, 1UL << vmid,
+			HV_PM_SCOPE_VM, vmid);
+	}
+	spinlock_irqrestore_release(&pm_transaction.lock, flags);
+	if (status == 0) {
+		make_system_suspend_request(BSP_CPU_ID);
+	}
+
+	return status;
+}
+
+int32_t hv_pm_request_vm_resume(uint16_t vmid)
+{
+	struct beau_pm_snapshot *data = &pm_transaction.data;
+	uint64_t flags;
+	int32_t status = 0;
+
+	if (vmid >= CONFIG_MAX_VM_NUM) {
+		return -EINVAL;
+	}
+
+	spinlock_irqsave_obtain(&pm_transaction.lock, &flags);
+	if ((data->scope != HV_PM_SCOPE_VM) ||
+		(data->target_vmid != vmid)) {
+		status = -EINVAL;
+	} else if (data->state != PM_SUSPENDED) {
+		status = -EBUSY;
+	} else {
+		hv_pm_transition_locked(data, PM_RESTORING_HOST);
 	}
 	spinlock_irqrestore_release(&pm_transaction.lock, flags);
 	if (status == 0) {
@@ -285,7 +354,8 @@ int32_t hv_pm_record_wake(uint32_t wake_source, uint16_t source_index)
 		return -EINVAL;
 	}
 	spinlock_irqsave_obtain(&pm_transaction.lock, &flags);
-	if ((data->state == PM_RUNNING) || (data->state == PM_FAILED)) {
+	if ((data->scope != HV_PM_SCOPE_SYSTEM) ||
+		(data->state == PM_RUNNING) || (data->state == PM_FAILED)) {
 		status = -EINVAL;
 	} else {
 		if (data->wake_reason == 0UL) {
@@ -358,6 +428,21 @@ bool hv_pm_io_is_gated(void)
 
 	spinlock_irqsave_obtain(&pm_transaction.lock, &flags);
 	gated = pm_transaction.data.io_gated != 0U;
+	spinlock_irqrestore_release(&pm_transaction.lock, flags);
+
+	return gated;
+}
+
+bool hv_pm_vm_io_is_gated(uint16_t vmid)
+{
+	uint64_t flags;
+	bool gated = false;
+
+	if (vmid >= CONFIG_MAX_VM_NUM) {
+		return false;
+	}
+	spinlock_irqsave_obtain(&pm_transaction.lock, &flags);
+	gated = (pm_transaction.data.io_gated_vm_mask & (1UL << vmid)) != 0UL;
 	spinlock_irqrestore_release(&pm_transaction.lock, flags);
 
 	return gated;
@@ -712,7 +797,7 @@ static int32_t hv_pm_freeze_guests(uint64_t epoch)
 		asm_pause();
 	}
 
-	LOG_INF("PM_GUESTS_FROZEN epoch:%lu vm-mask:0x%lx", epoch,
+	LOG_INF("STR: PM_GUESTS_FROZEN epoch:%lu vm-mask:0x%lx", epoch,
 		snapshot.required_vm_mask);
 	return 0;
 }
@@ -759,15 +844,6 @@ static int32_t hv_pm_thaw_guests(uint64_t epoch, bool require_frozen)
 		}
 	}
 
-	/* No guest can run between this publication and scheduler-gate release. */
-	spinlock_irqsave_obtain(&pm_transaction.lock, &flags);
-	if (pm_transaction.data.epoch != epoch) {
-		spinlock_irqrestore_release(&pm_transaction.lock, flags);
-		return -EINVAL;
-	}
-	pm_transaction.data.io_gated = 0U;
-	spinlock_irqrestore_release(&pm_transaction.lock, flags);
-
 	for (vmid = 0U; vmid < CONFIG_MAX_VM_NUM; vmid++) {
 		struct beau_vm_pm_record *record = &snapshot.vm[vmid];
 		struct acrn_vm *vm;
@@ -796,7 +872,24 @@ static int32_t hv_pm_thaw_guests(uint64_t epoch, bool require_frozen)
 		pm_transaction.data.vm[vmid].state = VM_PM_RUNNING;
 		spinlock_irqrestore_release(&pm_transaction.lock, flags);
 	}
-	LOG_INF("PM_GUESTS_THAWED epoch:%lu vm-mask:0x%lx", epoch,
+
+	/*
+	 * Keep MMIO/HVC paths gated until every target vCPU has been thawed. If
+	 * a restore hook or thread thaw fails, PM_FAILED still blocks target I/O
+	 * instead of letting a half-restored VM touch retained device state.
+	 */
+	spinlock_irqsave_obtain(&pm_transaction.lock, &flags);
+	if (pm_transaction.data.epoch != epoch) {
+		spinlock_irqrestore_release(&pm_transaction.lock, flags);
+		return -EINVAL;
+	}
+	pm_transaction.data.io_gated_vm_mask &= ~snapshot.required_vm_mask;
+	if (pm_transaction.data.io_gated_vm_mask == 0UL) {
+		pm_transaction.data.io_gated = 0U;
+	}
+	spinlock_irqrestore_release(&pm_transaction.lock, flags);
+
+	LOG_INF("STR: PM_GUESTS_THAWED epoch:%lu vm-mask:0x%lx", epoch,
 		snapshot.required_vm_mask);
 
 	return 0;
@@ -818,12 +911,15 @@ static void hv_pm_complete_running(uint64_t epoch, int32_t last_status)
 		pm_transaction.data.required_vm_mask = 0UL;
 		pm_transaction.data.completed_hook_mask = 0UL;
 		pm_transaction.data.io_gated = 0U;
+		pm_transaction.data.io_gated_vm_mask = 0UL;
+		pm_transaction.data.target_vmid = CONFIG_MAX_VM_NUM;
+		pm_transaction.data.scope = HV_PM_SCOPE_NONE;
 		hv_pm_transition_locked(&pm_transaction.data, PM_RUNNING);
 		completed = true;
 	}
 	spinlock_irqrestore_release(&pm_transaction.lock, flags);
 	if (completed) {
-		LOG_INF("PM_RUNNING epoch:%lu", epoch);
+		LOG_INF("STR: PM_RUNNING epoch:%lu", epoch);
 	}
 }
 
@@ -860,6 +956,24 @@ static int32_t hv_pm_rollback_from_idle(uint64_t epoch, int32_t reason)
 	return 0;
 }
 
+static int32_t hv_pm_restore_from_idle(uint64_t epoch)
+{
+	int32_t status;
+
+	LOG_INF("STR: PM_RESUMING epoch:%lu", epoch);
+	status = hv_pm_run_resume(epoch);
+	if (status == 0) {
+		status = hv_pm_thaw_guests(epoch, true);
+	}
+	if (status != 0) {
+		hv_pm_fail_epoch(epoch, status);
+		return status;
+	}
+	hv_pm_complete_running(epoch, 0);
+
+	return 0;
+}
+
 void hv_pm_process_from_idle(uint16_t pcpu_id)
 {
 	struct beau_pm_snapshot snapshot;
@@ -875,6 +989,10 @@ void hv_pm_process_from_idle(uint16_t pcpu_id)
 	epoch = snapshot.epoch;
 	if (snapshot.state == PM_ABORTING) {
 		(void)hv_pm_rollback_from_idle(epoch, snapshot.last_status);
+		return;
+	}
+	if (snapshot.state == PM_RESTORING_HOST) {
+		(void)hv_pm_restore_from_idle(epoch);
 		return;
 	}
 	if ((epoch == 0UL) || (snapshot.state != PM_PREPARING)) {
@@ -909,6 +1027,16 @@ void hv_pm_process_from_idle(uint16_t pcpu_id)
 		(void)hv_pm_rollback_from_idle(epoch, status);
 		return;
 	}
+	hv_pm_get_snapshot(&snapshot);
+	if (snapshot.scope == HV_PM_SCOPE_VM) {
+		LOG_INF("STR: PM_VM_SUSPENDED epoch:%lu vm:%hu",
+			epoch, snapshot.target_vmid);
+		return;
+	}
+	if (snapshot.scope != HV_PM_SCOPE_SYSTEM) {
+		(void)hv_pm_rollback_from_idle(epoch, -EINVAL);
+		return;
+	}
 
 	status = platform_pm_enter(epoch, &host_restored);
 	if ((status != 0) || !host_restored) {
@@ -924,16 +1052,7 @@ void hv_pm_process_from_idle(uint16_t pcpu_id)
 		hv_pm_fail_epoch(epoch, status);
 		return;
 	}
-	LOG_INF("PM_RESUMING epoch:%lu", epoch);
-	status = hv_pm_run_resume(epoch);
-	if (status == 0) {
-		status = hv_pm_thaw_guests(epoch, true);
-	}
-	if (status != 0) {
-		hv_pm_fail_epoch(epoch, status);
-		return;
-	}
-	hv_pm_complete_running(epoch, 0);
+	(void)hv_pm_restore_from_idle(epoch);
 }
 
 const char *hv_pm_state_to_str(enum beau_pm_system_state state)
@@ -949,4 +1068,15 @@ const char *hv_pm_state_to_str(enum beau_pm_system_state state)
 	};
 
 	return ((uint32_t)state < ARRAY_SIZE(names)) ? names[state] : "invalid";
+}
+
+const char *hv_pm_scope_to_str(enum beau_pm_scope scope)
+{
+	static const char *const names[] = {
+		[HV_PM_SCOPE_NONE] = "none",
+		[HV_PM_SCOPE_SYSTEM] = "system",
+		[HV_PM_SCOPE_VM] = "vm",
+	};
+
+	return ((uint32_t)scope < ARRAY_SIZE(names)) ? names[scope] : "invalid";
 }

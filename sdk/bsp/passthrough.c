@@ -508,6 +508,31 @@ void passthrough_deassign_vm(struct acrn_vm *vm)
 	}
 }
 
+bool passthrough_vm_has_owned_devices(uint16_t vm_id)
+{
+	uint64_t flags;
+	uint32_t i;
+	bool owned = false;
+
+	if (vm_id >= CONFIG_MAX_VM_NUM) {
+		return false;
+	}
+
+	spinlock_irqsave_obtain(&bsp_pt_lock, &flags);
+	for (i = 0U; i < ARRAY_SIZE(bsp_pt_devices); i++) {
+		const struct bsp_pt_device *dev = &bsp_pt_devices[i];
+
+		if (dev->valid && (dev->owner == BSP_PT_OWNER_VM) &&
+			(dev->owner_vmid == vm_id)) {
+			owned = true;
+			break;
+		}
+	}
+	spinlock_irqrestore_release(&bsp_pt_lock, flags);
+
+	return owned;
+}
+
 int32_t passthrough_pm_suspend(uint64_t epoch, uint64_t required_vm_mask)
 {
 	uint64_t flags;

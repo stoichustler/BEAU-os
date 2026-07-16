@@ -37,6 +37,7 @@ int32_t passthrough_deassign_device(struct acrn_vm *vm, uint32_t stream_id);
 void passthrough_deassign_vm(struct acrn_vm *vm);
 bool passthrough_irq_affinity(uint16_t vm_id, uint32_t phys_spi,
 	uint16_t *pcpu_id);
+bool passthrough_vm_has_owned_devices(uint16_t vm_id);
 int32_t passthrough_pm_suspend(uint64_t epoch, uint64_t required_vm_mask);
 int32_t passthrough_pm_resume(uint64_t epoch);
 

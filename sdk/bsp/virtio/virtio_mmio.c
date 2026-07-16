@@ -443,7 +443,8 @@ static void virtio_mmio_write_reg(struct virtio_mmio_dev *dev,
 			(dev->ops == NULL) || (dev->ops->notify_queue == NULL)) {
 			break;
 		}
-		if (dev->pm_suspended || hv_pm_io_is_gated()) {
+		if (dev->pm_suspended || ((dev->vm != NULL) &&
+			hv_pm_vm_io_is_gated(dev->vm->vm_id))) {
 			bitmap_set(value, &dev->deferred_queue_mask);
 		} else {
 			dev->ops->notify_queue(dev, (uint16_t)value);

@@ -60,6 +60,9 @@ static struct virtio_proxy_dev virtio_proxy_devs[CONFIG_MAX_VM_NUM][ARM64_VIRTIO
 static uint64_t virtio_proxy_suspend_epoch;
 static uint64_t virtio_proxy_suspend_ticks;
 static bool virtio_proxy_suspended;
+static uint64_t virtio_proxy_vm_suspend_epoch[CONFIG_MAX_VM_NUM];
+static uint64_t virtio_proxy_vm_suspend_ticks[CONFIG_MAX_VM_NUM];
+static bool virtio_proxy_vm_suspended[CONFIG_MAX_VM_NUM];
 
 struct virtio_proxy_batch_entry_meta {
 	uint32_t status;
@@ -1785,6 +1788,64 @@ static uint16_t virtio_proxy_pm_pending_count(void)
 	return active;
 }
 
+static uint16_t virtio_proxy_pm_pending_count_vm(uint16_t target_vmid)
+{
+	uint16_t active = 0U;
+	uint16_t index;
+
+	if (target_vmid >= CONFIG_MAX_VM_NUM) {
+		return 0U;
+	}
+
+	for (index = 0U; index < ARM64_VIRTIO_PROXY_MAX; index++) {
+		struct virtio_proxy_dev *dev =
+			&virtio_proxy_devs[target_vmid][index];
+
+		if (dev->mmio.vm == NULL) {
+			continue;
+		}
+		spinlock_obtain(&dev->lock);
+		active += virtio_proxy_pending_active(dev);
+		spinlock_release(&dev->lock);
+	}
+
+	return active;
+}
+
+bool virtio_proxy_vm_has_backend_dependents(uint16_t vm_id)
+{
+	uint16_t frontend_vmid;
+	uint16_t index;
+
+	if (vm_id >= CONFIG_MAX_VM_NUM) {
+		return false;
+	}
+
+	for (frontend_vmid = 0U; frontend_vmid < CONFIG_MAX_VM_NUM; frontend_vmid++) {
+		if (frontend_vmid == vm_id) {
+			continue;
+		}
+		for (index = 0U; index < ARM64_VIRTIO_PROXY_MAX; index++) {
+			struct virtio_proxy_dev *dev =
+				&virtio_proxy_devs[frontend_vmid][index];
+			bool dependent = false;
+
+			if ((dev->mmio.vm == NULL) || (dev->mmio.vm->state != VM_RUNNING)) {
+				continue;
+			}
+			spinlock_obtain(&dev->lock);
+			dependent = dev->hcall_backend_registered &&
+				(dev->backend_vmid == vm_id);
+			spinlock_release(&dev->lock);
+			if (dependent) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
 int32_t virtio_proxy_pm_suspend(uint64_t epoch)
 {
 	uint16_t vm_id;
@@ -1839,6 +1900,27 @@ static uint64_t virtio_proxy_pm_rebase_tick(uint64_t tick, uint64_t delta)
 		((tick <= (UINT64_MAX - delta)) ? (tick + delta) : UINT64_MAX);
 }
 
+static void virtio_proxy_pm_rebase_dev_locked(struct virtio_proxy_dev *dev,
+	uint64_t delta)
+{
+	if (dev == NULL) {
+		return;
+	}
+
+	dev->last_heartbeat_tick = virtio_proxy_pm_rebase_tick(
+		dev->last_heartbeat_tick, delta);
+	dev->first_activity_tick = virtio_proxy_pm_rebase_tick(
+		dev->first_activity_tick, delta);
+	dev->last_activity_tick = virtio_proxy_pm_rebase_tick(
+		dev->last_activity_tick, delta);
+	for (uint16_t queue_id = 0U; queue_id < VIRTIO_MMIO_MAX_QUEUES;
+		queue_id++) {
+		dev->last_notify_tick[queue_id] =
+			virtio_proxy_pm_rebase_tick(
+				dev->last_notify_tick[queue_id], delta);
+	}
+}
+
 int32_t virtio_proxy_pm_resume(uint64_t epoch)
 {
 	uint64_t delta;
@@ -1866,18 +1948,7 @@ int32_t virtio_proxy_pm_resume(uint64_t epoch)
 			}
 			if (virtio_proxy_suspended) {
 				spinlock_obtain(&dev->lock);
-				dev->last_heartbeat_tick = virtio_proxy_pm_rebase_tick(
-					dev->last_heartbeat_tick, delta);
-				dev->first_activity_tick = virtio_proxy_pm_rebase_tick(
-					dev->first_activity_tick, delta);
-				dev->last_activity_tick = virtio_proxy_pm_rebase_tick(
-					dev->last_activity_tick, delta);
-				for (uint16_t queue_id = 0U;
-					queue_id < VIRTIO_MMIO_MAX_QUEUES; queue_id++) {
-					dev->last_notify_tick[queue_id] =
-						virtio_proxy_pm_rebase_tick(
-							dev->last_notify_tick[queue_id], delta);
-				}
+				virtio_proxy_pm_rebase_dev_locked(dev, delta);
 				spinlock_release(&dev->lock);
 			}
 			/* virtio_mmio_pm_resume() owns replay after the proxy lock is released. */
@@ -1891,6 +1962,100 @@ int32_t virtio_proxy_pm_resume(uint64_t epoch)
 		virtio_proxy_suspend_epoch = 0UL;
 		virtio_proxy_suspend_ticks = 0UL;
 		virtio_proxy_suspended = false;
+	}
+
+	return first_error;
+}
+
+int32_t virtio_proxy_pm_suspend_vm(uint16_t vm_id, uint64_t epoch)
+{
+	uint16_t index;
+	uint32_t retry;
+	int32_t status;
+
+	if ((vm_id >= CONFIG_MAX_VM_NUM) || (epoch == 0UL)) {
+		return -EINVAL;
+	}
+	if (virtio_proxy_suspended) {
+		return -EBUSY;
+	}
+	if (virtio_proxy_vm_suspended[vm_id]) {
+		return (virtio_proxy_vm_suspend_epoch[vm_id] == epoch) ? 0 : -EBUSY;
+	}
+	if (virtio_proxy_vm_has_backend_dependents(vm_id)) {
+		return -EBUSY;
+	}
+
+	for (retry = 0U; retry < VIRTIO_PROXY_PM_DRAIN_RETRIES; retry++) {
+		if (virtio_proxy_pm_pending_count_vm(vm_id) == 0U) {
+			break;
+		}
+		udelay(VIRTIO_PROXY_PM_DRAIN_DELAY_US);
+	}
+	if (virtio_proxy_pm_pending_count_vm(vm_id) != 0U) {
+		return -ETIMEDOUT;
+	}
+
+	/*
+	 * Per-VM STR only owns the frontend devices indexed by target vm_id.
+	 * Backends for other running frontends are rejected during preflight so
+	 * this path cannot suspend a backend while another VM still depends on it.
+	 */
+	virtio_proxy_vm_suspend_epoch[vm_id] = epoch;
+	virtio_proxy_vm_suspend_ticks[vm_id] = cpu_ticks();
+	virtio_proxy_vm_suspended[vm_id] = true;
+	for (index = 0U; index < ARM64_VIRTIO_PROXY_MAX; index++) {
+		struct virtio_proxy_dev *dev = &virtio_proxy_devs[vm_id][index];
+
+		if (dev->mmio.vm == NULL) {
+			continue;
+		}
+		status = virtio_mmio_pm_suspend(&dev->mmio, epoch);
+		if (status != 0) {
+			(void)virtio_proxy_pm_resume_vm(vm_id, epoch);
+			return status;
+		}
+	}
+
+	return 0;
+}
+
+int32_t virtio_proxy_pm_resume_vm(uint16_t vm_id, uint64_t epoch)
+{
+	uint64_t delta;
+	uint16_t index;
+	int32_t first_error = 0;
+
+	if ((vm_id >= CONFIG_MAX_VM_NUM) || (epoch == 0UL)) {
+		return -EINVAL;
+	}
+	if (!virtio_proxy_vm_suspended[vm_id]) {
+		return 0;
+	}
+	if (virtio_proxy_vm_suspend_epoch[vm_id] != epoch) {
+		return -EINVAL;
+	}
+
+	delta = cpu_ticks() - virtio_proxy_vm_suspend_ticks[vm_id];
+	for (index = 0U; index < ARM64_VIRTIO_PROXY_MAX; index++) {
+		struct virtio_proxy_dev *dev = &virtio_proxy_devs[vm_id][index];
+		int32_t status;
+
+		if (dev->mmio.vm == NULL) {
+			continue;
+		}
+		spinlock_obtain(&dev->lock);
+		virtio_proxy_pm_rebase_dev_locked(dev, delta);
+		spinlock_release(&dev->lock);
+		status = virtio_mmio_pm_resume(&dev->mmio, epoch);
+		if ((status != 0) && (first_error == 0)) {
+			first_error = status;
+		}
+	}
+	if (first_error == 0) {
+		virtio_proxy_vm_suspend_epoch[vm_id] = 0UL;
+		virtio_proxy_vm_suspend_ticks[vm_id] = 0UL;
+		virtio_proxy_vm_suspended[vm_id] = false;
 	}
 
 	return first_error;

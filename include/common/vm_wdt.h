@@ -87,5 +87,7 @@ void vm_wdt_kick(const struct acrn_vm *vm, uint64_t token);
 int32_t vm_wdt_get_snapshot(uint16_t vm_id, struct vm_wdt_snapshot *snapshot);
 int32_t vm_wdt_pm_suspend(uint64_t epoch);
 int32_t vm_wdt_pm_resume(uint64_t epoch);
+int32_t vm_wdt_pm_suspend_vm(uint16_t vm_id, uint64_t epoch);
+int32_t vm_wdt_pm_resume_vm(uint16_t vm_id, uint64_t epoch);
 
 #endif /* VM_WDT_H */
