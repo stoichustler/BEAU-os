@@ -4,6 +4,8 @@ import re
 import unittest
 from pathlib import Path
 
+from regress import PROMPT, QemuSession
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -39,6 +41,27 @@ def python_function(text: str, signature: str) -> str:
 
 
 class VmStrShellReturnTest(unittest.TestCase):
+    def test_expect_searches_buffered_output_from_requested_offset(self) -> None:
+        class RunningProcess:
+            @staticmethod
+            def poll():
+                return None
+
+        prefix = "output before suspend\n"
+        qemu = QemuSession([], None, timeout=0.01)
+        self.addCleanup(qemu.selector.close)
+        qemu.output = prefix + PROMPT
+        qemu.proc = RunningProcess()
+        qemu.read_some = lambda deadline: None
+
+        matched = qemu.expect(
+            PROMPT,
+            "buffered BEAU prompt",
+            start_offset=len(prefix),
+        )
+
+        self.assertEqual(PROMPT, matched)
+
     def test_console_timer_only_publishes_shell_work(self) -> None:
         console = source("sdk/bsp/console.c")
         callback = function_body(
@@ -147,20 +170,25 @@ class VmStrShellReturnTest(unittest.TestCase):
             source("scripts/regress.py"),
             "def run_str_cycle(qemu, args, cycle):",
         )
-        suspended_prompt = (
-            'qemu.expect(PROMPT, f"{label}: BEAU shell responsive while target suspended")'
+        suspended_prompt = re.compile(
+            r"qemu\.expect\(\s*PROMPT,\s*"
+            r'f"\{label\}: BEAU shell responsive while target suspended",\s*'
+            r"start_offset=start_offset,?\s*\)",
         )
 
-        self.assertIn(suspended_prompt, regression)
+        prompt_match = suspended_prompt.search(regression)
+        self.assertIsNotNone(prompt_match)
+        suspend_index = regression.index('qemu.send(f"pm suspend {vmid}" + ENTER)')
         freeze_index = regression.index("STR_FREEZE_MARKERS")
-        prompt_index = regression.index(suspended_prompt)
+        prompt_index = prompt_match.start()
         sleep_index = regression.index("time.sleep(args.str_suspend_seconds)")
         resume_index = regression.index('qemu.send(f"pm resume {vmid}" + ENTER)')
 
+        self.assertLess(suspend_index, freeze_index)
         self.assertLess(freeze_index, prompt_index)
         self.assertLess(prompt_index, sleep_index)
         self.assertLess(sleep_index, resume_index)
-        self.assertNotIn("qemu.send(ENTER)", regression[freeze_index:prompt_index])
+        self.assertNotIn("qemu.send(ENTER)", regression[suspend_index:prompt_index])
 
 
 if __name__ == "__main__":

@@ -446,9 +446,10 @@ class QemuSession:
                 self.drain_after_fatal()
                 raise RuntimeError(f"fatal QEMU output matched: {pattern}")
 
-    def expect(self, pattern, name, timeout=None, keepalive=None):
+    def expect(self, pattern, name, timeout=None, keepalive=None,
+               start_offset=None):
         print(f"[regress] wait: {name}", flush=True)
-        start_len = len(self.output)
+        start_offset = len(self.output) if start_offset is None else start_offset
         deadline = time.monotonic() + (timeout or self.timeout)
         next_keepalive = time.monotonic() + 2.0
 
@@ -456,9 +457,9 @@ class QemuSession:
             if self.proc.poll() is not None:
                 raise RuntimeError(f"QEMU exited early with status {self.proc.returncode}")
             self.read_some(deadline)
-            if pattern in self.output[start_len:]:
+            if pattern in self.output[start_offset:]:
                 print(f"[pass] {name}", flush=True)
-                return self.output[start_len:]
+                return self.output[start_offset:]
             if keepalive and time.monotonic() >= next_keepalive:
                 self.send(keepalive)
                 next_keepalive = time.monotonic() + 2.0
@@ -887,7 +888,11 @@ def run_str_cycle(qemu, args, cycle):
         f"{label}: BEAU froze target VM",
         start_offset=start_offset,
     )
-    qemu.expect(PROMPT, f"{label}: BEAU shell responsive while target suspended")
+    qemu.expect(
+        PROMPT,
+        f"{label}: BEAU shell responsive while target suspended",
+        start_offset=start_offset,
+    )
 
     time.sleep(args.str_suspend_seconds)
 
