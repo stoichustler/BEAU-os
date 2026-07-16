@@ -142,77 +142,30 @@ int64_t arm64_vpsci_cpu_suspend(struct acrn_vcpu *vcpu, uint64_t power_state,
 int64_t arm64_vpsci_system_suspend(struct acrn_vcpu *vcpu,
 	uint64_t entry_point, uint64_t context_id)
 {
-	struct beau_pm_snapshot snapshot;
-	struct arm64_vm_pm_state *pm;
-	struct acrn_vcpu *target;
-	uint16_t idx;
-	int32_t status;
+	(void)vcpu;
+	(void)entry_point;
+	(void)context_id;
 
-	if ((vcpu == NULL) || (vcpu->vm == NULL)) {
-		return PSCI_RET_INVALID_PARAMS;
-	}
-	if (!is_vcpu_bsp(vcpu)) {
-		return PSCI_RET_DENIED;
-	}
-	if (!vpsci_resume_entry_is_valid(vcpu, entry_point)) {
-		return PSCI_RET_INVALID_ADDRESS;
-	}
-
-	hv_pm_get_snapshot(&snapshot);
-	if ((snapshot.state != PM_PREPARING) || (snapshot.epoch == 0UL) ||
-		((snapshot.required_vm_mask & (1UL << vcpu->vm->vm_id)) == 0UL)) {
-		return PSCI_RET_DENIED;
-	}
-
-	get_vm_lock(vcpu->vm);
-	foreach_vcpu(idx, vcpu->vm, target) {
-		if ((target != vcpu) &&
-			(vcpu_get_state(target) != VCPU_POWERED_OFF) &&
-			(vcpu_get_state(target) != VCPU_INIT)) {
-			put_vm_lock(vcpu->vm);
-			return PSCI_RET_DENIED;
-		}
-	}
-
-	pm = &vcpu->vm->arch_vm.pm;
-	if (pm->valid) {
-		put_vm_lock(vcpu->vm);
-		return PSCI_RET_DENIED;
-	}
-	pm->epoch = snapshot.epoch;
-	pm->resume_entry = entry_point;
-	pm->resume_context = context_id;
-	pm->valid = true;
-
-	status = hv_pm_mark_vm_suspended(vcpu->vm->vm_id, snapshot.epoch,
-		entry_point, context_id);
-	if (status != 0) {
-		(void)memset(pm, 0U, sizeof(*pm));
-	}
-	put_vm_lock(vcpu->vm);
-	if (status != 0) {
-		return PSCI_RET_DENIED;
-	}
-
-	LOG_INF("vm%u:vcpu%u psci system suspend epoch=%lu entry=0x%lx",
-		vcpu->vm->vm_id, vcpu->vcpu_id, snapshot.epoch, entry_point);
-	sleep_thread(&vcpu->thread_obj);
-
-	return PSCI_RET_SUCCESS;
+	/* Host transparent freeze is deliberately not exposed as guest PSCI STR. */
+	return PSCI_RET_NOT_SUPPORTED;
 }
 
 int64_t arm64_vpsci_system_off(struct acrn_vcpu *vcpu)
 {
+	int64_t ret;
+
 	if (vcpu == NULL) {
 		return PSCI_RET_INVALID_PARAMS;
 	}
-
-	LOG_INF("vm%u:vcpu%u psci system off", vcpu->vm->vm_id, vcpu->vcpu_id);
-	if (!poweroff_vcpu(vcpu)) {
+	if (hv_pm_begin_vm_topology_change(vcpu->vm->vm_id) != 0) {
 		return PSCI_RET_DENIED;
 	}
 
-	return PSCI_RET_SUCCESS;
+	LOG_INF("vm%u:vcpu%u psci system off", vcpu->vm->vm_id, vcpu->vcpu_id);
+	ret = poweroff_vcpu(vcpu) ? PSCI_RET_SUCCESS : PSCI_RET_DENIED;
+	hv_pm_end_vm_topology_change(vcpu->vm->vm_id);
+
+	return ret;
 }
 
 int64_t arm64_vpsci_system_reset(struct acrn_vcpu *vcpu)

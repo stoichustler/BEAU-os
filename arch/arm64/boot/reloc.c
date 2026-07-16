@@ -15,8 +15,8 @@ uint64_t arch_get_hv_image_delta(void)
 	uint64_t start;
 
 	asm volatile (
-		"adrp %0, _start\n"
-		"add %0, %0, :lo12:_start\n"
+		"adrp %0, ld_ram_start\n"
+		"add %0, %0, :lo12:ld_ram_start\n"
 		: "=r" (start));
 
 	return start - CONFIG_HV_RAM_START;

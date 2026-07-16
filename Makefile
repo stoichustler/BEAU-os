@@ -75,6 +75,7 @@ endif
 endif
 endef
 KCONFIG_BOOL_VARS := \
+	CONFIG_AARCH64_IMAGE_HEADER \
 	CONFIG_ACPI_PARSE_ENABLED \
 	CONFIG_ARM64_GICV5 \
 	CONFIG_AUTOSTART_VM \
@@ -155,6 +156,7 @@ libdir ?= /usr/lib
 sysconfdir ?= /etc
 
 LD_IN_TOOL = scripts/genld.sh
+ARM64_LINKER_DEPS := $(ARCH_LDSCRIPT_IN) $(LD_IN_TOOL) $(HV_CONFIG_MK)
 BASH = $(shell which bash)
 
 ARFLAGS += crs
@@ -572,11 +574,11 @@ $(HV_OBJDIR)/$(HV_DEBUG_FILE).bin: $(HV_OBJDIR)/$(HV_DEBUG_FILE).out
 	$(Q)$(OBJCOPY) -O binary $< $@
 	$(Q)rm -f $(UPDATE_RESULT)
 
-$(HV_OBJDIR)/$(HV_FILE).out: $(MODULES)
+$(HV_OBJDIR)/$(HV_FILE).out: $(MODULES) $(ARM64_LINKER_DEPS)
 	$(Q)echo "cc                 $(notdir $@)"
 	$(Q)${BASH} ${LD_IN_TOOL} $(ARCH_LDSCRIPT_IN) $(ARCH_LDSCRIPT) ${HV_CONFIG_MK}
 	$(Q)$(CC) -Wl,-Map=$(HV_OBJDIR)/$(HV_FILE).map -o $@ $(LDFLAGS) $(ARCH_LDFLAGS) -T$(ARCH_LDSCRIPT) \
-		-Wl,--start-group $^ -Wl,--end-group
+		-Wl,--start-group $(MODULES) -Wl,--end-group
 
 $(HV_OBJDIR)/symtab.c: $(HV_OBJDIR)/$(HV_FILE).out scripts/gen_symtab.py
 	$(Q)echo "symtab             $(notdir $@)"
@@ -586,7 +588,7 @@ $(HV_OBJDIR)/symtab.o: $(HV_OBJDIR)/symtab.c $(HEADERS)
 	$(Q)echo "cc                 $(notdir $@)"
 	$(Q)$(CC) $(patsubst %, -I%, $(INCLUDE_PATH)) -I. -c $(CFLAGS) $(ARCH_CFLAGS) $< -o $@ -MMD -MT $@
 
-$(HV_OBJDIR)/$(HV_DEBUG_FILE).out: $(MODULES) $(HV_OBJDIR)/symtab.o
+$(HV_OBJDIR)/$(HV_DEBUG_FILE).out: $(MODULES) $(HV_OBJDIR)/symtab.o $(ARM64_LINKER_DEPS)
 	$(Q)echo "cc                 $(notdir $@)"
 	$(Q)${BASH} ${LD_IN_TOOL} $(ARCH_LDSCRIPT_IN) $(ARCH_LDSCRIPT) ${HV_CONFIG_MK}
 	$(Q)$(CC) -Wl,-Map=$(HV_OBJDIR)/$(HV_DEBUG_FILE).map -o $@ $(LDFLAGS) $(ARCH_LDFLAGS) -T$(ARCH_LDSCRIPT) \

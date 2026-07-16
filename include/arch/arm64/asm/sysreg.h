@@ -8,6 +8,8 @@
 #define ARM64_SYSREG_H
 
 #include <types.h>
+#include <asm/instruction.h>
+#include <asm/lib/barrier.h>
 
 /*
  * ARM64 system-register quick reference for BEAU:
@@ -141,11 +143,50 @@
 
 #ifndef ASSEMBLER
 
+/* [20260716] ARM64 C system-register ownership
+ *
+ * named register helper -> generic access primitive -> MRS/MSR
+ *                                      |
+ *                                      +--> optional trailing ISB
+ *
+ * Key rules:
+ *   - subsystem code uses named helpers when one exists;
+ *   - generic primitives evaluate write values once and block compiler memory
+ *     motion across register accesses;
+ *   - synchronization is explicit: ordinary writes do not silently gain ISB;
+ *   - this header is the only C implementation point for MRS and MSR.
+ */
+#define ARM64_SYSREG_STRINGIFY_INNER(token) #token
+#define ARM64_SYSREG_STRINGIFY(token) ARM64_SYSREG_STRINGIFY_INNER(token)
+
+#define arm64_sysreg_read(reg) ({ \
+	uint64_t _arm64_sysreg_value; \
+	asm volatile ("mrs %0, " ARM64_SYSREG_STRINGIFY(reg) \
+		: "=r" (_arm64_sysreg_value) : : "memory"); \
+	_arm64_sysreg_value; \
+})
+
+#define arm64_sysreg_write(reg, value) do { \
+	uint64_t _arm64_sysreg_value = (uint64_t)(value); \
+	asm volatile ("msr " ARM64_SYSREG_STRINGIFY(reg) ", %0" \
+		: : "r" (_arm64_sysreg_value) : "memory"); \
+} while (0)
+
+#define arm64_sysreg_write_imm(reg, value) do { \
+	asm volatile ("msr " ARM64_SYSREG_STRINGIFY(reg) ", %0" \
+		: : "i" (value) : "memory"); \
+} while (0)
+
+#define arm64_sysreg_write_sync(reg, value) do { \
+	arm64_sysreg_write(reg, value); \
+	arm64_isb(); \
+} while (0)
+
 static inline uint64_t read_mpidr_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, mpidr_el1" : "=r" (val));
+	val = arm64_sysreg_read(mpidr_el1);
 	return val;
 }
 
@@ -153,7 +194,7 @@ static inline uint64_t read_currentel(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, CurrentEL" : "=r" (val));
+	val = arm64_sysreg_read(CurrentEL);
 	return val;
 }
 
@@ -161,7 +202,7 @@ static inline uint64_t read_cntfrq_el0(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, cntfrq_el0" : "=r" (val));
+	val = arm64_sysreg_read(cntfrq_el0);
 	return val;
 }
 
@@ -169,7 +210,7 @@ static inline uint64_t read_cntpct_el0(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, cntpct_el0" : "=r" (val));
+	val = arm64_sysreg_read(cntpct_el0);
 	return val;
 }
 
@@ -177,51 +218,51 @@ static inline uint64_t read_cntvct_el0(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, cntvct_el0" : "=r" (val));
+	val = arm64_sysreg_read(cntvct_el0);
 	return val;
 }
 
 static inline void write_cntv_tval_el0(uint32_t val)
 {
-	asm volatile ("msr cntv_tval_el0, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(cntv_tval_el0, val);
 }
 
 static inline uint64_t read_cntv_cval_el0(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, cntv_cval_el0" : "=r" (val));
+	val = arm64_sysreg_read(cntv_cval_el0);
 	return val;
 }
 
 static inline void write_cntv_cval_el0(uint64_t val)
 {
-	asm volatile ("msr cntv_cval_el0, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(cntv_cval_el0, val);
 }
 
 static inline uint32_t read_cntv_ctl_el0(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, cntv_ctl_el0" : "=r" (val));
+	val = arm64_sysreg_read(cntv_ctl_el0);
 	return (uint32_t)val;
 }
 
 static inline void write_cntv_ctl_el0(uint32_t val)
 {
-	asm volatile ("msr cntv_ctl_el0, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(cntv_ctl_el0, val);
 }
 
 static inline void write_cnthctl_el2(uint64_t val)
 {
-	asm volatile ("msr cnthctl_el2, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(cnthctl_el2, val);
 }
 
 static inline uint64_t read_cntvoff_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, cntvoff_el2" : "=r" (val));
+	val = arm64_sysreg_read(cntvoff_el2);
 	return val;
 }
 
@@ -229,7 +270,7 @@ static inline uint64_t read_cnthctl_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, cnthctl_el2" : "=r" (val));
+	val = arm64_sysreg_read(cnthctl_el2);
 	return val;
 }
 
@@ -237,120 +278,120 @@ static inline uint64_t read_cnthp_cval_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, cnthp_cval_el2" : "=r" (val));
+	val = arm64_sysreg_read(cnthp_cval_el2);
 	return val;
 }
 
 static inline void write_cnthp_cval_el2(uint64_t val)
 {
-	asm volatile ("msr cnthp_cval_el2, %0" : : "r" (val) : "memory");
+	arm64_sysreg_write(cnthp_cval_el2, val);
 }
 
 static inline uint32_t read_cnthp_ctl_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, cnthp_ctl_el2" : "=r" (val));
+	val = arm64_sysreg_read(cnthp_ctl_el2);
 	return (uint32_t)val;
 }
 
 static inline void write_cnthp_ctl_el2(uint32_t val)
 {
-	asm volatile ("msr cnthp_ctl_el2, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(cnthp_ctl_el2, val);
 }
 
 static inline void write_cntp_tval_el0(uint32_t val)
 {
-	asm volatile ("msr cntp_tval_el0, %0" : : "r" (val));
+	arm64_sysreg_write(cntp_tval_el0, val);
 }
 
 static inline uint64_t read_cntp_cval_el0(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, cntp_cval_el0" : "=r" (val));
+	val = arm64_sysreg_read(cntp_cval_el0);
 	return val;
 }
 
 static inline void write_cntp_cval_el0(uint64_t val)
 {
-	asm volatile ("msr cntp_cval_el0, %0" : : "r" (val));
+	arm64_sysreg_write(cntp_cval_el0, val);
 }
 
 static inline uint32_t read_cntp_ctl_el0(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, cntp_ctl_el0" : "=r" (val));
+	val = arm64_sysreg_read(cntp_ctl_el0);
 	return (uint32_t)val;
 }
 
 static inline void write_cntp_ctl_el0(uint32_t val)
 {
-	asm volatile ("msr cntp_ctl_el0, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(cntp_ctl_el0, val);
 }
 
 static inline void write_icc_sgi1r_el1(uint64_t val)
 {
-	asm volatile ("msr s3_0_c12_c11_5, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(s3_0_c12_c11_5, val);
 }
 
 static inline uint64_t read_icc_iar1_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_0_c12_c12_0" : "=r" (val));
+	val = arm64_sysreg_read(s3_0_c12_c12_0);
 	return val;
 }
 
 static inline void write_icc_eoir1_el1(uint64_t val)
 {
-	asm volatile ("msr s3_0_c12_c12_1, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(s3_0_c12_c12_1, val);
 }
 
 static inline void write_icc_pmr_el1(uint64_t val)
 {
-	asm volatile ("msr s3_0_c4_c6_0, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(s3_0_c4_c6_0, val);
 }
 
 static inline void write_icc_bpr1_el1(uint64_t val)
 {
-	asm volatile ("msr s3_0_c12_c12_3, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(s3_0_c12_c12_3, val);
 }
 
 static inline void write_icc_ctlr_el1(uint64_t val)
 {
-	asm volatile ("msr s3_0_c12_c12_4, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(s3_0_c12_c12_4, val);
 }
 
 static inline void write_icc_igrpen1_el1(uint64_t val)
 {
-	asm volatile ("msr s3_0_c12_c12_7, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(s3_0_c12_c12_7, val);
 }
 
 static inline uint64_t read_icc_igrpen1_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_0_c12_c12_7" : "=r" (val));
+	val = arm64_sysreg_read(s3_0_c12_c12_7);
 	return val;
 }
 
 static inline void write_icc_sre_el2(uint64_t val)
 {
-	asm volatile ("msr s3_4_c12_c9_5, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(s3_4_c12_c9_5, val);
 }
 
 static inline void write_icc_sre_el1(uint64_t val)
 {
-	asm volatile ("msr s3_0_c12_c12_5, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(s3_0_c12_c12_5, val);
 }
 
 static inline uint64_t read_icc_sre_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_0_c12_c12_5" : "=r" (val));
+	val = arm64_sysreg_read(s3_0_c12_c12_5);
 	return val;
 }
 
@@ -358,7 +399,7 @@ static inline uint64_t read_icc_pmr_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_0_c4_c6_0" : "=r" (val));
+	val = arm64_sysreg_read(s3_0_c4_c6_0);
 	return val;
 }
 
@@ -366,7 +407,7 @@ static inline uint64_t read_icc_ctlr_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_0_c12_c12_4" : "=r" (val));
+	val = arm64_sysreg_read(s3_0_c12_c12_4);
 	return val;
 }
 
@@ -374,7 +415,7 @@ static inline uint64_t read_ich_vtr_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_4_c12_c11_1" : "=r" (val));
+	val = arm64_sysreg_read(s3_4_c12_c11_1);
 	return val;
 }
 
@@ -382,33 +423,33 @@ static inline uint64_t read_ich_hcr_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_4_c12_c11_0" : "=r" (val));
+	val = arm64_sysreg_read(s3_4_c12_c11_0);
 	return val;
 }
 
 static inline void write_ich_hcr_el2(uint64_t val)
 {
-	asm volatile ("msr s3_4_c12_c11_0, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(s3_4_c12_c11_0, val);
 }
 
 static inline uint64_t read_ich_vmcr_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_4_c12_c11_7" : "=r" (val));
+	val = arm64_sysreg_read(s3_4_c12_c11_7);
 	return val;
 }
 
 static inline void write_ich_vmcr_el2(uint64_t val)
 {
-	asm volatile ("msr s3_4_c12_c11_7, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(s3_4_c12_c11_7, val);
 }
 
 static inline uint64_t read_ich_eisr_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_4_c12_c11_3" : "=r" (val));
+	val = arm64_sysreg_read(s3_4_c12_c11_3);
 	return val;
 }
 
@@ -416,7 +457,7 @@ static inline uint64_t read_ich_misr_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_4_c12_c11_2" : "=r" (val));
+	val = arm64_sysreg_read(s3_4_c12_c11_2);
 	return val;
 }
 
@@ -424,7 +465,7 @@ static inline uint64_t read_ich_elrsr_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_4_c12_c11_5" : "=r" (val));
+	val = arm64_sysreg_read(s3_4_c12_c11_5);
 	return val;
 }
 
@@ -434,28 +475,28 @@ static inline uint64_t read_ich_lr_el2(uint8_t idx)
 
 	switch (idx) {
 	case 0U:
-		asm volatile ("mrs %0, s3_4_c12_c12_0" : "=r" (val));
+		val = arm64_sysreg_read(s3_4_c12_c12_0);
 		break;
 	case 1U:
-		asm volatile ("mrs %0, s3_4_c12_c12_1" : "=r" (val));
+		val = arm64_sysreg_read(s3_4_c12_c12_1);
 		break;
 	case 2U:
-		asm volatile ("mrs %0, s3_4_c12_c12_2" : "=r" (val));
+		val = arm64_sysreg_read(s3_4_c12_c12_2);
 		break;
 	case 3U:
-		asm volatile ("mrs %0, s3_4_c12_c12_3" : "=r" (val));
+		val = arm64_sysreg_read(s3_4_c12_c12_3);
 		break;
 	case 4U:
-		asm volatile ("mrs %0, s3_4_c12_c12_4" : "=r" (val));
+		val = arm64_sysreg_read(s3_4_c12_c12_4);
 		break;
 	case 5U:
-		asm volatile ("mrs %0, s3_4_c12_c12_5" : "=r" (val));
+		val = arm64_sysreg_read(s3_4_c12_c12_5);
 		break;
 	case 6U:
-		asm volatile ("mrs %0, s3_4_c12_c12_6" : "=r" (val));
+		val = arm64_sysreg_read(s3_4_c12_c12_6);
 		break;
 	case 7U:
-		asm volatile ("mrs %0, s3_4_c12_c12_7" : "=r" (val));
+		val = arm64_sysreg_read(s3_4_c12_c12_7);
 		break;
 	default:
 		break;
@@ -468,28 +509,28 @@ static inline void write_ich_lr_el2(uint8_t idx, uint64_t val)
 {
 	switch (idx) {
 	case 0U:
-		asm volatile ("msr s3_4_c12_c12_0, %0; isb" : : "r" (val) : "memory");
+		arm64_sysreg_write_sync(s3_4_c12_c12_0, val);
 		break;
 	case 1U:
-		asm volatile ("msr s3_4_c12_c12_1, %0; isb" : : "r" (val) : "memory");
+		arm64_sysreg_write_sync(s3_4_c12_c12_1, val);
 		break;
 	case 2U:
-		asm volatile ("msr s3_4_c12_c12_2, %0; isb" : : "r" (val) : "memory");
+		arm64_sysreg_write_sync(s3_4_c12_c12_2, val);
 		break;
 	case 3U:
-		asm volatile ("msr s3_4_c12_c12_3, %0; isb" : : "r" (val) : "memory");
+		arm64_sysreg_write_sync(s3_4_c12_c12_3, val);
 		break;
 	case 4U:
-		asm volatile ("msr s3_4_c12_c12_4, %0; isb" : : "r" (val) : "memory");
+		arm64_sysreg_write_sync(s3_4_c12_c12_4, val);
 		break;
 	case 5U:
-		asm volatile ("msr s3_4_c12_c12_5, %0; isb" : : "r" (val) : "memory");
+		arm64_sysreg_write_sync(s3_4_c12_c12_5, val);
 		break;
 	case 6U:
-		asm volatile ("msr s3_4_c12_c12_6, %0; isb" : : "r" (val) : "memory");
+		arm64_sysreg_write_sync(s3_4_c12_c12_6, val);
 		break;
 	case 7U:
-		asm volatile ("msr s3_4_c12_c12_7, %0; isb" : : "r" (val) : "memory");
+		arm64_sysreg_write_sync(s3_4_c12_c12_7, val);
 		break;
 	default:
 		break;
@@ -500,51 +541,51 @@ static inline uint64_t read_ich_ap0r0_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_4_c12_c8_0" : "=r" (val));
+	val = arm64_sysreg_read(s3_4_c12_c8_0);
 	return val;
 }
 
 static inline void write_ich_ap0r0_el2(uint64_t val)
 {
-	asm volatile ("msr s3_4_c12_c8_0, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(s3_4_c12_c8_0, val);
 }
 
 static inline uint64_t read_ich_ap1r0_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_4_c12_c9_0" : "=r" (val));
+	val = arm64_sysreg_read(s3_4_c12_c9_0);
 	return val;
 }
 
 static inline void write_ich_ap1r0_el2(uint64_t val)
 {
-	asm volatile ("msr s3_4_c12_c9_0, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(s3_4_c12_c9_0, val);
 }
 
 static inline void write_hcr_el2(uint64_t val)
 {
-	asm volatile ("msr hcr_el2, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(hcr_el2, val);
 }
 
 static inline uint64_t read_cptr_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, cptr_el2" : "=r" (val));
+	val = arm64_sysreg_read(cptr_el2);
 	return val;
 }
 
 static inline void write_cptr_el2(uint64_t val)
 {
-	asm volatile ("msr cptr_el2, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(cptr_el2, val);
 }
 
 static inline uint64_t read_id_aa64pfr0_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, id_aa64pfr0_el1" : "=r" (val));
+	val = arm64_sysreg_read(id_aa64pfr0_el1);
 	return val;
 }
 
@@ -552,7 +593,7 @@ static inline uint64_t read_ctr_el0(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, ctr_el0" : "=r" (val));
+	val = arm64_sysreg_read(ctr_el0);
 	return val;
 }
 
@@ -560,20 +601,20 @@ static inline uint64_t read_clidr_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, clidr_el1" : "=r" (val));
+	val = arm64_sysreg_read(clidr_el1);
 	return val;
 }
 
 static inline void write_csselr_el1(uint64_t val)
 {
-	asm volatile ("msr csselr_el1, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(csselr_el1, val);
 }
 
 static inline uint64_t read_ccsidr_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, ccsidr_el1" : "=r" (val));
+	val = arm64_sysreg_read(ccsidr_el1);
 	return val;
 }
 
@@ -581,7 +622,7 @@ static inline uint64_t read_id_aa64zfr0_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_0_c0_c4_4" : "=r" (val));
+	val = arm64_sysreg_read(s3_0_c0_c4_4);
 	return val;
 }
 
@@ -589,357 +630,360 @@ static inline uint64_t read_zcr_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_0_c1_c2_0" : "=r" (val));
+	val = arm64_sysreg_read(s3_0_c1_c2_0);
 	return val;
 }
 
 static inline void write_zcr_el1(uint64_t val)
 {
-	asm volatile ("msr s3_0_c1_c2_0, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(s3_0_c1_c2_0, val);
 }
 
 static inline uint64_t read_zcr_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_4_c1_c2_0" : "=r" (val));
+	val = arm64_sysreg_read(s3_4_c1_c2_0);
 	return val;
 }
 
 static inline void write_zcr_el2(uint64_t val)
 {
-	asm volatile ("msr s3_4_c1_c2_0, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(s3_4_c1_c2_0, val);
 }
 
 static inline uint64_t read_fpsr(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, fpsr" : "=r" (val));
+	val = arm64_sysreg_read(fpsr);
 	return val;
 }
 
 static inline void write_fpsr(uint64_t val)
 {
-	asm volatile ("msr fpsr, %0" : : "r" (val) : "memory");
+	arm64_sysreg_write(fpsr, val);
 }
 
 static inline uint64_t read_fpcr(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, fpcr" : "=r" (val));
+	val = arm64_sysreg_read(fpcr);
 	return val;
 }
 
 static inline void write_fpcr(uint64_t val)
 {
-	asm volatile ("msr fpcr, %0" : : "r" (val) : "memory");
+	arm64_sysreg_write(fpcr, val);
 }
 
 static inline void write_vtcr_el2(uint64_t val)
 {
-	asm volatile ("msr vtcr_el2, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(vtcr_el2, val);
 }
 
 static inline void write_vttbr_el2(uint64_t val)
 {
-	asm volatile ("msr vttbr_el2, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(vttbr_el2, val);
 }
 
 static inline void write_vmpidr_el2(uint64_t val)
 {
-	asm volatile ("msr vmpidr_el2, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(vmpidr_el2, val);
 }
 
 static inline uint64_t read_sctlr_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, sctlr_el1" : "=r" (val));
+	val = arm64_sysreg_read(sctlr_el1);
 	return val;
 }
 
 static inline void write_sctlr_el1(uint64_t val)
 {
-	asm volatile ("msr sctlr_el1, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(sctlr_el1, val);
 }
 
 static inline uint64_t read_cntkctl_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, cntkctl_el1" : "=r" (val));
+	val = arm64_sysreg_read(cntkctl_el1);
 	return val;
 }
 
 static inline void write_cntkctl_el1(uint64_t val)
 {
-	asm volatile ("msr cntkctl_el1, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(cntkctl_el1, val);
 }
 
 static inline uint64_t read_ttbr0_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, ttbr0_el1" : "=r" (val));
+	val = arm64_sysreg_read(ttbr0_el1);
 	return val;
 }
 
 static inline void write_ttbr0_el1(uint64_t val)
 {
-	asm volatile ("msr ttbr0_el1, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(ttbr0_el1, val);
 }
 
 static inline uint64_t read_ttbr1_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, ttbr1_el1" : "=r" (val));
+	val = arm64_sysreg_read(ttbr1_el1);
 	return val;
 }
 
 static inline void write_ttbr1_el1(uint64_t val)
 {
-	asm volatile ("msr ttbr1_el1, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(ttbr1_el1, val);
 }
 
 static inline uint64_t read_tcr_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, tcr_el1" : "=r" (val));
+	val = arm64_sysreg_read(tcr_el1);
 	return val;
 }
 
 static inline void write_tcr_el1(uint64_t val)
 {
-	asm volatile ("msr tcr_el1, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(tcr_el1, val);
 }
 
 static inline uint64_t read_mair_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, mair_el1" : "=r" (val));
+	val = arm64_sysreg_read(mair_el1);
 	return val;
 }
 
 static inline void write_mair_el1(uint64_t val)
 {
-	asm volatile ("msr mair_el1, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(mair_el1, val);
 }
 
 static inline uint64_t read_amair_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, amair_el1" : "=r" (val));
+	val = arm64_sysreg_read(amair_el1);
 	return val;
 }
 
 static inline void write_amair_el1(uint64_t val)
 {
-	asm volatile ("msr amair_el1, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(amair_el1, val);
 }
 
 static inline uint64_t read_vbar_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, vbar_el1" : "=r" (val));
+	val = arm64_sysreg_read(vbar_el1);
 	return val;
 }
 
 static inline void write_vbar_el1(uint64_t val)
 {
-	asm volatile ("msr vbar_el1, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(vbar_el1, val);
 }
 
 static inline uint64_t read_contextidr_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, contextidr_el1" : "=r" (val));
+	val = arm64_sysreg_read(contextidr_el1);
 	return val;
 }
 
 static inline void write_contextidr_el1(uint64_t val)
 {
-	asm volatile ("msr contextidr_el1, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(contextidr_el1, val);
 }
 
 static inline uint64_t read_cpacr_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, cpacr_el1" : "=r" (val));
+	val = arm64_sysreg_read(cpacr_el1);
 	return val;
 }
 
 static inline void write_cpacr_el1(uint64_t val)
 {
-	asm volatile ("msr cpacr_el1, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(cpacr_el1, val);
 }
 
 static inline uint64_t read_tpidr_el0(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, tpidr_el0" : "=r" (val));
+	val = arm64_sysreg_read(tpidr_el0);
 	return val;
 }
 
 static inline void write_tpidr_el0(uint64_t val)
 {
-	asm volatile ("msr tpidr_el0, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(tpidr_el0, val);
 }
 
 static inline uint64_t read_tpidrro_el0(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, tpidrro_el0" : "=r" (val));
+	val = arm64_sysreg_read(tpidrro_el0);
 	return val;
 }
 
 static inline void write_tpidrro_el0(uint64_t val)
 {
-	asm volatile ("msr tpidrro_el0, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(tpidrro_el0, val);
 }
 
 static inline uint64_t read_tpidr_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, tpidr_el1" : "=r" (val));
+	val = arm64_sysreg_read(tpidr_el1);
 	return val;
 }
 
 static inline void write_tpidr_el1(uint64_t val)
 {
-	asm volatile ("msr tpidr_el1, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(tpidr_el1, val);
 }
 
 static inline uint64_t read_sp_el0(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, sp_el0" : "=r" (val));
+	val = arm64_sysreg_read(sp_el0);
 	return val;
 }
 
 static inline void write_sp_el0(uint64_t val)
 {
-	asm volatile ("msr sp_el0, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(sp_el0, val);
 }
 
 static inline uint64_t read_elr_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, elr_el1" : "=r" (val));
+	val = arm64_sysreg_read(elr_el1);
 	return val;
 }
 
 static inline void write_elr_el1(uint64_t val)
 {
-	asm volatile ("msr elr_el1, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(elr_el1, val);
 }
 
 static inline uint64_t read_spsr_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, spsr_el1" : "=r" (val));
+	val = arm64_sysreg_read(spsr_el1);
 	return val;
 }
 
 static inline void write_spsr_el1(uint64_t val)
 {
-	asm volatile ("msr spsr_el1, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(spsr_el1, val);
 }
 
 static inline uint64_t read_esr_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, esr_el1" : "=r" (val));
+	val = arm64_sysreg_read(esr_el1);
 	return val;
 }
 
 static inline void write_esr_el1(uint64_t val)
 {
-	asm volatile ("msr esr_el1, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(esr_el1, val);
 }
 
 static inline uint64_t read_far_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, far_el1" : "=r" (val));
+	val = arm64_sysreg_read(far_el1);
 	return val;
 }
 
 static inline void write_far_el1(uint64_t val)
 {
-	asm volatile ("msr far_el1, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(far_el1, val);
 }
 
 static inline uint64_t read_afsr0_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, afsr0_el1" : "=r" (val));
+	val = arm64_sysreg_read(afsr0_el1);
 	return val;
 }
 
 static inline void write_afsr0_el1(uint64_t val)
 {
-	asm volatile ("msr afsr0_el1, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(afsr0_el1, val);
 }
 
 static inline uint64_t read_afsr1_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, afsr1_el1" : "=r" (val));
+	val = arm64_sysreg_read(afsr1_el1);
 	return val;
 }
 
 static inline void write_afsr1_el1(uint64_t val)
 {
-	asm volatile ("msr afsr1_el1, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(afsr1_el1, val);
 }
 
 static inline uint64_t read_par_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("dmb sy; mrs %0, par_el1; dmb sy" : "=r" (val) : : "memory");
+	arm64_dmb_sy();
+	val = arm64_sysreg_read(par_el1);
+	arm64_dmb_sy();
 	return val;
 }
 
 static inline void write_par_el1(uint64_t val)
 {
-	asm volatile ("msr par_el1, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(par_el1, val);
 }
 
 static inline void arm64_at_s1e1r(uint64_t va)
 {
-	asm volatile ("at s1e1r, %0; isb" : : "r" (va) : "memory");
+	arm64_at(s1e1r, va);
+	arm64_isb();
 }
 
 static inline void write_vbar_el2(uint64_t val)
 {
-	asm volatile ("msr vbar_el2, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(vbar_el2, val);
 }
 
 static inline uint64_t read_elr_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, elr_el2" : "=r" (val));
+	val = arm64_sysreg_read(elr_el2);
 	return val;
 }
 
@@ -947,7 +991,7 @@ static inline uint64_t read_spsr_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, spsr_el2" : "=r" (val));
+	val = arm64_sysreg_read(spsr_el2);
 	return val;
 }
 
@@ -955,7 +999,7 @@ static inline uint64_t read_esr_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, esr_el2" : "=r" (val));
+	val = arm64_sysreg_read(esr_el2);
 	return val;
 }
 
@@ -963,7 +1007,7 @@ static inline uint64_t read_far_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, far_el2" : "=r" (val));
+	val = arm64_sysreg_read(far_el2);
 	return val;
 }
 
@@ -971,7 +1015,7 @@ static inline uint64_t read_hpfar_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, hpfar_el2" : "=r" (val));
+	val = arm64_sysreg_read(hpfar_el2);
 	return val;
 }
 
@@ -979,7 +1023,7 @@ static inline uint64_t read_hcr_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, hcr_el2" : "=r" (val));
+	val = arm64_sysreg_read(hcr_el2);
 	return val;
 }
 
@@ -987,46 +1031,52 @@ static inline uint64_t read_vttbr_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, vttbr_el2" : "=r" (val));
+	val = arm64_sysreg_read(vttbr_el2);
 	return val;
 }
 
 static inline void write_ttbr0_el2(uint64_t val)
 {
-	asm volatile ("msr ttbr0_el2, %0" : : "r" (val) : "memory");
+	arm64_sysreg_write(ttbr0_el2, val);
 }
 
 static inline void write_tcr_el2(uint64_t val)
 {
-	asm volatile ("msr tcr_el2, %0" : : "r" (val) : "memory");
+	arm64_sysreg_write(tcr_el2, val);
 }
 
 static inline void write_mair_el2(uint64_t val)
 {
-	asm volatile ("msr mair_el2, %0" : : "r" (val) : "memory");
+	arm64_sysreg_write(mair_el2, val);
 }
 
 static inline uint64_t read_sctlr_el2(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, sctlr_el2" : "=r" (val));
+	val = arm64_sysreg_read(sctlr_el2);
 	return val;
 }
 
 static inline void write_sctlr_el2(uint64_t val)
 {
-	asm volatile ("msr sctlr_el2, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(sctlr_el2, val);
 }
 
 static inline void flush_tlb_local(void)
 {
-	asm volatile ("dsb ishst; tlbi alle2; dsb ish; isb" ::: "memory");
+	arm64_dsb_ishst();
+	arm64_tlbi(alle2);
+	arm64_dsb_ish();
+	arm64_isb();
 }
 
 static inline void flush_stage2_tlb_local(void)
 {
-	asm volatile ("dsb ishst; tlbi vmalls12e1; dsb ish; isb" ::: "memory");
+	arm64_dsb_ishst();
+	arm64_tlbi(vmalls12e1);
+	arm64_dsb_ish();
+	arm64_isb();
 }
 
 #endif /* ASSEMBLER */

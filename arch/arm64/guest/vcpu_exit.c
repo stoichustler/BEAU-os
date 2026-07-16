@@ -15,6 +15,7 @@
 #include <bsp/io_req.h>
 #include <guest_memory.h>
 #include <acrn_common.h>
+#include <hv_pm.h>
 #include <softirq.h>
 #include <ticks.h>
 #include <vm_config.h>
@@ -730,6 +731,11 @@ static int64_t handle_psci_cpu_on(struct acrn_vcpu *vcpu)
 	struct acrn_vcpu *target = psci_target_vcpu(vcpu->vm, vcpu->arch.regs.x1);
 	int64_t ret = PSCI_RET_INVALID_PARAMS;
 
+	if (hv_pm_begin_vm_topology_change(vcpu->vm->vm_id) != 0) {
+		ret = PSCI_RET_DENIED;
+		record_psci_call(vcpu, (uint32_t)vcpu->arch.regs.x0, target, ret);
+		return ret;
+	}
 	if (target != NULL) {
 		get_vm_lock(vcpu->vm);
 		if (is_vcpu_running(target)) {
@@ -744,6 +750,7 @@ static int64_t handle_psci_cpu_on(struct acrn_vcpu *vcpu)
 		}
 		put_vm_lock(vcpu->vm);
 	}
+	hv_pm_end_vm_topology_change(vcpu->vm->vm_id);
 	record_psci_call(vcpu, (uint32_t)vcpu->arch.regs.x0, target, ret);
 
 	return ret;
@@ -760,12 +767,10 @@ static int64_t handle_psci_features(uint32_t fn)
 	case PSCI_0_2_FN_MIGRATE_INFO_TYPE:
 	case PSCI_0_2_FN_SYSTEM_OFF:
 	case PSCI_0_2_FN_SYSTEM_RESET:
-	case PSCI_1_0_FN_SYSTEM_SUSPEND:
 	case PSCI_1_0_FN_PSCI_FEATURES:
 	case PSCI_0_2_FN64_CPU_SUSPEND:
 	case PSCI_0_2_FN64_CPU_ON:
 	case PSCI_0_2_FN64_AFFINITY_INFO:
-	case PSCI_1_0_FN64_SYSTEM_SUSPEND:
 		return PSCI_RET_SUCCESS;
 	default:
 		return PSCI_RET_NOT_SUPPORTED;
@@ -815,7 +820,12 @@ static int32_t handle_psci64(struct acrn_vcpu *vcpu, bool advance_elr)
 		ret = handle_psci_cpu_on(vcpu);
 		break;
 	case PSCI_0_2_FN_CPU_OFF:
-		ret = poweroff_vcpu(vcpu) ? PSCI_RET_SUCCESS : PSCI_RET_DENIED;
+		if (hv_pm_begin_vm_topology_change(vcpu->vm->vm_id) != 0) {
+			ret = PSCI_RET_DENIED;
+		} else {
+			ret = poweroff_vcpu(vcpu) ? PSCI_RET_SUCCESS : PSCI_RET_DENIED;
+			hv_pm_end_vm_topology_change(vcpu->vm->vm_id);
+		}
 		break;
 	case PSCI_0_2_FN_AFFINITY_INFO:
 	case PSCI_0_2_FN64_AFFINITY_INFO:

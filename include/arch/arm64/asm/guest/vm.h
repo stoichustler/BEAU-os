@@ -19,13 +19,6 @@
 #define UART_PIO_IDX0		INVALID_PIO_IDX
 #define EMUL_PIO_IDX_MAX	1U
 
-struct arm64_vm_pm_state {
-	uint64_t epoch;
-	uint64_t resume_entry;
-	uint64_t resume_context;
-	bool valid;
-};
-
 struct vm_arch {
 	int64_t time_delta;
 	/*
@@ -34,7 +27,6 @@ struct vm_arch {
 	 * zero means inject immediately.
 	 */
 	uint64_t intr_inject_delay_delta;
-	struct arm64_vm_pm_state pm;
 	struct arm64_vgicv3 vgic;
 };
 

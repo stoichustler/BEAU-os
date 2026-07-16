@@ -10,9 +10,9 @@
 #include <irq.h>
 #include <io.h>
 #include <logmsg.h>
-#include <pgtable.h>
 #include <bsp/pm.h>
 #include <asm/hv_pm.h>
+#include <asm/instruction.h>
 #include <asm/irq.h>
 
 #define QEMU_PM_UART_BASE	0x09000000UL
@@ -26,18 +26,9 @@
 #define QEMU_PM_PL011_INT_RT	(1U << 6U)
 #define QEMU_PM_PL011_INT_ALL	0x7ffU
 
-enum qemu_pm_mode {
-	QEMU_PM_SIMULATED = HV_PM_PLATFORM_SIMULATED,
-	QEMU_PM_STRICT = HV_PM_PLATFORM_STRICT,
-};
-
 static uint32_t qemu_pm_saved_imsc;
 static uint32_t qemu_pm_acrn_irq = IRQ_INVALID;
-
-static inline void asm_wfi(void)
-{
-	asm volatile ("wfi" : : : "memory");
-}
+static bool qemu_pm_uart_wake_armed;
 
 static inline void *qemu_pm_uart_reg(uint32_t offset)
 {
@@ -59,6 +50,9 @@ static int32_t qemu_pm_arm_uart_wake(void)
 {
 	int32_t status;
 
+	if (qemu_pm_uart_wake_armed) {
+		return -EBUSY;
+	}
 	qemu_pm_acrn_irq = arm64_domain_get_acrn_irq(ARM64_IRQD_GIC,
 		QEMU_PM_UART_IRQ);
 	if (qemu_pm_acrn_irq == IRQ_INVALID) {
@@ -74,12 +68,16 @@ static int32_t qemu_pm_arm_uart_wake(void)
 		qemu_pm_uart_reg(QEMU_PM_PL011_ICR));
 	mmio_write32(qemu_pm_saved_imsc | QEMU_PM_PL011_INT_RX |
 		QEMU_PM_PL011_INT_RT, qemu_pm_uart_reg(QEMU_PM_PL011_IMSC));
+	qemu_pm_uart_wake_armed = true;
 
 	return 0;
 }
 
 static void qemu_pm_disarm_uart_wake(void)
 {
+	if (!qemu_pm_uart_wake_armed) {
+		return;
+	}
 	mmio_write32(qemu_pm_saved_imsc,
 		qemu_pm_uart_reg(QEMU_PM_PL011_IMSC));
 	mmio_write32(QEMU_PM_PL011_INT_ALL,
@@ -88,62 +86,52 @@ static void qemu_pm_disarm_uart_wake(void)
 		free_irq(qemu_pm_acrn_irq);
 		qemu_pm_acrn_irq = IRQ_INVALID;
 	}
+	qemu_pm_uart_wake_armed = false;
 }
 
-static int32_t qemu_pm_simulated_wait(uint64_t epoch)
+static int32_t qemu_pm_prepare(__unused uint64_t epoch,
+	struct arm64_host_pm_context *context)
+{
+	return ((context != NULL) && context->valid) ?
+		qemu_pm_arm_uart_wake() : -EINVAL;
+}
+
+static int32_t qemu_pm_simulated_wait(uint64_t epoch,
+	struct arm64_host_pm_context *context)
 {
 	struct beau_pm_snapshot snapshot;
-	int32_t status = qemu_pm_arm_uart_wake();
 
-	if (status != 0) {
-		return status;
+	if ((context == NULL) || !context->valid || (context->epoch != epoch)) {
+		return -EINVAL;
 	}
 	LOG_INF("PM_SUSPENDED epoch:%lu", epoch);
 	do {
-		asm_wfi();
+		arm64_wfi();
 		hv_pm_get_snapshot(&snapshot);
 	} while ((snapshot.epoch == epoch) && (snapshot.state == PM_SUSPENDED) &&
 		(snapshot.wake_bitmap == 0UL));
-	qemu_pm_disarm_uart_wake();
 
 	return ((snapshot.epoch == epoch) && (snapshot.wake_bitmap != 0UL)) ?
 		0 : -EIO;
 }
 
-static int32_t qemu_pm_strict_enter(uint64_t epoch,
-	struct arm64_host_pm_context *context)
+static int32_t qemu_pm_release(__unused uint64_t epoch,
+	__unused struct arm64_host_pm_context *context)
 {
-	int64_t ret;
-
-	/* arm64_suspend_enter saves callee state before issuing psci_system_suspend. */
-	LOG_INF("PM_SUSPENDED epoch:%lu", epoch);
-	ret = arm64_suspend_enter(&context->callee,
-		hva2hpa(arm64_suspend_resume), hva2hpa(context));
-
-	if (ret == 0L) {
-		return 0;
-	}
-	LOG_ERR("QEMU PM strict PSCI SYSTEM_SUSPEND failed: %ld", ret);
-	return (ret == -1L) ? -ENOSYS : -EIO;
+	qemu_pm_disarm_uart_wake();
+	return 0;
 }
 
-int32_t qemu_platform_pm_enter(uint64_t epoch,
-	struct arm64_host_pm_context *context)
+static const struct arm64_platform_pm_ops qemu_pm_ops = {
+	.name = "qemu-simulated",
+	.capabilities = ARM64_PLATFORM_PM_CAP_SIMULATED,
+	.prepare = qemu_pm_prepare,
+	.enter = qemu_pm_simulated_wait,
+	.wake = qemu_pm_release,
+	.abort = qemu_pm_release,
+};
+
+const struct arm64_platform_pm_ops *arm64_platform_pm_get_ops(void)
 {
-	struct beau_pm_snapshot snapshot;
-
-	hv_pm_get_snapshot(&snapshot);
-	if ((context == NULL) || !context->valid || (context->epoch != epoch) ||
-		(snapshot.epoch != epoch)) {
-		return -EINVAL;
-	}
-
-	switch ((enum qemu_pm_mode)snapshot.platform_mode) {
-	case QEMU_PM_SIMULATED:
-		return qemu_pm_simulated_wait(epoch);
-	case QEMU_PM_STRICT:
-		return qemu_pm_strict_enter(epoch, context);
-	default:
-		return -ENOSYS;
-	}
+	return &qemu_pm_ops;
 }

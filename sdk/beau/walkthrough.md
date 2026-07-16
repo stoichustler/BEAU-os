@@ -36,7 +36,7 @@ Read the code in this order when learning the ARM64 path:
 
 ```text
 Makefile / arch/arm64/Makefile
-  -> arch/arm64/boot/cpu_entry.S
+  -> arch/arm64/boot/entry.S
   -> arch/arm64/init.c
   -> arch/arm64/mmu.c
   -> core/schedule.c / core/timer.c / core/softirq.c
@@ -78,7 +78,7 @@ hardware validation is manual.
 
 ## EL2 Host Boot
 
-The first ARM64 source file is `arch/arm64/boot/cpu_entry.S`. It does only the
+The first ARM64 source file is `arch/arm64/boot/entry.S`. It does only the
 minimum architectural setup needed before C code can run:
 
 ```text

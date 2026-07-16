@@ -17,11 +17,9 @@
 enum beau_pm_system_state {
 	PM_RUNNING = 0U,
 	PM_PREPARING,
-	PM_GUESTS_QUIESCED,
 	PM_FREEZING_HOST,
 	PM_SUSPENDED,
 	PM_RESTORING_HOST,
-	PM_RESUMING_GUESTS,
 	PM_ABORTING,
 	PM_FAILED,
 };
@@ -30,10 +28,7 @@ enum beau_pm_system_state {
 
 enum beau_vm_pm_state {
 	VM_PM_RUNNING = 0U,
-	VM_PM_PREPARE_SENT,
-	VM_PM_SUSPEND_PENDING,
-	VM_PM_SUSPENDED,
-	VM_PM_RESUMING,
+	VM_PM_FROZEN,
 	VM_PM_FAILED,
 };
 
@@ -54,13 +49,16 @@ struct beau_pm_policy {
 
 struct beau_vm_pm_record {
 	uint64_t epoch;
-	uint64_t resume_entry;
-	uint64_t context_id;
+	uint64_t gated_vcpu_mask;
+	uint64_t active_vcpu_mask;
+	uint64_t frozen_vcpu_mask;
+	uint64_t wake_owned_vcpu_mask;
 	int32_t status;
 	uint32_t state;
+	uint32_t prior_vm_state;
 	uint16_t vmid;
 	uint8_t required;
-	uint8_t reserved;
+	uint8_t reserved[5U];
 };
 
 struct beau_pm_phase_error {
@@ -75,11 +73,10 @@ struct beau_pm_snapshot {
 	uint64_t epoch;
 	uint64_t last_epoch;
 	uint64_t required_vm_mask;
-	uint64_t ready_vm_mask;
-	uint64_t resume_pending_vm_mask;
 	uint64_t completed_hook_mask;
 	uint64_t wake_reason;
 	uint64_t wake_bitmap;
+	uint64_t topology_change_vm_mask;
 	uint64_t phase_start_ticks[HV_PM_PHASE_COUNT];
 	uint64_t phase_duration_ticks[HV_PM_PHASE_COUNT];
 	struct beau_vm_pm_record vm[CONFIG_MAX_VM_NUM];
@@ -122,10 +119,8 @@ void hv_pm_get_snapshot(struct beau_pm_snapshot *snapshot);
 bool hv_pm_io_is_gated(void);
 int32_t hv_pm_set_policy(const struct beau_pm_policy *policy);
 int32_t hv_pm_record_wake(uint32_t wake_source, uint16_t source_index);
-int32_t hv_pm_mark_vm_suspended(uint16_t vmid, uint64_t epoch,
-	uint64_t resume_entry, uint64_t resume_context);
-int32_t hv_pm_resume_vm(uint16_t vmid, uint64_t epoch);
-int32_t hv_pm_guest_resume_complete(uint16_t vmid, uint64_t epoch);
+int32_t hv_pm_begin_vm_topology_change(uint16_t vmid);
+void hv_pm_end_vm_topology_change(uint16_t vmid);
 void make_system_suspend_request(uint16_t pcpu_id);
 bool has_system_suspend_request(uint16_t pcpu_id);
 bool need_system_suspend(uint16_t pcpu_id);
@@ -136,7 +131,9 @@ int32_t hv_pm_run_prepare(uint64_t epoch);
 int32_t hv_pm_run_suspend(uint64_t epoch);
 int32_t hv_pm_run_resume(uint64_t epoch);
 int32_t hv_pm_run_abort(uint64_t epoch);
-int32_t platform_pm_enter(uint64_t epoch);
+uint32_t platform_pm_capabilities(void);
+int32_t platform_pm_preflight(uint8_t platform_mode);
+int32_t platform_pm_enter(uint64_t epoch, bool *host_restored);
 
 void arch_shutdown_host(void);
 void arch_reset_host(bool warm);

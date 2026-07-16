@@ -569,10 +569,7 @@ void arm64_gicv3_init(uint16_t pcpu_id)
 
 static uint64_t gic_pm_read_bpr1(void)
 {
-	uint64_t value;
-
-	asm volatile ("mrs %0, icc_bpr1_el1" : "=r" (value));
-	return value;
+	return arm64_sysreg_read(icc_bpr1_el1);
 }
 
 int32_t arm64_gicv3_pm_suspend_cpu(uint64_t epoch)

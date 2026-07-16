@@ -463,9 +463,8 @@ struct arm64_vcpu_debug_info {
 
 struct acrn_vcpu_arch {
 	/*
-	 * This must be the first member of acrn_vcpu_arch so low-level assembly
-	 * can treat struct acrn_vcpu_arch as a struct cpu_regs when building the
-	 * guest-entry frame.
+	 * Low-level guest-entry assembly locates this durable register image through
+	 * the compiler-generated ACRN_VCPU_ARCH_OFFSET_REGS constant.
 	 */
 	struct cpu_regs regs;
 

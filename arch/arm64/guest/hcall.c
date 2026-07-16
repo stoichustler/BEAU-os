@@ -16,7 +16,6 @@
 #include <logmsg.h>
 #include <trace.h>
 #include <virtio_proxy.h>
-#include <bsp/pm.h>
 #include <asm/guest/vipc.h>
 
 /* [20260630] ARM64 hcall dispatch principle:
@@ -120,13 +119,6 @@ static int32_t hcall_arm64_ipc(struct acrn_vcpu *vcpu,
 	return arm64_vipc_hcall(vcpu, param1);
 }
 
-static int32_t hcall_arm64_pm_control(struct acrn_vcpu *vcpu,
-	__unused struct acrn_vm *target_vm, uint64_t param1,
-	__unused uint64_t param2)
-{
-	return bsp_pm_control_hcall(vcpu, param1);
-}
-
 static int32_t hcall_arm64_not_supported(__unused struct acrn_vcpu *vcpu,
 	__unused struct acrn_vm *target_vm, __unused uint64_t param1,
 	__unused uint64_t param2)
@@ -181,10 +173,6 @@ static const struct hcall_dispatch_entry arm64_hc_dispatch_table[] = {
 	},
 	[HC_IDX(HC_IPC)] = {
 		.handler = hcall_arm64_ipc,
-		.permission_flags = GUEST_FLAG_STATIC_VM,
-	},
-	[HC_IDX(HC_PM_CONTROL)] = {
-		.handler = hcall_arm64_pm_control,
 		.permission_flags = GUEST_FLAG_STATIC_VM,
 	},
 };

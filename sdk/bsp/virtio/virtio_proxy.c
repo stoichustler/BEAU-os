@@ -626,10 +626,6 @@ static void virtio_proxy_notify_queue(struct virtio_mmio_dev *mmio,
 	if ((dev == NULL) || (queue_id >= mmio->queue_num)) {
 		return;
 	}
-	if (hv_pm_io_is_gated()) {
-		return;
-	}
-
 	spinlock_obtain(&dev->lock);
 	now = cpu_ticks();
 	dev->notify_count++;
@@ -1810,6 +1806,8 @@ int32_t virtio_proxy_pm_suspend(uint64_t epoch)
 		udelay(VIRTIO_PROXY_PM_DRAIN_DELAY_US);
 	}
 	if (virtio_proxy_pm_pending_count() != 0U) {
+		/* The transaction gate may already have deferred frontend kicks. */
+		(void)virtio_proxy_pm_resume(epoch);
 		return -ETIMEDOUT;
 	}
 
@@ -1851,14 +1849,12 @@ int32_t virtio_proxy_pm_resume(uint64_t epoch)
 	if (epoch == 0UL) {
 		return -EINVAL;
 	}
-	if (!virtio_proxy_suspended) {
-		return 0;
-	}
-	if (virtio_proxy_suspend_epoch != epoch) {
+	if (virtio_proxy_suspended && (virtio_proxy_suspend_epoch != epoch)) {
 		return -EINVAL;
 	}
 
-	delta = cpu_ticks() - virtio_proxy_suspend_ticks;
+	delta = virtio_proxy_suspended ?
+		(cpu_ticks() - virtio_proxy_suspend_ticks) : 0UL;
 	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
 		for (index = 0U; index < ARM64_VIRTIO_PROXY_MAX; index++) {
 			struct virtio_proxy_dev *dev =
@@ -1868,21 +1864,24 @@ int32_t virtio_proxy_pm_resume(uint64_t epoch)
 			if (dev->mmio.vm == NULL) {
 				continue;
 			}
-			spinlock_obtain(&dev->lock);
-			dev->last_heartbeat_tick = virtio_proxy_pm_rebase_tick(
-				dev->last_heartbeat_tick, delta);
-			dev->first_activity_tick = virtio_proxy_pm_rebase_tick(
-				dev->first_activity_tick, delta);
-			dev->last_activity_tick = virtio_proxy_pm_rebase_tick(
-				dev->last_activity_tick, delta);
-			for (uint16_t queue_id = 0U;
-				queue_id < VIRTIO_MMIO_MAX_QUEUES; queue_id++) {
-				dev->last_notify_tick[queue_id] =
-					virtio_proxy_pm_rebase_tick(
-						dev->last_notify_tick[queue_id], delta);
+			if (virtio_proxy_suspended) {
+				spinlock_obtain(&dev->lock);
+				dev->last_heartbeat_tick = virtio_proxy_pm_rebase_tick(
+					dev->last_heartbeat_tick, delta);
+				dev->first_activity_tick = virtio_proxy_pm_rebase_tick(
+					dev->first_activity_tick, delta);
+				dev->last_activity_tick = virtio_proxy_pm_rebase_tick(
+					dev->last_activity_tick, delta);
+				for (uint16_t queue_id = 0U;
+					queue_id < VIRTIO_MMIO_MAX_QUEUES; queue_id++) {
+					dev->last_notify_tick[queue_id] =
+						virtio_proxy_pm_rebase_tick(
+							dev->last_notify_tick[queue_id], delta);
+				}
+				spinlock_release(&dev->lock);
 			}
+			/* virtio_mmio_pm_resume() owns replay after the proxy lock is released. */
 			status = virtio_mmio_pm_resume(&dev->mmio, epoch);
-			spinlock_release(&dev->lock);
 			if ((status != 0) && (first_error == 0)) {
 				first_error = status;
 			}

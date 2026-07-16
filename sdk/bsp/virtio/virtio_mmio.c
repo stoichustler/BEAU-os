@@ -6,6 +6,7 @@
 
 #include <types.h>
 #include <errno.h>
+#include <bits.h>
 #include <hv_pm.h>
 #include <vm.h>
 #include <guest_memory.h>
@@ -121,6 +122,7 @@ static void virtio_mmio_reset_state(struct virtio_mmio_dev *dev)
 	dev->queue_sel = 0U;
 	dev->interrupt_status = 0U;
 	dev->status = 0U;
+	dev->deferred_queue_mask = 0UL;
 	dev->irq_asserted = false;
 	if (asserted) {
 		arch_trigger_level_intr(dev->vm, dev->irq, false);
@@ -437,8 +439,13 @@ static void virtio_mmio_write_reg(struct virtio_mmio_dev *dev,
 		}
 		break;
 	case VIRTIO_MMIO_QUEUE_NOTIFY:
-		if (!dev->pm_suspended && !hv_pm_io_is_gated() &&
-			(dev->ops != NULL) && (dev->ops->notify_queue != NULL)) {
+		if ((value >= dev->queue_num) ||
+			(dev->ops == NULL) || (dev->ops->notify_queue == NULL)) {
+			break;
+		}
+		if (dev->pm_suspended || hv_pm_io_is_gated()) {
+			bitmap_set(value, &dev->deferred_queue_mask);
+		} else {
 			dev->ops->notify_queue(dev, (uint16_t)value);
 		}
 		break;
@@ -509,19 +516,44 @@ int32_t virtio_mmio_pm_suspend(struct virtio_mmio_dev *dev, uint64_t epoch)
 	return 0;
 }
 
+/* [20260716] Virtio queue-notify retention
+ *
+ * Guest MMIO write          BEAU PM gate             proxy/backend
+ *       |                         |                         |
+ *       +-- QueueNotify --------->| set queue bit           |
+ *       |                         |                         |
+ *       |                         | restore device state    |
+ *       |                         +-- test-and-clear bit -->| one replay
+ *
+ * Key rules:
+ *   - the MMIO device owns a bounded, per-queue deferred-notify bitmap;
+ *   - repeated kicks may coalesce because a virtqueue kick only announces
+ *     that more descriptors may be available;
+ *   - resume clears each bit before invoking the backend, so a new concurrent
+ *     kick remains observable instead of being erased after callback return;
+ *   - proxy callers must not hold their device lock while replay enters the
+ *     notify callback, which acquires that same lock.
+ */
 int32_t virtio_mmio_pm_resume(struct virtio_mmio_dev *dev, uint64_t epoch)
 {
+	uint16_t queue_id;
+
 	if ((dev == NULL) || (epoch == 0UL)) {
 		return -EINVAL;
 	}
-	if (!dev->pm_suspended) {
-		return 0;
-	}
-	if (dev->pm_epoch != epoch) {
+	if (dev->pm_suspended && (dev->pm_epoch != epoch)) {
 		return -EINVAL;
 	}
 
-	dev->pm_epoch = 0UL;
-	dev->pm_suspended = false;
+	if (dev->pm_suspended) {
+		dev->pm_epoch = 0UL;
+		dev->pm_suspended = false;
+	}
+	for (queue_id = 0U; queue_id < dev->queue_num; queue_id++) {
+		if (bitmap_test_and_clear(queue_id, &dev->deferred_queue_mask) &&
+			(dev->ops != NULL) && (dev->ops->notify_queue != NULL)) {
+			dev->ops->notify_queue(dev, queue_id);
+		}
+	}
 	return 0;
 }

@@ -507,15 +507,14 @@
 
 #define	gic_icc_write(reg, val)					\
 do {								\
-	WRITE_SPECIALREG(icc_ ##reg ##_el1, val);		\
-	isb();							\
+	arm64_sysreg_write_sync(icc_ ##reg ##_el1, val);		\
 } while (0)
 
 #define	gic_icc_read(reg)					\
 ({								\
 	uint64_t val;						\
 								\
-	val = READ_SPECIALREG(icc_ ##reg ##_el1);		\
+	val = arm64_sysreg_read(icc_ ##reg ##_el1);		\
 	(val);							\
 })
 

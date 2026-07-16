@@ -29,6 +29,8 @@
 #define ENOTTY		25
 /** Indicates the operation is obsoleted. */
 #define ENOSYS		38
+/** Indicates that an operation is not supported by this platform. */
+#define ENOTSUP		95
 /** Indicates no data is currently available. */
 #define ENODATA		61
 /** Indicates that timeout occurs. */

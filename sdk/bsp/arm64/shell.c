@@ -3611,13 +3611,13 @@ static void shell_pm_print_snapshot(const struct beau_pm_snapshot *snapshot,
 		snapshot->initiator_vmid, snapshot->controller_vmid,
 		shell_yes_no(snapshot->enabled != 0U),
 		shell_pm_mode_to_str(snapshot->platform_mode));
-	shell_item_line("masks:policy:0x%016lx required:0x%016lx ready:0x%016lx resume:0x%016lx hooks:0x%016lx",
+	shell_item_line("masks:policy:0x%016lx required:0x%016lx topology:0x%016lx hooks:0x%016lx",
 		snapshot->policy_required_vm_mask, snapshot->required_vm_mask,
-		snapshot->ready_vm_mask, snapshot->resume_pending_vm_mask,
-		snapshot->completed_hook_mask);
+		snapshot->topology_change_vm_mask, snapshot->completed_hook_mask);
 	shell_item_line("timeouts:prepare:%ums resume:%ums io-gated:%s",
 		snapshot->prepare_timeout_ms, snapshot->resume_timeout_ms,
 		shell_yes_no(snapshot->io_gated != 0U));
+	shell_item_line("platform-caps:0x%08x", platform_pm_capabilities());
 	shell_item_line("wake:reason:%lu bitmap:0x%016lx",
 		snapshot->wake_reason, snapshot->wake_bitmap);
 	shell_item_line("last:epoch:%lu phase:%s status:%d error:epoch:%lu phase:%s vm:%hu status:%d",
@@ -3643,9 +3643,12 @@ static void shell_pm_print_snapshot(const struct beau_pm_snapshot *snapshot,
 			const struct beau_vm_pm_record *record = &snapshot->vm[vmid];
 
 			if ((snapshot->policy_required_vm_mask & (1UL << vmid)) != 0UL) {
-				shell_item_line("vm%hu epoch:%lu state:%u required:%u status:%d entry:0x%016lx context:0x%016lx",
-					vmid, record->epoch, record->state, record->required,
-					record->status, record->resume_entry, record->context_id);
+				shell_item_line("vm%hu epoch:%lu state:%u prior:%u required:%u status:%d gated:0x%016lx active:0x%016lx frozen:0x%016lx wake-owned:0x%016lx",
+					vmid, record->epoch, record->state,
+					record->prior_vm_state, record->required, record->status,
+					record->gated_vcpu_mask, record->active_vcpu_mask,
+					record->frozen_vcpu_mask,
+					record->wake_owned_vcpu_mask);
 			}
 		}
 	}

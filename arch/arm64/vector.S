@@ -6,6 +6,7 @@
 
 #include <asm/trap.h>
 #include <asm/cpu.h>
+#include <generated/offsets.h>
 
 /*
  * 2026-06-30 ARM64 exception-vector principle:
@@ -30,9 +31,7 @@
  *        |                           |
  *        v                           v
  *   ERET to EL2 thread          ERET to EL1 guest
- */
-
-/*
+ *
  * ARM64 exception entry saves a full cpu_regs frame on the current EL2 stack.
  * Host exceptions return through dispatch_trap, while guest exceptions enter
  * vcpu_exit.c and then branch to vcpu_exit_return so the modified guest frame

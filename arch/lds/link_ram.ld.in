@@ -19,10 +19,11 @@ EXTERN(_start)
  *   CONFIG_HV_RAM_START
  *        |
  *        v
- *   .text.entry -> .text -> .rodata -> .rela -> .data -> .boot_stack -> .bss
+ *   optional image header -> .text.entry -> .text -> .rodata -> .rela
+ *                         -> .data -> .boot_stack -> .bss
  *
  * Keep the section order and exported symbols synchronized with
- * arch/arm64/boot/cpu_entry.S, arch/arm64/boot/reloc.c, and ld_sym.h.
+ * arch/arm64/boot/entry.S, arch/arm64/boot/reloc.c, and ld_sym.h.
  */
 SECTIONS
 {
@@ -40,12 +41,14 @@ SECTIONS
 	ld_ram_start = .;
 
 	/*
-	 * Keep the reset entry first so the CPU starts in code that can mask
-	 * exceptions, select SP_EL2, install VBAR_EL2, clear BSS, and create the
-	 * first stack before calling C code.
+	 * Keep the optional U-Boot Image header before the raw reset entry. When
+	 * disabled the input section is absent and .text.entry remains at offset 0.
 	 */
 	.text : {
 		_text_start = .;
+		ld_image_header_start = .;
+		KEEP(*(.image_header))
+		ld_image_header_end = .;
 		KEEP(*(.text.entry))
 		*(.text)
 		*(.text.*)
@@ -97,12 +100,16 @@ SECTIONS
 		_data_end = .;
 	}
 
+	/* objcopy ends the raw binary here; later sections are zero-filled RAM. */
+	ld_image_end = .;
+	ld_image_size = ld_image_end - ld_ram_start;
+
 	. = ALIGN(0x1000);
 
 	/*
 	 * The BSP uses this temporary full-descending stack only long enough to
 	 * enter C and build the per-pCPU stack model. _boot_stack_end is the
-	 * initial SP_EL2 value written by cpu_entry.S.
+	 * initial SP_EL2 value written by entry.S.
 	 */
 	.boot_stack : {
 		_boot_stack_start = .;
@@ -131,4 +138,11 @@ SECTIONS
 
 	/* End of the linked RAM footprint, rounded up for page-table mappings. */
 	ld_ram_end = .;
+
+	ASSERT((ld_image_header_start == ld_ram_start) &&
+		(((ld_image_header_end - ld_image_header_start) == 0) ||
+		 ((ld_image_header_end - ld_image_header_start) == 64)),
+		"AArch64 Image header must be absent or 64 bytes at offset zero")
+	ASSERT(_start == ld_image_header_end,
+		"EL2 entry must immediately follow the optional AArch64 Image header")
 }

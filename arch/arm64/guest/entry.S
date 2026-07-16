@@ -6,6 +6,7 @@
 
 #include <asm/cpu.h>
 #include <asm/trap.h>
+#include <generated/offsets.h>
 
 #define VCPU_RUN_STACK_SIZE	CPU_REGS_OFFSET_LAST
 
@@ -64,12 +65,12 @@ arm64_run_vcpu:
 	 */
 	sub	sp, sp, #VCPU_RUN_STACK_SIZE
 	/*
-	 * x0 points at struct acrn_vcpu_arch.  Its first member is struct cpu_regs,
-	 * so assembly can treat x0 as the source register image without knowing the
-	 * rest of the C structure.  x17 names the temporary stack frame consumed by
+	 * x0 points at struct acrn_vcpu_arch.  Resolve its register image through a
+	 * compiler-generated member offset so structure growth cannot silently move
+	 * the source consumed here.  x17 names the temporary stack frame consumed by
 	 * vcpu_exit_return.
 	 */
-	mov	x16, x0
+	add	x16, x0, #ACRN_VCPU_ARCH_OFFSET_REGS
 	mov	x17, sp
 	/*
 	 * Copy the durable guest register image pairwise into the stack frame.

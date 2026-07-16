@@ -20,6 +20,7 @@ extern char		_bss_start;
 extern char		_bss_end;
 
 extern char		ld_ram_start;
+extern char		ld_image_end;
 extern char		ld_ram_end;
 
 #endif /* ARM64_LD_SYM_H */

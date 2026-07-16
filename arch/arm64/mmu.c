@@ -308,12 +308,14 @@ void flush_tlb_range(__unused uint64_t addr, __unused uint64_t size)
 
 void flush_invalidate_all_cache(void)
 {
-	asm volatile ("dsb sy; isb" ::: "memory");
+	arm64_dsb_sy();
+	arm64_isb();
 }
 
 void flush_cacheline(const volatile void *p)
 {
-	asm volatile ("dc civac, %0; dsb ish" : : "r" (p) : "memory");
+	arm64_dc(civac, p);
+	arm64_dsb_ish();
 }
 
 void flush_cache_range(const volatile void *p, uint64_t size)

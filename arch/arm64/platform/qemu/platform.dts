@@ -34,7 +34,6 @@
 			required-vms = <0 1 2 3>;
 			prepare-timeout-ms = <5000>;
 			resume-timeout-ms = <5000>;
-			event-virq = <60>;
 			wakeup-irqs = <33>;
 			qemu-mode = "simulated";
 		};
@@ -434,11 +433,7 @@
 			load-order = "service";
 			beau,static-mem = <0x0 0x42000000 0x0 0x06000000>;
 			direct-map;
-			/*
-			 * Zephyr runs uniprocessor because it has no runtime CPU hotplug.
-			 * Keep its never-started vcpu1 mapped into the CBS pool to preserve
-			 * the QEMU scheduler topology; VCPU_INIT is an offline PSCI state.
-			 */
+			/* Zephyr SMP boots vcpu1 through PSCI CPU_ON onto the shared pool. */
 			cpu-affinity = <0 4>;
 			guest-flags = "static", "no-fw";
 			beau,sve = "disabled";

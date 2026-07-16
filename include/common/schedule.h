@@ -129,6 +129,8 @@ struct thread_object {
 	 * inside IRQ/vCPU locks; schedulers that do not implement .prioritize ignore it.
 	 */
 	volatile bool priority_pending;
+	uint64_t freeze_epoch;
+	bool deferred_wake;
 	/*
 	 * VM identity is scheduler metadata, not ownership. It lets CBS make a
 	 * bounded co-scheduling preference without depending on VM/vCPU internals.
@@ -277,6 +279,11 @@ void run_thread(struct thread_object *obj);
 void sleep_thread(struct thread_object *obj);
 void sleep_thread_sync(struct thread_object *obj);
 void wake_thread(struct thread_object *obj);
+bool freeze_thread(struct thread_object *obj, uint64_t epoch,
+	bool *wake_owned);
+bool is_thread_frozen(struct thread_object *obj, uint64_t epoch);
+bool thaw_thread(struct thread_object *obj, uint64_t epoch,
+	bool wake_owned);
 /*
  * Request best-effort scheduler-specific priority treatment. This always raises
  * NEED_RESCHEDULE; only schedulers with .prioritize attach extra ordering state.

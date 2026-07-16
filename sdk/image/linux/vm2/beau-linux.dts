@@ -23,14 +23,6 @@
 		migrate = <0xc4000005>;
 	};
 
-	beau-pm {
-		compatible = "beau,pm";
-		interrupts = <0 28 4>;
-		beau,abi-version = <1>;
-		beau,hcall-id = <0x80000081>;
-		status = "okay";
-	};
-
 	cpus {
 		#address-cells = <2>;
 		#size-cells = <0>;

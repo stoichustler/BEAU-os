@@ -5,6 +5,7 @@
  */
 
 #include <asm/cpu.h>
+#include <generated/offsets.h>
 
 	.text
 	.align 4

@@ -63,7 +63,7 @@ static inline uint64_t read_id_aa64pfr1_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_0_c0_c4_1" : "=r" (val));
+	val = arm64_sysreg_read(s3_0_c0_c4_1);
 	return val;
 }
 
@@ -71,7 +71,7 @@ static inline uint64_t read_id_aa64dfr0_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_0_c0_c5_0" : "=r" (val));
+	val = arm64_sysreg_read(s3_0_c0_c5_0);
 	return val;
 }
 
@@ -79,7 +79,7 @@ static inline uint64_t read_id_aa64dfr1_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_0_c0_c5_1" : "=r" (val));
+	val = arm64_sysreg_read(s3_0_c0_c5_1);
 	return val;
 }
 
@@ -87,7 +87,7 @@ static inline uint64_t read_id_aa64isar0_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_0_c0_c6_0" : "=r" (val));
+	val = arm64_sysreg_read(s3_0_c0_c6_0);
 	return val;
 }
 
@@ -95,7 +95,7 @@ static inline uint64_t read_id_aa64isar1_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_0_c0_c6_1" : "=r" (val));
+	val = arm64_sysreg_read(s3_0_c0_c6_1);
 	return val;
 }
 
@@ -103,7 +103,7 @@ static inline uint64_t read_id_aa64mmfr0_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_0_c0_c7_0" : "=r" (val));
+	val = arm64_sysreg_read(s3_0_c0_c7_0);
 	return val;
 }
 
@@ -111,7 +111,7 @@ static inline uint64_t read_id_aa64mmfr1_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_0_c0_c7_1" : "=r" (val));
+	val = arm64_sysreg_read(s3_0_c0_c7_1);
 	return val;
 }
 
@@ -119,7 +119,7 @@ static inline uint64_t read_id_aa64mmfr2_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_0_c0_c7_2" : "=r" (val));
+	val = arm64_sysreg_read(s3_0_c0_c7_2);
 	return val;
 }
 

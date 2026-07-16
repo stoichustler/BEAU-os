@@ -668,10 +668,15 @@ static int32_t restart_vm_with_mode(struct acrn_vm *vm, bool reload_image)
 	if (vm == NULL) {
 		return -EINVAL;
 	}
+	ret = hv_pm_begin_vm_topology_change(vm->vm_id);
+	if (ret != 0) {
+		return ret;
+	}
 
 	get_vm_lock(vm);
 	ret = restart_vm_locked(vm, reload_image);
 	put_vm_lock(vm);
+	hv_pm_end_vm_topology_change(vm->vm_id);
 
 	return ret;
 }
@@ -694,6 +699,10 @@ int32_t make_reset_vm_request(uint16_t pcpu_id, uint16_t vm_id)
 	if ((pcpu_id >= MAX_PCPU_NUM) || (vm_id >= CONFIG_MAX_VM_NUM)) {
 		return ret;
 	}
+	ret = hv_pm_begin_vm_topology_change(vm_id);
+	if (ret != 0) {
+		return ret;
+	}
 
 	vm = get_vm_from_vmid(vm_id);
 	if ((vm != NULL) && !is_poweroff_vm(vm) && !is_service_vm(vm)) {
@@ -713,6 +722,9 @@ int32_t make_reset_vm_request(uint16_t pcpu_id, uint16_t vm_id)
 			arch_smp_call_kick_pcpu(pcpu_id);
 		}
 		ret = 0;
+	}
+	if (ret != 0) {
+		hv_pm_end_vm_topology_change(vm_id);
 	}
 
 	return ret;
@@ -735,6 +747,7 @@ void reset_vm_from_idle(uint16_t pcpu_id)
 		(void)restart_vm_locked(vm, true);
 		put_vm_lock(vm);
 		bitmap_clear_non_atomic(vm_id, vms);
+		hv_pm_end_vm_topology_change(vm_id);
 	}
 }
 

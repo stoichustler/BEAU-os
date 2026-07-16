@@ -447,6 +447,8 @@ void init_thread_data(struct thread_object *obj, struct sched_params *params)
 	 */
 	set_thread_status(obj, THREAD_STS_BLOCKED);
 	obj->priority_pending = false;
+	obj->freeze_epoch = 0UL;
+	obj->deferred_wake = false;
 	obj->latency.state_since = cpu_ticks();
 	register_thread_object(obj);
 	release_schedule_lock(obj->pcpu_id, rflag);
@@ -719,13 +721,12 @@ void schedule(void)
 	}
 }
 
-void sleep_thread(struct thread_object *obj)
+static bool sleep_thread_locked(struct thread_object *obj)
 {
 	uint16_t pcpu_id = obj->pcpu_id;
 	struct acrn_scheduler *scheduler = get_scheduler(pcpu_id);
-	uint64_t rflag;
+	bool wake_owned = !is_blocked(obj) && !obj->be_blocking;
 
-	obtain_schedule_lock(pcpu_id, &rflag);
 	if (scheduler->sleep != NULL) {
 		scheduler->sleep(obj);
 	}
@@ -736,6 +737,17 @@ void sleep_thread(struct thread_object *obj)
 		sched_mark_blocked(obj, cpu_ticks());
 		set_thread_status(obj, THREAD_STS_BLOCKED);
 	}
+
+	return wake_owned;
+}
+
+void sleep_thread(struct thread_object *obj)
+{
+	uint16_t pcpu_id = obj->pcpu_id;
+	uint64_t rflag;
+
+	obtain_schedule_lock(pcpu_id, &rflag);
+	(void)sleep_thread_locked(obj);
 	release_schedule_lock(pcpu_id, rflag);
 }
 
@@ -747,13 +759,11 @@ void sleep_thread_sync(struct thread_object *obj)
 	}
 }
 
-void wake_thread(struct thread_object *obj)
+static void wake_thread_locked(struct thread_object *obj)
 {
 	uint16_t pcpu_id = obj->pcpu_id;
 	struct acrn_scheduler *scheduler;
-	uint64_t rflag;
 
-	obtain_schedule_lock(pcpu_id, &rflag);
 	if (is_blocked(obj) || obj->be_blocking) {
 		scheduler = get_scheduler(pcpu_id);
 		if (scheduler->wake != NULL) {
@@ -766,7 +776,111 @@ void wake_thread(struct thread_object *obj)
 		}
 		obj->be_blocking = false;
 	}
+}
+
+void wake_thread(struct thread_object *obj)
+{
+	uint16_t pcpu_id = obj->pcpu_id;
+	uint64_t rflag;
+
+	obtain_schedule_lock(pcpu_id, &rflag);
+	if (obj->freeze_epoch != 0UL) {
+		obj->deferred_wake = true;
+	} else {
+		wake_thread_locked(obj);
+	}
 	release_schedule_lock(pcpu_id, rflag);
+}
+
+/* [20260716] Transparent freeze scheduler gate
+ *
+ * Host PM                         target scheduler
+ *    | freeze_thread(epoch)              |
+ *    +---------------------------------->| block and publish epoch gate
+ *    |                                   | wake -> deferred_wake only
+ *    |<----------------------------------+ no longer current
+ *    | thaw_thread(epoch, ownership)     |
+ *    +---------------------------------->| clear gate, replay one wake
+ *
+ * Key rules:
+ *   - the scheduler lock serializes freeze against every wake producer;
+ *   - a gate never changes vCPU lifecycle state or architecture context;
+ *   - thaw wakes only work owned by PM or observed while the gate was active.
+ */
+bool freeze_thread(struct thread_object *obj, uint64_t epoch,
+	bool *wake_owned)
+{
+	uint16_t pcpu_id;
+	uint64_t rflag;
+	bool frozen = false;
+
+	if ((obj == NULL) || (epoch == 0UL) || (wake_owned == NULL)) {
+		return false;
+	}
+	pcpu_id = obj->pcpu_id;
+	*wake_owned = false;
+
+	obtain_schedule_lock(pcpu_id, &rflag);
+	if ((obj->freeze_epoch == 0UL) || (obj->freeze_epoch == epoch)) {
+		if (obj->freeze_epoch == 0UL) {
+			obj->freeze_epoch = epoch;
+			obj->deferred_wake = false;
+		}
+		*wake_owned = sleep_thread_locked(obj);
+		frozen = true;
+	}
+	release_schedule_lock(pcpu_id, rflag);
+
+	return frozen;
+}
+
+bool is_thread_frozen(struct thread_object *obj, uint64_t epoch)
+{
+	struct sched_control *ctl;
+	uint16_t pcpu_id;
+	uint64_t rflag;
+	bool frozen;
+
+	if ((obj == NULL) || (epoch == 0UL)) {
+		return false;
+	}
+	pcpu_id = obj->pcpu_id;
+	ctl = obj->sched_ctl;
+
+	obtain_schedule_lock(pcpu_id, &rflag);
+	frozen = (obj->freeze_epoch == epoch) &&
+		(obj->status == THREAD_STS_BLOCKED) && !obj->be_blocking &&
+		(ctl->curr_obj != obj);
+	release_schedule_lock(pcpu_id, rflag);
+
+	return frozen;
+}
+
+bool thaw_thread(struct thread_object *obj, uint64_t epoch, bool wake_owned)
+{
+	uint16_t pcpu_id;
+	uint64_t rflag;
+	bool thawed = false;
+	bool replay_wake;
+
+	if ((obj == NULL) || (epoch == 0UL)) {
+		return false;
+	}
+	pcpu_id = obj->pcpu_id;
+
+	obtain_schedule_lock(pcpu_id, &rflag);
+	if (obj->freeze_epoch == epoch) {
+		replay_wake = wake_owned || obj->deferred_wake;
+		obj->freeze_epoch = 0UL;
+		obj->deferred_wake = false;
+		if (replay_wake) {
+			wake_thread_locked(obj);
+		}
+		thawed = true;
+	}
+	release_schedule_lock(pcpu_id, rflag);
+
+	return thawed;
 }
 
 void request_thread_priority(struct thread_object *obj)

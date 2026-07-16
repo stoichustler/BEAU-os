@@ -52,7 +52,7 @@ static inline uint64_t gicv5_sysl(uint32_t op1, uint32_t crn, uint32_t crm, uint
 
 	if ((op1 == GICR_CDIA_op1) && (crn == GICR_CDIA_CRn) &&
 		(crm == GICR_CDIA_CRm) && (op2 == GICR_CDIA_op2)) {
-		asm volatile ("sysl %0, #0, c12, c3, #0" : "=r" (val));
+		val = arm64_sysl_read(0, 12, 3, 0);
 	}
 
 	return val;
@@ -62,7 +62,7 @@ static inline void gicv5_sys(uint32_t op1, uint32_t crn, uint32_t crm, uint32_t 
 {
 	if ((op1 == GIC_CDEOI_op1) && (crn == GIC_CDEOI_CRn) &&
 		(crm == GIC_CDEOI_CRm) && (op2 == GIC_CDEOI_op2)) {
-		asm volatile ("sys #0, c12, c1, #7" ::: "memory");
+		arm64_sys(0, 12, 1, 7);
 	}
 }
 
@@ -71,113 +71,113 @@ static inline void gicv5_sys_arg(uint32_t op1, uint32_t crn, uint32_t crm, uint3
 {
 	if ((op1 == GIC_CDDI_op1) && (crn == GIC_CDDI_CRn) &&
 		(crm == GIC_CDDI_CRm) && (op2 == GIC_CDDI_op2)) {
-		asm volatile ("sys #0, c12, c2, #0, %0" : : "r" (val) : "memory");
+		arm64_sys_write(0, 12, 2, 0, val);
 	} else if ((op1 == GIC_CDDIS_op1) && (crn == GIC_CDDIS_CRn) &&
 		(crm == GIC_CDDIS_CRm) && (op2 == GIC_CDDIS_op2)) {
-		asm volatile ("sys #0, c12, c1, #0, %0" : : "r" (val) : "memory");
+		arm64_sys_write(0, 12, 1, 0, val);
 	} else if ((op1 == GIC_CDEN_op1) && (crn == GIC_CDEN_CRn) &&
 		(crm == GIC_CDEN_CRm) && (op2 == GIC_CDEN_op2)) {
-		asm volatile ("sys #0, c12, c1, #1, %0" : : "r" (val) : "memory");
+		arm64_sys_write(0, 12, 1, 1, val);
 	} else if ((op1 == GIC_CDPRI_op1) && (crn == GIC_CDPRI_CRn) &&
 		(crm == GIC_CDPRI_CRm) && (op2 == GIC_CDPRI_op2)) {
-		asm volatile ("sys #0, c12, c1, #2, %0" : : "r" (val) : "memory");
+		arm64_sys_write(0, 12, 1, 2, val);
 	} else if ((op1 == GIC_CDAFF_op1) && (crn == GIC_CDAFF_CRn) &&
 		(crm == GIC_CDAFF_CRm) && (op2 == GIC_CDAFF_op2)) {
-		asm volatile ("sys #0, c12, c1, #3, %0" : : "r" (val) : "memory");
+		arm64_sys_write(0, 12, 1, 3, val);
 	} else if ((op1 == GIC_CDPEND_op1) && (crn == GIC_CDPEND_CRn) &&
 		(crm == GIC_CDPEND_CRm) && (op2 == GIC_CDPEND_op2)) {
-		asm volatile ("sys #0, c12, c1, #4, %0" : : "r" (val) : "memory");
+		arm64_sys_write(0, 12, 1, 4, val);
 	}
 }
 
 static inline void gicv5_gsb_ack(void)
 {
-	asm volatile ("sys #0, c12, c0, #1" ::: "memory");
+	arm64_sys(0, 12, 0, 1);
 }
 
 static inline void gicv5_gsb_sys(void)
 {
-	asm volatile ("sys #0, c12, c0, #0" ::: "memory");
+	arm64_sys(0, 12, 0, 0);
 }
 
 static inline uint64_t gicv5_read_icc_iaffidr_el1(void)
 {
 	uint64_t val;
 
-	asm volatile ("mrs %0, s3_0_c12_c10_5" : "=r" (val));
+	val = arm64_sysreg_read(s3_0_c12_c10_5);
 	return val;
 }
 
 static inline void gicv5_write_icc_cr0_el1(uint64_t val)
 {
-	asm volatile ("msr s3_1_c12_c0_1, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(s3_1_c12_c0_1, val);
 }
 
 static inline void gicv5_write_icc_pcr_el1(uint64_t val)
 {
-	asm volatile ("msr s3_1_c12_c0_2, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(s3_1_c12_c0_2, val);
 }
 
 static inline void gicv5_write_icc_ppi_enabler0_el1(uint64_t val)
 {
-	asm volatile ("msr s3_0_c12_c10_6, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(s3_0_c12_c10_6, val);
 }
 
 static inline void gicv5_write_icc_ppi_enabler1_el1(uint64_t val)
 {
-	asm volatile ("msr s3_0_c12_c10_7, %0; isb" : : "r" (val) : "memory");
+	arm64_sysreg_write_sync(s3_0_c12_c10_7, val);
 }
 
 static inline void gicv5_write_icc_ppi_priorityr(uint32_t reg, uint64_t val)
 {
 	switch (reg) {
 	case 0U:
-		asm volatile ("msr s3_0_c12_c14_0, %0" : : "r" (val) : "memory");
+		arm64_sysreg_write(s3_0_c12_c14_0, val);
 		break;
 	case 1U:
-		asm volatile ("msr s3_0_c12_c14_1, %0" : : "r" (val) : "memory");
+		arm64_sysreg_write(s3_0_c12_c14_1, val);
 		break;
 	case 2U:
-		asm volatile ("msr s3_0_c12_c14_2, %0" : : "r" (val) : "memory");
+		arm64_sysreg_write(s3_0_c12_c14_2, val);
 		break;
 	case 3U:
-		asm volatile ("msr s3_0_c12_c14_3, %0" : : "r" (val) : "memory");
+		arm64_sysreg_write(s3_0_c12_c14_3, val);
 		break;
 	case 4U:
-		asm volatile ("msr s3_0_c12_c14_4, %0" : : "r" (val) : "memory");
+		arm64_sysreg_write(s3_0_c12_c14_4, val);
 		break;
 	case 5U:
-		asm volatile ("msr s3_0_c12_c14_5, %0" : : "r" (val) : "memory");
+		arm64_sysreg_write(s3_0_c12_c14_5, val);
 		break;
 	case 6U:
-		asm volatile ("msr s3_0_c12_c14_6, %0" : : "r" (val) : "memory");
+		arm64_sysreg_write(s3_0_c12_c14_6, val);
 		break;
 	case 7U:
-		asm volatile ("msr s3_0_c12_c14_7, %0" : : "r" (val) : "memory");
+		arm64_sysreg_write(s3_0_c12_c14_7, val);
 		break;
 	case 8U:
-		asm volatile ("msr s3_0_c12_c15_0, %0" : : "r" (val) : "memory");
+		arm64_sysreg_write(s3_0_c12_c15_0, val);
 		break;
 	case 9U:
-		asm volatile ("msr s3_0_c12_c15_1, %0" : : "r" (val) : "memory");
+		arm64_sysreg_write(s3_0_c12_c15_1, val);
 		break;
 	case 10U:
-		asm volatile ("msr s3_0_c12_c15_2, %0" : : "r" (val) : "memory");
+		arm64_sysreg_write(s3_0_c12_c15_2, val);
 		break;
 	case 11U:
-		asm volatile ("msr s3_0_c12_c15_3, %0" : : "r" (val) : "memory");
+		arm64_sysreg_write(s3_0_c12_c15_3, val);
 		break;
 	case 12U:
-		asm volatile ("msr s3_0_c12_c15_4, %0" : : "r" (val) : "memory");
+		arm64_sysreg_write(s3_0_c12_c15_4, val);
 		break;
 	case 13U:
-		asm volatile ("msr s3_0_c12_c15_5, %0" : : "r" (val) : "memory");
+		arm64_sysreg_write(s3_0_c12_c15_5, val);
 		break;
 	case 14U:
-		asm volatile ("msr s3_0_c12_c15_6, %0" : : "r" (val) : "memory");
+		arm64_sysreg_write(s3_0_c12_c15_6, val);
 		break;
 	case 15U:
-		asm volatile ("msr s3_0_c12_c15_7, %0" : : "r" (val) : "memory");
+		arm64_sysreg_write(s3_0_c12_c15_7, val);
 		break;
 	default:
 		break;

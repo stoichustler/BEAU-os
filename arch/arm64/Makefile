@@ -40,7 +40,37 @@ ARCH_CFLAGS += -mno-outline-atomics
 
 ARCH_ASFLAGS +=
 
-HOST_S_SRCS += arch/arm64/boot/cpu_entry.S
+ARM64_OFFSETS_SRC := arch/arm64/offsets/offsets.c
+ARM64_OFFSETS_OBJ := $(HV_OBJDIR)/arch/arm64/offsets/offsets.o
+ARM64_OFFSETS_DEP := $(ARM64_OFFSETS_OBJ:.o=.d)
+ARM64_OFFSETS_H := $(HV_OBJDIR)/include/generated/offsets.h
+ARM64_OFFSETS_GENERATOR := scripts/gen_offset_header.py
+ARM64_OFFSETS_SYMBOLS := scripts/arm64_offset_symbols.txt
+
+ARCH_PRE_BUILD_TARGETS += $(ARM64_OFFSETS_H)
+
+-include $(ARM64_OFFSETS_DEP)
+
+.PHONY: offsets
+offsets: $(ARM64_OFFSETS_H)
+
+$(ARM64_OFFSETS_OBJ): $(ARM64_OFFSETS_SRC) $(HV_CONFIG_H) $(HV_CONFIG_TIMESTAMP) | $(HV_OBJDIR)/include/generated
+	$(Q)mkdir -p $(dir $@)
+	$(Q)echo "cc                 $(notdir $@)"
+	$(Q)$(CC) $(patsubst %, -I%, $(INCLUDE_PATH)) -I. -c $(CFLAGS) \
+		$(ARCH_CFLAGS) -fno-stack-protector $< -o $@ -MMD -MT $@
+
+$(ARM64_OFFSETS_H): $(ARM64_OFFSETS_OBJ) $(ARM64_OFFSETS_GENERATOR) $(ARM64_OFFSETS_SYMBOLS) | $(HV_OBJDIR)/include/generated
+	$(Q)echo "offsets            $(notdir $@)"
+	$(Q)python3 $(ARM64_OFFSETS_GENERATOR) --input $< --output $@ \
+		--symbols $(ARM64_OFFSETS_SYMBOLS)
+
+ifeq (y, $(CONFIG_AARCH64_IMAGE_HEADER))
+HOST_S_SRCS += arch/arm64/boot/header.S
+ARCH_ASFLAGS += -DCONFIG_AARCH64_IMAGE_HEADER=1
+LDFLAGS += -Wl,-u,_image_header
+endif
+HOST_S_SRCS += arch/arm64/boot/entry.S
 HOST_S_SRCS += arch/arm64/vector.S
 HOST_S_SRCS += arch/arm64/sched.S
 HOST_S_SRCS += arch/arm64/suspend.S
@@ -119,6 +149,7 @@ MODULES += $(VP_MOD)
 
 $(HOST_MOD): $(HOST_C_OBJS) $(HOST_S_OBJS)
 	$(Q)echo "ar                 $(notdir $@)"
+	$(Q)rm -f $@
 	$(Q)$(AR) $(ARFLAGS) $(HOST_MOD) $(HOST_C_OBJS) $(HOST_S_OBJS)
 
 $(VP_MOD): $(VP_C_OBJS) $(VP_S_OBJS) $(VM_CFG_C_OBJS) $(VM_CFG_S_OBJS)

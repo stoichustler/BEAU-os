@@ -47,8 +47,8 @@ FATAL_PATTERNS = (
     "fatal error",
 )
 FATAL_DRAIN_TIMEOUT = 1.0
-STR_READY_MARKERS = tuple(f"PM_GUEST_READY vm:{vmid}" for vmid in range(4))
-STR_RESUME_MARKERS = tuple(f"PM_GUEST_RESUMED vm:{vmid}" for vmid in range(4))
+STR_FREEZE_MARKERS = ("PM_GUESTS_FROZEN", "PM_SUSPENDED")
+STR_THAW_MARKERS = ("PM_RESUMING", "PM_GUESTS_THAWED", "PM_RUNNING")
 STR_FAULT_OPTIONS = (
     "prepare-timeout",
     "pending-wake",
@@ -606,8 +606,6 @@ def expect_vm2_id(qemu, name):
 
 def expect_vm2_kbe_backends(qemu, name):
     checks = (
-        "test -c /dev/beau-pm",
-        "grep -qw mem /sys/power/state",
         "dmesg | grep -q 'BEAU virtio-fs backend started'",
         "dmesg | grep -q 'BEAU virtio-rng backend started'",
         "dmesg | grep -q 'BEAU virtio-blk backend started'",
@@ -726,11 +724,6 @@ def expect_vm3_virtioi2c(qemu, name):
 
 
 def expect_vm3_virtio_proxy_smoke(qemu):
-    vm3_command(
-        qemu,
-        "test -c /dev/beau-pm && grep -qw mem /sys/power/state",
-        "VM3 BEAU PM agent ready",
-    )
     expect_vm3_virtiofs(qemu, "VM3 virtio-fs mount/write/read")
     expect_vm3_virtiorng(qemu, "VM3 virtio-rng read")
     expect_vm3_virtioblk(qemu, "VM3 virtio-blk 4K write/read")
@@ -780,6 +773,13 @@ def run_guest_help(qemu, vmid, prompt, name, timeout):
     except Exception:
         qemu.capture_vm_diagnostics(f"{name}: help", vmid)
         raise
+
+
+def check_zephyr_thread_list(qemu, label):
+    qemu.send("kernel thread list" + ENTER)
+    qemu.expect("Threads:", f"{label}: thread list starts", timeout=20.0)
+    qemu.expect(ZEPHYR_PROMPT, f"{label}: thread list returns", timeout=20.0,
+                keepalive=ENTER)
 
 
 def run_vsh_help_stress(qemu, args):
@@ -851,6 +851,7 @@ def check_str_guest_heartbeats(qemu, cycle):
     label = f"STR cycle {cycle}"
     vsh_enter(qemu, 0, ZEPHYR_PROMPT, f"{label}: VM0 heartbeat")
     run_guest_help(qemu, 0, ZEPHYR_PROMPT, f"{label}: VM0", 15.0)
+    check_zephyr_thread_list(qemu, f"{label}: VM0 SMP runtime stats")
     vsh_return(qemu, f"{label}: return from VM0", vmid=0)
 
     vsh_enter(qemu, 1, RTTHREAD_PROMPT, f"{label}: VM1 heartbeat", timeout=30.0)
@@ -878,8 +879,8 @@ def run_str_cycle(qemu, qmp, args, cycle):
     if args.str_fault == "pending-wake":
         qemu.send(b"\r")
     qemu.expect_all(
-        (*STR_READY_MARKERS, "PM_SUSPENDED"),
-        f"{label}: all guests ready and host suspended",
+        STR_FREEZE_MARKERS,
+        f"{label}: BEAU froze guests and suspended the host",
         start_offset=start_offset,
     )
 
@@ -892,8 +893,8 @@ def run_str_cycle(qemu, qmp, args, cycle):
     assert_qmp_status(qmp, "running", f"{label}: QEMU continued")
     qemu.send(b"\r\r" if args.str_fault == "duplicate-wake" else b"\r")
     qemu.expect_all(
-        ("PM_RESUMING", *STR_RESUME_MARKERS, "PM_RUNNING"),
-        f"{label}: host and all guests resumed",
+        STR_THAW_MARKERS,
+        f"{label}: BEAU restored the host and thawed guests",
         start_offset=resume_offset,
     )
     qemu.send(ENTER)
@@ -1081,24 +1082,14 @@ def run_qemu(args, cmd):
 
         qemu.send("vsh 0" + ENTER)
         qemu.expect(ZEPHYR_PROMPT, "VM0 Zephyr shell", keepalive=ENTER)
-        qemu.send("beau_pm status" + ENTER)
-        qemu.expect("beau_pm:ready:Y vm:0", "VM0 BEAU PM agent status",
-                    timeout=15.0)
-        qemu.expect(ZEPHYR_PROMPT, "VM0 shell after BEAU PM status", keepalive=ENTER)
+        run_guest_help(qemu, 0, ZEPHYR_PROMPT, "VM0 Zephyr", 15.0)
+        check_zephyr_thread_list(qemu, "VM0 Zephyr SMP runtime stats")
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM0 shell")
 
         qemu.send("vsh 1" + ENTER)
         qemu.expect(RTTHREAD_PROMPT, "VM1 RT-Thread shell", timeout=60.0, keepalive=ENTER)
-        qemu.send("beau_str status" + ENTER)
-        qemu.expect("beau_str:ready:Y vm:1", "VM1 BEAU STR agent status",
-                    timeout=15.0)
-        qemu.expect(RTTHREAD_PROMPT, "VM1 shell after BEAU STR status", keepalive=ENTER)
-        qemu.send("beau_str suspend" + ENTER)
-        qemu.expect("beau_str:suspend denied:no-prepare",
-                    "VM1 BEAU STR rejects uncoordinated suspend", timeout=15.0)
-        qemu.expect(RTTHREAD_PROMPT, "VM1 shell after denied BEAU STR suspend",
-                    keepalive=ENTER)
+        run_guest_help(qemu, 1, RTTHREAD_PROMPT, "VM1 RT-Thread", 15.0)
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM1 shell")
 

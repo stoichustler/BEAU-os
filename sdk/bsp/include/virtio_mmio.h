@@ -93,6 +93,7 @@ struct virtio_mmio_dev {
 	uint32_t interrupt_status;
 	uint32_t status;
 	uint64_t pm_epoch;
+	volatile uint64_t deferred_queue_mask;
 	bool irq_asserted;
 	bool pm_suspended;
 };

@@ -24,6 +24,15 @@ config RELOC
 	  QEMU and rk356x bring-up defaults link BEAU at the platform RAM base,
 	  so leave this disabled unless the boot path is updated accordingly.
 
+config AARCH64_IMAGE_HEADER
+	bool "Emit AArch64 Image header"
+	default n
+	help
+	  Put the 64-byte AArch64 Image header used by Zephyr and Linux at
+	  offset zero of the raw BEAU image. This allows U-Boot booti to find
+	  the load size, page-size flags, and ARM64 magic before branching to
+	  the EL2 entry point. This is not a PE/COFF UEFI application header.
+
 config HV_RAM_START
 	hex "Hypervisor RAM link address"
 	default 0x50000000 if PLATFORM_QEMU

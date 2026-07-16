@@ -95,12 +95,12 @@ void arch_start_pcpu(uint16_t pcpu_id)
 
 void arch_cpu_do_idle(void)
 {
-	asm volatile ("wfi" ::: "memory");
+	arm64_wfi();
 }
 
 void arch_cpu_dead(void)
 {
 	while (true) {
-		asm volatile ("wfi" ::: "memory");
+		arm64_wfi();
 	}
 }

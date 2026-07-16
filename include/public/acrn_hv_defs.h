@@ -142,41 +142,6 @@ struct acrn_ipc_ring_header {
 /* Power management */
 #define HC_ID_PM_BASE               0x80UL
 #define HC_PM_GET_CPU_STATE         BASE_HC_ID(HC_ID, HC_ID_PM_BASE + 0x00UL)
-#define HC_PM_CONTROL               BASE_HC_ID(HC_ID, HC_ID_PM_BASE + 0x01UL)
-
-#define ACRN_PM_ABI_VERSION         1U
-
-#define ACRN_PM_QUERY_CAPS          0U
-#define ACRN_PM_REQUEST_SUSPEND     1U
-#define ACRN_PM_GET_EVENT           2U
-#define ACRN_PM_ABORT               3U
-#define ACRN_PM_GET_STATUS          4U
-#define ACRN_PM_GET_WAKE_REASON     5U
-#define ACRN_PM_RESUME_COMPLETE     6U
-
-#define ACRN_PM_FLAG_REQUIRED       (1U << 0U)
-#define ACRN_PM_EVENT_PREPARE       (1U << 1U)
-#define ACRN_PM_EVENT_RESUME        (1U << 2U)
-#define ACRN_PM_CAP_SYSTEM_SUSPEND  (1U << 8U)
-
-struct acrn_pm_ioc {
-	uint32_t abi_version;
-	uint32_t ioc_size;
-	uint32_t op;
-	int32_t status;
-	uint64_t epoch;
-	uint64_t wake_reason;
-	uint64_t required_vm_mask;
-	uint32_t pm_state;
-	uint32_t vm_state;
-	uint16_t vmid;
-	uint16_t flags;
-	uint32_t event_virq;
-	uint64_t reserved;
-} __aligned(64);
-
-_Static_assert(sizeof(struct acrn_pm_ioc) == 64U,
-	"acrn_pm_ioc ABI must remain 64 bytes");
 
 /* X86 TEE */
 #define HC_ID_TEE_BASE              0x90UL

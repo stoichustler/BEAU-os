@@ -83,12 +83,6 @@ void arm64_platform_init_post_console(void)
 	if (ret != 0) {
 		panic("failed to install PM wake policy: %d", ret);
 	}
-	if (platform_info.pm.enabled != 0U) {
-		ret = bsp_pm_set_event_virq(platform_info.pm.event_virq);
-		if (ret != 0) {
-			panic("failed to install PM event virq: %d", ret);
-		}
-	}
 }
 
 void arm64_platform_init_smmu(void)
@@ -330,30 +324,6 @@ static void fdt_add_timer(void *fdt)
 	fdt_check_ret(fdt_end_node(fdt), "timer end");
 }
 
-static void fdt_add_pm(void *fdt, const struct acrn_vm *vm)
-{
-	uint32_t irq = platform_info.pm.event_virq;
-	uint32_t interrupts[] = {
-		ARM64_FDT_GIC_SPI, 0U, ARM64_FDT_IRQ_TYPE_LEVEL,
-	};
-
-	if ((platform_info.pm.enabled == 0U) ||
-		((platform_info.pm.required_vm_mask & (1UL << vm->vm_id)) == 0UL)) {
-		return;
-	}
-	interrupts[1] = irq - 32U;
-	fdt_check_ret(fdt_begin_node(fdt, "beau-pm"), "beau pm");
-	fdt_check_ret(fdt_property_string(fdt, "compatible", "beau,pm"),
-		"beau pm compatible");
-	fdt_property_irq(fdt, "interrupts", interrupts, ARRAY_SIZE(interrupts));
-	fdt_check_ret(fdt_property_u32(fdt, "beau,abi-version", ACRN_PM_ABI_VERSION),
-		"beau pm abi");
-	fdt_check_ret(fdt_property_u32(fdt, "beau,hcall-id", (uint32_t)HC_PM_CONTROL),
-		"beau pm hcall");
-	fdt_check_ret(fdt_property_string(fdt, "status", "okay"), "beau pm status");
-	fdt_check_ret(fdt_end_node(fdt), "beau pm end");
-}
-
 static void fdt_add_uart_clock(void *fdt)
 {
 	fdt_check_ret(fdt_begin_node(fdt, "apb-pclk"), "uartclk");
@@ -483,7 +453,6 @@ void arch_init_service_vm_vfdt(struct acrn_vm *vm)
 	fdt_add_gic(fdt, vm);
 	fdt_add_its(fdt, vm);
 	fdt_add_timer(fdt);
-	fdt_add_pm(fdt, vm);
 	if (fdt_vm_uses_virtio_console(get_vm_config(vm->vm_id))) {
 		fdt_add_virtio_console(fdt, vm);
 	} else {
