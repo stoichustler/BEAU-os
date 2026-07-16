@@ -177,6 +177,22 @@ def parse_args():
     if len(selected_faults) > 1:
         parser.error("select at most one --str-fault-* option")
     args.str_fault = selected_faults[0] if selected_faults else None
+    if args.smmu_no_s2_smoke:
+        incompatible = []
+        if args.wdt_restart_smoke:
+            incompatible.append("--wdt-restart-smoke")
+        if args.stress_vsh_switch:
+            incompatible.append("--stress-vsh-switch")
+        if args.stress_vsh_help:
+            incompatible.append("--stress-vsh-help")
+        if args.str_cycles > 0:
+            incompatible.append("--str-cycles")
+        if args.str_fault is not None:
+            incompatible.append(f"--str-fault-{args.str_fault}")
+        if incompatible:
+            parser.error(
+                "--smmu-no-s2-smoke cannot be combined with " + ", ".join(incompatible)
+            )
     return args
 
 
@@ -517,7 +533,8 @@ class QemuSession:
 
         for attempt in range(attempts):
             try:
-                return self.command(line, patterns, rejects=rejects)
+                self.command(line, patterns, rejects=rejects)
+                return
             except RuntimeError as err:
                 last_error = err
                 if attempt + 1 >= attempts:
@@ -955,9 +972,28 @@ def smmu_stream_blocks(text):
     return blocks
 
 
-def expect_smmu_contract(qemu, no_s2):
-    text = qemu.command_retry("smmustat", ["smmustat:"])
-    blocks = smmu_stream_blocks(text)
+def last_complete_smmu_snapshot(text):
+    starts = list(re.finditer(r"(?m)^smmustat:\r?$", text))
+
+    for idx in range(len(starts) - 1, -1, -1):
+        start = starts[idx].start()
+        end = starts[idx + 1].start() if idx + 1 < len(starts) else len(text)
+        candidate = text[start:end]
+        table_end = re.search(r"(?m)^[ \t]*└─\r?$", candidate)
+
+        if table_end is None:
+            continue
+        snapshot_end = table_end.end()
+        prompt = candidate.find(PROMPT, snapshot_end)
+        if prompt >= 0:
+            snapshot_end = prompt + len(PROMPT)
+        return candidate[:snapshot_end]
+
+    raise RuntimeError("smmustat output has no complete snapshot")
+
+
+def validate_smmu_contract(snapshot, no_s2):
+    blocks = smmu_stream_blocks(snapshot)
     missing = []
     forbidden = []
 
@@ -974,8 +1010,10 @@ def expect_smmu_contract(qemu, no_s2):
             "assignment:Y",
         )
 
-    missing.extend(pattern for pattern in expected if pattern not in text)
-    forbidden.extend(pattern for pattern in ("cfg:bypass", "quarantine:Y") if pattern in text)
+    missing.extend(pattern for pattern in expected if pattern not in snapshot)
+    forbidden.extend(
+        pattern for pattern in ("cfg:bypass", "quarantine:Y") if pattern in snapshot
+    )
 
     if no_s2:
         for stream_id, block in blocks.items():
@@ -990,7 +1028,7 @@ def expect_smmu_contract(qemu, no_s2):
                 missing.append(f"stream[0x{stream_id:04x}]")
                 continue
             for pattern in (
-                f"stream[0x{stream_id:04x}] sw-owner:vm2 ste-vm:vm2",
+                "sw-owner:vm2 ste-vm:vm2",
                 "assigned:Y",
                 "cfg:s2(6)",
             ):
@@ -1005,7 +1043,38 @@ def expect_smmu_contract(qemu, no_s2):
             details.append(f"forbidden {forbidden!r}")
         raise RuntimeError(f"SMMUv3 {'no-S2' if no_s2 else 'Stage-2'} contract failed: " + "; ".join(details))
 
-    print(f"[pass] SMMUv3 {'no-S2 fail-closed' if no_s2 else 'strict Stage-2'} contract", flush=True)
+
+def expect_smmu_contract(qemu, no_s2, attempts=8, delay=1.0):
+    last_error = None
+    last_contract_error = None
+
+    for attempt in range(attempts):
+        try:
+            text = qemu.command("smmustat", ["smmustat:"])
+            snapshot = last_complete_smmu_snapshot(text)
+            try:
+                validate_smmu_contract(snapshot, no_s2)
+            except RuntimeError as err:
+                last_contract_error = err
+                raise
+            print(
+                f"[pass] SMMUv3 {'no-S2 fail-closed' if no_s2 else 'strict Stage-2'} contract",
+                flush=True,
+            )
+            return
+        except RuntimeError as err:
+            last_error = err
+            if attempt + 1 >= attempts:
+                break
+            print(f"[regress] retry: smmustat contract: {err}", flush=True)
+            qemu.drain_for(delay)
+
+    raise last_contract_error or last_error
+
+
+def finish_qemu_regression(args):
+    args.qmp_socket.unlink(missing_ok=True)
+    print(f"[pass] regression complete; log: {args.log}", flush=True)
 
 
 def run_qemu(args, cmd):
@@ -1023,12 +1092,18 @@ def run_qemu(args, cmd):
     args.qmp_socket.parent.mkdir(parents=True, exist_ok=True)
     args.qmp_socket.unlink(missing_ok=True)
     print(f"[regress] qemu: {quote(cmd)}", flush=True)
+    if args.smmu_no_s2_smoke:
+        with QemuSession(cmd, args.log, args.timeout) as qemu:
+            qemu.disable_terminal_replies = args.no_terminal_replies
+            qemu.expect(PROMPT, "BEAU shell prompt", keepalive=ENTER)
+            expect_smmu_contract(qemu, True)
+        finish_qemu_regression(args)
+        return
+
     with QemuSession(cmd, args.log, args.timeout) as qemu:
         qemu.disable_terminal_replies = args.no_terminal_replies
         qemu.expect(PROMPT, "BEAU shell prompt", keepalive=ENTER)
-        expect_smmu_contract(qemu, args.smmu_no_s2_smoke)
-        if args.smmu_no_s2_smoke:
-            return
+        expect_smmu_contract(qemu, False)
         if args.wdt_restart_smoke:
             run_wdt_restart_smoke(qemu)
             return
@@ -1205,9 +1280,7 @@ def run_qemu(args, cmd):
             run_vsh_help_stress(qemu, args)
         run_str_cycles(qemu, args)
 
-    args.qmp_socket.unlink(missing_ok=True)
-
-    print(f"[pass] regression complete; log: {args.log}", flush=True)
+    finish_qemu_regression(args)
 
 
 def main():
