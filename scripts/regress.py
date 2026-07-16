@@ -752,10 +752,11 @@ def vm_command(qemu, vmid, command, name, patterns=None, timeout=20.0, expect_rc
     token = f"__b{vmid}_{qemu.vm_command_seq}__"
     patterns = [] if patterns is None else patterns
     qemu.send_slow(
-        f"t={token}; {command}; rc=$?; printf '\\n%s:%s\\n' \"$t\" \"$rc\"" + ENTER,
+        f"t={token}; {command}; rc=$?; "
+        f"printf '\\n%s:%s\\n%s_end\\n' \"$t\" \"$rc\" \"$t\"" + ENTER,
         delay=0.005,
     )
-    text = qemu.expect(f"{token}:", name, timeout=timeout)
+    text = qemu.expect(f"{token}_end", name, timeout=timeout)
     if f"{token}:{expect_rc}" not in text:
         raise RuntimeError(f"{name}: command returned non-zero\n{text[-2000:]}")
     for pattern in patterns:
@@ -1168,6 +1169,15 @@ def expect_smmu_contract(qemu, no_s2, attempts=8, delay=1.0):
     raise last_contract_error or last_error
 
 
+def expect_coredump_shell(qemu):
+    qemu.command_retry(
+        "coredump print",
+        ["coredump: no valid stored snapshot"],
+    )
+    qemu.command_retry("coredump erase", ["coredump: erased"])
+    print("[pass] ARM64 coredump shell print/erase", flush=True)
+
+
 def finish_qemu_regression(args):
     args.qmp_socket.unlink(missing_ok=True)
     print(f"[pass] regression complete; log: {args.log}", flush=True)
@@ -1193,6 +1203,7 @@ def run_qemu(args, cmd):
             qemu.disable_terminal_replies = args.no_terminal_replies
             qemu.expect(PROMPT, "BEAU shell prompt", keepalive=ENTER)
             expect_smmu_contract(qemu, True)
+            expect_coredump_shell(qemu)
             qemu.command_retry("vsmmustat", ["vsmmustat:", "instances:none"])
         finish_qemu_regression(args)
         return
@@ -1201,6 +1212,7 @@ def run_qemu(args, cmd):
         qemu.disable_terminal_replies = args.no_terminal_replies
         qemu.expect(PROMPT, "BEAU shell prompt", keepalive=ENTER)
         expect_smmu_contract(qemu, False)
+        expect_coredump_shell(qemu)
         if args.smmu_passthrough_smoke:
             run_smmu_passthrough_smoke(qemu)
             finish_qemu_regression(args)

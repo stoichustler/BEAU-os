@@ -576,8 +576,26 @@ void arch_context_switch_in(struct thread_object *next)
 
 uint64_t arch_setup_thread_stack(struct thread_object *obj, uint8_t *stack, uint64_t stack_size)
 {
-	uint64_t stacktop = (uint64_t)&stack[stack_size];
-	struct stack_frame *frame = (struct stack_frame *)stacktop;
+	uint64_t stack_base = (uint64_t)stack;
+	uint64_t stacktop;
+	struct stack_frame *frame;
+
+	if (obj != NULL) {
+		obj->host_stack_base = 0UL;
+		obj->host_stack_size = 0UL;
+	}
+	if ((obj == NULL) || (stack == NULL) ||
+		(stack_size < sizeof(struct stack_frame)) ||
+		(stack_base > (UINT64_MAX - stack_size))) {
+		return 0UL;
+	}
+	stacktop = stack_base + stack_size;
+	if (((stack_base | stacktop) & (CPU_STACK_ALIGN - 1UL)) != 0UL) {
+		return 0UL;
+	}
+	obj->host_stack_base = stack_base;
+	obj->host_stack_size = stack_size;
+	frame = (struct stack_frame *)stacktop;
 
 	frame -= 1;
 	memset(frame, 0, sizeof(struct stack_frame));

@@ -6,13 +6,9 @@
 
 #include <types.h>
 #include <irq.h>
-#include <asm/page.h>
 #include <logmsg.h>
 #include <dump.h>
-#include <debug/symbol.h>
-
-#define CALL_TRACE_HIERARCHY_MAX	0x10U
-#define DUMP_STACK_SIZE			0x800U
+#include <asm/coredump.h>
 
 void asm_assert(__unused int32_t line, __unused const char *file, __unused const char *txt)
 {
@@ -20,41 +16,6 @@ void asm_assert(__unused int32_t line, __unused const char *file, __unused const
 	do {
 		asm_pause();
 	} while (1);
-}
-
-static void show_host_call_trace(uint64_t stack_phy, uint64_t fp_arg, uint16_t pcpu_id)
-{
-	uint32_t i;
-	uint32_t cb_hierarchy = 0U;
-	uint64_t *fp = (uint64_t *)fp_arg;
-	uint64_t *sp = (uint64_t *)stack_phy;
-	uint64_t dump_size = min(roundup(stack_phy, PAGE_SIZE) - stack_phy, DUMP_STACK_SIZE);
-
-	LOG_ERR("host stack: cpu%hu\r\n", pcpu_id);
-	for (i = 0U; i < (dump_size >> 5U); i++) {
-		LOG_ERR("addr(0x%lx)	0x%016lx  0x%016lx  0x%016lx  0x%016lx\r\n",
-			(stack_phy + (i * 32U)), sp[i * 4U],
-			sp[(i * 4U) + 1U], sp[(i * 4U) + 2U],
-			sp[(i * 4U) + 3U]);
-	}
-
-	LOG_ERR("\r\nhost call trace:\r\n");
-	while (cb_hierarchy < CALL_TRACE_HIERARCHY_MAX) {
-		uint64_t lr = *(uint64_t *)(fp + 1);
-		char sym[96U];
-
-		dbg_format_symbol(lr, sym, sizeof(sym));
-		LOG_ERR(" ✘  0x%016lx  %s\r\n", lr, sym);
-
-		if (*fp == SP_BOTTOM_MAGIC) {
-			break;
-		}
-
-		fp = (uint64_t *)(*fp);
-		cb_hierarchy++;
-	}
-
-	LOG_ERR("\r\n");
 }
 
 void dump_intr_excp_frame(const struct intr_excp_ctx *ctx)
@@ -85,6 +46,12 @@ void dump_intr_excp_frame(const struct intr_excp_ctx *ctx)
 
 void dump_exception(const struct intr_excp_ctx *ctx, uint16_t pcpu_id)
 {
+	struct arm64_coredump_context context;
+
 	dump_intr_excp_frame(ctx);
-	show_host_call_trace(ctx->regs.sp, ctx->regs.x29, pcpu_id);
+	context.pc = ctx->regs.elr;
+	context.lr = ctx->regs.lr;
+	context.sp = ctx->regs.sp;
+	context.fp = ctx->regs.x29;
+	arm64_coredump_log(&context, pcpu_id, LOG_ERROR);
 }

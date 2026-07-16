@@ -1166,6 +1166,7 @@ performance policy，并选最大 P-state。QEMU 和 rk356x platform backend 目
 | `memstat` | 页表池和 Stage-2 ownership |
 | `health` | host/VM 运行健康摘要与 findings |
 | `dumpstat [vmid]` | vCPU regs、栈、vGIC、vtimer、最近 exit |
+| `coredump <print\|erase>` | 查看或清除最近一次 ARM64 panic/异常快照 |
 | `vmstat` | VM 配置、状态、affinity、boot、timer、WDT |
 | `cachestat` | cache topology 和 LLC domain |
 | `ipcstat` | IPC channel、ring、notify/ack/drop |
@@ -1185,8 +1186,12 @@ performance policy，并选最大 P-state。QEMU 和 rk356x platform backend 目
 记录并计数。trace 默认停止，需 shell 启动。类别包括 scheduler、VM exit、IRQ、
 timer 等。
 
-debug build 保留 frame pointer 和符号；`gen_symtab.py` 生成地址到名称表，
-`dumpstat` 和 panic path 可进行 host/guest 栈回溯。
+ARM64 build 保留 frame pointer；debug image 由 `gen_symtab.py` 生成地址到名称表。
+`arch/arm64/coredump.c` 只在已登记的 thread、per-pCPU 或 boot stack 边界内读取
+frame record，并限制原始栈快照和回溯深度；panic 与同步异常共用该 fail-closed
+host 栈回溯路径。每个 pCPU 保留一个带版本和校验和的内存快照，shell 可通过
+`coredump print` 查看最新快照或通过 `coredump erase` 清除；`dumpstat` 继续提供
+guest/vCPU 诊断。
 
 ## 19. SDK 模块
 

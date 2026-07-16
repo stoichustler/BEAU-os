@@ -23,4 +23,7 @@ extern char		ld_ram_start;
 extern char		ld_image_end;
 extern char		ld_ram_end;
 
+extern char		_boot_stack_start;
+extern char		_boot_stack_end;
+
 #endif /* ARM64_LD_SYM_H */

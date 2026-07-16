@@ -36,6 +36,7 @@
 #include <bsp/vuart.h>
 #include <debug/symbol.h>
 #include <asm/mmu.h>
+#include <asm/coredump.h>
 #include <asm/irq.h>
 #include <asm/cache.h>
 #include <asm/platform.h>
@@ -61,6 +62,9 @@
 #define SHELL_CMD_DUMPSTAT		"dumpstat"
 #define SHELL_CMD_DUMPSTAT_PARAM	"[vm id]"
 #define SHELL_CMD_DUMPSTAT_HELP		"dump arm64 vcpu stats and vgic/vtimer diagnostics"
+#define SHELL_CMD_COREDUMP		"coredump"
+#define SHELL_CMD_COREDUMP_PARAM	"<print|erase>"
+#define SHELL_CMD_COREDUMP_HELP		"print or erase the latest ARM64 coredump"
 #define SHELL_CMD_VMSTAT		"vmstat"
 #define SHELL_CMD_VMSTAT_PARAM		NULL
 #define SHELL_CMD_VMSTAT_HELP		"list arm64 vm state"
@@ -124,6 +128,7 @@ static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv);
 static int32_t shell_memstat(int32_t argc, __unused char **argv);
 static int32_t shell_health(int32_t argc, __unused char **argv);
 static int32_t shell_dumpstat(int32_t argc, char **argv);
+static int32_t shell_coredump(int32_t argc, char **argv);
 static int32_t shell_vmstat(int32_t argc, __unused char **argv);
 static int32_t shell_cachestat(int32_t argc, __unused char **argv);
 static int32_t shell_ipcstat(int32_t argc, __unused char **argv);
@@ -166,6 +171,12 @@ struct shell_cmd arch_shell_cmds[] = {
 		.cmd_param	= SHELL_CMD_DUMPSTAT_PARAM,
 		.help_str	= SHELL_CMD_DUMPSTAT_HELP,
 		.fcn		= shell_dumpstat,
+	},
+	{
+		.str		= SHELL_CMD_COREDUMP,
+		.cmd_param	= SHELL_CMD_COREDUMP_PARAM,
+		.help_str	= SHELL_CMD_COREDUMP_HELP,
+		.fcn		= shell_coredump,
 	},
 	{
 		.str		= SHELL_CMD_VMSTAT,
@@ -2199,6 +2210,29 @@ static int32_t shell_dumpstat(int32_t argc, char **argv)
 	}
 
 	return 0;
+}
+
+static int32_t shell_coredump(int32_t argc, char **argv)
+{
+	if (argc != 2) {
+		shell_puts("usage: coredump <print|erase>\r\n");
+		return -EINVAL;
+	}
+
+	if (strncmp(argv[1], "print", sizeof("print")) == 0) {
+		if (!arm64_coredump_print_stored(LOG_INFO)) {
+			shell_puts("coredump: no valid stored snapshot\r\n");
+		}
+		return 0;
+	}
+	if (strncmp(argv[1], "erase", sizeof("erase")) == 0) {
+		arm64_coredump_erase_stored();
+		shell_puts("coredump: erased\r\n");
+		return 0;
+	}
+
+	shell_puts("usage: coredump <print|erase>\r\n");
+	return -EINVAL;
 }
 
 static const char *shell_vm_state_to_str(enum vm_state state)

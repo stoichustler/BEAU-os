@@ -968,6 +968,8 @@ void run_idle_thread(void)
 	idle->thread_entry = default_idle;
 	idle->switch_out = NULL;
 	idle->switch_in = NULL;
+	idle->host_stack_base = (uint64_t)&per_cpu(stack, pcpu_id)[0];
+	idle->host_stack_size = CONFIG_STACK_SIZE;
 	idle_params.prio = PRIO_IDLE;
 	init_thread_data(idle, &idle_params);
 

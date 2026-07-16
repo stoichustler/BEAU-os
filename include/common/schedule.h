@@ -139,6 +139,8 @@ struct thread_object {
 	uint16_t vcpu_id;
 
 	uint64_t host_sp;
+	uint64_t host_stack_base;
+	uint64_t host_stack_size;
 	switch_t switch_out;
 	switch_t switch_in;
 

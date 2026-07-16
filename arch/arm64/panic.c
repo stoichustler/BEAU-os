@@ -9,12 +9,22 @@
 #include <vcpu.h>
 #include <vm.h>
 #include <logmsg.h>
+#include <asm/coredump.h>
 #include <asm/sysreg.h>
 
 void panic_dump_context(void)
 {
-	uint16_t pcpu_id = get_pcpu_id();
+	struct arm64_coredump_context context;
+	uint16_t pcpu_id;
 	struct acrn_vcpu *vcpu = NULL;
+
+	__asm__ volatile(
+		"mov %0, x30\n"
+		"mov %1, sp\n"
+		"mov %2, x29\n"
+		: "=r" (context.pc), "=r" (context.sp), "=r" (context.fp));
+	context.lr = context.pc;
+	pcpu_id = get_pcpu_id();
 
 	if (pcpu_id < MAX_PCPU_NUM) {
 		vcpu = get_running_vcpu(pcpu_id);
@@ -35,4 +45,5 @@ void panic_dump_context(void)
 	} else {
 		LOG_FTL("vcpu: none");
 	}
+	arm64_coredump_log(&context, pcpu_id, LOG_FATAL);
 }
