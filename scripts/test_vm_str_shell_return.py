@@ -28,6 +28,16 @@ def function_body(text: str, signature: str) -> str:
     raise AssertionError(f"unterminated function: {signature}")
 
 
+def python_function(text: str, signature: str) -> str:
+    start = text.index(signature)
+    remainder = text[start + len(signature):]
+    next_function = re.search(r"^def \w+\(", remainder, re.MULTILINE)
+    end = len(text) if next_function is None else (
+        start + len(signature) + next_function.start()
+    )
+    return text[start:end]
+
+
 class VmStrShellReturnTest(unittest.TestCase):
     def test_console_timer_only_publishes_shell_work(self) -> None:
         console = source("sdk/bsp/console.c")
@@ -131,6 +141,26 @@ class VmStrShellReturnTest(unittest.TestCase):
             ),
         )
         self.assertNotIn("make_reschedule_request", secondary_idle)
+
+    def test_runtime_checks_prompt_before_resuming_suspended_vm(self) -> None:
+        regression = python_function(
+            source("scripts/regress.py"),
+            "def run_str_cycle(qemu, args, cycle):",
+        )
+        suspended_prompt = (
+            'qemu.expect(PROMPT, f"{label}: BEAU shell responsive while target suspended")'
+        )
+
+        self.assertIn(suspended_prompt, regression)
+        freeze_index = regression.index("STR_FREEZE_MARKERS")
+        prompt_index = regression.index(suspended_prompt)
+        sleep_index = regression.index("time.sleep(args.str_suspend_seconds)")
+        resume_index = regression.index('qemu.send(f"pm resume {vmid}" + ENTER)')
+
+        self.assertLess(freeze_index, prompt_index)
+        self.assertLess(prompt_index, sleep_index)
+        self.assertLess(sleep_index, resume_index)
+        self.assertNotIn("qemu.send(ENTER)", regression[freeze_index:prompt_index])
 
 
 if __name__ == "__main__":

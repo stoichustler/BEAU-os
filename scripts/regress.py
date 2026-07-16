@@ -887,6 +887,7 @@ def run_str_cycle(qemu, args, cycle):
         f"{label}: BEAU froze target VM",
         start_offset=start_offset,
     )
+    qemu.expect(PROMPT, f"{label}: BEAU shell responsive while target suspended")
 
     time.sleep(args.str_suspend_seconds)
 
