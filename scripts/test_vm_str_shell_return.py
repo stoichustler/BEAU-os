@@ -109,6 +109,23 @@ class VmStrShellReturnTest(unittest.TestCase):
             ),
         )
 
+    def test_pm_idle_completion_requests_reschedule(self) -> None:
+        schedule = source("core/schedule.c")
+        idle = function_body(
+            schedule,
+            "void default_idle(__unused struct thread_object *obj)\n{",
+        )
+
+        self.assertRegex(
+            idle,
+            re.compile(
+                r"if\s*\(need_system_suspend\(pcpu_id\)\)\s*\{\s*"
+                r"hv_pm_process_from_idle\(pcpu_id\);\s*"
+                r"make_reschedule_request\(pcpu_id\);",
+                re.DOTALL,
+            ),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

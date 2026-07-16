@@ -924,6 +924,15 @@ void run_thread(struct thread_object *obj)
 	}
 }
 
+/* [20260716] PM idle scheduler handoff
+ *
+ * scheduler -> idle -> PM transaction -> NEED_RESCHEDULE -> scheduler
+ *
+ * Key rule:
+ *   - PM owns the suspend transaction while the idle thread executes it;
+ *   - after PM returns, the scheduler must reconsider runnable host threads;
+ *   - publishing the request prevents idle from entering WFI with pending work.
+ */
 void default_idle(__unused struct thread_object *obj)
 {
 	uint16_t pcpu_id = get_pcpu_id();
@@ -931,6 +940,7 @@ void default_idle(__unused struct thread_object *obj)
 	while (1) {
 		if (need_system_suspend(pcpu_id)) {
 			hv_pm_process_from_idle(pcpu_id);
+			make_reschedule_request(pcpu_id);
 		} else if (need_reschedule(pcpu_id)) {
 			schedule();
 		} else if (need_offline(pcpu_id)) {
