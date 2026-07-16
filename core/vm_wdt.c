@@ -710,7 +710,7 @@ static bool vm_wdt_process_recovery(uint16_t vm_id)
 			if (vm_wdt_start_verification(vm_id)) {
 				LOG_INF("HWT: VM%u restart verified", vm_id);
 			} else {
-				LOG_INF("HWT: VM%u restart launched; wait-kick", vm_id);
+				LOG_INF("HWT: VM%u restart launched", vm_id);
 			}
 		} else if (vm_wdt_update_quiesce(vm_id, wait_vcpus)) {
 			LOG_ERR("HWT: VM%u restart failed cause:quiesce-timeout wait:0x%lx",

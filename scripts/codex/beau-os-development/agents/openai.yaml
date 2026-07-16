@@ -1,0 +1,4 @@
+interface:
+  display_name: "BEAU OS Development"
+  short_description: "Implement, build, validate, and submit BEAU OS changes"
+  default_prompt: "Use $beau-os-development to implement, build, validate, and submit this BEAU OS change."
