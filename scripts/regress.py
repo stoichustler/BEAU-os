@@ -57,6 +57,7 @@ STR_FAULT_OPTIONS = (
     "duplicate-wake",
     "resume-timeout",
 )
+SMMU_PASSTHROUGH_STREAM_IDS = (0x0008, 0x0010)
 
 
 def relpath(path):
@@ -126,6 +127,11 @@ def parse_args():
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
+        "--smmu-no-s2-smoke",
+        action="store_true",
+        help="Verify that an SMMUv3 without Stage-2 support remains fail closed.",
+    )
+    parser.add_argument(
         "--wdt-restart-smoke",
         action="store_true",
         help="Trigger one VM3 missed heartbeat and verify bounded cold watchdog recovery.",
@@ -185,10 +191,14 @@ def make_cmd(args):
 
 
 def qemu_cmd(args):
+    smmu_stage = "1" if args.smmu_no_s2_smoke else "2"
+
     return [
         args.qemu,
         "-machine",
         "virt,virtualization=on,gic-version=3,its=on,iommu=smmuv3",
+        "-global",
+        f"arm-smmuv3.stage={smmu_stage}",
         "-cpu",
         "cortex-a57",
         "-smp",
@@ -500,14 +510,14 @@ class QemuSession:
             if pattern in text:
                 raise RuntimeError(f"{line!r} output contains rejected {pattern!r}")
         print(f"[pass] {line}: expected output found", flush=True)
+        return text
 
     def command_retry(self, line, patterns, rejects=None, attempts=8, delay=1.0):
         last_error = None
 
         for attempt in range(attempts):
             try:
-                self.command(line, patterns, rejects=rejects)
-                return
+                return self.command(line, patterns, rejects=rejects)
             except RuntimeError as err:
                 last_error = err
                 if attempt + 1 >= attempts:
@@ -931,6 +941,73 @@ def run_str_cycles(qemu, args):
         run_str_cycle(qemu, args, cycle)
 
 
+def smmu_stream_blocks(text):
+    matches = list(re.finditer(r"stream\[0x([0-9a-fA-F]+)\]", text))
+    blocks = {}
+
+    for idx, match in enumerate(matches):
+        stream_id = int(match.group(1), 16)
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        if stream_id in blocks:
+            raise RuntimeError(f"smmustat output contains duplicate stream 0x{stream_id:04x}")
+        blocks[stream_id] = text[match.start():end]
+
+    return blocks
+
+
+def expect_smmu_contract(qemu, no_s2):
+    text = qemu.command_retry("smmustat", ["smmustat:"])
+    blocks = smmu_stream_blocks(text)
+    missing = []
+    forbidden = []
+
+    if no_s2:
+        expected = (
+            "strict:Y caps.valid:N state:abort",
+            "s2p:N",
+            "assignment:N",
+        )
+    else:
+        expected = (
+            "strict:Y caps.valid:Y state:ready",
+            "s2p:Y",
+            "assignment:Y",
+        )
+
+    missing.extend(pattern for pattern in expected if pattern not in text)
+    forbidden.extend(pattern for pattern in ("cfg:bypass", "quarantine:Y") if pattern in text)
+
+    if no_s2:
+        for stream_id, block in blocks.items():
+            if "assigned:Y" in block:
+                forbidden.append(f"stream[0x{stream_id:04x}] assigned:Y")
+            if ("cfg:" in block) and ("cfg:abort(0)" not in block):
+                forbidden.append(f"stream[0x{stream_id:04x}] non-ABORT STE")
+    else:
+        for stream_id in SMMU_PASSTHROUGH_STREAM_IDS:
+            block = blocks.get(stream_id)
+            if block is None:
+                missing.append(f"stream[0x{stream_id:04x}]")
+                continue
+            for pattern in (
+                f"stream[0x{stream_id:04x}] sw-owner:vm2 ste-vm:vm2",
+                "assigned:Y",
+                "cfg:s2(6)",
+            ):
+                if pattern not in block:
+                    missing.append(f"stream[0x{stream_id:04x}] {pattern}")
+
+    if missing or forbidden:
+        details = []
+        if missing:
+            details.append(f"missing {missing!r}")
+        if forbidden:
+            details.append(f"forbidden {forbidden!r}")
+        raise RuntimeError(f"SMMUv3 {'no-S2' if no_s2 else 'Stage-2'} contract failed: " + "; ".join(details))
+
+    print(f"[pass] SMMUv3 {'no-S2 fail-closed' if no_s2 else 'strict Stage-2'} contract", flush=True)
+
+
 def run_qemu(args, cmd):
     if not args.kernel.is_file():
         raise SystemExit(f"Kernel image not found: {args.kernel}")
@@ -949,6 +1026,9 @@ def run_qemu(args, cmd):
     with QemuSession(cmd, args.log, args.timeout) as qemu:
         qemu.disable_terminal_replies = args.no_terminal_replies
         qemu.expect(PROMPT, "BEAU shell prompt", keepalive=ENTER)
+        expect_smmu_contract(qemu, args.smmu_no_s2_smoke)
+        if args.smmu_no_s2_smoke:
+            return
         if args.wdt_restart_smoke:
             run_wdt_restart_smoke(qemu)
             return
@@ -1146,6 +1226,8 @@ def main():
             checks += f", VM console help stress x{args.stress_help_rounds}"
         if args.wdt_restart_smoke:
             checks = "VM3 watchdog timeout, quiesce, cold restart, verification kick, VM3 shell"
+        if args.smmu_no_s2_smoke:
+            checks = "SMMUv3 no-S2 fail-closed state"
         print(f"checks: {checks}")
         return 0
 
