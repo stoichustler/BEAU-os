@@ -29,12 +29,24 @@ def function_body(text: str, signature: str) -> str:
 
 
 class VmStrShellReturnTest(unittest.TestCase):
-    def test_public_kick_only_wakes_shell_thread(self) -> None:
+    def test_console_timer_only_publishes_shell_work(self) -> None:
+        console = source("sdk/bsp/console.c")
+        callback = function_body(
+            console,
+            "static void console_timer_callback(__unused void *data)\n{",
+        )
+
+        self.assertIn("shell_kick();", callback)
+        self.assertNotIn("console_vm_kick", callback)
+
+    def test_public_kick_only_prioritizes_shell_thread(self) -> None:
         shell = source("sdk/bsp/shell.c")
         kick = function_body(shell, "void shell_kick(void)")
 
-        self.assertIn("wake_thread(&shell_thread);", kick)
+        self.assertIn("request_thread_priority(&shell_thread);", kick)
+        self.assertNotIn("wake_thread", kick)
         self.assertNotIn("console_vm_kick", kick)
+        self.assertNotIn("shell_getc", kick)
         self.assertNotIn("shell_input_line", kick)
         self.assertNotIn("shell_process", kick)
 
@@ -61,9 +73,26 @@ class VmStrShellReturnTest(unittest.TestCase):
                 re.DOTALL,
             ),
         )
-        self.assertIn("shell_thread_kick();", thread)
-        self.assertIn("sleep_thread(&shell_thread);", thread)
-        self.assertIn("schedule();", thread)
+        for token in ("shell_thread_kick();", "yield_current();", "schedule();"):
+            self.assertIn(token, thread)
+        kick_index = thread.index("shell_thread_kick();")
+        yield_index = thread.index("yield_current();")
+        schedule_index = thread.index("schedule();")
+        self.assertLess(kick_index, yield_index)
+        self.assertLess(yield_index, schedule_index)
+        self.assertNotIn("sleep_thread", thread)
+
+    def test_boot_quiet_waits_for_enter(self) -> None:
+        shell = source("sdk/bsp/shell.c")
+        worker = function_body(shell, "static void shell_thread_kick(void)")
+        quiet_start = worker.index("if (!shell_prompt_enabled)")
+        input_start = worker.index("if (shell_input_line())")
+        quiet = worker[quiet_start:input_start]
+
+        self.assertIn("char ch = shell_getc();", quiet)
+        self.assertIn("(ch == '\\r') || (ch == '\\n')", quiet)
+        self.assertIn("shell_show_banner_prompt();", quiet)
+        self.assertIn("return;", quiet)
 
     def test_guest_console_return_reopens_inactive_prompt(self) -> None:
         shell = source("sdk/bsp/shell.c")

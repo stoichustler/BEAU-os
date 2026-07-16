@@ -32,18 +32,23 @@
  * VM console switching. It runs as a low-priority scheduler thread on the BSP
  * and consumes the same physical console that VM consoles use through vsh.
  *
- *   console timer softirq          shell thread
- *          |                            |
- *          +-- shell_kick() ---------->| wake
- *                                       |
- *                                       v
- *                              route console ownership
- *                                       |
- *                              edit -> dispatch -> prompt
+ *   console timer softirq              shell thread
+ *          |                                 |
+ *          v                                 |
+ *   shell_kick()                             |
+ *          |                                 |
+ *          +-- priority/reschedule --------->|
+ *                                            v
+ *                                   route console ownership
+ *                                            |
+ *                                   edit -> dispatch -> prompt
+ *                                            |
+ *                                   yield -> schedule -> loop
  *
  * Key rules:
  *   - the timer only publishes work; the shell thread owns input and dispatch;
- *   - command completion publishes the next prompt before the thread sleeps;
+ *   - the low-priority loop remains a fallback if timer publication is absent;
+ *   - command completion publishes the next prompt before yielding the pCPU;
  *   - guest ownership suppresses that prompt until BEAU owns the console again.
  *
  * Asynchronous logs still serialize terminal redraw through shell_tx_lock so
@@ -980,7 +985,7 @@ static void shell_thread_kick(void)
 void shell_kick(void)
 {
 	if (shell_started) {
-		wake_thread(&shell_thread);
+		request_thread_priority(&shell_thread);
 	}
 }
 
@@ -1045,9 +1050,9 @@ bool shell_async_puts_raw(const char *string_ptr)
 static void shell_thread_main(__unused struct thread_object *obj)
 {
 	while (true) {
-		sleep_thread(&shell_thread);
-		schedule();
 		shell_thread_kick();
+		yield_current();
+		schedule();
 	}
 }
 

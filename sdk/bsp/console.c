@@ -1218,11 +1218,24 @@ bool console_vm_kick(void)
 	return handled;
 }
 
+/* [20260716] Console polling handoff
+ *
+ *   timer softirq -> shell_kick() -> scheduler request
+ *                                      |
+ *                                      v
+ *                              shell thread
+ *                                      |
+ *                                      v
+ *                              console_vm_kick()
+ *
+ * Key rule:
+ *   - the timer never routes console bytes or mutates shell input state;
+ *   - all potentially slow console work runs in the shell thread;
+ *   - the shell fallback loop preserves diagnostics if the timer is unavailable.
+ */
 static void console_timer_callback(__unused void *data)
 {
-	if (!console_vm_kick()) {
-		shell_kick();
-	}
+	shell_kick();
 }
 
 void console_setup_timer(void)
@@ -1230,10 +1243,8 @@ void console_setup_timer(void)
 	uint64_t period_in_cycle, fire_tsc;
 
 	/*
-	 * The console timer is the pacing boundary for shell and VM console work.
-	 * Keeping it periodic avoids doing slow serial output directly in guest
-	 * MMIO exits, while the configurable low-ms cadence keeps vsh input/output
-	 * responsive enough for interactive debugging.
+	 * Periodic priority publication keeps vsh input/output responsive without
+	 * executing console routing in timer softirq context.
 	 */
 	period_in_cycle = TICKS_PER_MS * CONSOLE_KICK_TIMER_TIMEOUT;
 	fire_tsc = cpu_ticks() + period_in_cycle;
