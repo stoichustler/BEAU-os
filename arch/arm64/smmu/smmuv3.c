@@ -16,6 +16,7 @@
 #include <vm.h>
 #include <acrn_hv_defs.h>
 #include <asm/mmu.h>
+#include <asm/platform.h>
 #include <asm/pgtable.h>
 #include <asm/vtd.h>
 #include <asm/irq.h>
@@ -117,7 +118,22 @@
 #define ARM_SMMU_IDR0_ST_LVL_SHIFT	27U
 #define ARM_SMMU_IDR0_ST_LVL_MASK	(3U << ARM_SMMU_IDR0_ST_LVL_SHIFT)
 #define ARM_SMMU_IDR0_ST_LVL_2LVL	1U
+#define ARM_SMMU_IDR0_STALL_MODEL_SHIFT	24U
+#define ARM_SMMU_IDR0_STALL_MODEL_MASK	(3U << ARM_SMMU_IDR0_STALL_MODEL_SHIFT)
+#define ARM_SMMU_IDR0_STALL_MODEL_FORCE	2U
+#define ARM_SMMU_IDR0_TTENDIAN_SHIFT	21U
+#define ARM_SMMU_IDR0_TTENDIAN_MASK	(3U << ARM_SMMU_IDR0_TTENDIAN_SHIFT)
+#define ARM_SMMU_IDR0_TTENDIAN_MIXED	0U
+#define ARM_SMMU_IDR0_TTENDIAN_LE	2U
+#define ARM_SMMU_IDR0_VMID16		(1U << 18U)
+#define ARM_SMMU_IDR0_COHACC		(1U << 4U)
+#define ARM_SMMU_IDR0_TTF_SHIFT		2U
+#define ARM_SMMU_IDR0_TTF_MASK		(3U << ARM_SMMU_IDR0_TTF_SHIFT)
+#define ARM_SMMU_IDR0_TTF_AARCH64	2U
 #define ARM_SMMU_IDR0_S2P		(1U << 0U)
+#define ARM_SMMU_IDR1_TABLES_PRESET	(1U << 30U)
+#define ARM_SMMU_IDR1_QUEUES_PRESET	(1U << 29U)
+#define ARM_SMMU_IDR1_REL		(1U << 28U)
 #define ARM_SMMU_IDR1_CMDQS_SHIFT	21U
 #define ARM_SMMU_IDR1_CMDQS_MASK	(0x1fU << ARM_SMMU_IDR1_CMDQS_SHIFT)
 #define ARM_SMMU_IDR1_EVTQS_SHIFT	16U
@@ -130,6 +146,9 @@
 #define ARM_SMMU_IDR5_OAS_42_BIT	3U
 #define ARM_SMMU_IDR5_OAS_44_BIT	4U
 #define ARM_SMMU_IDR5_OAS_48_BIT	5U
+#define ARM_SMMU_IDR5_OAS_52_BIT	6U
+#define ARM_SMMU_IDR5_OAS_56_BIT	7U
+#define ARM_SMMU_IDR5_GRAN4K		(1U << 4U)
 #define ARM_SMMU_IDR0			0x0000U
 #define ARM_SMMU_IDR1			0x0004U
 #define ARM_SMMU_IDR5			0x0014U
@@ -140,6 +159,24 @@
 #define ARM_SMMU_CR0_SMMUEN		(1U << 0U)
 #define ARM_SMMU_CR0_EVTQEN		(1U << 2U)
 #define ARM_SMMU_CR0_CMDQEN		(1U << 3U)
+#define ARM_SMMU_CR1			0x0028U
+#define ARM_SMMU_CR1_TABLE_SH_SHIFT	10U
+#define ARM_SMMU_CR1_TABLE_OC_SHIFT	8U
+#define ARM_SMMU_CR1_TABLE_IC_SHIFT	6U
+#define ARM_SMMU_CR1_QUEUE_SH_SHIFT	4U
+#define ARM_SMMU_CR1_QUEUE_OC_SHIFT	2U
+#define ARM_SMMU_CR1_QUEUE_IC_SHIFT	0U
+#define ARM_SMMU_CR1_SH_INNER		3U
+#define ARM_SMMU_CR1_CACHE_WB		1U
+#define ARM_SMMU_CR1_STRICT_WB_ISH \
+	((ARM_SMMU_CR1_SH_INNER << ARM_SMMU_CR1_TABLE_SH_SHIFT) | \
+	 (ARM_SMMU_CR1_CACHE_WB << ARM_SMMU_CR1_TABLE_OC_SHIFT) | \
+	 (ARM_SMMU_CR1_CACHE_WB << ARM_SMMU_CR1_TABLE_IC_SHIFT) | \
+	 (ARM_SMMU_CR1_SH_INNER << ARM_SMMU_CR1_QUEUE_SH_SHIFT) | \
+	 (ARM_SMMU_CR1_CACHE_WB << ARM_SMMU_CR1_QUEUE_OC_SHIFT) | \
+	 (ARM_SMMU_CR1_CACHE_WB << ARM_SMMU_CR1_QUEUE_IC_SHIFT))
+#define ARM_SMMU_CR2			0x002cU
+#define ARM_SMMU_CR2_RECINVSID		(1U << 1U)
 #define ARM_SMMU_GBPA			0x0044U
 #define ARM_SMMU_GBPA_UPDATE		(1U << 31U)
 #define ARM_SMMU_GBPA_ABORT		(1U << 20U)
@@ -147,11 +184,11 @@
 #define ARM_SMMU_IRQ_CTRLACK		0x0054U
 #define ARM_SMMU_STRTAB_BASE		0x0080U
 #define ARM_SMMU_STRTAB_BASE_RA		(1UL << 62U)
-#define ARM_SMMU_STRTAB_BASE_ADDR_MASK	0x000ffffffffffffc0UL
+#define ARM_SMMU_STRTAB_BASE_ADDR_MASK	0x000fffffffffffc0UL
 #define ARM_SMMU_STRTAB_BASE_CFG	0x0088U
 #define ARM_SMMU_STRTAB_BASE_CFG_FMT_LINEAR	0U
 #define ARM_SMMU_Q_BASE_RWA		(1UL << 62U)
-#define ARM_SMMU_Q_BASE_ADDR_MASK	0x000ffffffffffffe0UL
+#define ARM_SMMU_Q_BASE_ADDR_MASK	0x000fffffffffffe0UL
 #define ARM_SMMU_CMDQ_BASE		0x0090U
 #define ARM_SMMU_CMDQ_PROD		0x0098U
 #define ARM_SMMU_CMDQ_CONS		0x009cU
@@ -159,9 +196,10 @@
 #define ARM_SMMU_EVTQ_PROD		0x00a8U
 #define ARM_SMMU_EVTQ_CONS		0x00acU
 #define ARM_SMMU_PAGE1_OFFSET		0x00010000U
+#define ARM_SMMU_MMIO_SIZE		(2UL * ARM_SMMU_PAGE1_OFFSET)
 #define ARM_SMMU_PAGE1_EVTQ_SIZE	(ARM_SMMU_PAGE1_OFFSET + ARM_SMMU_EVTQ_CONS + \
 	sizeof(uint32_t))
-#define ARM_SMMU_QUEUE_LOG2_ENTRIES	4U
+#define ARM_SMMU_QUEUE_LOG2_ENTRIES	6U
 #define ARM_SMMU_QUEUE_ENTRIES		(1U << ARM_SMMU_QUEUE_LOG2_ENTRIES)
 #define ARM_SMMU_CMD_DWORDS		2U
 #define ARM_SMMU_EVT_DWORDS		4U
@@ -283,6 +321,9 @@ struct arm_smmu_pm_state {
 	uint64_t evtq_base;
 	uint32_t strtab_base_cfg;
 	uint32_t cr0;
+	uint32_t cr1;
+	uint32_t cr2;
+	uint32_t gbpa;
 	uint32_t irq_ctrl;
 	bool hardware_active;
 	bool valid;
@@ -292,6 +333,8 @@ static struct arm_smmu_pm_state arm_smmu_pm_state;
 
 static struct arm_smmu_stream_state *arm_smmu_find_stream(uint32_t stream_id);
 static struct arm_smmu_stream_state *arm_smmu_alloc_stream(uint32_t stream_id);
+static uint32_t arm_smmu_cmdq_log2_entries(uint32_t idr1);
+static uint32_t arm_smmu_evtq_log2_entries(uint32_t idr1);
 
 static inline void *arm_smmu_reg(uint64_t base, uint32_t off)
 {
@@ -435,7 +478,8 @@ static uint64_t arm_smmu_ste_vtcr(uint32_t ipa_width)
 	vtcr |= (VTCR_ORGN0_WBWA >> 10U) << ARM_SMMU_VTCR_S2OR0_SHIFT;
 	vtcr |= (VTCR_SH0_INNER >> 12U) << ARM_SMMU_VTCR_S2SH0_SHIFT;
 	vtcr |= (VTCR_TG0_4K >> 14U) << ARM_SMMU_VTCR_S2TG_SHIFT;
-	vtcr |= (VTCR_PS_48BIT >> 16U) << ARM_SMMU_VTCR_S2PS_SHIFT;
+	vtcr |= (uint64_t)(arm_smmu_hw.idr5 & ARM_SMMU_IDR5_OAS_MASK) <<
+		ARM_SMMU_VTCR_S2PS_SHIFT;
 
 	return vtcr;
 }
@@ -756,12 +800,140 @@ static uint32_t arm_smmu_oas_bits(uint32_t idr5)
 		bits = 44U;
 		break;
 	case ARM_SMMU_IDR5_OAS_48_BIT:
-	default:
 		bits = 48U;
+		break;
+	case ARM_SMMU_IDR5_OAS_52_BIT:
+		bits = 52U;
+		break;
+	case ARM_SMMU_IDR5_OAS_56_BIT:
+		bits = 56U;
+		break;
+	default:
+		bits = 0U;
 		break;
 	}
 
 	return bits;
+}
+
+static bool arm_smmu_range_last(uint64_t base, uint64_t size, uint64_t *last)
+{
+	if ((last == NULL) || (size == 0UL) || (base > (UINT64_MAX - (size - 1UL)))) {
+		return false;
+	}
+
+	*last = base + size - 1UL;
+	return true;
+}
+
+static bool arm_smmu_include_range(uint64_t *maximum, uint64_t base, uint64_t size)
+{
+	uint64_t last;
+
+	if ((maximum == NULL) || !arm_smmu_range_last(base, size, &last)) {
+		return false;
+	}
+	if (last > *maximum) {
+		*maximum = last;
+	}
+
+	return true;
+}
+
+static uint32_t arm_smmu_address_bits(uint64_t address)
+{
+	uint32_t bits = 0U;
+
+	do {
+		bits++;
+		address >>= 1U;
+	} while (address != 0UL);
+
+	return bits;
+}
+
+static uint64_t arm_smmu_validate_caps_locked(uint64_t strtab_pa,
+	uint64_t cmdq_pa, uint64_t evtq_pa)
+{
+	uint32_t idr0 = arm_smmu_hw.idr0;
+	uint32_t idr1 = arm_smmu_hw.idr1;
+	uint32_t ttendian = (idr0 & ARM_SMMU_IDR0_TTENDIAN_MASK) >>
+		ARM_SMMU_IDR0_TTENDIAN_SHIFT;
+	uint32_t stall_model = (idr0 & ARM_SMMU_IDR0_STALL_MODEL_MASK) >>
+		ARM_SMMU_IDR0_STALL_MODEL_SHIFT;
+	uint32_t ttf = (idr0 & ARM_SMMU_IDR0_TTF_MASK) >> ARM_SMMU_IDR0_TTF_SHIFT;
+	uint64_t maximum_pa = 0UL;
+	uint64_t failures = 0UL;
+	bool ranges_valid = true;
+
+	arm_smmu_hw.sid_bits = idr1 & ARM_SMMU_IDR1_SIDSIZE_MASK;
+	arm_smmu_hw.oas_bits = arm_smmu_oas_bits(arm_smmu_hw.idr5);
+	arm_smmu_hw.vmid_bits = ((idr0 & ARM_SMMU_IDR0_VMID16) != 0U) ? 16U : 8U;
+
+	if ((idr0 & ARM_SMMU_IDR0_S2P) == 0U) {
+		failures |= ARM_SMMU_CAP_FAIL_S2P;
+	}
+	if ((ttf & ARM_SMMU_IDR0_TTF_AARCH64) == 0U) {
+		failures |= ARM_SMMU_CAP_FAIL_TTF;
+	}
+	if ((ttendian != ARM_SMMU_IDR0_TTENDIAN_MIXED) &&
+		(ttendian != ARM_SMMU_IDR0_TTENDIAN_LE)) {
+		failures |= ARM_SMMU_CAP_FAIL_TTENDIAN;
+	}
+	if ((arm_smmu_hw.idr5 & ARM_SMMU_IDR5_GRAN4K) == 0U) {
+		failures |= ARM_SMMU_CAP_FAIL_GRAN4K;
+	}
+	if ((idr0 & ARM_SMMU_IDR0_COHACC) == 0U) {
+		failures |= ARM_SMMU_CAP_FAIL_COHACC;
+	}
+	if ((stall_model == ARM_SMMU_IDR0_STALL_MODEL_FORCE) || (stall_model == 3U)) {
+		failures |= ARM_SMMU_CAP_FAIL_STALL_MODEL;
+	}
+	if ((idr1 & ARM_SMMU_IDR1_TABLES_PRESET) != 0U) {
+		failures |= ARM_SMMU_CAP_FAIL_TABLES_PRESET;
+	}
+	if ((idr1 & ARM_SMMU_IDR1_QUEUES_PRESET) != 0U) {
+		failures |= ARM_SMMU_CAP_FAIL_QUEUES_PRESET;
+	}
+	if ((idr1 & ARM_SMMU_IDR1_REL) != 0U) {
+		failures |= ARM_SMMU_CAP_FAIL_RELATIVE;
+	}
+	if (arm_smmu_cmdq_log2_entries(idr1) < ARM_SMMU_QUEUE_LOG2_ENTRIES) {
+		failures |= ARM_SMMU_CAP_FAIL_CMDQ;
+	}
+	if (arm_smmu_evtq_log2_entries(idr1) < ARM_SMMU_QUEUE_LOG2_ENTRIES) {
+		failures |= ARM_SMMU_CAP_FAIL_EVTQ;
+	}
+	if (arm_smmu_hw.sid_bits > 32U) {
+		failures |= ARM_SMMU_CAP_FAIL_SID;
+	}
+	if (CONFIG_MAX_VM_NUM > ((1UL << arm_smmu_hw.vmid_bits) - 1UL)) {
+		failures |= ARM_SMMU_CAP_FAIL_VMID;
+	}
+
+	ranges_valid &= arm_smmu_include_range(&maximum_pa, arm64_get_phys_mem_start(),
+		arm64_get_phys_mem_size());
+	ranges_valid &= arm_smmu_include_range(&maximum_pa, strtab_pa,
+		sizeof(arm_smmu_strtab));
+	ranges_valid &= arm_smmu_include_range(&maximum_pa, cmdq_pa,
+		sizeof(arm_smmu_cmdq));
+	ranges_valid &= arm_smmu_include_range(&maximum_pa, evtq_pa,
+		sizeof(arm_smmu_evtq));
+	if (beau_config.gits_size != 0UL) {
+		ranges_valid &= arm_smmu_include_range(&maximum_pa, beau_config.gits_base,
+			beau_config.gits_size);
+	}
+	arm_smmu_hw.required_oas_bits = ranges_valid ?
+		arm_smmu_address_bits(maximum_pa) : 64U;
+	if (!ranges_valid || (arm_smmu_hw.oas_bits == 0U) ||
+		(arm_smmu_hw.required_oas_bits > arm_smmu_hw.oas_bits) ||
+		((strtab_pa & ~ARM_SMMU_STRTAB_BASE_ADDR_MASK) != 0UL) ||
+		((cmdq_pa & ~ARM_SMMU_Q_BASE_ADDR_MASK) != 0UL) ||
+		((evtq_pa & ~ARM_SMMU_Q_BASE_ADDR_MASK) != 0UL)) {
+		failures |= ARM_SMMU_CAP_FAIL_OAS;
+	}
+
+	return failures;
 }
 
 static uint32_t arm_smmu_cmdq_log2_entries(uint32_t idr1)
@@ -832,7 +1004,38 @@ static int32_t arm_smmu_update_gbpa(uint32_t set, uint32_t clear)
 	mmio_write32(reg | ARM_SMMU_GBPA_UPDATE, arm_smmu_reg(arm_smmu_hw.base,
 		ARM_SMMU_GBPA));
 
-	return arm_smmu_wait_reg32(ARM_SMMU_GBPA, ARM_SMMU_GBPA_UPDATE, 0U);
+	ret = arm_smmu_wait_reg32(ARM_SMMU_GBPA, ARM_SMMU_GBPA_UPDATE, 0U);
+	if (ret == 0) {
+		reg = mmio_read32(arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_GBPA));
+		arm_smmu_hw.gbpa = reg;
+		if (((reg & set) != set) || ((reg & clear) != 0U)) {
+			ret = -EIO;
+		}
+	}
+
+	return ret;
+}
+
+static int32_t arm_smmu_program_memory_attrs_locked(uint32_t cr1, uint32_t cr2)
+{
+	uint32_t cr1_read;
+	uint32_t cr2_read;
+
+	mmio_write32(cr1, arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CR1));
+	mmio_write32(cr2, arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CR2));
+	cr1_read = mmio_read32(arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CR1));
+	cr2_read = mmio_read32(arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CR2));
+	arm_smmu_hw.cr1 = cr1_read;
+	arm_smmu_hw.cr2 = cr2_read;
+
+	if ((cr1_read != cr1) || ((cr2_read & ARM_SMMU_CR2_RECINVSID) !=
+		(cr2 & ARM_SMMU_CR2_RECINVSID))) {
+		arm_smmu_hw.cap_fail |= ARM_SMMU_CAP_FAIL_REG_CONFIG;
+		arm_smmu_hw.caps_valid = false;
+		return -EIO;
+	}
+
+	return 0;
 }
 
 static void arm_smmu_zero_abort_tables(uint32_t strtab_log2)
@@ -874,19 +1077,35 @@ static int32_t arm_smmu_hw_enable_abort_locked(void)
 	if (!arm_smmu_hw.discovered) {
 		return ARM_SMMU_INIT_UNDISCOVERED;
 	}
-	sid_bits = arm_smmu_hw.idr1 & ARM_SMMU_IDR1_SIDSIZE_MASK;
-
-	if ((sid_bits > 31U) ||
-		(arm_smmu_cmdq_log2_entries(arm_smmu_hw.idr1) < ARM_SMMU_QUEUE_LOG2_ENTRIES)) {
-		LOG_ERR("SMMUv3: queue/SID capability too small idr1=0x%x", arm_smmu_hw.idr1);
-		return -ENODEV;
+	ret = arm_smmu_update_gbpa(ARM_SMMU_GBPA_ABORT, 0U);
+	if (ret != 0) {
+		arm_smmu_hw.state = ARM_SMMU_STATE_FAILED;
+		return ret;
 	}
-	strtab_log2 = arm_smmu_strtab_log2_entries(sid_bits);
-	arm_smmu_zero_abort_tables(strtab_log2);
+	arm_smmu_hw.aborted = true;
+	arm_smmu_hw.state = ARM_SMMU_STATE_ABORT;
+	mmio_write32(0U, arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CR0));
+	ret = arm_smmu_wait_reg32(ARM_SMMU_CR0ACK, ARM_SMMU_CR0_SMMUEN |
+		ARM_SMMU_CR0_EVTQEN | ARM_SMMU_CR0_CMDQEN, 0U);
+	arm_smmu_hw.cr0 = mmio_read32(arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CR0));
+	if (ret != 0) {
+		arm_smmu_hw.state = ARM_SMMU_STATE_FAILED;
+		return ret;
+	}
 
 	strtab_pa = hva2hpa(arm_smmu_strtab);
 	cmdq_pa = hva2hpa(arm_smmu_cmdq);
 	evtq_pa = hva2hpa(arm_smmu_evtq);
+	arm_smmu_hw.cap_fail = arm_smmu_validate_caps_locked(strtab_pa, cmdq_pa, evtq_pa);
+	arm_smmu_hw.caps_valid = arm_smmu_hw.cap_fail == 0UL;
+	if (!arm_smmu_hw.caps_valid) {
+		LOG_ERR("SMMUv3: strict capability gate failed: 0x%lx", arm_smmu_hw.cap_fail);
+		return -ENODEV;
+	}
+
+	sid_bits = arm_smmu_hw.sid_bits;
+	strtab_log2 = arm_smmu_strtab_log2_entries(sid_bits);
+	arm_smmu_zero_abort_tables(strtab_log2);
 	strtab_cfg = ARM_SMMU_STRTAB_BASE_CFG_FMT_LINEAR | strtab_log2;
 	evtq_supported = arm_smmu_evtq_supported_locked();
 
@@ -905,9 +1124,8 @@ static int32_t arm_smmu_hw_enable_abort_locked(void)
 	 * registers. Its IRQ line remains masked; diagnostics poll events and
 	 * quarantine the faulting stream.
 	 */
-	mmio_write32(0U, arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CR0));
-	ret = arm_smmu_wait_reg32(ARM_SMMU_CR0ACK, ARM_SMMU_CR0_SMMUEN |
-		ARM_SMMU_CR0_EVTQEN | ARM_SMMU_CR0_CMDQEN, 0U);
+	ret = arm_smmu_program_memory_attrs_locked(ARM_SMMU_CR1_STRICT_WB_ISH,
+		ARM_SMMU_CR2_RECINVSID);
 	if (ret != 0) {
 		return ret;
 	}
@@ -962,7 +1180,6 @@ static int32_t arm_smmu_hw_enable_abort_locked(void)
 	arm_smmu_hw.cmdq_base = cmdq_pa;
 	arm_smmu_hw.evtq_base = evtq_supported ? evtq_pa : 0UL;
 	arm_smmu_hw.sid_bits = sid_bits;
-	arm_smmu_hw.oas_bits = arm_smmu_oas_bits(arm_smmu_hw.idr5);
 	arm_smmu_hw.strtab_log2_entries = strtab_log2;
 	arm_smmu_hw.cmdq_entries = ARM_SMMU_QUEUE_ENTRIES;
 	arm_smmu_hw.evtq_entries = evtq_supported ? ARM_SMMU_QUEUE_ENTRIES : 0U;
@@ -970,6 +1187,7 @@ static int32_t arm_smmu_hw_enable_abort_locked(void)
 	arm_smmu_hw.cmdq_enabled = true;
 	arm_smmu_hw.evtq_enabled = evtq_supported;
 	arm_smmu_hw.ready = true;
+	arm_smmu_hw.state = ARM_SMMU_STATE_READY;
 	arm_smmu_hw_ready = true;
 	arm_smmu_assignment_hw_ready = true;
 
@@ -981,37 +1199,46 @@ void arm_smmu_probe(uint64_t base, uint64_t size)
 	uint64_t flags;
 	int32_t ret;
 
-	if ((base == 0UL) || (size < (ARM_SMMU_AIDR + sizeof(uint32_t)))) {
-		LOG_ERR("invalid SMMUv3 dts window base=0x%lx size=0x%lx", base, size);
-		return;
-	}
-
-	/* [20260709] SMMU discovery and abort-default programming:
+	/* [20260716] Strict SMMUv3 capability gate
 	 *
-	 *   platform.dts -> MMIO ID registers -> zero STEs -> SMMUEN
-	 *                                           |
-	 *                                           v
-	 *                            all described StreamIDs fault by default
+	 *   platform.dts MMIO
+	 *       -> GBPA.ABORT confirmed
+	 *       -> CR0 disabled and acknowledged
+	 *       -> mandatory capabilities validated
+	 *       -> CR1/CR2 + tables/queues programmed
+	 *       -> CR0 enabled and READY published
 	 *
-	 * This protects against DMA bypass, but it is not a VM assignment path.
-	 * P1 must still replace one STE with a VM stage-2 descriptor and issue
-	 * command-queue sync before passthrough can succeed.
+	 * Key rule:
+	 *   - capability failure leaves the instance disabled in global ABORT;
+	 *   - assignment readiness is published only after every register readback;
+	 *   - SMMU table memory and platform DMA targets must fit the probed OAS.
 	 */
 	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);
 	(void)memset(&arm_smmu_hw, 0U, sizeof(arm_smmu_hw));
 	arm_smmu_hw.base = base;
 	arm_smmu_hw.size = size;
+	arm_smmu_hw.strict = true;
+	arm_smmu_hw.probed = true;
+	arm_smmu_hw.state = ARM_SMMU_STATE_UNDISCOVERED;
+	arm_smmu_hw.init_status = ARM_SMMU_INIT_UNDISCOVERED;
+	arm_smmu_hw_ready = false;
+	arm_smmu_assignment_hw_ready = false;
+	if ((base == 0UL) || (size < ARM_SMMU_MMIO_SIZE) ||
+		(base > (UINT64_MAX - (size - 1UL)))) {
+		arm_smmu_hw.cap_fail = ARM_SMMU_CAP_FAIL_MMIO;
+		arm_smmu_hw.state = ARM_SMMU_STATE_FAILED;
+		arm_smmu_hw.init_status = -EINVAL;
+		spinlock_irqrestore_release(&arm_smmu_lock, flags);
+		LOG_ERR("invalid SMMUv3 dts window base=0x%lx size=0x%lx", base, size);
+		return;
+	}
 	arm_smmu_hw.idr0 = mmio_read32(arm_smmu_reg(base, ARM_SMMU_IDR0));
 	arm_smmu_hw.idr1 = mmio_read32(arm_smmu_reg(base, ARM_SMMU_IDR1));
 	arm_smmu_hw.idr5 = mmio_read32(arm_smmu_reg(base, ARM_SMMU_IDR5));
 	arm_smmu_hw.iidr = mmio_read32(arm_smmu_reg(base, ARM_SMMU_IIDR));
 	arm_smmu_hw.aidr = mmio_read32(arm_smmu_reg(base, ARM_SMMU_AIDR));
 	arm_smmu_hw.discovered = true;
-	arm_smmu_hw.probed = true;
 	arm_smmu_hw.ready = false;
-	arm_smmu_hw.init_status = ARM_SMMU_INIT_UNDISCOVERED;
-	arm_smmu_hw_ready = false;
-	arm_smmu_assignment_hw_ready = false;
 	ret = arm_smmu_hw_enable_abort_locked();
 	arm_smmu_hw.init_status = ret;
 	spinlock_irqrestore_release(&arm_smmu_lock, flags);
@@ -1064,6 +1291,12 @@ int32_t arm_smmu_pm_suspend(uint64_t epoch)
 		mmio_read64(arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_EVTQ_BASE)) : 0UL;
 	arm_smmu_pm_state.cr0 = mmio_read32(arm_smmu_reg(
 		arm_smmu_hw.base, ARM_SMMU_CR0));
+	arm_smmu_pm_state.cr1 = mmio_read32(arm_smmu_reg(
+		arm_smmu_hw.base, ARM_SMMU_CR1));
+	arm_smmu_pm_state.cr2 = mmio_read32(arm_smmu_reg(
+		arm_smmu_hw.base, ARM_SMMU_CR2));
+	arm_smmu_pm_state.gbpa = mmio_read32(arm_smmu_reg(
+		arm_smmu_hw.base, ARM_SMMU_GBPA));
 	arm_smmu_pm_state.irq_ctrl = mmio_read32(arm_smmu_reg(
 		arm_smmu_hw.base, ARM_SMMU_IRQ_CTRL));
 	arm_smmu_pm_state.hardware_active = true;
@@ -1081,6 +1314,7 @@ int32_t arm_smmu_pm_suspend(uint64_t epoch)
 		arm_smmu_hw.cmdq_enabled = false;
 		arm_smmu_hw.evtq_enabled = false;
 		arm_smmu_hw.aborted = true;
+		arm_smmu_hw.state = ARM_SMMU_STATE_ABORT;
 	}
 	spinlock_irqrestore_release(&arm_smmu_lock, flags);
 
@@ -1119,6 +1353,10 @@ int32_t arm_smmu_pm_resume(uint64_t epoch)
 		ARM_SMMU_CR0_SMMUEN | ARM_SMMU_CR0_EVTQEN |
 		ARM_SMMU_CR0_CMDQEN, 0U);
 	if (ret == 0) {
+		ret = arm_smmu_program_memory_attrs_locked(arm_smmu_pm_state.cr1,
+			arm_smmu_pm_state.cr2);
+	}
+	if (ret == 0) {
 		flush_cache_range(arm_smmu_strtab,
 			(1U << arm_smmu_hw.strtab_log2_entries) * ARM_SMMU_STE_SIZE);
 		flush_cache_range(arm_smmu_cmdq, sizeof(arm_smmu_cmdq));
@@ -1142,7 +1380,8 @@ int32_t arm_smmu_pm_resume(uint64_t epoch)
 			mmio_write32(0U, arm_smmu_page1_reg(arm_smmu_hw.base,
 				ARM_SMMU_EVTQ_CONS));
 		}
-		ret = arm_smmu_update_gbpa(ARM_SMMU_GBPA_ABORT, 0U);
+		ret = arm_smmu_update_gbpa(arm_smmu_pm_state.gbpa & ARM_SMMU_GBPA_ABORT,
+			(~arm_smmu_pm_state.gbpa) & ARM_SMMU_GBPA_ABORT);
 	}
 	if (ret == 0) {
 		mmio_write32(arm_smmu_pm_state.irq_ctrl,
@@ -1174,6 +1413,7 @@ int32_t arm_smmu_pm_resume(uint64_t epoch)
 	}
 	if (ret == 0) {
 		arm_smmu_hw.aborted = true;
+		arm_smmu_hw.state = ARM_SMMU_STATE_READY;
 		arm_smmu_pm_state.suspend_epoch = 0UL;
 		arm_smmu_pm_state.hardware_active = false;
 		arm_smmu_pm_state.valid = false;
@@ -1269,6 +1509,12 @@ void arm_smmu_get_hw_info(struct arm_smmu_hw_info *info)
 	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);
 	*info = arm_smmu_hw;
 	info->ready = arm_smmu_hw_ready;
+	if (arm_smmu_hw.discovered && (arm_smmu_hw.base != 0UL)) {
+		info->cr0 = mmio_read32(arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CR0));
+		info->cr1 = mmio_read32(arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CR1));
+		info->cr2 = mmio_read32(arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_CR2));
+		info->gbpa = mmio_read32(arm_smmu_reg(arm_smmu_hw.base, ARM_SMMU_GBPA));
+	}
 	if (arm_smmu_hw.cmdq_enabled && (arm_smmu_hw.base != 0UL)) {
 		info->cmdq_prod = arm_smmu_cmdq_prod;
 		info->cmdq_cons = mmio_read32(arm_smmu_reg(arm_smmu_hw.base,
@@ -1433,14 +1679,24 @@ struct iommu_domain *arm_smmu_create_domain(uint16_t vm_id,
 	struct iommu_domain *domain = NULL;
 	uint64_t flags;
 
-	if ((vm_id >= ARM_SMMU_MAX_DOMAINS) || (root_table_hpa == 0UL)) {
+	if ((vm_id >= ARM_SMMU_MAX_DOMAINS) || (root_table_hpa == 0UL) ||
+		((root_table_hpa & (PAGE_SIZE - 1UL)) != 0UL)) {
 		return NULL;
 	}
-	if ((ipa_width < 32U) || (ipa_width > 48U)) {
+	if (ipa_width != 48U) {
 		return NULL;
 	}
 
 	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);
+	if (arm_smmu_hw.caps_valid) {
+		uint64_t root_last;
+
+		if (!arm_smmu_range_last(root_table_hpa, PAGE_SIZE, &root_last) ||
+			(arm_smmu_address_bits(root_last) > arm_smmu_hw.oas_bits)) {
+			spinlock_irqrestore_release(&arm_smmu_lock, flags);
+			return NULL;
+		}
+	}
 	domain = &arm_smmu_domains[vm_id];
 	if (!domain->used) {
 		domain->vm_id = vm_id;

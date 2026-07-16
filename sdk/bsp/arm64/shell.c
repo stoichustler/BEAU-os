@@ -135,6 +135,7 @@ static int32_t shell_pm(int32_t argc, char **argv);
 static int32_t shell_pmstat(int32_t argc, __unused char **argv);
 static const char *shell_yes_no(bool value);
 static const char *shell_vm_state_to_str(enum vm_state state);
+static struct arm_smmu_stream_config shell_smmu_streams[PCISTAT_MAX_STREAMS];
 
 struct shell_cmd arch_shell_cmds[] = {
 	{
@@ -1051,11 +1052,33 @@ static const char *shell_smmu_ste_cfg_to_str(uint32_t cfg)
 	return str;
 }
 
+static const char *shell_smmu_state_to_str(enum arm_smmu_state state)
+{
+	const char *str;
+
+	switch (state) {
+	case ARM_SMMU_STATE_ABORT:
+		str = "abort";
+		break;
+	case ARM_SMMU_STATE_READY:
+		str = "ready";
+		break;
+	case ARM_SMMU_STATE_FAILED:
+		str = "failed";
+		break;
+	case ARM_SMMU_STATE_UNDISCOVERED:
+	default:
+		str = "undiscovered";
+		break;
+	}
+
+	return str;
+}
+
 static int32_t shell_smmustat(int32_t argc, __unused char **argv)
 {
 	struct arm_smmu_hw_info info;
 	struct arm64_gicv3_its_stats its;
-	struct arm_smmu_stream_config streams[PCISTAT_MAX_STREAMS];
 	uint32_t stream_count;
 	uint32_t idx;
 
@@ -1069,13 +1092,17 @@ static int32_t shell_smmustat(int32_t argc, __unused char **argv)
 	arm_smmu_poll_events();
 	arm_smmu_get_hw_info(&info);
 	arm64_gicv3_its_get_stats(&its);
-	stream_count = arm_smmu_get_stream_configs(streams, ARRAY_SIZE(streams));
+	stream_count = arm_smmu_get_stream_configs(shell_smmu_streams,
+		ARRAY_SIZE(shell_smmu_streams));
 
 	shell_puts("\r\nsmmustat:\r\n");
 	shell_item_begin("smmu");
 	shell_item_line("discovered:%s probed:%s abort:%s ready:%s",
 		shell_yes_no(info.discovered), shell_yes_no(info.probed),
 		shell_yes_no(info.aborted), shell_yes_no(info.ready));
+	shell_item_line("strict:%s caps.valid:%s state:%s",
+		shell_yes_no(info.strict), shell_yes_no(info.caps_valid),
+		shell_smmu_state_to_str(info.state));
 	shell_item_line("init.status:%d", info.init_status);
 	if (!info.discovered) {
 		shell_item_line("hardware:none");
@@ -1087,6 +1114,10 @@ static int32_t shell_smmustat(int32_t argc, __unused char **argv)
 	shell_item_line("caps:sid.bits:%u oas.bits:%u streams:%u s2p:%s",
 		info.sid_bits, info.oas_bits, 1U << info.strtab_log2_entries,
 		shell_yes_no((info.idr0 & 0x1U) != 0U));
+	shell_item_line("caps:vmid.bits:%u required.oas.bits:%u fail:0x%016lx",
+		info.vmid_bits, info.required_oas_bits, info.cap_fail);
+	shell_item_line("regs:cr0:0x%08x cr1:0x%08x cr2:0x%08x gbpa:0x%08x",
+		info.cr0, info.cr1, info.cr2, info.gbpa);
 	shell_item_line("strtab:0x%016lx cmdq:0x%016lx evtq:0x%016lx",
 		info.strtab_base, info.cmdq_base, info.evtq_base);
 	shell_item_line("queue.entries:cmd:%u evt:%u cmdq.en:%s evtq.en:%s",
@@ -1131,27 +1162,31 @@ static int32_t shell_smmustat(int32_t argc, __unused char **argv)
 		char owner[16U];
 		char domain[16U];
 
-		shell_format_vmid(owner, sizeof(owner), streams[idx].owner_vmid);
-		shell_format_vmid(domain, sizeof(domain), streams[idx].domain_vmid);
+		shell_format_vmid(owner, sizeof(owner), shell_smmu_streams[idx].owner_vmid);
+		shell_format_vmid(domain, sizeof(domain), shell_smmu_streams[idx].domain_vmid);
 		shell_item_line("stream[0x%04x] sw-owner:%s ste-vm:%s assigned:%s quarantine:%s strtab:%s idx:0x%04x",
-			streams[idx].stream_id, owner, domain,
-			shell_yes_no(streams[idx].assigned),
-			shell_yes_no(streams[idx].quarantined),
-			shell_yes_no(streams[idx].in_strtab), streams[idx].strtab_index);
+			shell_smmu_streams[idx].stream_id, owner, domain,
+			shell_yes_no(shell_smmu_streams[idx].assigned),
+			shell_yes_no(shell_smmu_streams[idx].quarantined),
+			shell_yes_no(shell_smmu_streams[idx].in_strtab),
+			shell_smmu_streams[idx].strtab_index);
 		shell_item_line("     s2:ipa:%u root:0x%016lx",
-			streams[idx].ipa_width, streams[idx].root_table_hpa);
-		if (streams[idx].in_strtab) {
+			shell_smmu_streams[idx].ipa_width,
+			shell_smmu_streams[idx].root_table_hpa);
+		if (shell_smmu_streams[idx].in_strtab) {
 			shell_item_line("     ste:valid:%s cfg:%s(%u) w0:0x%016lx w1:0x%016lx",
-				shell_yes_no(streams[idx].ste_valid),
-				shell_smmu_ste_cfg_to_str(streams[idx].ste_cfg),
-				streams[idx].ste_cfg, streams[idx].ste[0], streams[idx].ste[1]);
+				shell_yes_no(shell_smmu_streams[idx].ste_valid),
+				shell_smmu_ste_cfg_to_str(shell_smmu_streams[idx].ste_cfg),
+				shell_smmu_streams[idx].ste_cfg, shell_smmu_streams[idx].ste[0],
+				shell_smmu_streams[idx].ste[1]);
 			shell_item_line("     ste:w2:0x%016lx w3:0x%016lx",
-				streams[idx].ste[2], streams[idx].ste[3]);
+				shell_smmu_streams[idx].ste[2], shell_smmu_streams[idx].ste[3]);
 		}
-		if (streams[idx].fault_count != 0U) {
+		if (shell_smmu_streams[idx].fault_count != 0U) {
 			shell_item_line("     fault:count:%u code:0x%02x iova:0x%016lx",
-				streams[idx].fault_count, streams[idx].last_fault_code,
-				streams[idx].last_fault_iova);
+				shell_smmu_streams[idx].fault_count,
+				shell_smmu_streams[idx].last_fault_code,
+				shell_smmu_streams[idx].last_fault_iova);
 		}
 	}
 	shell_item_end();
@@ -1380,7 +1415,6 @@ static void shell_pcistat_vm(uint16_t vm_id,
 
 static int32_t shell_pcistat(int32_t argc, __unused char **argv)
 {
-	struct arm_smmu_stream_config streams[PCISTAT_MAX_STREAMS];
 	uint32_t stream_count;
 	uint16_t vm_id;
 
@@ -1390,7 +1424,8 @@ static int32_t shell_pcistat(int32_t argc, __unused char **argv)
 	}
 
 	arm_smmu_poll_events();
-	stream_count = arm_smmu_get_stream_configs(streams, ARRAY_SIZE(streams));
+	stream_count = arm_smmu_get_stream_configs(shell_smmu_streams,
+		ARRAY_SIZE(shell_smmu_streams));
 	shell_puts("\r\npcistat:\r\n");
 	shell_pcistat_host();
 
@@ -1398,7 +1433,7 @@ static int32_t shell_pcistat(int32_t argc, __unused char **argv)
 		struct acrn_vm_config *vm_config = get_vm_config(vm_id);
 
 		if ((vm_config->pci_devs != NULL) && (vm_config->pci_dev_num != 0U)) {
-			shell_pcistat_vm(vm_id, streams, stream_count);
+			shell_pcistat_vm(vm_id, shell_smmu_streams, stream_count);
 		}
 	}
 

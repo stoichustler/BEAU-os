@@ -45,6 +45,30 @@ struct dmar_info {
 	struct dmar_drhd *drhd_units;
 };
 
+enum arm_smmu_state {
+	ARM_SMMU_STATE_UNDISCOVERED = 0U,
+	ARM_SMMU_STATE_ABORT,
+	ARM_SMMU_STATE_READY,
+	ARM_SMMU_STATE_FAILED,
+};
+
+#define ARM_SMMU_CAP_FAIL_MMIO			(1UL << 0U)
+#define ARM_SMMU_CAP_FAIL_S2P			(1UL << 1U)
+#define ARM_SMMU_CAP_FAIL_TTF			(1UL << 2U)
+#define ARM_SMMU_CAP_FAIL_TTENDIAN		(1UL << 3U)
+#define ARM_SMMU_CAP_FAIL_GRAN4K		(1UL << 4U)
+#define ARM_SMMU_CAP_FAIL_COHACC		(1UL << 5U)
+#define ARM_SMMU_CAP_FAIL_STALL_MODEL		(1UL << 6U)
+#define ARM_SMMU_CAP_FAIL_TABLES_PRESET		(1UL << 7U)
+#define ARM_SMMU_CAP_FAIL_QUEUES_PRESET		(1UL << 8U)
+#define ARM_SMMU_CAP_FAIL_RELATIVE		(1UL << 9U)
+#define ARM_SMMU_CAP_FAIL_CMDQ			(1UL << 10U)
+#define ARM_SMMU_CAP_FAIL_EVTQ			(1UL << 11U)
+#define ARM_SMMU_CAP_FAIL_OAS			(1UL << 12U)
+#define ARM_SMMU_CAP_FAIL_VMID			(1UL << 13U)
+#define ARM_SMMU_CAP_FAIL_SID			(1UL << 14U)
+#define ARM_SMMU_CAP_FAIL_REG_CONFIG		(1UL << 15U)
+
 struct arm_smmu_hw_info {
 	uint64_t base;
 	uint64_t size;
@@ -56,8 +80,16 @@ struct arm_smmu_hw_info {
 	uint32_t idr5;
 	uint32_t iidr;
 	uint32_t aidr;
+	uint32_t cr0;
+	uint32_t cr1;
+	uint32_t cr2;
+	uint32_t gbpa;
 	uint32_t sid_bits;
 	uint32_t oas_bits;
+	uint32_t vmid_bits;
+	uint32_t required_oas_bits;
+	uint64_t cap_fail;
+	enum arm_smmu_state state;
 	uint32_t strtab_log2_entries;
 	uint32_t cmdq_entries;
 	uint32_t evtq_entries;
@@ -94,6 +126,8 @@ struct arm_smmu_hw_info {
 	bool cmdq_enabled;
 	bool evtq_enabled;
 	bool ready;
+	bool strict;
+	bool caps_valid;
 };
 
 struct arm_smmu_stream_config {
