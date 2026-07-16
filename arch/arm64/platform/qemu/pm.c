@@ -26,6 +26,25 @@
 #define QEMU_PM_PL011_INT_RT	(1U << 6U)
 #define QEMU_PM_PL011_INT_ALL	0x7ffU
 
+/* [20260716] QEMU simulated STR wake path
+ *
+ * host terminal byte -> PL011 RX/RT IRQ -> qemu_pm_wake_irq()
+ *                                              |
+ *                                              +-- drain RX FIFO
+ *                                              +-- clear PL011 IRQ
+ *                                              +-- validate wake allow-list
+ *                                              +-- publish epoch wake bitmap
+ *                                                                |
+ * BSP: arm UART -> WFI loop -------------------------------------+-> restore
+ *
+ * Key rule:
+ *   - QEMU simulated mode exercises the same PM transaction and retention
+ *     ordering without claiming that virtual hardware lost power;
+ *   - prepare saves the original PL011 interrupt mask, and wake/abort both
+ *     restore it and release the temporary IRQ handler deterministically;
+ *   - the ISR drains input before recording the wake so a level-triggered UART
+ *     cannot immediately retrigger while host interrupt state is restored.
+ */
 static uint32_t qemu_pm_saved_imsc;
 static uint32_t qemu_pm_acrn_irq = IRQ_INVALID;
 static bool qemu_pm_uart_wake_armed;

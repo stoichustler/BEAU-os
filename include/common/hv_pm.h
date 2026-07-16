@@ -14,6 +14,25 @@
 #define HV_PM_DEFAULT_CONTROLLER_VM	2U
 #define HV_PM_MAX_HOOKS		32U
 
+/* [20260716] Suspend-to-RAM (STR) transaction state contract
+ *
+ * RUNNING -> PREPARING -> FREEZING_HOST -> SUSPENDED
+ *    ^                                       |
+ *    |                         resume/wake   v
+ *    +------------------------------- RESTORING_HOST
+ *    ^
+ *    |
+ * ABORTING <---------- explicit abort/error in any active phase
+ *    |
+ *    +--> FAILED when rollback cannot prove restored isolation
+ *
+ * Key rule:
+ *   - epoch identifies one transaction and rejects stale callbacks;
+ *   - scope selects either one VM or the policy-defined system VM set;
+ *   - snapshots are read-only observations, while core/pm.c owns transitions;
+ *   - PM_FAILED is fail-closed: target I/O remains gated when isolation cannot
+ *     be proven after a rollback or restore error.
+ */
 enum beau_pm_system_state {
 	PM_RUNNING = 0U,
 	PM_PREPARING,
@@ -112,6 +131,11 @@ struct beau_pm_transaction {
 
 typedef int32_t (*beau_pm_hook_fn)(uint64_t epoch);
 
+/*
+ * Lower priorities suspend first; resume and abort run completed hooks in
+ * reverse priority order. The completed-hook bitmap is the rollback journal,
+ * so a provider is unwound only after its forward callback succeeds.
+ */
 struct beau_pm_ops {
 	const char *name;
 	uint16_t priority;

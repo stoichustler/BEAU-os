@@ -27,6 +27,30 @@
 #define BSP_PM_HOOK_PRIO_VTIMER	800U
 #define BSP_PM_HOOK_PRIO_VGIC	900U
 
+/* [20260716] BSP STR retention framework
+ *
+ * core PM epoch/scope
+ *       |
+ *       +-- prepare --> virtio drain and QueueNotify gate
+ *       |
+ *       +-- suspend --> WDT -> passthrough IRQ -> vPCI -> SMMU
+ *                                      -> vtimer -> vGIC
+ *       |
+ *       +-- resume/abort <------------- reverse dependency order
+ *
+ * System scope                         VM scope
+ *   all required VMs                     target VM only
+ *   passthrough IRQ + SMMU retained       passthrough ownership rejected
+ *   platform entry follows hooks          host and other VMs keep running
+ *
+ * Key rule:
+ *   - core/pm.c owns the transaction; this file only binds device providers;
+ *   - each adapter validates the epoch and derives scope from one snapshot;
+ *   - suspend proceeds from producers toward delivery state, while reverse
+ *     order restores consumers only after their providers are usable;
+ *   - VM-only STR fails closed when DMA or backend sharing prevents an
+ *     isolation proof without guest cooperation.
+ */
 static uint32_t bsp_pm_wakeup_irqs[BSP_PM_MAX_WAKE_IRQS];
 static uint16_t bsp_pm_wakeup_irq_count;
 static bool bsp_pm_retention_hooks_registered;
@@ -82,6 +106,7 @@ static int32_t bsp_pm_run_required_vm_resume_hook(uint64_t epoch,
 		return -EINVAL;
 	}
 
+	/* Match the hook-level LIFO rule inside a multi-VM provider as well. */
 	for (vmid = CONFIG_MAX_VM_NUM; vmid > 0U; vmid--) {
 		struct acrn_vm *vm;
 		int32_t status;
@@ -137,6 +162,7 @@ static int32_t bsp_pm_get_epoch_snapshot(uint64_t epoch,
 		return -EINVAL;
 	}
 
+	/* Epoch validation prevents a late callback from touching a newer STR. */
 	hv_pm_get_snapshot(snapshot);
 	return (snapshot->epoch == epoch) ? 0 : -EINVAL;
 }
@@ -295,6 +321,12 @@ static int32_t bsp_pm_smmu_resume(uint64_t epoch)
 
 static int32_t bsp_pm_register_retention_hooks(void)
 {
+	/*
+	 * Priorities encode dependencies. In particular vGIC is retained after
+	 * vPCI/MSI and timers, then restored before they can deliver new IRQ state.
+	 * vPCI disables bus mastering before SMMU switches DMA to abort mode; the
+	 * passthrough hook keeps physical IRQs masked across that retention window.
+	 */
 	static const struct beau_pm_ops retention_hooks[] = {
 		{
 			.name = "vm-wdt",
@@ -376,6 +408,7 @@ int32_t bsp_pm_set_wakeup_irqs(const uint32_t *irqs, uint16_t count)
 		return status;
 	}
 
+	/* Only policy-listed physical sources may turn an IRQ into an STR wake. */
 	for (idx = 0U; idx < count; idx++) {
 		bsp_pm_wakeup_irqs[idx] = irqs[idx];
 	}

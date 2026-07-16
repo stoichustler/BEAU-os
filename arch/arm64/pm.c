@@ -82,6 +82,11 @@ void arm64_restore_el2_context(const struct arm64_el2_pm_context *context)
 	if (context == NULL) {
 		return;
 	}
+	/*
+	 * Rebuild the EL2 translation regime before restoring registers that can
+	 * resume guest execution. DSB makes the table-base writes visible and ISB
+	 * makes the new execution context architectural before SCTLR_EL2 is used.
+	 */
 	arm64_sysreg_write(vbar_el2, context->vbar_el2);
 	arm64_sysreg_write(mair_el2, context->mair_el2);
 	arm64_sysreg_write(tcr_el2, context->tcr_el2);
@@ -374,6 +379,29 @@ static void arm64_pm_record_first_error(int32_t status, int32_t *first_error)
 	}
 }
 
+/* [20260716] ARM64 system STR flow
+ *
+ * BSP idle / core PM       ARM64 host retention         platform backend
+ *        |                          |                          |
+ *        +-- PM_SUSPENDED --------->| save EL2 context         |
+ *        |                          +-- arm wake source ------>|
+ *        |                          +-- park APs               |
+ *        |                          +-- stop BSP timer/GIC     |
+ *        |                          +-- enter ---------------->|
+ *        |                          |<--------------- wake/err |
+ *        |                          +-- restore EL2/GIC/SMMU   |
+ *        |                          +-- timer/APs/console      |
+ *        |<-- host_restored --------+-- release wake source -->|
+ *
+ * Key rule:
+ *   - platform prepare owns wake-source arming until wake or abort cleanup;
+ *   - APs save banked state on their own CPUs before the BSP retains global
+ *     distributor and EL2 state;
+ *   - restore order follows availability dependencies, so the SMMU and GIC
+ *     are usable before APs and guest-facing device hooks resume;
+ *   - all independent restore steps run and preserve the first error; callers
+ *     may roll back only when host_restored proves EL2 is operational.
+ */
 int32_t platform_pm_enter(uint64_t epoch, bool *host_restored)
 {
 	const struct arm64_platform_pm_ops *ops = arm64_platform_pm_get_ops();

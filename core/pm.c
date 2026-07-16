@@ -26,7 +26,7 @@
  *    |                 | freeze(epoch) -->| block target threads  |
  *    |                 |<-- switch-out ACK|                       |
  *    |                 | suspend target devices ----------------->|
- *    |                 |                                         |
+ *    |                 |                                          |
  *    |                 +-- VM scope: wait for explicit resume     |
  *    |                 +-- system: retain EL2 / wait for wake --->|
  *    |                 |<----------------------- restore Host EL2 |
@@ -41,6 +41,18 @@
  *   - device retention starts only after every gated vCPU has switched out;
  *   - restore hooks and vCPU thaw finish before target I/O is ungated;
  *   - an unprovable restore leaves PM_FAILED with guests and I/O still frozen.
+ *
+ * State flow:
+ *
+ *   RUNNING -> PREPARING -> FREEZING_HOST -> SUSPENDED
+ *      ^                                       |
+ *      |                         resume/wake   v
+ *      +------------------------------- RESTORING_HOST
+ *      ^
+ *      |
+ *   ABORTING <---------- explicit abort/error in any active phase
+ *      |
+ *      +--> PM_FAILED if rollback cannot prove restored isolation
  */
 static struct beau_pm_transaction pm_transaction = {
 	.data = {
@@ -548,6 +560,11 @@ static int32_t hv_pm_run_forward(uint64_t epoch, bool suspend_phase)
 	if (status != 0) {
 		return status;
 	}
+	/*
+	 * The priority-sorted array is a dependency order, not merely a callback
+	 * list. Recording each success makes reverse traversal a precise unwind of
+	 * the resources acquired or retained by this epoch.
+	 */
 	for (idx = 0U; idx < count; idx++) {
 		beau_pm_hook_fn callback = suspend_phase ?
 			pm_hooks[idx].suspend : pm_hooks[idx].prepare;
@@ -697,6 +714,12 @@ static int32_t hv_pm_gate_vm(uint64_t epoch, uint16_t vmid)
 	pm_transaction.data.vm[vmid].prior_vm_state = vm->state;
 	spinlock_irqrestore_release(&pm_transaction.lock, flags);
 
+	/*
+	 * STR freezes scheduler threads without rewriting guest-visible vCPU
+	 * lifecycle state. active records threads that still need a switch-out;
+	 * wake_owned records blocked threads whose pending wake must be replayed by
+	 * thaw_thread(), preserving the sleep/wake edge across the freeze window.
+	 */
 	for (vcpu_id = 0U; vcpu_id < vm->hw.created_vcpus; vcpu_id++) {
 		struct acrn_vcpu *vcpu = vcpu_from_vid(vm, vcpu_id);
 		enum vcpu_state state = vcpu_get_state(vcpu);
@@ -981,6 +1004,11 @@ void hv_pm_process_from_idle(uint16_t pcpu_id)
 	int32_t status;
 	bool host_restored = false;
 
+	/*
+	 * Idle context is the execution barrier for STR: no caller stack or guest
+	 * exit path remains part of the transaction. APs retain only banked local
+	 * state; the BSP alone advances the global state machine and platform path.
+	 */
 	if (pcpu_id != BSP_CPU_ID) {
 		arch_pm_process_secondary_from_idle(pcpu_id);
 		return;
