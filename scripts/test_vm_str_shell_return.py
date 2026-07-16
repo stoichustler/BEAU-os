@@ -115,6 +115,11 @@ class VmStrShellReturnTest(unittest.TestCase):
             schedule,
             "void default_idle(__unused struct thread_object *obj)\n{",
         )
+        arch_pm = source("arch/arm64/pm.c")
+        secondary_idle = function_body(
+            arch_pm,
+            "void arch_pm_process_secondary_from_idle(uint16_t pcpu_id)\n{",
+        )
 
         self.assertRegex(
             idle,
@@ -125,6 +130,7 @@ class VmStrShellReturnTest(unittest.TestCase):
                 re.DOTALL,
             ),
         )
+        self.assertNotIn("make_reschedule_request", secondary_idle)
 
 
 if __name__ == "__main__":

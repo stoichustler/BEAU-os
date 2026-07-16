@@ -217,7 +217,6 @@ void arch_pm_process_secondary_from_idle(uint16_t pcpu_id)
 	}
 	arm64_pm_secondary.resume_status[pcpu_id] = first_error;
 	bitmap_set(pcpu_id, &arm64_pm_secondary.resumed_mask);
-	make_reschedule_request(pcpu_id);
 }
 
 static int32_t arm64_pm_release_secondary_cpus(uint64_t epoch,

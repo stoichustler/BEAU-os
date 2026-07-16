@@ -930,7 +930,7 @@ void run_thread(struct thread_object *obj)
  *
  * Key rule:
  *   - PM owns the suspend transaction while the idle thread executes it;
- *   - after PM returns, the scheduler must reconsider runnable host threads;
+ *   - common idle owns the return handoff for BSP and secondary PM paths;
  *   - publishing the request prevents idle from entering WFI with pending work.
  */
 void default_idle(__unused struct thread_object *obj)
