@@ -15,9 +15,9 @@
     ├── beau             // Documentation
     ├── bsp              // BEAU dev/vdev drivers
     ├── image
-    ├── kbe              // Linux kernel virtio backend
+    ├── kbe              // BEAU general-purpose Linux drivers
     ├── ube              // Userspace backend (not used yet)
-    └── zsh              // Zephyr guest shell validation sources
+    └── zsh              // BEAU general-purpose Zephyr applications
 ```
 
 ## Coding Spec
@@ -64,12 +64,13 @@ Example box-drawing elements:
 ──┤  ├──  ─┬─  ─┴─
 ```
 
-5. Use this shape for non-trivial C design comments:
+5. Use this shape for non-trivial C design comments. The compact ASCII diagram
+   may be a framework/architecture diagram, flowchart, or sequence diagram:
 
 ```
 /* [YYYYMMDD] Topic
  *
- * compact ASCII diagram or state flow
+ * compact ASCII framework/architecture diagram, flowchart, or sequence diagram
  *
  * Key rule:
  *   - explanatory Contents (for principles and background knowledge);
@@ -98,8 +99,9 @@ publish ownership
    avoid hidden ownership transfer, and keep diagnostics actionable.
    (More details refer to [ISO26262.md](beau/ISO26262.md))
 
-8. After BEAU OS general-purpose Linux drivers and Zephyr test shell code are
-   validated, move the retained copies into `sdk/kbe` and `sdk/zsh`
+8. After changes to BEAU general-purpose Linux drivers or BEAU general-purpose
+   Zephyr applications are validated in their corresponding guest OS source
+   trees, copy the approved reusable files into `sdk/kbe` and `sdk/zsh`
    respectively so later porting and validation can reuse them quickly.
 
 9. Move validation images that need to be reused, including Linux `Image`,

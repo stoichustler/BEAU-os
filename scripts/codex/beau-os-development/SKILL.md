@@ -1,6 +1,6 @@
 ---
 name: beau-os-development
-description: Implement, compile, validate, and submit BEAU OS ARM64 hypervisor changes in this repository. Use when Codex edits BEAU OS C, assembly, headers, Kconfig, DTS, Makefiles, SDK documentation, or regression code; diagnoses build or runtime failures; runs qemu or rk356x builds; validates SMMU, vPCI, vGIC, scheduler, watchdog, console, or virtio behavior; or prepares a BEAU OS commit.
+description: Plan, implement, compile, validate, and submit BEAU OS ARM64 hypervisor changes in this repository through explicit human approval gates. Use when Codex scopes or designs a BEAU OS change; edits C, assembly, headers, Kconfig, DTS, Makefiles, SDK documentation, or regression code; diagnoses build or runtime failures; runs qemu or rk356x builds; validates SMMU, vPCI, vGIC, scheduler, watchdog, console, or virtio behavior; or prepares a BEAU OS commit or push.
 ---
 
 # BEAU OS Development
@@ -8,6 +8,111 @@ description: Implement, compile, validate, and submit BEAU OS ARM64 hypervisor c
 Use the repository's code ownership, safety rules, build entry points, and
 commit format consistently. Keep edits narrowly scoped and preserve unrelated
 worktree changes.
+
+## Enforce Phase Gates
+
+Treat approval as scoped to the phase and artifacts shown to the user. Do not
+infer approval from silence, an earlier approval, or a general request to finish
+the task. Read-only inspection needed to prepare the current phase is allowed.
+
+### Phase 1: Confirm Requirements and Boundaries
+
+Before designing or editing, state:
+
+- the requested outcome and explicitly excluded work;
+- the affected subsystem and target platform;
+- allowed and prohibited file or directory boundaries;
+- the expected behavior, failure contract, and measurable success criteria;
+- for guest OS changes, the human-provided source root, editable paths, and
+  guest source to BEAU retained-copy mapping;
+- assumptions, ambiguities, and decisions still needed.
+
+Ask for explicit human approval. Do not enter Phase 2 until the requirements and
+boundaries are approved. If the requirements later change, return to Phase 1.
+
+### Phase 2: Design the Change
+
+After Phase 1 approval, inspect the implementation and present:
+
+- the exact files expected to change and their ownership layers;
+- the control flow, data flow, state ownership, and cleanup path;
+- the implementation sequence and required design comments;
+- per-code-tree file changes, build targets, validation, and worktree handling;
+- the validated guest source files to copy into BEAU, when guest OS code changes;
+- the build target, automated-test proposal, risks, and rollback approach.
+
+Do not edit implementation files during this phase. When requested, the only
+allowed write is an AI-generated development plan under `docs/plan/`. Treat
+these plans as local process artifacts: they may describe the complete workflow
+but must remain outside every code submission. Ask for explicit human approval
+before entering Phase 3. If implementation requires a new file, subsystem, ABI
+change, or other unapproved scope, stop and return to Phase 2.
+
+### Phase 3: Implement the Approved Design
+
+Modify only the approved files and behavior. Follow the repository rules below
+and report any deviation before making it. After implementation, summarize the
+actual diff and continue to the approved compilation checks in Phase 4.
+
+### Phase 4: Compile
+
+Compile every affected target in every approved code tree specified by the
+design. Compilation, compiler diagnostics, `git diff --check`, and other
+non-test integrity checks do not require a separate test approval. Do not
+silently add or run automated tests as part of a build command.
+
+### Phase 5: Plan and Approve Testing
+
+#### Automated Testing
+
+Treat unit, integration, regression, smoke, and runtime test scripts as
+automated tests. Before changing a test script, show the proposed files and
+coverage change and obtain explicit human approval. After any approved test
+changes are complete, obtain separate approval before enabling or running tests.
+
+The execution approval request must list:
+
+- test type and script path;
+- target code tree;
+- exact command and target platform;
+- estimated duration and environment impact;
+- whether the test modifies images, generated files, devices, or runtime state.
+
+Approval to implement or compile does not authorize test modification or test
+execution. If the test plan changes, stop and request approval again.
+
+#### Manual Testing
+
+When the user selects manual testing or validation, provide the complete plan
+before execution and obtain explicit approval. Include:
+
+- the objective, coverage, target code tree, platform, and environment;
+- prerequisites and preparation;
+- numbered actions with the expected result for each action;
+- pass, fail, and stop criteria;
+- required logs, screenshots, serial output, or other evidence;
+- cleanup and environment-restoration steps;
+- estimated duration and environment impact.
+
+When the user performs the test, wait for the required evidence and assess it
+against the stated criteria. Do not infer success from the plan or from missing
+evidence. When assisting with a device or environment, list the exact operations
+and obtain separate approval before acting. Mark incomplete, failed, or
+insufficiently evidenced manual testing as unverified; do not enter Phase 6 or
+update retained guest OS copies in that state.
+
+### Phase 6: Submit
+
+After validation, report the changed files, diff summary, build and approved
+test results, known limitations, and proposed commit message for each code tree.
+Obtain explicit human approval before creating each commit. Obtain separate
+approval before pushing each commit or creating/updating a remote review. Never
+apply approval for one code tree to another.
+
+Never request, accept, store, or pass a Gitee, GitHub, or Gerrit password or
+access token in source files, helper files, prompts, logs, commit messages, or
+command-line arguments. Ask the user to configure local SSH, a credential
+manager, or the provider's interactive login when authentication is unavailable.
 
 ## Establish Context
 
@@ -22,8 +127,35 @@ worktree changes.
 6. Inspect `git status --short`, the recent commit headers, and overlapping
    diffs. Treat existing changes as user-owned unless their origin is known.
 7. Inspect the current implementation and its callers before selecting a fix.
-   Use external Nebula or Zephyr trees only as references; adapt their design to
-   BEAU ownership and failure rules instead of copying platform assumptions.
+   Do not search for or inspect local external projects unless the user provides
+   the source root and approves its role in the task.
+
+## Handle External and Guest OS Code
+
+1. Operate only in the current BEAU repository by default. Do not discover,
+   search, or infer another source tree from local directories, images, build
+   outputs, or neighboring workspaces.
+2. Treat a human-provided external reference project as read-only unless it is
+   explicitly approved as the guest OS implementation target. Adapt reference
+   ideas to BEAU ownership and failure rules instead of copying assumptions.
+3. Before changing guest OS code, confirm its exact source root and editable
+   paths in Phase 1 and approve its file-level design in Phase 2. After both
+   gates pass, modify the approved guest OS files directly.
+4. Keep task-specific external project names and absolute paths in task context;
+   do not add them to this skill.
+5. Inspect and preserve user-owned changes separately in every approved code
+   tree. Build, test, commit, and push each tree under its own applicable rules
+   and approval gates.
+6. `sdk/kbe/` retains BEAU general-purpose Linux drivers. `sdk/zsh/` retains
+   BEAU general-purpose Zephyr applications. After every required build and
+   automated or manual test in the approved design passes, copy only the
+   approved reusable source, header, and integration files according to the
+   Phase 2 mapping.
+7. Compare the retained copies with their validated guest source files after
+   copying. Do not retain a complete external tree, build outputs, logs,
+   temporary files, or images.
+8. Do not update `sdk/kbe/` or `sdk/zsh/` when required validation is skipped,
+   fails, remains incomplete, or lacks the required evidence.
 
 ## Assign Ownership
 
@@ -37,8 +169,8 @@ Place behavior in the narrowest existing layer:
   and layout-stable.
 - Put platform discovery, shell commands, vPCI, passthrough policy, virtio
   proxy, watchdog, image loading, and guest-facing DT construction in `sdk/bsp/`.
-- Put retained Linux and Zephyr validation sources in `sdk/kbe/` and `sdk/zsh/`
-  only after validation.
+- Put retained BEAU general-purpose Linux drivers in `sdk/kbe/` and retained
+  BEAU general-purpose Zephyr applications in `sdk/zsh/` only after validation.
 - Put reusable guest images in `sdk/image/`.
 - Put retained automated coverage in `scripts/regress.py`; never submit
   `scripts/test_*.py`.
@@ -129,11 +261,12 @@ Scale validation to the changed contract:
 
 1. Run `git diff --check` after edits.
 2. Compile every affected target with warnings treated as errors.
-3. Run `python3 -m py_compile scripts/regress.py` when regression code changes.
-4. Add durable success and failure coverage to `scripts/regress.py` for new
-   runtime behavior.
-5. Run a targeted smoke first, then the broader regression required by the
-   blast radius.
+3. Propose `python3 -m py_compile scripts/regress.py` when regression code
+   changes, and run it only after Phase 5 execution approval.
+4. Propose durable success and failure coverage in `scripts/regress.py` for new
+   runtime behavior. Modify it only after Phase 5 modification approval.
+5. After Phase 5 execution approval, run a targeted smoke first, then the
+   broader regression required by the blast radius.
 
 Use the repository entry points:
 
@@ -153,16 +286,21 @@ after a transient failure and preserve the first failure's diagnostic context.
 
 ## Submit
 
-Commit only when requested or when the active task explicitly requires
-submission.
+Commit only after the Phase 6 commit approval. A request to implement, finish,
+or submit a change does not replace this approval.
+
+Use the steps below for the BEAU repository. For an approved guest OS source
+tree, read and follow its repository-local submission rules, then request its
+commit and push approvals separately.
 
 1. Re-read `git status --short` and `git diff` after validation.
 2. Determine the next two-digit count from recent commits for the active BEAU
    version.
 3. Stage an explicit path list. Leave unrelated modified and untracked files
-   unstaged.
+   unstaged. Never stage AI-generated files under `docs/plan/`.
 4. Run `git diff --cached --check` and review `git diff --cached --stat` plus
-   the staged diff.
+   the staged diff. Verify `git diff --cached --name-only` contains no
+   `docs/plan/` path before committing.
 5. Use the exact commit structure:
 
 ```text
@@ -171,9 +309,8 @@ submission.
 Purpose of the change.
 ```
 
-6. Verify the resulting commit and worktree. Push only when the user requested
-   remote submission. Never place credentials in source, helper files, commit
-   messages, or command-line arguments.
+6. Verify the resulting commit and worktree. Push only after the separate Phase
+   6 push approval, using authentication already configured by the user.
 
 Report the commit hash, pushed branch when applicable, validation performed,
 known limitations, and any preserved user-owned changes.
