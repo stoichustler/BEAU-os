@@ -16,6 +16,7 @@
 #include <schedule.h>
 #include <asm/hv_pm.h>
 #include <asm/irq.h>
+#include <asm/pmu.h>
 #include <asm/psci.h>
 #include <asm/sysreg.h>
 #include <asm/vtd.h>
@@ -184,6 +185,7 @@ void arch_pm_process_secondary_from_idle(uint16_t pcpu_id)
 		return;
 	}
 
+	arm64_core_pmu_suspend_cpu(epoch);
 	status = arch_pm_suspend_timer(epoch);
 	if (status == 0) {
 		timer_suspended = true;
@@ -215,6 +217,7 @@ void arch_pm_process_secondary_from_idle(uint16_t pcpu_id)
 		status = arch_pm_resume_timer(epoch);
 		arm64_pm_record_first_error(status, &first_error);
 	}
+	arm64_core_pmu_resume_cpu(epoch);
 	arm64_pm_secondary.resume_status[pcpu_id] = first_error;
 	bitmap_set(pcpu_id, &arm64_pm_secondary.resumed_mask);
 }
@@ -412,6 +415,7 @@ int32_t platform_pm_enter(uint64_t epoch, bool *host_restored)
 	bool secondary_suspended = false;
 	bool secondary_restored = false;
 	bool timer_suspended = false;
+	bool pmu_suspended = false;
 	bool gic_suspended = false;
 
 	if (host_restored == NULL) {
@@ -446,6 +450,8 @@ int32_t platform_pm_enter(uint64_t epoch, bool *host_restored)
 	status = arch_pm_suspend_secondary_cpus(epoch, &secondary_restored);
 	if (status == 0) {
 		secondary_suspended = true;
+		arm64_core_pmu_suspend_cpu(epoch);
+		pmu_suspended = true;
 		status = arch_pm_suspend_timer(epoch);
 	} else if (!secondary_restored) {
 		/* An AP that did not acknowledge local restore keeps EL2 failed closed. */
@@ -472,6 +478,9 @@ int32_t platform_pm_enter(uint64_t epoch, bool *host_restored)
 	if (timer_suspended) {
 		status = arch_pm_resume_timer(epoch);
 		arm64_pm_record_first_error(status, &restore_status);
+	}
+	if (pmu_suspended) {
+		arm64_core_pmu_resume_cpu(epoch);
 	}
 	if (secondary_suspended) {
 		status = arch_pm_resume_secondary_cpus(epoch);

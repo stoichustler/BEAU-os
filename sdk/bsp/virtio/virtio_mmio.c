@@ -13,6 +13,7 @@
 #include <bsp/io_req.h>
 #include <rtl.h>
 #include <virtio_mmio.h>
+#include <asm/pmu.h>
 
 /* [20260712] virtio-mmio transport boundary
  *
@@ -475,6 +476,7 @@ static void virtio_mmio_write_reg(struct virtio_mmio_dev *dev,
 int32_t virtio_mmio_handler(struct io_request *io_req,
 	void *handler_private_data)
 {
+	struct arm64_core_pmu_path_token pmu_token;
 	struct virtio_mmio_dev *dev = (struct virtio_mmio_dev *)handler_private_data;
 	struct acrn_mmio_request *mmio;
 	uint32_t offset;
@@ -485,6 +487,7 @@ int32_t virtio_mmio_handler(struct io_request *io_req,
 		return ret;
 	}
 
+	arm64_core_pmu_path_begin(&pmu_token);
 	mmio = &io_req->reqs.mmio_request;
 	if ((mmio->size == 1UL) || (mmio->size == 2UL) || (mmio->size == 4UL)) {
 		offset = (uint32_t)(mmio->address - dev->base);
@@ -500,6 +503,7 @@ int32_t virtio_mmio_handler(struct io_request *io_req,
 		ret = 0;
 	}
 
+	arm64_core_pmu_path_end(ARM64_CORE_PMU_PATH_VIRTIO, &pmu_token);
 	return ret;
 }
 

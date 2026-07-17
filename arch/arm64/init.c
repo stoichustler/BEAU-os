@@ -23,6 +23,7 @@
 #include <asm/platform.h>
 #include <asm/irq.h>
 #include <asm/cache.h>
+#include <asm/pmu.h>
 #ifdef STACK_PROTECTOR
 #include <asm/security.h>
 #endif
@@ -210,6 +211,7 @@ static void init_pcpu_comm_post(void)
 	init_interrupt(pcpu_id);
 	init_smp_call();
 	timer_init();
+	arm64_core_pmu_init_pcpu();
 	ptdev_init();
 
 	init_sched(pcpu_id);
@@ -228,6 +230,7 @@ static void init_pcpu_comm_post(void)
 		if (!wait_pcpus_running(AP_MASK)) {
 			panic("failed to initialize all secondary cores!");
 		}
+		arm64_core_pmu_init_workers();
 		cpufreq_init();
 		arm64_rttest_init();
 		shell_start();

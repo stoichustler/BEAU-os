@@ -67,14 +67,6 @@ static inline uint64_t read_id_aa64pfr1_el1(void)
 	return val;
 }
 
-static inline uint64_t read_id_aa64dfr0_el1(void)
-{
-	uint64_t val;
-
-	val = arm64_sysreg_read(s3_0_c0_c5_0);
-	return val;
-}
-
 static inline uint64_t read_id_aa64dfr1_el1(void)
 {
 	uint64_t val;
@@ -245,7 +237,7 @@ static bool arm64_vsve_read_id_value(const struct acrn_vcpu *vcpu,
 		*value = arm64_vcpu_mpu_sve_enabled(vcpu) ? read_id_aa64zfr0_el1() : 0UL;
 		break;
 	case SYSREG_ID_AA64DFR0_EL1:
-		*value = read_id_aa64dfr0_el1();
+		*value = read_id_aa64dfr0_el1() & ~ID_AA64DFR0_PMUVER_MASK;
 		break;
 	case SYSREG_ID_AA64DFR1_EL1:
 		*value = read_id_aa64dfr1_el1();

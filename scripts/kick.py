@@ -44,6 +44,11 @@ def parse_args():
     parser.add_argument("--smp", default=getenv("BEAU_QEMU_SMP", "8"))
     parser.add_argument("-m", "--memory", default=getenv("BEAU_QEMU_MEM", "1024M"))
     parser.add_argument(
+        "--pmu-icount",
+        action="store_true",
+        help="enable precise QEMU icount for INST_RETIRED validation (slows SMP guests)",
+    )
+    parser.add_argument(
         "--linux-image",
         default=None,
         type=relpath,
@@ -191,6 +196,9 @@ def main():
         "-device",
         f"loader,file={args.linux_initramfs},addr={LINUX_INITRAMFS_STAGE_ADDR},force-raw=on",
     ]
+    # Precise icount disables MTTCG; keep it opt-in for PMU register validation.
+    if args.pmu_icount:
+        qemu_cmd.extend(["-icount", "shift=0,align=off,sleep=off"])
     if not args.no_pcie_test:
         qemu_cmd.extend(["-device", "edu,addr=0x1"])
     if not args.no_pcie_net_backend:

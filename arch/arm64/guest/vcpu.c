@@ -15,6 +15,7 @@
 #include <trace.h>
 #include <asm/irq.h>
 #include <asm/cpu.h>
+#include <asm/pmu.h>
 #include <asm/sysreg.h>
 #include <asm/trap.h>
 #include <asm/guest/vcpu_priv.h>
@@ -380,6 +381,8 @@ void load_vcpu(__unused struct acrn_vcpu *vcpu)
 {
 	struct arm64_vcpu_guest_ctx *gctx = &vcpu->arch.gctx;
 
+	arm64_core_pmu_vcpu_load(vcpu);
+
 	/*
 	 * VTTBR/VTCR select the VM's stage-2 table and VMPIDR gives the guest its
 	 * virtual CPU identity. CNTV is direct guest hardware state saved/restored
@@ -438,6 +441,7 @@ void unload_vcpu(__unused struct acrn_vcpu *vcpu)
 	arm64_vgicv3_arm_cntv_timer(vcpu);
 	write_hcr_el2(0UL);
 	write_vttbr_el2(0UL);
+	arm64_core_pmu_vcpu_unload(vcpu);
 }
 
 void flush_vcpu_context(__unused struct acrn_vcpu *vcpu)

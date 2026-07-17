@@ -99,6 +99,7 @@ HOST_C_SRCS += arch/arm64/notify.c
 HOST_C_SRCS += arch/arm64/trap.c
 HOST_C_SRCS += arch/arm64/security.c
 HOST_C_SRCS += arch/arm64/pm.c
+HOST_C_SRCS += arch/arm64/pmu.c
 HOST_C_SRCS += arch/arm64/sve.c
 HOST_C_SRCS += arch/arm64/mpu.c
 HOST_C_SRCS += arch/arm64/smmu/smmu.c

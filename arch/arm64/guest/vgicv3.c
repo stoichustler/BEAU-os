@@ -46,6 +46,7 @@
 #include <guest_memory.h>
 #include <ticks.h>
 #include <asm/platform.h>
+#include <asm/pmu.h>
 #include <asm/sysreg.h>
 #include <asm/trap.h>
 #include <asm/guest/vgicv3.h>
@@ -4024,6 +4025,7 @@ static int32_t vgicv3_mmio_access(struct acrn_vcpu *vcpu, struct arm64_vgicv3 *v
 
 int32_t arm64_vgicv3_mmio_handler(struct io_request *io_req, void *handler_private_data)
 {
+	struct arm64_core_pmu_path_token pmu_token;
 	struct arm64_vgicv3 *vgic = (struct arm64_vgicv3 *)handler_private_data;
 	struct acrn_mmio_request *mmio = &io_req->reqs.mmio_request;
 	struct acrn_vcpu *vcpu = get_running_vcpu(get_pcpu_id());
@@ -4041,6 +4043,7 @@ int32_t arm64_vgicv3_mmio_handler(struct io_request *io_req, void *handler_priva
 	 *   data abort -> io_request -> vGIC lock -> sync
 	 *        -> emulate GICD/GICR/GITS -> flush if LR state changed
 	 */
+	arm64_core_pmu_path_begin(&pmu_token);
 	if ((vcpu != NULL) && (vgic != NULL)) {
 		struct arm64_vgicv3_vcpu_ctx *ctx = &vcpu->arch.vgic;
 		uint64_t old_lrs[ARM64_VGIC_MAX_LRS];
@@ -4058,6 +4061,7 @@ int32_t arm64_vgicv3_mmio_handler(struct io_request *io_req, void *handler_priva
 		}
 		spinlock_irqrestore_release(&vgic->lock, flags);
 	}
+	arm64_core_pmu_path_end(ARM64_CORE_PMU_PATH_VGIC, &pmu_token);
 
 	return ret;
 }

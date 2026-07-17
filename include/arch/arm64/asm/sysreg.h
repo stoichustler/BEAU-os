@@ -90,6 +90,31 @@
 #define ID_AA64PFR0_SVE_SHIFT	32U
 #define ID_AA64PFR0_SVE_MASK	(0xfUL << ID_AA64PFR0_SVE_SHIFT)
 
+#define ID_AA64DFR0_PMUVER_SHIFT	8U
+#define ID_AA64DFR0_PMUVER_MASK		(0xfUL << ID_AA64DFR0_PMUVER_SHIFT)
+
+#define MDCR_EL2_HPMN_MASK	0x1fUL
+#define MDCR_EL2_TPMCR		(1UL << 5U)
+#define MDCR_EL2_TPM		(1UL << 6U)
+#define MDCR_EL2_HPME		(1UL << 7U)
+#define MDCR_EL2_HPMD		(1UL << 17U)
+#define MDCR_EL2_HCCD		(1UL << 23U)
+
+#define PMCR_EL0_E		(1UL << 0U)
+#define PMCR_EL0_P		(1UL << 1U)
+#define PMCR_EL0_C		(1UL << 2U)
+#define PMCR_EL0_D		(1UL << 3U)
+#define PMCR_EL0_X		(1UL << 4U)
+#define PMCR_EL0_DP		(1UL << 5U)
+#define PMCR_EL0_LC		(1UL << 6U)
+#define PMCR_EL0_LP		(1UL << 7U)
+#define PMCR_EL0_N_SHIFT	11U
+#define PMCR_EL0_N_MASK		0x1fUL
+#define PMCR_EL0_WRITABLE_MASK	(PMCR_EL0_E | PMCR_EL0_P | PMCR_EL0_C | \
+	PMCR_EL0_D | PMCR_EL0_X | PMCR_EL0_DP | PMCR_EL0_LC | PMCR_EL0_LP)
+
+#define PMU_EVENT_INCLUDE_EL2	(1UL << 27U)
+
 #define ZCR_ELx_LEN_MASK	0xfUL
 
 /* ICH_HCR_EL2 controls the virtual GIC CPU interface exposed to a vCPU. */
@@ -588,6 +613,100 @@ static inline uint64_t read_id_aa64pfr0_el1(void)
 	val = arm64_sysreg_read(id_aa64pfr0_el1);
 	return val;
 }
+
+static inline uint64_t read_id_aa64dfr0_el1(void)
+{
+	return arm64_sysreg_read(s3_0_c0_c5_0);
+}
+
+static inline uint64_t read_pmcr_el0(void)
+{
+	return arm64_sysreg_read(pmcr_el0);
+}
+
+static inline void write_pmcr_el0(uint64_t val)
+{
+	arm64_sysreg_write(pmcr_el0, val);
+	arm64_isb();
+}
+
+static inline uint64_t read_pmceid0_el0(void)
+{
+	return arm64_sysreg_read(pmceid0_el0);
+}
+
+static inline uint64_t read_pmceid1_el0(void)
+{
+	return arm64_sysreg_read(pmceid1_el0);
+}
+
+static inline uint64_t read_pmccntr_el0(void)
+{
+	return arm64_sysreg_read(pmccntr_el0);
+}
+
+static inline void write_pmccntr_el0(uint64_t val)
+{
+	arm64_sysreg_write(pmccntr_el0, val);
+}
+
+static inline void write_pmcntenset_el0(uint64_t val)
+{
+	arm64_sysreg_write(pmcntenset_el0, val);
+}
+
+static inline void write_pmcntenclr_el0(uint64_t val)
+{
+	arm64_sysreg_write(pmcntenclr_el0, val);
+}
+
+static inline void write_pmintenclr_el1(uint64_t val)
+{
+	arm64_sysreg_write(pmintenclr_el1, val);
+}
+
+static inline uint64_t read_pmovsclr_el0(void)
+{
+	return arm64_sysreg_read(pmovsclr_el0);
+}
+
+static inline void write_pmovsclr_el0(uint64_t val)
+{
+	arm64_sysreg_write(pmovsclr_el0, val);
+}
+
+static inline void write_pmccfiltr_el0(uint64_t val)
+{
+	arm64_sysreg_write(pmccfiltr_el0, val);
+}
+
+static inline void write_pmuserenr_el0(uint64_t val)
+{
+	arm64_sysreg_write(pmuserenr_el0, val);
+}
+
+#define ARM64_PMU_COUNTER_HELPERS(n) \
+static inline uint64_t read_pmevcntr##n##_el0(void) \
+{ \
+	return arm64_sysreg_read(pmevcntr##n##_el0); \
+} \
+static inline void write_pmevcntr##n##_el0(uint64_t val) \
+{ \
+	arm64_sysreg_write(pmevcntr##n##_el0, val); \
+} \
+static inline void write_pmevtyper##n##_el0(uint64_t val) \
+{ \
+	arm64_sysreg_write(pmevtyper##n##_el0, val); \
+}
+
+ARM64_PMU_COUNTER_HELPERS(0)
+ARM64_PMU_COUNTER_HELPERS(1)
+ARM64_PMU_COUNTER_HELPERS(2)
+ARM64_PMU_COUNTER_HELPERS(3)
+ARM64_PMU_COUNTER_HELPERS(4)
+ARM64_PMU_COUNTER_HELPERS(5)
+
+#undef ARM64_PMU_COUNTER_HELPERS
 
 static inline uint64_t read_ctr_el0(void)
 {

@@ -23,6 +23,7 @@
 #include <asm/cpu.h>
 #include <asm/irq.h>
 #include <asm/page.h>
+#include <asm/pmu.h>
 #include <asm/sysreg.h>
 #include <asm/trap.h>
 #include <asm/guest/vcpu_priv.h>
@@ -585,6 +586,7 @@ static void advance_vcpu_elr(struct acrn_vcpu *vcpu)
 
 static int32_t handle_mmio_abort(struct acrn_vcpu *vcpu)
 {
+	struct arm64_core_pmu_path_token pmu_token;
 	struct cpu_regs *regs = &vcpu->arch.regs;
 	struct io_request *io_req = &vcpu->req;
 	struct acrn_mmio_request *mmio = &io_req->reqs.mmio_request;
@@ -629,7 +631,9 @@ static int32_t handle_mmio_abort(struct acrn_vcpu *vcpu)
 	 * dominate boot/runtime cost here even when each emulated register access
 	 * is individually simple.
 	 */
+	arm64_core_pmu_path_begin(&pmu_token);
 	ret = emulate_io(vcpu, io_req);
+	arm64_core_pmu_path_end(ARM64_CORE_PMU_PATH_MMIO, &pmu_token);
 	if (ret == 0) {
 		if (((esr & ESR_DABT_WNR) == 0UL) && (reg != NULL)) {
 			*reg = extend_mmio_read(mmio->value, size, esr);
@@ -917,13 +921,18 @@ static int32_t handle_sysreg(struct acrn_vcpu *vcpu)
 		((sysreg == SYSREG_ICC_SGI1R_EL1) || (sysreg == SYSREG_ICC_SGI0R_EL1) ||
 		(sysreg == SYSREG_ICC_ASGI1R_EL1)) &&
 		(reg != NULL)) {
+		struct arm64_core_pmu_path_token pmu_token;
+
+		arm64_core_pmu_path_begin(&pmu_token);
 		ret = arm64_vgicv3_handle_sgi1r(vcpu, *reg);
+		arm64_core_pmu_path_end(ARM64_CORE_PMU_PATH_VGIC, &pmu_token);
 		if (ret == 0) {
 			advance_vcpu_elr(vcpu);
 		}
 	} else if ((sysreg == SYSREG_ICC_PMR_EL1) || (sysreg == SYSREG_ICC_CTLR_EL1) ||
 		(sysreg == SYSREG_ICC_SRE_EL1) || (sysreg == SYSREG_ICC_IGRPEN1_EL1) ||
 		(sysreg == SYSREG_ICC_DIR_EL1) || (sysreg == SYSREG_ICC_RPR_EL1)) {
+		struct arm64_core_pmu_path_token pmu_token;
 		uint32_t vgic_sysreg;
 
 		switch (sysreg) {
@@ -946,11 +955,19 @@ static int32_t handle_sysreg(struct acrn_vcpu *vcpu)
 			vgic_sysreg = ARM64_VGIC_SYSREG_ICC_IGRPEN1_EL1;
 			break;
 		}
-		ret = arm64_vgicv3_handle_cpuif_sysreg(vcpu, vgic_sysreg,
-			read, reg);
+		arm64_core_pmu_path_begin(&pmu_token);
+		ret = arm64_vgicv3_handle_cpuif_sysreg(vcpu, vgic_sysreg, read, reg);
+		arm64_core_pmu_path_end(ARM64_CORE_PMU_PATH_VGIC, &pmu_token);
 		if (ret == 0) {
 			advance_vcpu_elr(vcpu);
 		}
+	} else if (arm64_core_pmu_guest_sysreg(sysreg)) {
+		if (read && (reg != NULL)) {
+			*reg = 0UL;
+		}
+		arm64_core_pmu_record_guest_access(vcpu);
+		advance_vcpu_elr(vcpu);
+		ret = 0;
 	} else if (arm64_vtimer_sysreg(sysreg)) {
 		ret = arm64_vtimer_handle_sysreg(vcpu, sysreg, read, reg);
 		if (ret == 0) {
