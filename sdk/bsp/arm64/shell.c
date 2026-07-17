@@ -36,6 +36,7 @@
 #include <bsp/vuart.h>
 #include <debug/symbol.h>
 #include <asm/mmu.h>
+#include <asm/boot/ld_sym.h>
 #include <asm/coredump.h>
 #include <asm/irq.h>
 #include <asm/cache.h>
@@ -57,6 +58,9 @@
 #define SHELL_CMD_MEM_STAT		"memstat"
 #define SHELL_CMD_MEM_STAT_PARAM	NULL
 #define SHELL_CMD_MEM_STAT_HELP		"list ARM64 page-table pool and stage-2 ownership statistics"
+#define SHELL_CMD_KUSG			"kusg"
+#define SHELL_CMD_KUSG_PARAM		NULL
+#define SHELL_CMD_KUSG_HELP		"list BEAU static memory usage in KB"
 #define SHELL_CMD_HEALTH		"health"
 #define SHELL_CMD_HEALTH_PARAM		NULL
 #define SHELL_CMD_HEALTH_HELP		"summarize current host and VM operational health"
@@ -82,7 +86,7 @@
 #define SHELL_CMD_SMMUSTAT_PARAM	NULL
 #define SHELL_CMD_SMMUSTAT_HELP		"list ARM SMMUv3 and ITS passthrough state"
 #define SHELL_CMD_VSMMUSTAT		"vsmmustat"
-#define SHELL_CMD_VSMMUSTAT_PARAM	"[vm id]"
+#define SHELL_CMD_VSMMUSTAT_PARAM	NULL
 #define SHELL_CMD_VSMMUSTAT_HELP	"list guest-visible synthetic SMMUv3 state"
 #define SHELL_CMD_PCISTAT		"pcistat"
 #define SHELL_CMD_PCISTAT_PARAM		NULL
@@ -118,8 +122,8 @@
 #define RTTEST_SAMPLE_COUNT		1000U
 #define RTTEST_CBS_PERIOD_US		10000U
 #define RTTEST_CBS_BUDGET_US		500U
-#define RTTEST_LINE_SIZE		112U
-#define RTTEST_OUTPUT_SIZE		((MAX_PCPU_NUM * RTTEST_LINE_SIZE) + 1U)
+#define RTTEST_LINE_SIZE		160U
+#define RTTEST_OUTPUT_SIZE		(((MAX_PCPU_NUM + 1U) * RTTEST_LINE_SIZE) + 1U)
 #define TRACE_DUMP_DEFAULT_COUNT	64U
 #define SHELL_MEM_KB_BYTES		1024UL
 #define SHELL_MEM_MB_BYTES		(SHELL_MEM_KB_BYTES * 1024UL)
@@ -127,6 +131,7 @@
 
 static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv);
 static int32_t shell_memstat(int32_t argc, __unused char **argv);
+static int32_t shell_kusg(int32_t argc, __unused char **argv);
 static int32_t shell_health(int32_t argc, __unused char **argv);
 static int32_t shell_dumpstat(int32_t argc, char **argv);
 static int32_t shell_coredump(int32_t argc, char **argv);
@@ -135,7 +140,7 @@ static int32_t shell_cachestat(int32_t argc, __unused char **argv);
 static int32_t shell_ipcstat(int32_t argc, __unused char **argv);
 static int32_t shell_virtiostat(int32_t argc, char **argv);
 static int32_t shell_smmustat(int32_t argc, __unused char **argv);
-static int32_t shell_vsmmustat(int32_t argc, char **argv);
+static int32_t shell_vsmmustat(int32_t argc, __unused char **argv);
 static int32_t shell_pcistat(int32_t argc, char **argv);
 static int32_t shell_cpufreq(int32_t argc, __unused char **argv);
 static int32_t shell_rttest(int32_t argc, __unused char **argv);
@@ -161,6 +166,12 @@ struct shell_cmd arch_shell_cmds[] = {
 		.cmd_param	= SHELL_CMD_MEM_STAT_PARAM,
 		.help_str	= SHELL_CMD_MEM_STAT_HELP,
 		.fcn		= shell_memstat,
+	},
+	{
+		.str		= SHELL_CMD_KUSG,
+		.cmd_param	= SHELL_CMD_KUSG_PARAM,
+		.help_str	= SHELL_CMD_KUSG_HELP,
+		.fcn		= shell_kusg,
 	},
 	{
 		.str		= SHELL_CMD_HEALTH,
@@ -269,8 +280,8 @@ uint32_t arch_shell_cmds_sz = ARRAY_SIZE(arch_shell_cmds);
 
 static void shell_print_mem_header(void)
 {
-	shell_puts("domain      type       attr                    address range (size)\r\n");
-	shell_puts("──────────  ─────────  ──────────────────────  ─────────────────────────────────────────────────────\r\n");
+	shell_item_line("domain      type       attr                    address range (size)");
+	shell_item_line("──────────  ─────────  ──────────────────────  ─────────────────────────────────────────────────────");
 }
 
 static uint64_t shell_mem_range_end(uint64_t start, uint64_t size)
@@ -281,7 +292,6 @@ static uint64_t shell_mem_range_end(uint64_t start, uint64_t size)
 static void shell_print_mem_map(const char *domain, const char *type,
 	const char *attr, uint64_t addr, uint64_t size)
 {
-	char temp_str[MAX_STR_SIZE];
 	uint64_t unit_bytes;
 	uint64_t size_whole;
 	uint64_t size_fraction;
@@ -300,11 +310,10 @@ static void shell_print_mem_map(const char *domain, const char *type,
 	size_whole = size / unit_bytes;
 	size_fraction = ((size % unit_bytes) * 1000UL) / unit_bytes;
 
-	snprintf(temp_str, MAX_STR_SIZE,
-		"%-10s  %-9s  %-22s  [0x%016lx,0x%016lx] (%04lu.%03lu %s)\r\n",
+	shell_item_line("%-10s  %-9s  %-22s  [0x%016lx,0x%016lx] (%04lu.%03lu %s)",
 		domain, type, attr, addr, shell_mem_range_end(addr, size),
 		size_whole, size_fraction, unit);
-	shell_puts(temp_str);
+	shell_output_checkpoint();
 }
 
 static const char *shell_memory_type_name(enum arm64_memory_type type)
@@ -452,7 +461,7 @@ static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv)
 {
 	uint16_t vm_id;
 
-	shell_puts("\r\narm64 memory mappings:\r\n");
+	shell_item_begin("arm64 memory mappings:");
 	shell_print_mem_header();
 	shell_print_host_maps();
 
@@ -463,6 +472,7 @@ static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv)
 			shell_print_vm_stage2_maps(vm);
 		}
 	}
+	shell_item_end();
 
 	return 0;
 }
@@ -545,6 +555,7 @@ static int32_t shell_memstat(int32_t argc, __unused char **argv)
 	shell_item_line("────  ─────────  ──────────────────  ───  ───  ───  ───  ─────  ─────────");
 	for (uint16_t vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
 		found |= shell_memstat_print_vm(vm_id, &accounted, &malformed);
+		shell_output_checkpoint();
 	}
 
 	if (!found) {
@@ -560,6 +571,43 @@ static int32_t shell_memstat(int32_t argc, __unused char **argv)
 
 	shell_item_line("accounted:%lu unowned:%lu overaccounted:%lu malformed:%lu",
 		accounted, unowned, overaccounted, malformed);
+	shell_item_end();
+
+	return 0;
+}
+
+static void shell_kusg_print_section(const char *name, uint64_t bytes)
+{
+	uint64_t whole = bytes / SHELL_MEM_KB_BYTES;
+	uint64_t fraction = ((bytes % SHELL_MEM_KB_BYTES) * 1000UL) /
+		SHELL_MEM_KB_BYTES;
+
+	shell_item_line("%-11s  %8lu.%03lu KB", name, whole, fraction);
+}
+
+static int32_t shell_kusg(int32_t argc, __unused char **argv)
+{
+	if (argc != 1) {
+		return -EINVAL;
+	}
+
+	shell_item_begin("kusg");
+	shell_item_line("section      usage");
+	shell_item_line("───────────  ───────────────");
+	shell_kusg_print_section(".text",
+		(uint64_t)&_text_end - (uint64_t)&_text_start);
+	shell_kusg_print_section(".rodata",
+		(uint64_t)&_rodata_end - (uint64_t)&_rodata_start);
+	shell_kusg_print_section(".data",
+		(uint64_t)&_data_end - (uint64_t)&_data_start);
+	shell_kusg_print_section(".bss",
+		(uint64_t)&_bss_end - (uint64_t)&_bss_start);
+	shell_kusg_print_section(".boot.stack",
+		(uint64_t)&_boot_stack_end - (uint64_t)&_boot_stack_start);
+	shell_kusg_print_section("Image",
+		(uint64_t)&ld_image_end - (uint64_t)&ld_ram_start);
+	shell_kusg_print_section("RAM",
+		(uint64_t)&ld_ram_end - (uint64_t)&ld_ram_start);
 	shell_item_end();
 
 	return 0;
@@ -638,6 +686,7 @@ static void shell_pmu_print_entity(const char *name, int32_t pcpu_id,
 		ticks_to_us(values->running_ticks),
 		values->value[ARM64_CORE_PMU_CYCLES],
 		instructions, ipc);
+	shell_output_checkpoint();
 }
 
 static void shell_pmu_format_optional(char *buffer, size_t size, uint64_t value,
@@ -676,6 +725,7 @@ static void shell_pmu_print_optional_entity(const char *name, uint32_t event_mas
 		ARM64_CORE_PMU_BRANCH_MISPRED);
 	shell_item_line("%-12s %14s %14s %14s %14s %14s", name,
 		frontend, backend, l1d, dtlb, branch);
+	shell_output_checkpoint();
 }
 
 static void shell_pmu_format_counter(char *buffer, size_t size,
@@ -710,6 +760,7 @@ static void shell_pmu_print_event_map(uint16_t pcpu_id,
 		counter[ARM64_CORE_PMU_L1D_REFILL],
 		counter[ARM64_CORE_PMU_DTLB_WALK],
 		counter[ARM64_CORE_PMU_BRANCH_MISPRED]);
+	shell_output_checkpoint();
 }
 
 static void shell_pmu_add_path(struct arm64_core_pmu_path_values *target,
@@ -743,6 +794,7 @@ static void shell_pmu_print_path(const char *owner, enum arm64_core_pmu_path pat
 	shell_item_line("%-12s %-8s %10lu %16lu %16s %9s %10lu", owner,
 		arm64_core_pmu_path_name(path), values->calls, values->cycles,
 		instructions, ipc, values->dropped);
+	shell_output_checkpoint();
 }
 
 /* [20260717] pmustat diagnostic projection
@@ -834,6 +886,7 @@ static int32_t shell_pmustat_dump(void)
 			pcpu->capability.event_mask, pcpu->overflow_count,
 			pcpu->capability.pmceid0,
 			pcpu->capability.pmceid1);
+		shell_output_checkpoint();
 	}
 	shell_item_line("event-map ('-' means unsupported):");
 	for (pcpu_id = 0U; pcpu_id < shell_pmu_snapshot.pcpu_num; pcpu_id++) {
@@ -1011,6 +1064,7 @@ static int32_t shell_pmustat_dump(void)
 				pcpu_id, ticks_to_us(vcpu->total.running_ticks),
 				ticks_to_us(peer_ticks), ticks_to_us(latency.max_wait_ticks),
 				vcpu->denied_accesses);
+			shell_output_checkpoint();
 		}
 	}
 	shell_item_end();
@@ -1095,7 +1149,7 @@ static void rttest_append_result(const struct rttest_cpu_context *ctx, size_t *o
 
 	if (remaining > 1U) {
 		(void)snprintf(&rttest_output[*offset], remaining,
-			"T:%2hu (%5hu) P:%2u I:%4u C:%7u Min:%7lu Act:%7lu Avg:%7lu Max:%7lu\r\n",
+			"│   T:%2hu (%5hu) P:%2u I:%4u C:%7u Min:%7lu Act:%7lu Avg:%7lu Max:%7lu\r\n",
 			ctx->pcpu_id, ctx->pcpu_id, 0U, RTTEST_INTERVAL_US, ctx->count,
 			ticks_to_us(min_ticks), ticks_to_us(ctx->act_ticks), ticks_to_us(avg_ticks),
 			ticks_to_us(ctx->max_ticks));
@@ -1105,13 +1159,20 @@ static void rttest_append_result(const struct rttest_cpu_context *ctx, size_t *o
 
 static void rttest_print_results(void)
 {
-	size_t offset = 0U;
+	size_t offset;
+	size_t remaining;
 	uint16_t pcpu_id;
 
-	rttest_output[0] = '\0';
+	(void)snprintf(rttest_output, sizeof(rttest_output), "┌─  rttest\r\n");
+	offset = strnlen_s(rttest_output, sizeof(rttest_output));
 	for (pcpu_id = 0U; pcpu_id < rttest_run.pcpu_num; pcpu_id++) {
 		rttest_append_result(&rttest_cpus[pcpu_id], &offset);
 	}
+	remaining = RTTEST_OUTPUT_SIZE - offset;
+	if (remaining > 1U) {
+		(void)snprintf(&rttest_output[offset], remaining, "└─\r\n");
+	}
+	/* Publish one complete item so asynchronous completion cannot split the prompt. */
 	(void)shell_async_puts(rttest_output);
 }
 
@@ -1432,6 +1493,7 @@ static void shell_trace_status(void)
 		shell_item_line("%4hu  %7u  %11lu  %-6s", pcpu_id,
 			status.count, status.overwritten,
 			status.writer_active ? "active" : "idle");
+		shell_output_checkpoint();
 	}
 	shell_item_end();
 }
@@ -1527,6 +1589,7 @@ static int32_t shell_trace_dump(int32_t argc, char **argv)
 		cursors[best].index++;
 		cursors[best].valid = trace_get_record(best, cursors[best].index,
 			&cursors[best].record);
+		shell_output_checkpoint();
 	}
 	shell_item_end();
 
@@ -1776,6 +1839,7 @@ static int32_t shell_smmustat(int32_t argc, __unused char **argv)
 				shell_smmu_streams[idx].last_fault_code,
 				shell_smmu_streams[idx].last_fault_iova);
 		}
+		shell_output_checkpoint();
 	}
 	shell_item_end();
 
@@ -1811,34 +1875,23 @@ static void shell_vsmmustat_one(uint16_t vm_id,
 	shell_item_end();
 }
 
-static int32_t shell_vsmmustat(int32_t argc, char **argv)
+static int32_t shell_vsmmustat(int32_t argc, __unused char **argv)
 {
 	struct arm64_vsmmu_debug debug;
-	int64_t param;
-	uint16_t first = 0U;
-	uint16_t last = CONFIG_MAX_VM_NUM;
 	uint16_t vm_id;
 	bool found = false;
 
-	if (argc > 2) {
-		shell_puts("usage: vsmmustat [vm id]\r\n");
+	if (argc != 1) {
+		shell_puts("usage: vsmmustat\r\n");
 		return -EINVAL;
-	}
-	if (argc == 2) {
-		param = strtol_deci(argv[1]);
-		if ((param < 0L) || (param >= CONFIG_MAX_VM_NUM)) {
-			shell_puts("invalid vm id\r\n");
-			return -EINVAL;
-		}
-		first = (uint16_t)param;
-		last = first + 1U;
 	}
 
 	shell_puts("\r\nvsmmustat:\r\n");
-	for (vm_id = first; vm_id < last; vm_id++) {
+	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
 		if (arm64_vsmmu_get_debug(vm_id, &debug)) {
 			shell_vsmmustat_one(vm_id, &debug);
 			found = true;
+			shell_output_checkpoint();
 		}
 	}
 	if (!found) {
@@ -2007,6 +2060,7 @@ static void shell_pcistat_host(void)
 		shell_item_line("[%02u] %s class:%02x:%02x hdr:0x%02x bars:%u drhd:%u",
 			idx, bdf, pdev->base_class, pdev->sub_class, pdev->hdr_type,
 			pdev->nr_bars, pdev->drhd_index);
+		shell_output_checkpoint();
 	}
 	shell_item_end();
 }
@@ -2065,6 +2119,7 @@ static void shell_pcistat_vm(uint16_t vm_id,
 			shell_pcistat_print_msi(vdev);
 			shell_pcistat_print_msix(vdev);
 		}
+		shell_output_checkpoint();
 	}
 	shell_item_end();
 }
@@ -2163,6 +2218,7 @@ static void shell_dumpstat_reg_line(uint32_t count, ...)
 		shell_item_line("%s %s %s %s", reg[0U], reg[1U], reg[2U], reg[3U]);
 		break;
 	}
+	shell_output_checkpoint();
 }
 
 static void shell_dumpstat_regs(const struct cpu_regs *regs)
@@ -2329,6 +2385,7 @@ static void shell_dumpstat_guest_trace(const struct arm64_vcpu_guest_trace *trac
 		shell_item_line("       elr:0x%016lx esr:0x%016lx far:0x%016lx hpfar:0x%016lx",
 			entry->elr, entry->esr, entry->far, entry->hpfar);
 		prev_tsc = entry->tsc;
+		shell_output_checkpoint();
 	}
 }
 
@@ -2362,6 +2419,7 @@ static void shell_dumpstat_vtimer_trace(const struct arm64_vcpu_vtimer_trace *tr
 			shell_yes_no(entry->injected), delta);
 		shell_item_line("       cval:0x%016lx cntvct:0x%016lx lr0:0x%016lx hcr:0x%016lx",
 			entry->cval, entry->cntvct, entry->lr0, entry->hcr);
+		shell_output_checkpoint();
 	}
 }
 
@@ -2389,11 +2447,15 @@ static void shell_dumpstat_print_frame(uint32_t idx, uint64_t fp, uint64_t lr, b
 		shell_item_line("[%02u] fp:0x%016lx  lr:0x%016lx",
 			idx, fp, lr);
 	}
+	shell_output_checkpoint();
 }
 
 static void shell_dumpstat_unwind_host_stack(uint64_t sp, uint64_t fp, uint64_t lr,
 	uint64_t stack_start, uint64_t stack_end)
 {
+	uint64_t frame_fp[DUMPSTAT_STACK_DEPTH];
+	uint64_t frame_lr[DUMPSTAT_STACK_DEPTH];
+	uint32_t count = 0U;
 	uint32_t idx;
 
 	if (!shell_stack_contains(stack_start, stack_end, sp, sizeof(uint64_t))) {
@@ -2404,7 +2466,9 @@ static void shell_dumpstat_unwind_host_stack(uint64_t sp, uint64_t fp, uint64_t 
 	for (idx = 0U; idx < DUMPSTAT_STACK_DEPTH; idx++) {
 		uint64_t next_fp = 0UL;
 
-		shell_dumpstat_print_frame(idx, fp, lr, true);
+		frame_fp[count] = fp;
+		frame_lr[count] = lr;
+		count++;
 
 		if (!shell_stack_contains(stack_start, stack_end, fp, sizeof(uint64_t) * 2UL)) {
 			break;
@@ -2418,6 +2482,10 @@ static void shell_dumpstat_unwind_host_stack(uint64_t sp, uint64_t fp, uint64_t 
 
 		fp = next_fp;
 	}
+
+	for (idx = 0U; idx < count; idx++) {
+		shell_dumpstat_print_frame(idx, frame_fp[idx], frame_lr[idx], true);
+	}
 }
 
 struct dumpstat_guest_frame {
@@ -2428,8 +2496,10 @@ struct dumpstat_guest_frame {
 static void shell_dumpstat_vm_stack(struct acrn_vcpu *vcpu, const struct cpu_regs *regs)
 {
 	struct dumpstat_guest_frame frame;
+	struct dumpstat_guest_frame frames[DUMPSTAT_STACK_DEPTH];
 	uint64_t fp = regs->x29;
 	uint64_t lr = regs->lr;
+	uint32_t count = 0U;
 	uint32_t idx;
 
 	if ((fp == 0UL) && (lr == 0UL)) {
@@ -2438,7 +2508,9 @@ static void shell_dumpstat_vm_stack(struct acrn_vcpu *vcpu, const struct cpu_reg
 	}
 
 	for (idx = 0U; idx < DUMPSTAT_STACK_DEPTH; idx++) {
-		shell_dumpstat_print_frame(idx, fp, lr, false);
+		frames[count].fp = fp;
+		frames[count].lr = lr;
+		count++;
 
 		if (fp == 0UL) {
 			break;
@@ -2453,6 +2525,10 @@ static void shell_dumpstat_vm_stack(struct acrn_vcpu *vcpu, const struct cpu_reg
 
 		fp = frame.fp;
 		lr = frame.lr;
+	}
+
+	for (idx = 0U; idx < count; idx++) {
+		shell_dumpstat_print_frame(idx, frames[idx].fp, frames[idx].lr, false);
 	}
 }
 
@@ -2552,6 +2628,10 @@ static const struct cpu_regs *shell_dumpstat_get_regs(struct acrn_vcpu *vcpu,
 
 	(void)memset(snapshot, 0U, sizeof(*snapshot));
 	snapshot->vcpu = vcpu;
+	(void)memcpy_s(&snapshot->regs, sizeof(snapshot->regs),
+		&vcpu->arch.regs, sizeof(snapshot->regs));
+	(void)memcpy_s(&snapshot->debug, sizeof(snapshot->debug),
+		&vcpu->arch.debug, sizeof(snapshot->debug));
 	(void)memcpy_s(&snapshot->gctx, sizeof(snapshot->gctx),
 		&vcpu->arch.gctx, sizeof(snapshot->gctx));
 	(void)memcpy_s(&snapshot->vgic_ctx, sizeof(snapshot->vgic_ctx),
@@ -2570,7 +2650,7 @@ static const struct cpu_regs *shell_dumpstat_get_regs(struct acrn_vcpu *vcpu,
 			snapshot, DUMPSTAT_SMP_CALL_TIMEOUT_US);
 	}
 
-	return snapshot->captured ? &snapshot->regs : &vcpu->arch.regs;
+	return &snapshot->regs;
 }
 
 /* [20260630] dumpstat monitor:
@@ -2697,7 +2777,7 @@ static int32_t shell_dumpstat_vcpu(struct acrn_vcpu *vcpu)
 	current = (vcpu_get_state(vcpu) == VCPU_OFFLINE) ?
 		NULL : sched_get_current(vcpu->thread_obj.pcpu_id);
 	regs = shell_dumpstat_get_regs(vcpu, &snapshot);
-	debug = snapshot.captured ? &snapshot.debug : &vcpu->arch.debug;
+	debug = &snapshot.debug;
 
 	shell_item_begin("vm%hu/vcpu%hu", vcpu->vm->vm_id, vcpu->vcpu_id);
 	/*
@@ -2730,7 +2810,7 @@ static int32_t shell_dumpstat_vcpu(struct acrn_vcpu *vcpu)
 	}
 	shell_item_section("vgic/vtimer");
 	shell_dumpstat_timer_state(&snapshot);
-	shell_dumpstat_vtimer_diag(&vcpu->arch.debug.vtimer_diag);
+	shell_dumpstat_vtimer_diag(&debug->vtimer_diag);
 	shell_dumpstat_vtimer_trace(&debug->vtimer_trace);
 	shell_item_end();
 
@@ -2767,6 +2847,7 @@ static int32_t shell_dumpstat(int32_t argc, char **argv)
 
 	for (vcpu_id = 0U; vcpu_id < vm->hw.created_vcpus; vcpu_id++) {
 		(void)shell_dumpstat_vcpu(vcpu_from_vid(vm, vcpu_id));
+		shell_output_checkpoint();
 	}
 
 	return 0;
@@ -2896,6 +2977,7 @@ static void shell_cachestat_print_vm_affinity(uint16_t vm_id,
 			shell_item_line("vm%hu:%s vcpu%hu pcpu:%hu llc:%u",
 				vm_id, name, vcpu_id, pcpu_id, llc_id);
 		}
+		shell_output_checkpoint();
 	}
 }
 
@@ -2931,6 +3013,7 @@ static int32_t shell_cachestat(int32_t argc, __unused char **argv)
 				leaf->level, arm64_cache_type_str(leaf->type), leaf->line_size,
 				leaf->sets, leaf->ways, leaf->size / 1024UL,
 				leaf->shared_pcpu_mask);
+			shell_output_checkpoint();
 		}
 	}
 
@@ -2944,6 +3027,7 @@ static int32_t shell_cachestat(int32_t argc, __unused char **argv)
 			continue;
 		}
 		shell_cachestat_print_vm_affinity(vm_id, vm_config, vm);
+		shell_output_checkpoint();
 	}
 	shell_item_end();
 	return 0;
@@ -3006,6 +3090,7 @@ static int32_t shell_ipcstat(int32_t argc, __unused char **argv)
 			stats[idx].bad_hcall_count);
 		shell_ipcstat_print_dir(&stats[idx], ACRN_IPC_DIR_EP0_TO_EP1, now);
 		shell_ipcstat_print_dir(&stats[idx], ACRN_IPC_DIR_EP1_TO_EP0, now);
+		shell_output_checkpoint();
 	}
 	shell_item_end();
 
@@ -3443,6 +3528,7 @@ static void shell_health_print_vm(const struct shell_health_vm *health)
 		health->created_vcpus, health->configured_vcpus,
 		wdt_status, wdt_age, console, virtio,
 		shell_health_level_to_str(health->level));
+	shell_output_checkpoint();
 }
 
 static void shell_health_print_findings(const struct shell_health_host *host,
@@ -3534,6 +3620,7 @@ static void shell_health_print_findings(const struct shell_health_host *host,
 				health->name, health->virtio_timeouts);
 			printed = true;
 		}
+		shell_output_checkpoint();
 	}
 
 	if (!printed) {
@@ -3741,6 +3828,7 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 				qid, shell_yes_no(queue->ready), queue->num,
 				queue->last_avail_idx, queue->desc, queue->avail,
 				queue->used);
+			shell_output_checkpoint();
 		}
 	}
 
@@ -3969,6 +4057,7 @@ static void shell_vmstat_vcpus(const struct acrn_vm *vm)
 				cbs.wake_replenish_count, cbs.late_account_count);
 		}
 		shell_vmstat_vcpu_timer(vcpu);
+		shell_output_checkpoint();
 	}
 }
 
@@ -3994,6 +4083,7 @@ static int32_t shell_vmstat(int32_t argc, __unused char **argv)
 		shell_vmstat_vm_config(vm_id, vm_config, vm);
 		shell_vmstat_vcpus(vm);
 		shell_item_end();
+		shell_output_checkpoint();
 	}
 
 	return 0;
@@ -4215,6 +4305,7 @@ static void shell_virtiostat_print_summary_device(const struct virtio_proxy_stat
 	shell_item_line("last:poll:q:%hu reply:q:%hu len:%u",
 		stats->last_poll_queue_id, stats->last_reply_queue_id, stats->last_reply_len);
 	shell_item_end();
+	shell_output_checkpoint();
 }
 
 static bool shell_virtiostat_print_summary_for_device(uint32_t device_id)
@@ -4366,6 +4457,7 @@ static void shell_pm_print_snapshot(const struct beau_pm_snapshot *snapshot,
 				shell_item_line("phase:%-16s duration.us:%lu",
 					hv_pm_state_to_str((enum beau_pm_system_state)phase),
 					ticks_to_us(duration));
+				shell_output_checkpoint();
 			}
 		}
 		for (vmid = 0U; vmid < CONFIG_MAX_VM_NUM; vmid++) {
@@ -4378,6 +4470,7 @@ static void shell_pm_print_snapshot(const struct beau_pm_snapshot *snapshot,
 					record->gated_vcpu_mask, record->active_vcpu_mask,
 					record->frozen_vcpu_mask,
 					record->wake_owned_vcpu_mask);
+				shell_output_checkpoint();
 			}
 		}
 	}

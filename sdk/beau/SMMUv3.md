@@ -525,7 +525,7 @@ physical SMMU ABORT-only ready
 
 ## 9. 可观测性
 
-新增 `vsmmustat [vmid]`，至少显示：
+新增 `vsmmustat`，显示全部 vSMMU 实例，并至少包含：
 
 - virtual register enable state、CMDQ/EVTQ producer/consumer。
 - command processed/rejected/budget-reschedule/timeout。

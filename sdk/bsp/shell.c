@@ -62,10 +62,11 @@
 #define SHELL_EVENT_IDLE		0U
 #define SHELL_EVENT_LATCHED	1U
 #define SHELL_RX_DRAIN_BUDGET	64U
-#define SHELL_BVT_WEIGHT		1U
+#define SHELL_BVT_WEIGHT		64U
 #define SHELL_BVT_WARP_VALUE	8
 #define SHELL_BVT_WARP_LIMIT	1U
 #define SHELL_BVT_UNWARP_PERIOD	4U
+#define SHELL_ITEM_STR_SIZE	(MAX_STR_SIZE * 2U)
 #define SHELL_SCHEDSTAT_MAX_THREADS	((CONFIG_MAX_VM_NUM * MAX_VCPUS_PER_VM) + MAX_PCPU_NUM + 8U)
 #define SHELL_SCHEDSTAT_PERCENT_SCALE	1000UL
 
@@ -378,13 +379,14 @@ static void shell_set_input_active(bool active)
 
 static void shell_item_vprint(const char *prefix, const char *fmt, va_list args)
 {
-	char body[MAX_STR_SIZE];
+	char body[SHELL_ITEM_STR_SIZE];
 	/* Leave room for the UTF-8 item prefix, CRLF and string terminator. */
-	char line[MAX_STR_SIZE + 16U];
+	char line[SHELL_ITEM_STR_SIZE + 16U];
 
 	(void)vsnprintf(body, sizeof(body), fmt, args);
 	(void)snprintf(line, sizeof(line), "%s%s\r\n", prefix, body);
 	shell_puts(line);
+	shell_output_checkpoint();
 }
 
 void shell_item_begin(const char *fmt, ...)
@@ -417,6 +419,34 @@ void shell_item_line(const char *fmt, ...)
 void shell_item_end(void)
 {
 	shell_puts("└─\r\n");
+	shell_output_checkpoint();
+}
+
+/* [20260717] Cooperative shell output scheduling
+ *
+ * long command -> print one complete row -> release output/subsystem locks
+ *                                           |
+ *                                           v
+ *                                 honor NEED_RESCHEDULE
+ *                                           |
+ *                                           v
+ *                                  resume the same command
+ *
+ * Key rule:
+ *   - only the BSP shell thread may use this checkpoint;
+ *   - callers place it where no subsystem or output lock is held;
+ *   - bounded runtime charging prevents one long dump from leaving the shell
+ *     far ahead of its BVT peers after the command completes.
+ */
+void shell_output_checkpoint(void)
+{
+	uint16_t pcpu_id = get_pcpu_id();
+
+	if ((pcpu_id == BSP_CPU_ID) &&
+		(sched_get_current(pcpu_id) == &shell_thread) &&
+		need_reschedule(pcpu_id)) {
+		schedule();
+	}
 }
 
 static void clear_input_line(uint32_t len)
@@ -1170,6 +1200,7 @@ static void shell_print_registered_commands(void)
 					break;
 				}
 			}
+			shell_output_checkpoint();
 		}
 	}
 
@@ -1198,21 +1229,23 @@ static int32_t shell_clear(__unused int32_t argc, __unused char **argv)
 
 static int32_t shell_symtab(int32_t argc, __unused char **argv)
 {
-	char temp_str[MAX_STR_SIZE];
 	uint32_t i;
 
 	if (argc != 1) {
 		return -EINVAL;
 	}
 
+	shell_item_begin("symtab symbols:%u", dbg_symbol_count);
 	if (dbg_symbol_count == 0U) {
-		shell_puts("\r\nsymbol table is empty\r\n");
+		shell_item_line("symbol table is empty");
+		shell_item_end();
 		return 0;
 	}
 
-	shell_puts("\r\noffset              symbol\r\n");
-	shell_puts("──────────────────  ────────────────────────────────\r\n");
+	shell_item_line("%-5s  %-18s  %s", "index", "offset", "symbol");
+	shell_item_line("─────  ──────────────────  ────────────────────────────────");
 	for (i = 0U; i < dbg_symbol_count; i++) {
+		char index[16U];
 		const char *name = dbg_symbol_table[i].name;
 		uint64_t offset = dbg_symbol_table[i].addr;
 
@@ -1222,14 +1255,15 @@ static int32_t shell_symtab(int32_t argc, __unused char **argv)
 		 * different load addresses can be compared directly.
 		 */
 		if ((dbg_symbol_text_start != 0UL) && (offset >= dbg_symbol_text_start)) {
-			offset -= dbg_symbol_text_start;
+				offset -= dbg_symbol_text_start;
 		}
 
-		(void)snprintf(temp_str, MAX_STR_SIZE, "0x%016lx  ", offset);
-		shell_puts(temp_str);
-		shell_puts((name == NULL) ? "<null>" : name);
-		shell_puts("\r\n");
+		(void)snprintf(index, sizeof(index), "%04u", i + 1U);
+		shell_item_line("%-5s  0x%016lx  %s", index,
+			offset, (name == NULL) ? "<null>" : name);
+		shell_output_checkpoint();
 	}
+	shell_item_end();
 
 	return 0;
 }
@@ -1284,6 +1318,7 @@ static int32_t shell_dump_host_mem(int32_t argc, char **argv)
 					hva, *hva, *(hva + 1UL), *(hva + 2UL), *(hva + 3UL));
 			hva += 4UL;
 			shell_puts(temp_str);
+			shell_output_checkpoint();
 		}
 		ret = 0;
 	}
@@ -1328,14 +1363,14 @@ static bool pcpu_is_shared_by_vcpus(uint16_t pcpu_id)
  */
 static int32_t shell_list_vcpu(__unused int32_t argc, __unused char **argv)
 {
-	char temp_str[MAX_STR_SIZE];
 	struct acrn_vm *vm;
 	struct acrn_vcpu *vcpu;
 	uint16_t i;
 	uint16_t idx;
 
-	shell_puts("\r\nvcpu       pcpu  pcpu_mode  lifecycle  thread    switches  lastwait.us  maxwait.us  since.us\r\n");
-	shell_puts("─────────  ────  ─────────  ─────────  ────────  ────────  ───────────  ──────────  ────────\r\n");
+	shell_item_begin("vcpus");
+	shell_item_line("vcpu       pcpu  pcpu_mode  lifecycle  thread    switches  lastwait.us  maxwait.us  since.us");
+	shell_item_line("─────────  ────  ─────────  ─────────  ────────  ────────  ───────────  ──────────  ────────");
 
 	for (idx = 0U; idx < CONFIG_MAX_VM_NUM; idx++) {
 		vm = get_vm_from_vmid(idx);
@@ -1356,8 +1391,7 @@ static int32_t shell_list_vcpu(__unused int32_t argc, __unused char **argv)
 			} else {
 				snprintf(since_us, sizeof(since_us), "-");
 			}
-			snprintf(temp_str, MAX_STR_SIZE,
-				"%-9s  %-4hu  %-9s  %-9s  %-8s  %-8lu  %-11lu  %-10lu  %-8s\r\n",
+			shell_item_line("%-9s  %-4hu  %-9s  %-9s  %-8s  %-8lu  %-11lu  %-10lu  %-8s",
 				vcpu->thread_obj.name,
 				pcpu_id,
 				shared_pcpu ? "shared" : "exclusive",
@@ -1367,9 +1401,10 @@ static int32_t shell_list_vcpu(__unused int32_t argc, __unused char **argv)
 				ticks_to_us(stats.last_wait_ticks),
 				ticks_to_us(stats.max_wait_ticks),
 				since_us);
-			shell_puts(temp_str);
+			shell_output_checkpoint();
 		}
 	}
+	shell_item_end();
 
 	return 0;
 }
@@ -1428,26 +1463,24 @@ static int32_t shell_list_threads(__unused int32_t argc, __unused char **argv)
 	struct list_head *pos;
 	struct thread_object *thread;
 	struct thread_object *current;
-	char temp_str[MAX_STR_SIZE];
 
-	snprintf(temp_str, MAX_STR_SIZE, "\r\nthreads: %u\r\n", sched_get_thread_count());
-	shell_puts(temp_str);
-	shell_puts("name             pcpu  lifecycle  thread    current  entry\r\n");
-	shell_puts("───────────────  ────  ─────────  ────────  ───────  ────────────────\r\n");
+	shell_item_begin("ps threads:%u", sched_get_thread_count());
+	shell_item_line("name             pcpu  lifecycle  thread    current  entry");
+	shell_item_line("───────────────  ────  ─────────  ────────  ───────  ────────────────");
 
 	list_for_each(pos, head) {
 		thread = container_of(pos, struct thread_object, node);
 		current = sched_get_current(thread->pcpu_id);
-		snprintf(temp_str, MAX_STR_SIZE,
-			"%-15s  %-4hu  %-9s  %-8s  %-7s  0x%014lx\r\n",
+		shell_item_line("%-15s  %-4hu  %-9s  %-8s  %-7s  0x%014lx",
 			thread->name,
 			thread->pcpu_id,
 			thread_lifecycle_str(thread),
 			thread_state_str(thread->status),
 			(current == thread) ? "Y" : "N",
 			(uint64_t)thread->thread_entry);
-		shell_puts(temp_str);
+		shell_output_checkpoint();
 	}
+	shell_item_end();
 
 	return 0;
 }
@@ -1606,7 +1639,6 @@ static const char *shell_schedstat_pcpu_role(uint16_t pcpu_id)
 static void shell_schedstat_print_cpu_usage(const struct list_head *head, uint64_t window_ticks)
 {
 	struct list_head *pos;
-	char temp_str[MAX_STR_SIZE];
 
 	/* [20260630] scheduler stats:
 	 *   schedule() accumulates per-thread running ticks.
@@ -1615,9 +1647,9 @@ static void shell_schedstat_print_cpu_usage(const struct list_head *head, uint64
 	 *   previous snapshot --delta window--> current snapshot
 	 *          runtime[N] ----------------> runtime[N] + run_delta
 	 */
-	shell_puts("\r\nCPU usage since previous schedstat:\r\n\r\n");
-	shell_puts("name             pcpu  lifecycle  thread    cpu%   run.us\r\n");
-	shell_puts("───────────────  ────  ─────────  ────────  ─────  ─────────\r\n");
+	shell_item_section("CPU usage since previous schedstat:");
+	shell_item_line("name             pcpu  lifecycle  thread    cpu%%   run.us");
+	shell_item_line("───────────────  ────  ─────────  ────────  ─────  ─────────");
 
 	list_for_each(pos, head) {
 		struct thread_object *thread = container_of(pos, struct thread_object, node);
@@ -1640,26 +1672,24 @@ static void shell_schedstat_print_cpu_usage(const struct list_head *head, uint64
 			shell_schedstat_format_percent(percent, sizeof(percent), run_delta, window_ticks);
 		}
 
-		snprintf(temp_str, MAX_STR_SIZE,
-			"%-15s  %-4hu  %-9s  %-8s  %-5s  %-9lu\r\n",
+		shell_item_line("%-15s  %-4hu  %-9s  %-8s  %-5s  %-9lu",
 			thread->name,
 			thread->pcpu_id,
 			thread_lifecycle_str(thread),
 			thread_state_str(thread->status),
 			percent,
 			ticks_to_us(run_delta));
-		shell_puts(temp_str);
+		shell_output_checkpoint();
 	}
 
 	if (shell_schedstat_sample.overflow || shell_schedstat_last.overflow) {
-		shell_puts("\r\nwarning: schedstat thread sample overflow; cpu% may omit some threads.\r\n");
+		shell_item_line("warning: schedstat thread sample overflow; cpu%% may omit some threads.");
 	}
 }
 
 static void shell_schedstat_print_cbs_latency_hist(const struct list_head *head)
 {
 	struct list_head *pos;
-	char temp_str[MAX_STR_SIZE];
 	bool printed_header = false;
 	bool has_previous = shell_schedstat_last.valid;
 
@@ -1687,11 +1717,9 @@ static void shell_schedstat_print_cbs_latency_hist(const struct list_head *head)
 		}
 
 		if (!printed_header) {
-			shell_puts(has_previous ?
-				"\r\nCBS latency histogram delta (runnable -> running):\r\n\r\n" :
-				"\r\nCBS latency histogram cumulative (runnable -> running):\r\n\r\n");
-			snprintf(temp_str, MAX_STR_SIZE,
-				"name             pcpu  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  max.us(total)\r\n",
+			shell_item_section("CBS latency histogram %s (runnable -> running):",
+				has_previous ? "delta" : "cumulative");
+			shell_item_line("name             pcpu  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  max.us(total)",
 				sched_latency_hist_bucket_name(0U),
 				sched_latency_hist_bucket_name(1U),
 				sched_latency_hist_bucket_name(2U),
@@ -1700,13 +1728,11 @@ static void shell_schedstat_print_cbs_latency_hist(const struct list_head *head)
 				sched_latency_hist_bucket_name(5U),
 				sched_latency_hist_bucket_name(6U),
 				sched_latency_hist_bucket_name(7U));
-			shell_puts(temp_str);
-			shell_puts("───────────────  ────  ───────  ───────  ───────  ───────  ───────  ───────  ───────  ───────  ──────\r\n");
+			shell_item_line("───────────────  ────  ───────  ───────  ───────  ───────  ───────  ───────  ───────  ───────  ──────");
 			printed_header = true;
 		}
 
-		snprintf(temp_str, MAX_STR_SIZE,
-			"%-15s  %-4hu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-6lu\r\n",
+		shell_item_line("%-15s  %-4hu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-6lu",
 			thread->name,
 			thread->pcpu_id,
 			hist[0U],
@@ -1718,14 +1744,13 @@ static void shell_schedstat_print_cbs_latency_hist(const struct list_head *head)
 			hist[6U],
 			hist[7U],
 			ticks_to_us(current->max_wait_ticks));
-		shell_puts(temp_str);
+		shell_output_checkpoint();
 	}
 }
 
 static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 {
 	const struct list_head *head = sched_get_thread_list();
-	char temp_str[MAX_STR_SIZE];
 	struct list_head *pos;
 	uint16_t pcpu_id;
 	uint16_t pcpu_num = get_pcpu_nums();
@@ -1739,17 +1764,15 @@ static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 	window_ticks = shell_schedstat_last.valid ?
 		shell_schedstat_delta(shell_schedstat_sample.sample_ticks, shell_schedstat_last.sample_ticks) : 0UL;
 
-	snprintf(temp_str, MAX_STR_SIZE,
-		"\r\nschedstat pcpus:%hu\r\n", pcpu_num);
-	shell_puts(temp_str);
+	shell_item_begin("schedstat pcpus:%hu", pcpu_num);
 
 	/*
 	 * Per-pCPU counters answer whether the scheduler is ticking, whether
 	 * context switches are happening, and which thread currently owns a CPU.
 	 */
-	shell_puts("\r\nPer-pCPU hybrid scheduler counters:\r\n\r\n");
-	shell_puts("pcpu  role       scheduler    busy%  timer   switches  resched  runqueue  current\r\n");
-	shell_puts("────  ─────────  ───────────  ─────  ──────  ────────  ───────  ────────  ─────────────────\r\n");
+	shell_item_section("Per-pCPU hybrid scheduler counters:");
+	shell_item_line("pcpu  role       scheduler    busy%%  timer   switches  resched  runqueue  current");
+	shell_item_line("────  ─────────  ───────────  ─────  ──────  ────────  ───────  ────────  ─────────────────");
 
 	for (pcpu_id = 0U; pcpu_id < pcpu_num; pcpu_id++) {
 		struct thread_object *current = sched_get_current(pcpu_id);
@@ -1758,8 +1781,7 @@ static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 
 		shell_schedstat_format_pcpu_busy(busy, sizeof(busy), pcpu_id, window_ticks);
 
-		snprintf(temp_str, MAX_STR_SIZE,
-			"%-5hu %-10s %-12s %-6s %-7lu %-9lu %-8lu %-9u %s\r\n",
+		shell_item_line("%-5hu %-10s %-12s %-6s %-7lu %-9lu %-8lu %-9u %s",
 			pcpu_id,
 			shell_schedstat_pcpu_role(pcpu_id),
 			sched_get_scheduler_name(pcpu_id),
@@ -1769,7 +1791,7 @@ static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 			sched_get_reschedule_requests(pcpu_id),
 			shell_sched_runqueue_count(pcpu_id),
 			name);
-		shell_puts(temp_str);
+		shell_output_checkpoint();
 	}
 
 	for (pcpu_id = 0U; pcpu_id < pcpu_num; pcpu_id++) {
@@ -1777,15 +1799,15 @@ static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 
 		if (sched_get_cbs_pcpu_stats(pcpu_id, &cbs_pcpu)) {
 			if (!printed_cbs_pcpu_header) {
-				shell_puts("\r\nCBS pCPU stats:\r\n\r\n");
-				shell_puts("pcpu  admission.ppm  runqueue\r\n");
-				shell_puts("────  ─────────────  ────────\r\n");
+				shell_item_section("CBS pCPU stats:");
+				shell_item_line("pcpu  admission.ppm  runqueue");
+				shell_item_line("────  ─────────────  ────────");
 				printed_cbs_pcpu_header = true;
 			}
-			snprintf(temp_str, MAX_STR_SIZE, "%-5hu %-14lu %-8u\r\n",
+			shell_item_line("%-5hu %-14lu %-8u",
 				pcpu_id, cbs_pcpu.admission_utilization,
 				cbs_pcpu.runqueue_count);
-			shell_puts(temp_str);
+			shell_output_checkpoint();
 		}
 	}
 
@@ -1816,24 +1838,23 @@ static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 		 * BVT stats expose virtual-time ordering. Lower avt/evt is more
 		 * eligible; weight controls how quickly virtual time advances.
 		 */
-		shell_puts("\r\nBVT stats:\r\n\r\n");
-		shell_puts("name             pcpu  state     weight  avt       evt\r\n");
-		shell_puts("───────────────  ────  ────────  ──────  ────────  ────────\r\n");
+		shell_item_section("BVT stats:");
+		shell_item_line("name             pcpu  state     weight  avt       evt");
+		shell_item_line("───────────────  ────  ────────  ──────  ────────  ────────");
 
 		list_for_each(pos, head) {
 			struct thread_object *thread = container_of(pos, struct thread_object, node);
 			struct sched_bvt_stats bvt;
 
 			if (sched_get_bvt_stats(thread, &bvt)) {
-				snprintf(temp_str, MAX_STR_SIZE,
-					"%-15s  %-4hu  %-8s  %-6u  %-8ld  %-8ld\r\n",
+				shell_item_line("%-15s  %-4hu  %-8s  %-6u  %-8ld  %-8ld",
 					thread->name,
 					thread->pcpu_id,
 					thread_state_str(thread->status),
 					(uint32_t)bvt.weight,
 					bvt.avt,
 					bvt.evt);
-				shell_puts(temp_str);
+				shell_output_checkpoint();
 			}
 		}
 	}
@@ -1845,17 +1866,16 @@ static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 		 * RTDS stats show fixed-period budget accounting and the time
 		 * left before the next scheduling deadline.
 		 */
-		shell_puts("\r\nRTDS stats:\r\n\r\n");
-		shell_puts("name             pcpu  state     period.us  budget.us  remain.us  deadline-in.us\r\n");
-		shell_puts("───────────────  ────  ────────  ─────────  ─────────  ─────────  ──────────────\r\n");
+		shell_item_section("RTDS stats:");
+		shell_item_line("name             pcpu  state     period.us  budget.us  remain.us  deadline-in.us");
+		shell_item_line("───────────────  ────  ────────  ─────────  ─────────  ─────────  ──────────────");
 
 		list_for_each(pos, head) {
 			struct thread_object *thread = container_of(pos, struct thread_object, node);
 			struct sched_rtds_stats rtds;
 
 			if (sched_get_rtds_stats(thread, &rtds)) {
-				snprintf(temp_str, MAX_STR_SIZE,
-					"%-15s  %-4hu  %-8s  %-9lu  %-9lu  %-9lu  %-11lu\r\n",
+				shell_item_line("%-15s  %-4hu  %-8s  %-9lu  %-9lu  %-9lu  %-11lu",
 					thread->name,
 					thread->pcpu_id,
 					thread_state_str(thread->status),
@@ -1864,7 +1884,7 @@ static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 					ticks_to_us(rtds.remaining_ticks),
 					(rtds.deadline_ticks > now) ?
 						ticks_to_us(rtds.deadline_ticks - now) : 0UL);
-				shell_puts(temp_str);
+				shell_output_checkpoint();
 			}
 		}
 	}
@@ -1876,17 +1896,16 @@ static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 		 * CBS stats show the active reservation server state. Deadline moves
 		 * forward when budget is replenished after depletion or wake admission.
 		 */
-		shell_puts("\r\nCBS stats:\r\n\r\n");
-		shell_puts("name             pcpu  state     period.us  budget.us  remain.us  deadline-in.us  dep       repl      wake      late\r\n");
-		shell_puts("───────────────  ────  ────────  ─────────  ─────────  ─────────  ──────────────  ────────  ────────  ────────  ────────\r\n");
+		shell_item_section("CBS stats:");
+		shell_item_line("name             pcpu  state     period.us  budget.us  remain.us  deadline-in.us  dep       repl      wake      late");
+		shell_item_line("───────────────  ────  ────────  ─────────  ─────────  ─────────  ──────────────  ────────  ────────  ────────  ────────");
 
 		list_for_each(pos, head) {
 			struct thread_object *thread = container_of(pos, struct thread_object, node);
 			struct sched_cbs_stats cbs;
 
 			if (sched_get_cbs_stats(thread, &cbs)) {
-				snprintf(temp_str, MAX_STR_SIZE,
-					"%-15s  %-4hu  %-8s  %-9lu  %-9lu  %-9lu  %-14lu  %-8lu  %-8lu  %-8lu  %-8lu\r\n",
+				shell_item_line("%-15s  %-4hu  %-8s  %-9lu  %-9lu  %-9lu  %-14lu  %-8lu  %-8lu  %-8lu  %-8lu",
 					thread->name,
 					thread->pcpu_id,
 					thread_state_str(thread->status),
@@ -1899,13 +1918,14 @@ static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 					cbs.replenish_count,
 					cbs.wake_replenish_count,
 					cbs.late_account_count);
-				shell_puts(temp_str);
+				shell_output_checkpoint();
 			}
 		}
 		shell_schedstat_print_cbs_latency_hist(head);
 	}
 
 	shell_schedstat_last = shell_schedstat_sample;
+	shell_item_end();
 
 	return 0;
 }
@@ -2047,21 +2067,20 @@ static void shell_print_guest_irqstat(void)
 	 */
 	count = arm64_vgicv3_get_irq_stats(shell_irqstat_vgic_stats,
 		ARRAY_SIZE(shell_irqstat_vgic_stats));
-	shell_puts("\r\nguest virq:\r\n");
+	shell_item_section("guest virq:");
 	if (count == 0U) {
-		shell_puts("(no enabled guest-visible virtual IRQ activity)\r\n");
+		shell_item_line("(no enabled guest-visible virtual IRQ activity)");
 		return;
 	}
 
 #if CONFIG_IRQSTAT_LATENCY
-	shell_puts("vm   vcpu virq  type  live assert   deassert lr       eoi      raise-lr min/avg/max      lr-eoi min/avg/max\r\n");
-	shell_puts("──── ──── ───── ───── ──── ──────── ──────── ──────── ──────── ───────────────────────── ─────────────────────────\r\n");
+	shell_item_line("vm   vcpu virq  type  live assert   deassert lr       eoi      raise-lr min/avg/max      lr-eoi min/avg/max");
+	shell_item_line("──── ──── ───── ───── ──── ──────── ──────── ──────── ──────── ───────────────────────── ─────────────────────────");
 #else
-	shell_puts("vm   vcpu virq  type  live assert   deassert lr       eoi\r\n");
-	shell_puts("──── ──── ───── ───── ──── ──────── ──────── ──────── ────────\r\n");
+	shell_item_line("vm   vcpu virq  type  live assert   deassert lr       eoi");
+	shell_item_line("──── ──── ───── ───── ──── ──────── ──────── ──────── ────────");
 #endif
 	for (idx = 0U; idx < count; idx++) {
-		char temp_str[MAX_STR_SIZE];
 		const struct arm64_vgic_irq_stats *entry = &shell_irqstat_vgic_stats[idx];
 
 #if CONFIG_IRQSTAT_LATENCY
@@ -2072,8 +2091,7 @@ static void shell_print_guest_irqstat(void)
 			&entry->raise_to_lr);
 		shell_irqstat_format_vgic_latency(lr_to_eoi, sizeof(lr_to_eoi),
 			&entry->lr_to_eoi);
-		snprintf(temp_str, sizeof(temp_str),
-			"%-4hu %-4hu %-5u %-5s %-4s %-8lu %-8lu %-8lu %-8lu %-25s %-25s\r\n",
+		shell_item_line("%-4hu %-4hu %-5u %-5s %-4s %-8lu %-8lu %-8lu %-8lu %-25s %-25s",
 			entry->vm_id,
 			entry->vcpu_id,
 			entry->virq,
@@ -2086,8 +2104,7 @@ static void shell_print_guest_irqstat(void)
 			raise_to_lr,
 			lr_to_eoi);
 #else
-		snprintf(temp_str, sizeof(temp_str),
-			"%-4hu %-4hu %-5u %-5s %-4s %-8lu %-8lu %-8lu %-8lu\r\n",
+		shell_item_line("%-4hu %-4hu %-5u %-5s %-4s %-8lu %-8lu %-8lu %-8lu",
 			entry->vm_id,
 			entry->vcpu_id,
 			entry->virq,
@@ -2098,7 +2115,7 @@ static void shell_print_guest_irqstat(void)
 			entry->lr_count,
 			entry->eoi_count);
 #endif
-		shell_puts(temp_str);
+		shell_output_checkpoint();
 	}
 }
 #endif
@@ -2125,17 +2142,15 @@ static int32_t shell_irqstat(int32_t argc, __unused char **argv)
 		return -EINVAL;
 	}
 
-	snprintf(temp_str, MAX_STR_SIZE,
-		"\r\nhost pirq: nr_irqs=%u, pcpus=%hu\r\n",
-		NR_IRQS, pcpu_num);
-	shell_puts(temp_str);
-	shell_puts("irq   name             active ");
+	shell_item_begin("irqstat");
+	shell_item_section("host pirq: nr_irqs=%u, pcpus=%hu", NR_IRQS, pcpu_num);
+	shell_puts("│   irq   name             active ");
 	shell_print_irq_cpu_headers(pcpu_num);
 #if CONFIG_IRQSTAT_LATENCY
 	shell_puts("handler-lat min/avg/max");
 #endif
 	shell_puts("\r\n");
-	shell_puts("───── ──────────────── ──────");
+	shell_puts("│   ───── ──────────────── ──────");
 	for (uint16_t pcpu_id = 0U; pcpu_id < pcpu_num; pcpu_id++) {
 		shell_puts(" ────────");
 	}
@@ -2164,6 +2179,7 @@ static int32_t shell_irqstat(int32_t argc, __unused char **argv)
 			irq,
 			arch_irq_name(irq),
 			allocated ? "Y" : "N");
+		shell_puts("│   ");
 		shell_puts(temp_str);
 		shell_print_irq_cpu_counts(&snapshot, pcpu_num);
 #if CONFIG_IRQSTAT_LATENCY
@@ -2173,15 +2189,17 @@ static int32_t shell_irqstat(int32_t argc, __unused char **argv)
 #endif
 		shell_puts(temp_str);
 		shown++;
+		shell_output_checkpoint();
 	}
 
 	if (shown == 0U) {
-		shell_puts("(no active irq handlers and no interrupt counts)\r\n");
+		shell_item_line("(no active irq handlers and no interrupt counts)");
 	}
 
 #ifdef CONFIG_ARM64
 	shell_print_guest_irqstat();
 #endif
+	shell_item_end();
 
 	return 0;
 }
@@ -2362,6 +2380,7 @@ static int32_t shell_vm_log(int32_t argc, char **argv)
 		shell_vlog_write(buf, count, &line_start, &last_cr,
 			terminal_query_buf, &terminal_query_len);
 		offset += count;
+		shell_output_checkpoint();
 	}
 	if (terminal_query_len != 0U) {
 		char out[MAX_STR_SIZE];

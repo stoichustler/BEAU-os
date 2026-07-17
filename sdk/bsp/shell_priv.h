@@ -104,6 +104,7 @@ void shell_item_begin(const char *fmt, ...);
 void shell_item_section(const char *fmt, ...);
 void shell_item_line(const char *fmt, ...);
 void shell_item_end(void);
+void shell_output_checkpoint(void);
 uint16_t sanitize_vmid(uint16_t vmid);
 
 #endif /* SHELL_PRIV_H */
