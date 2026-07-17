@@ -141,6 +141,7 @@ enum serial_dev_type {
 union pci_bdf;
 void serial_init(bool early_boot);
 char serial_getc(void);
+bool serial_rx_ready(void);
 size_t serial_puts(const char *buf, uint32_t len);
 void serial_set_property(bool enabled, enum serial_dev_type uart_type, uint64_t base_addr);
 bool is_pci_dbg_uart(union pci_bdf bdf_value);

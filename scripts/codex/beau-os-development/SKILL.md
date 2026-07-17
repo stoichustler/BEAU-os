@@ -83,23 +83,16 @@ execution. If the test plan changes, stop and request approval again.
 
 #### Manual Testing
 
-When the user selects manual testing or validation, provide the complete plan
-before execution and obtain explicit approval. Include:
+When the user selects manual testing or validation, stop all AI-side test
+activity and wait for the human result. Do not prepare a test plan, inspect
+prerequisites, run commands, start or monitor an environment, request or verify
+evidence, inspect processes, or perform cleanup. Act only when the user later
+requests specific assistance, and keep that action within the explicit scope.
 
-- the objective, coverage, target code tree, platform, and environment;
-- prerequisites and preparation;
-- numbered actions with the expected result for each action;
-- pass, fail, and stop criteria;
-- required logs, screenshots, serial output, or other evidence;
-- cleanup and environment-restoration steps;
-- estimated duration and environment impact.
-
-When the user performs the test, wait for the required evidence and assess it
-against the stated criteria. Do not infer success from the plan or from missing
-evidence. When assisting with a device or environment, list the exact operations
-and obtain separate approval before acting. Mark incomplete, failed, or
-insufficiently evidenced manual testing as unverified; do not enter Phase 6 or
-update retained guest OS copies in that state.
+Accept an explicit human pass or fail report as the authoritative test result
+without performing corroborating work. Enter Phase 6 after a reported pass.
+Record a reported failure and wait for further direction. Treat ambiguous or
+incomplete feedback as unverified and continue waiting; do not infer a result.
 
 ### Phase 6: Submit
 

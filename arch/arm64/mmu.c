@@ -165,6 +165,77 @@ static const struct pgtable ppt_pgtable = {
 	.set_pgentry = ppt_set_pgentry,
 };
 
+static enum arm64_memory_type arm64_s1_memory_type(uint8_t mair_attr)
+{
+	enum arm64_memory_type type;
+
+	switch (mair_attr) {
+	case MAIR_ATTR_DEVICE_GRE:
+		type = ARM64_MEMORY_DEVICE_GRE;
+		break;
+	case MAIR_ATTR_DEVICE_nGRE:
+		type = ARM64_MEMORY_DEVICE_nGRE;
+		break;
+	case MAIR_ATTR_DEVICE_nGnRE:
+		type = ARM64_MEMORY_DEVICE_nGnRE;
+		break;
+	case MAIR_ATTR_DEVICE_nGnRnE:
+		type = ARM64_MEMORY_DEVICE_nGnRnE;
+		break;
+	default:
+		type = ((mair_attr & 0xf0U) != 0U) ?
+			ARM64_MEMORY_NORMAL : ARM64_MEMORY_UNKNOWN;
+		break;
+	}
+
+	return type;
+}
+
+/* [20260717] Stage-1 memory-type query
+ *
+ *   EL2 VA -> leaf AttrIdx -> current MAIR_EL2 byte -> memory type
+ *
+ * Key rule:
+ *   - the host stage-1 table is immutable after boot;
+ *   - the type is derived from the active MAIR_EL2, not a display-time guess;
+ *   - an absent leaf is reported as Unmapped, while a reserved MAIR byte is
+ *     reported as Unknown.
+ */
+bool arm64_get_hv_s1_memory_attr(uint64_t addr,
+	struct arm64_memory_attr *attr)
+{
+	const uint64_t *entry;
+	uint64_t pg_size = 0UL;
+	uint64_t mair;
+	uint32_t attr_idx;
+	uint8_t mair_attr;
+
+	if (attr == NULL) {
+		return false;
+	}
+	attr->type = ARM64_MEMORY_UNKNOWN;
+	attr->encoding = 0U;
+	if (ppt_mmu_top_addr == NULL) {
+		return false;
+	}
+
+	entry = pgtable_lookup_entry((uint64_t *)ppt_mmu_top_addr, addr,
+		&pg_size, &ppt_pgtable);
+	if (entry == NULL) {
+		attr->type = ARM64_MEMORY_UNMAPPED;
+		return true;
+	}
+
+	attr_idx = (uint32_t)((*entry & PAGE_ATTR_IDX_MASK) >>
+		PAGE_ATTR_IDX_SHIFT);
+	mair = arm64_sysreg_read(mair_el2);
+	mair_attr = (uint8_t)((mair >> (attr_idx * 8U)) & 0xffUL);
+	attr->type = arm64_s1_memory_type(mair_attr);
+	attr->encoding = mair_attr & 0x0fU;
+
+	return true;
+}
+
 static void init_hv_mapping(void)
 {
 	uint64_t hva_base;

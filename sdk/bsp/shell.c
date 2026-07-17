@@ -19,6 +19,8 @@
 #include <ticks.h>
 #include <schedule.h>
 #include <irq.h>
+#include <atomic.h>
+#include <serial.h>
 #include <debug/symbol.h>
 #include <bits.h>
 #include <banner.h>
@@ -26,28 +28,23 @@
 #include <asm/guest/vgicv3.h>
 #endif
 
-/* [20260716] BEAU shell service ownership:
+/* [20260717] BEAU shell event ownership:
  *
- * The shell is the interactive OS-service front end for BEAU diagnostics and
- * VM console switching. It runs as a low-priority scheduler thread on the BSP
- * and consumes the same physical console that VM consoles use through vsh.
- *
- *   console timer softirq                 shell thread
- *          |                                   |
- *          +-- VM selected -> bounded I/O      |
- *          |                                   |
- *          +-- BEAU selected -> shell_kick() ->| priority/reschedule
- *                                              |
- *                                              v
- *                                     edit -> dispatch -> prompt
- *                                              |
- *                                     yield -> schedule -> loop
+ *   console timer                         shell thread
+ *        |                                    |
+ *        +-- RX/ownership event               |
+ *        +-- atomic latch ------------------->| wake + bounded BVT warp
+ *                                             |
+ *                                             +-- edit / dispatch / prompt
+ *                                             +-- bounded drain
+ *                                             +-- sleep, then recheck latch/RX
  *
  * Key rules:
  *   - the timer owns bounded selected-VM I/O; the shell thread never drains it;
  *   - only the shell thread owns BEAU input editing and command dispatch;
- *   - the low-priority loop remains a fallback if timer publication is absent;
- *   - command completion publishes the next prompt before yielding the pCPU;
+ *   - the latch preserves an event that arrives before the thread blocks;
+ *   - the post-sleep recheck preserves an event that races with blocking;
+ *   - BVT warp changes short-term ordering without changing long-term weight;
  *   - guest ownership suppresses that prompt until BEAU owns the console again.
  *
  * Asynchronous logs still serialize terminal redraw through shell_tx_lock so
@@ -62,6 +59,13 @@
 #define SHELL_VT100_CLEAR_LINE	"\033[2K"
 #define SHELL_VLOG_CHUNK_SIZE	128U
 #define SHELL_VLOG_CPR_QUERY_LEN	4U
+#define SHELL_EVENT_IDLE		0U
+#define SHELL_EVENT_LATCHED	1U
+#define SHELL_RX_DRAIN_BUDGET	64U
+#define SHELL_BVT_WEIGHT		1U
+#define SHELL_BVT_WARP_VALUE	8
+#define SHELL_BVT_WARP_LIMIT	1U
+#define SHELL_BVT_UNWARP_PERIOD	4U
 #define SHELL_SCHEDSTAT_MAX_THREADS	((CONFIG_MAX_VM_NUM * MAX_VCPUS_PER_VM) + MAX_PCPU_NUM + 8U)
 #define SHELL_SCHEDSTAT_PERCENT_SCALE	1000UL
 
@@ -182,6 +186,7 @@ static struct shell *p_shell = &hv_shell;
 static struct thread_object shell_thread;
 static uint8_t shell_stack[CONFIG_STACK_SIZE] __aligned(16);
 static spinlock_t shell_tx_lock = {0U};
+static uint32_t shell_event_pending;
 static bool shell_started;
 static bool shell_prompt_enabled;
 static bool shell_input_active;
@@ -984,9 +989,17 @@ static void shell_thread_kick(void)
 
 void shell_kick(void)
 {
+	(void)atomic_cmpxchg32(&shell_event_pending,
+		SHELL_EVENT_IDLE, SHELL_EVENT_LATCHED);
 	if (shell_started) {
-		request_thread_priority(&shell_thread);
+		wake_thread(&shell_thread);
 	}
+}
+
+static bool shell_event_is_pending(void)
+{
+	return atomic_cmpxchg32(&shell_event_pending,
+		SHELL_EVENT_IDLE, SHELL_EVENT_IDLE) == SHELL_EVENT_LATCHED;
 }
 
 bool shell_is_open(void)
@@ -1047,17 +1060,29 @@ bool shell_async_puts_raw(const char *string_ptr)
 	return true;
 }
 
-static void shell_thread_main(__unused struct thread_object *obj)
+static void shell_thread_main(struct thread_object *obj)
 {
 	while (true) {
-		shell_thread_kick();
-		yield_current();
+		uint32_t budget = SHELL_RX_DRAIN_BUDGET;
+
+		(void)atomic_readandclear32(&shell_event_pending);
+		do {
+			shell_thread_kick();
+			budget--;
+		} while ((budget > 0U) && console_is_hv() && serial_rx_ready());
+
+		sleep_thread(obj);
+		if (shell_event_is_pending() ||
+			(console_is_hv() && serial_rx_ready())) {
+			wake_thread(obj);
+		}
 		schedule();
 	}
 }
 
 void shell_init(void)
 {
+	shell_event_pending = SHELL_EVENT_IDLE;
 	p_shell->cmds = shell_cmds;
 	p_shell->cmd_count = ARRAY_SIZE(shell_cmds);
 
@@ -1087,9 +1112,16 @@ void shell_start(void)
 	shell_thread.host_sp = arch_setup_thread_stack(&shell_thread, shell_stack, CONFIG_STACK_SIZE);
 
 	shell_params.prio = PRIO_LOW;
+	shell_params.bvt_weight = SHELL_BVT_WEIGHT;
+	shell_params.bvt_warp_value = SHELL_BVT_WARP_VALUE;
+	shell_params.bvt_warp_limit = SHELL_BVT_WARP_LIMIT;
+	shell_params.bvt_unwarp_period = SHELL_BVT_UNWARP_PERIOD;
 	init_thread_data(&shell_thread, &shell_params);
-	wake_thread(&shell_thread);
 	shell_started = true;
+	if (shell_event_is_pending() ||
+		(console_is_hv() && serial_rx_ready())) {
+		wake_thread(&shell_thread);
+	}
 }
 
 #define MAX_OUTPUT_LEN  80

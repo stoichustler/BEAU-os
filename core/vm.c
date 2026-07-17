@@ -660,10 +660,10 @@ static int32_t restart_vm_with_mode(struct acrn_vm *vm, bool reload_image)
 	int32_t ret;
 
 	/*
-	 * Synchronous restart is for EL2 management contexts such as the shell or
-	 * idle thread. A target VM's own vCPU exit path must use
-	 * make_reset_vm_request(), because resetting the currently executing vCPU
-	 * would overwrite the state frame that the exit handler is still using.
+	 * Synchronous restart is for stable lifecycle owners such as the idle or
+	 * watchdog thread. Interactive shell and target-vCPU exit paths must use an
+	 * asynchronous request so they do not block their control path or overwrite
+	 * a register frame that is still being consumed.
 	 */
 	if (vm == NULL) {
 		return -EINVAL;
@@ -691,12 +691,41 @@ int32_t restart_vm_warm(struct acrn_vm *vm)
 	return restart_vm_with_mode(vm, false);
 }
 
+/* [20260717] Asynchronous cold-restart ownership
+ *
+ *   shell / guest PSCI producer
+ *            |
+ *            v
+ *   target BSP pCPU reset bitmap + reschedule
+ *            |
+ *            v
+ *   target pCPU idle -> pause -> reset -> reload -> start
+ *
+ * Key rule:
+ *   - PM topology state owns exclusion from suspend and duplicate restart;
+ *   - the atomic bitmap is published before the scheduler request;
+ *   - reset work runs outside the interactive shell and vCPU exit frames.
+ */
+int32_t request_vm_cold_restart(struct acrn_vm *vm)
+{
+	struct acrn_vcpu *bsp;
+
+	if ((vm == NULL) || (vm->vm_id >= CONFIG_MAX_VM_NUM) ||
+		(vm->hw.created_vcpus == 0U) || is_poweroff_vm(vm) ||
+		is_service_vm(vm)) {
+		return -EINVAL;
+	}
+
+	bsp = vcpu_from_vid(vm, BSP_CPU_ID);
+	return make_reset_vm_request(pcpuid_from_vcpu(bsp), vm->vm_id);
+}
+
 int32_t make_reset_vm_request(uint16_t pcpu_id, uint16_t vm_id)
 {
 	struct acrn_vm *vm;
 	int32_t ret = -EINVAL;
 
-	if ((pcpu_id >= MAX_PCPU_NUM) || (vm_id >= CONFIG_MAX_VM_NUM)) {
+	if ((pcpu_id >= get_pcpu_nums()) || (vm_id >= CONFIG_MAX_VM_NUM)) {
 		return ret;
 	}
 	ret = hv_pm_begin_vm_topology_change(vm_id);
@@ -706,21 +735,9 @@ int32_t make_reset_vm_request(uint16_t pcpu_id, uint16_t vm_id)
 
 	vm = get_vm_from_vmid(vm_id);
 	if ((vm != NULL) && !is_poweroff_vm(vm) && !is_service_vm(vm)) {
-		/*
-		 * VM reset is intentionally asynchronous:
-		 *
-		 *   PSCI/shell producer -> per-pCPU reset bitmap -> idle thread
-		 *                         pause -> arch reset -> start BSP
-		 *
-		 * The producer might run in a vCPU exit path where sleeping or tearing
-		 * down device state would be fragile. The idle thread is a stable EL2
-		 * owner for the VM state machine.
-		 */
-		bitmap_set_non_atomic(vm_id, &per_cpu(reset_vm_bitmap, pcpu_id));
+		bitmap_set(vm_id, &per_cpu(reset_vm_bitmap, pcpu_id));
 		bitmap_set(NEED_RESET_VM, &per_cpu(pcpu_flag, pcpu_id));
-		if (get_pcpu_id() != pcpu_id) {
-			arch_smp_call_kick_pcpu(pcpu_id);
-		}
+		make_reschedule_request(pcpu_id);
 		ret = 0;
 	}
 	if (ret != 0) {
@@ -730,15 +747,23 @@ int32_t make_reset_vm_request(uint16_t pcpu_id, uint16_t vm_id)
 	return ret;
 }
 
+bool has_reset_vm_request(uint16_t pcpu_id)
+{
+	return (pcpu_id < get_pcpu_nums()) &&
+		bitmap_test(NEED_RESET_VM, &per_cpu(pcpu_flag, pcpu_id));
+}
+
 bool need_reset_vm(uint16_t pcpu_id)
 {
-	return bitmap_test_and_clear(NEED_RESET_VM, &per_cpu(pcpu_flag, pcpu_id));
+	return (pcpu_id < get_pcpu_nums()) &&
+		bitmap_test_and_clear(NEED_RESET_VM,
+			&per_cpu(pcpu_flag, pcpu_id));
 }
 
 void reset_vm_from_idle(uint16_t pcpu_id)
 {
 	uint16_t vm_id;
-	uint64_t *vms = &per_cpu(reset_vm_bitmap, pcpu_id);
+	volatile uint64_t *vms = &per_cpu(reset_vm_bitmap, pcpu_id);
 	struct acrn_vm *vm;
 
 	for (vm_id = fls64(*vms); vm_id < CONFIG_MAX_VM_NUM; vm_id = fls64(*vms)) {
@@ -746,7 +771,7 @@ void reset_vm_from_idle(uint16_t pcpu_id)
 		get_vm_lock(vm);
 		(void)restart_vm_locked(vm, true);
 		put_vm_lock(vm);
-		bitmap_clear_non_atomic(vm_id, vms);
+		bitmap_clear(vm_id, vms);
 		hv_pm_end_vm_topology_change(vm_id);
 	}
 }

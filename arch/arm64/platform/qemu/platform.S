@@ -26,17 +26,6 @@ arm64_platform_dtb_end:
 	.set arm64_platform_dtb_size, arm64_platform_dtb_end - arm64_platform_dtb_start
 	.align 12
 
-	.section .rodata.beau_linux_vm1_dtb, "a", %progbits
-	.align 12
-	.globl arm64_beau_linux_vm1_dtb_start
-arm64_beau_linux_vm1_dtb_start:
-	.incbin "sdk/image/linux/vm1/beau-linux.dtb"
-	.globl arm64_beau_linux_vm1_dtb_end
-arm64_beau_linux_vm1_dtb_end:
-	.globl arm64_beau_linux_vm1_dtb_size
-	.set arm64_beau_linux_vm1_dtb_size, arm64_beau_linux_vm1_dtb_end - arm64_beau_linux_vm1_dtb_start
-	.align 12
-
 	.section .rodata.beau_linux_vm2_dtb, "a", %progbits
 	.align 12
 	.globl arm64_beau_linux_vm2_dtb_start

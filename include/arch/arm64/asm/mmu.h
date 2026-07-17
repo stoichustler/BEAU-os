@@ -35,5 +35,7 @@ uint64_t arm64_get_phys_mem_start(void);
 uint64_t arm64_get_phys_mem_size(void);
 const struct mem_region *arm64_get_reserved_mem_regions(uint32_t *count);
 void arm64_get_hv_s1_page_pool_stats(struct page_pool_stats *stats);
+bool arm64_get_hv_s1_memory_attr(uint64_t addr,
+	struct arm64_memory_attr *attr);
 
 #endif /* ARM64_MMU_H */

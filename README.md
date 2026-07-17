@@ -33,7 +33,7 @@ for mixed RTOS and Linux guests.
 
 ## Learning Path
 
-Start with [Note.md](sdk/beau/Note.md) for the ARM64
+Start with [BEAU-os.md](sdk/beau/BEAU-os.md) for the ARM64
 implementation flow from EL2 entry through VM creation, vCPU entry/exit,
 stage-2 memory, vGIC/vtimer virtualization, and console debugging.
 
@@ -41,6 +41,11 @@ stage-2 memory, vGIC/vtimer virtualization, and console debugging.
 
 - [LICENSE](LICENSE)
 - [NOTICE.md](NOTICE.md)
+
+## AI Coding
+
+- [AGENTS.md](AGENTS.md)
+
 
 ---
 

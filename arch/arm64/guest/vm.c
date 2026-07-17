@@ -294,6 +294,76 @@ bool arm64_get_stage2_vm_stats(struct acrn_vm *vm,
 	return stats->total_pages != 0UL;
 }
 
+static enum arm64_memory_type arm64_stage2_memory_type(uint64_t memattr)
+{
+	enum arm64_memory_type type;
+
+	switch (memattr) {
+	case PAGE_S2_MEMATTR_DEVICE_nGnRnE:
+		type = ARM64_MEMORY_DEVICE_nGnRnE;
+		break;
+	case PAGE_S2_MEMATTR_DEVICE_nGnRE:
+		type = ARM64_MEMORY_DEVICE_nGnRE;
+		break;
+	case PAGE_S2_MEMATTR_DEVICE_nGRE:
+		type = ARM64_MEMORY_DEVICE_nGRE;
+		break;
+	case PAGE_S2_MEMATTR_DEVICE_GRE:
+		type = ARM64_MEMORY_DEVICE_GRE;
+		break;
+	default:
+		type = ARM64_MEMORY_NORMAL;
+		break;
+	}
+
+	return type;
+}
+
+/* [20260717] Stage-2 memory-type query
+ *
+ *   guest IPA -> locked stage-2 leaf -> MemAttr[3:0] -> memory type
+ *
+ * Key rule:
+ *   - stg2pt_lock keeps the lookup coherent with dynamic device map/unmap;
+ *   - only the copied leaf is decoded after releasing the lock;
+ *   - an absent leaf is a valid Unmapped result used by emulated MMIO ranges.
+ */
+bool arm64_get_stage2_memory_attr(struct acrn_vm *vm, uint64_t ipa,
+	struct arm64_memory_attr *attr)
+{
+	const uint64_t *entry;
+	uint64_t pg_size = 0UL;
+	uint64_t descriptor = 0UL;
+	uint64_t memattr;
+	bool mapped;
+
+	if ((vm == NULL) || (attr == NULL) || (vm->root_stg2ptp == NULL)) {
+		return false;
+	}
+	attr->type = ARM64_MEMORY_UNKNOWN;
+	attr->encoding = 0U;
+
+	spinlock_obtain(&vm->stg2pt_lock);
+	entry = pgtable_lookup_entry((uint64_t *)vm->root_stg2ptp, ipa,
+		&pg_size, &vm->stg2_pgtable);
+	mapped = entry != NULL;
+	if (mapped) {
+		descriptor = *entry;
+	}
+	spinlock_release(&vm->stg2pt_lock);
+
+	if (!mapped) {
+		attr->type = ARM64_MEMORY_UNMAPPED;
+		return true;
+	}
+
+	memattr = descriptor & PAGE_S2_MEMATTR_MASK;
+	attr->type = arm64_stage2_memory_type(memattr);
+	attr->encoding = (uint8_t)(memattr >> 2U);
+
+	return true;
+}
+
 static bool arm64_vm_uses_virtio_console(const struct acrn_vm_config *vm_config)
 {
 	/*

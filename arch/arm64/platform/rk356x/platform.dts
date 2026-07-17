@@ -281,7 +281,7 @@
 				tag = "linux";
 				reg = <0x0 0x70000000 0x0 0x0>;
 				size-source = "symbol";
-				size-symbol = "BEAU_LINUX_IMAGE_SIZE";
+				size-symbol = "BEAU_LINUX_VM2_IMAGE_SIZE";
 				load-addr = <0x0 0x18080000>;
 				entry-addr = <0x0 0x18080000>;
 				bootargs = "console=hvc0 rdinit=/init loglevel=7";

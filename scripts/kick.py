@@ -9,7 +9,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CWD = Path.cwd()
-LINUX_VM1_IMAGE_STAGE_ADDR = "0x70000000"
 LINUX_INITRAMFS_STAGE_ADDR = "0x74000000"
 LINUX_VM2_IMAGE_STAGE_ADDR = "0x76000000"
 LINUX_VM3_IMAGE_STAGE_ADDR = "0x7c000000"
@@ -50,7 +49,7 @@ def parse_args():
         type=relpath,
         help="legacy: use one Linux Image for both Linux VM2 and Linux VM3",
     )
-    parser.add_argument("--linux-vm1-image", default=ROOT / "sdk/image/linux/vm1/Image", type=relpath)
+    parser.add_argument("--linux-vm1-image", default=None, type=relpath, help=argparse.SUPPRESS)
     parser.add_argument("--linux-vm2-image", default=ROOT / "sdk/image/linux/vm2/Image", type=relpath)
     parser.add_argument("--linux-vm3-image", default=ROOT / "sdk/image/linux/vm2/Image", type=relpath)
     parser.add_argument(
@@ -100,6 +99,8 @@ def parse_args():
     if extra[:1] == ["--"]:
         extra = extra[1:]
     args.extra = extra
+    if args.linux_vm1_image is not None:
+        parser.error("--linux-vm1-image was removed because VM1 runs RT-Thread")
     if args.linux_image is not None:
         args.linux_vm2_image = args.linux_image
         args.linux_vm3_image = args.linux_image

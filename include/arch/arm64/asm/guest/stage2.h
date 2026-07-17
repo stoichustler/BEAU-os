@@ -8,6 +8,7 @@
 #define ARM64_GUEST_STAGE2_H
 
 #include <types.h>
+#include <asm/pgtable.h>
 
 struct acrn_vm;
 struct page_pool_stats;
@@ -34,6 +35,8 @@ uint64_t arm64_stage2_vttbr(const struct acrn_vm *vm);
 void arm64_get_stage2_page_pool_stats(struct page_pool_stats *stats);
 bool arm64_get_stage2_vm_stats(struct acrn_vm *vm,
 	struct arm64_stage2_vm_stats *stats);
+bool arm64_get_stage2_memory_attr(struct acrn_vm *vm, uint64_t ipa,
+	struct arm64_memory_attr *attr);
 void arm64_stage2_map(struct acrn_vm *vm, uint64_t hpa, uint64_t ipa,
 	uint64_t size, uint32_t flags);
 void arm64_stage2_unmap(struct acrn_vm *vm, uint64_t ipa, uint64_t size);

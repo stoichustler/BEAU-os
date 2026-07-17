@@ -211,6 +211,8 @@ void make_shutdown_vm_request(uint16_t pcpu_id);
 bool need_shutdown_vm(uint16_t pcpu_id);
 void reset_vm_from_idle(uint16_t pcpu_id);
 int32_t make_reset_vm_request(uint16_t pcpu_id, uint16_t vm_id);
+int32_t request_vm_cold_restart(struct acrn_vm *vm);
+bool has_reset_vm_request(uint16_t pcpu_id);
 bool need_reset_vm(uint16_t pcpu_id);
 void poweroff_if_rt_vm(struct acrn_vm *vm);
 bool is_poweroff_vm(const struct acrn_vm *vm);

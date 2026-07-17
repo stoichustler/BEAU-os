@@ -1224,23 +1224,30 @@ bool console_vm_kick(void)
 	return handled;
 }
 
-/* [20260716] Console polling ownership
+/* [20260717] Console polling ownership
  *
  *   timer softirq
  *        |
  *        +-- selected VM -> bounded collect / RX push / TX drain
  *        |
- *        +-- BEAU shell  -> shell_kick() -> shell thread
+ *        +-- BEAU + RX ready -> latch event -> wake shell thread
+ *        |
+ *        +-- VM -> BEAU ownership change -> latch event -> restore prompt
  *
  * Key rule:
  *   - selected-VM I/O stays on the fixed-period path so low-priority shell
  *     scheduling cannot add interactive latency;
  *   - collect and drain budgets bound the work performed in timer softirq;
- *   - BEAU input editing and command dispatch remain shell-thread-owned.
+ *   - RX readiness is observed without consuming DR; only the shell thread
+ *     owns BEAU input editing and command dispatch.
  */
 static void console_timer_callback(__unused void *data)
 {
-	if (!console_vm_kick()) {
+	if (console_vm_kick()) {
+		if (console_is_hv()) {
+			shell_kick();
+		}
+	} else if (serial_rx_ready()) {
 		shell_kick();
 	}
 }

@@ -95,15 +95,12 @@
 #define SHELL_CMD_TRACE			"trace"
 #define SHELL_CMD_TRACE_PARAM		"<status|start|stop|clear|dump> [category|count]"
 #define SHELL_CMD_TRACE_HELP		"capture and dump per-pCPU EL2 trace events"
-#define SHELL_CMD_RESET			"reset"
-#define SHELL_CMD_RESET_PARAM		"<vm id>"
-#define SHELL_CMD_RESET_HELP		"reset a non-service VM by id"
 #define SHELL_CMD_REBOOT		"reboot"
 #define SHELL_CMD_REBOOT_PARAM		NULL
 #define SHELL_CMD_REBOOT_HELP		"trigger a system reboot (immediately)"
 #define SHELL_CMD_PM			"pm"
-#define SHELL_CMD_PM_PARAM		"<suspend|resume> <vmid> | status"
-#define SHELL_CMD_PM_HELP		"control VM STR and inspect PM state"
+#define SHELL_CMD_PM_PARAM		"<suspend|resume|reboot> <vmid> | status"
+#define SHELL_CMD_PM_HELP		"control VM power state and inspect PM state"
 #define SHELL_CMD_PMSTAT		"pmstat"
 #define SHELL_CMD_PMSTAT_PARAM		NULL
 #define SHELL_CMD_PMSTAT_HELP		"list coordinated guest suspend transaction statistics"
@@ -139,7 +136,6 @@ static int32_t shell_pcistat(int32_t argc, char **argv);
 static int32_t shell_cpufreq(int32_t argc, __unused char **argv);
 static int32_t shell_rttest(int32_t argc, __unused char **argv);
 static int32_t shell_trace(int32_t argc, char **argv);
-static int32_t shell_reset_vm(int32_t argc, char **argv);
 static int32_t shell_reboot(__unused int32_t argc, __unused char **argv);
 static int32_t shell_pm(int32_t argc, char **argv);
 static int32_t shell_pmstat(int32_t argc, __unused char **argv);
@@ -239,12 +235,6 @@ struct shell_cmd arch_shell_cmds[] = {
 		.fcn		= shell_trace,
 	},
 	{
-		.str		= SHELL_CMD_RESET,
-		.cmd_param	= SHELL_CMD_RESET_PARAM,
-		.help_str	= SHELL_CMD_RESET_HELP,
-		.fcn		= shell_reset_vm,
-	},
-	{
 		.str		= SHELL_CMD_REBOOT,
 		.cmd_param	= SHELL_CMD_REBOOT_PARAM,
 		.help_str	= SHELL_CMD_REBOOT_HELP,
@@ -267,8 +257,8 @@ uint32_t arch_shell_cmds_sz = ARRAY_SIZE(arch_shell_cmds);
 
 static void shell_print_mem_header(void)
 {
-	shell_puts("domain      type       attr       address range (size)\r\n");
-	shell_puts("──────────  ─────────  ─────────  ─────────────────────────────────────────────────────\r\n");
+	shell_puts("domain      type       attr                    address range (size)\r\n");
+	shell_puts("──────────  ─────────  ──────────────────────  ─────────────────────────────────────────────────────\r\n");
 }
 
 static uint64_t shell_mem_range_end(uint64_t start, uint64_t size)
@@ -299,10 +289,92 @@ static void shell_print_mem_map(const char *domain, const char *type,
 	size_fraction = ((size % unit_bytes) * 1000UL) / unit_bytes;
 
 	snprintf(temp_str, MAX_STR_SIZE,
-		"%-10s  %-9s  %-9s  [0x%016lx,0x%016lx] (%04lu.%03lu %s)\r\n",
+		"%-10s  %-9s  %-22s  [0x%016lx,0x%016lx] (%04lu.%03lu %s)\r\n",
 		domain, type, attr, addr, shell_mem_range_end(addr, size),
 		size_whole, size_fraction, unit);
 	shell_puts(temp_str);
+}
+
+static const char *shell_memory_type_name(enum arm64_memory_type type)
+{
+	const char *name;
+
+	switch (type) {
+	case ARM64_MEMORY_NORMAL:
+		name = "Normal Memory";
+		break;
+	case ARM64_MEMORY_DEVICE_GRE:
+		name = "Device-GRE";
+		break;
+	case ARM64_MEMORY_DEVICE_nGRE:
+		name = "Device-nGRE";
+		break;
+	case ARM64_MEMORY_DEVICE_nGnRE:
+		name = "Device-nGnRE";
+		break;
+	case ARM64_MEMORY_DEVICE_nGnRnE:
+		name = "Device-nGnRnE";
+		break;
+	case ARM64_MEMORY_UNMAPPED:
+		name = "Unmapped";
+		break;
+	case ARM64_MEMORY_UNKNOWN:
+	default:
+		name = "Unknown";
+		break;
+	}
+
+	return name;
+}
+
+static void shell_format_memory_attr(char *buf, size_t size,
+	const struct arm64_memory_attr *attr, bool stage2)
+{
+	const char *name;
+	uint8_t encoding;
+
+	if ((buf == NULL) || (size == 0U) || (attr == NULL)) {
+		return;
+	}
+	if (attr->type == ARM64_MEMORY_UNMAPPED) {
+		(void)snprintf(buf, size, "Unmapped (%s)",
+			stage2 ? "IPA->HPA" : "VA->HPA");
+		return;
+	}
+
+	name = shell_memory_type_name(attr->type);
+	encoding = attr->encoding & 0x0fU;
+	(void)snprintf(buf, size, "%-13s [0b%u%u%u%u]", name,
+		(encoding >> 3U) & 1U, (encoding >> 2U) & 1U,
+		(encoding >> 1U) & 1U, encoding & 1U);
+}
+
+static void shell_print_host_mem_map(const char *type, uint64_t addr,
+	uint64_t size)
+{
+	struct arm64_memory_attr attr = { 0U };
+	char attr_text[32U];
+
+	if (!arm64_get_hv_s1_memory_attr(addr, &attr)) {
+		attr.type = ARM64_MEMORY_UNKNOWN;
+	}
+	(void)memset(attr_text, 0U, sizeof(attr_text));
+	shell_format_memory_attr(attr_text, sizeof(attr_text), &attr, false);
+	shell_print_mem_map("host s1", type, attr_text, addr, size);
+}
+
+static void shell_print_stage2_mem_map(struct acrn_vm *vm, const char *domain,
+	const char *type, uint64_t addr, uint64_t size)
+{
+	struct arm64_memory_attr attr = { 0U };
+	char attr_text[32U];
+
+	if (!arm64_get_stage2_memory_attr(vm, addr, &attr)) {
+		attr.type = ARM64_MEMORY_UNKNOWN;
+	}
+	(void)memset(attr_text, 0U, sizeof(attr_text));
+	shell_format_memory_attr(attr_text, sizeof(attr_text), &attr, true);
+	shell_print_mem_map(domain, type, attr_text, addr, size);
 }
 
 static void shell_print_host_maps(void)
@@ -316,51 +388,53 @@ static void shell_print_host_maps(void)
 
 	mmio_regions = arm64_get_platform_mmio_regions(&mmio_count);
 	for (idx = 0U; idx < mmio_count; idx++) {
-		shell_print_mem_map("host s1", "MMIO", "device",
+		shell_print_host_mem_map("MMIO",
 			mmio_regions[idx].base, mmio_regions[idx].size);
 	}
 
-	shell_print_mem_map("host s1", "RAM", "normal",
+	shell_print_host_mem_map("RAM",
 		arm64_get_phys_mem_start(), arm64_get_phys_mem_size());
-	shell_print_mem_map("host s1", "HV", "normal-x",
-		hv_base, get_hv_image_size());
+	shell_print_host_mem_map("HV", hv_base, get_hv_image_size());
 
 	rsvd_regions = arm64_get_reserved_mem_regions(&rsvd_count);
 	for (idx = 0U; idx < rsvd_count; idx++) {
-		shell_print_mem_map("host s1", "RSVD", "unmapped",
+		shell_print_host_mem_map("RSVD",
 			rsvd_regions[idx].addr, rsvd_regions[idx].size);
 	}
 }
 
-static void shell_print_vm_stage2_maps(const struct acrn_vm *vm)
+static void shell_print_vm_stage2_maps(struct acrn_vm *vm)
 {
 	const struct arch_vm_config *arch_config = &get_vm_config(vm->vm_id)->arch;
 	char domain[16];
 
 	snprintf(domain, sizeof(domain), "vm-%u s2", vm->vm_id);
-	shell_print_mem_map(domain, "RAM", "normal",
+	shell_print_stage2_mem_map(vm, domain, "RAM",
 		arch_config->guest_ram_start,
 		arch_config->guest_ram_size);
-	shell_print_mem_map(domain, "vGICD", "vio",
+	shell_print_stage2_mem_map(vm, domain, "vGICD",
 		arch_config->guest_gicd_base,
 		arch_config->guest_gicd_size);
-	shell_print_mem_map(domain, "vGICR", "vio",
+	shell_print_stage2_mem_map(vm, domain, "vGICR",
 		arch_config->guest_gicr_base,
 		arch_config->guest_gicr_size);
-	shell_print_mem_map(domain, "vPL011", "vio",
+	shell_print_stage2_mem_map(vm, domain, "vPL011",
 		arch_config->guest_uart_base,
 		arch_config->guest_uart_size);
 }
 
-/* [20260630] devmap monitor:
+/* [20260717] devmap memory attributes:
  *
- * devmap is the quick ownership map for ARM64 address translation. It prints the
- * EL2 stage-1 host view first, then each VM's stage-2 view. RAM rows are leaf
- * mappings; vio rows are intentionally unmapped stage-2 device IPAs that exit
- * to EL2 through MMIO emulation.
+ *   host VA -> stage-1 leaf -> AttrIdx -> MAIR_EL2 -> type + low 4 bits
+ *   guest IPA -> locked stage-2 leaf -> MemAttr[3:0] -> type + 4 bits
  *
- *   host VA range -> EL2 stage-1 -> identity HPA range
- *   guest IPA range -> VM stage-2 -> identity RAM HPA, or vio data abort
+ * The command prints the EL2 stage-1 host view first, then each VM's stage-2
+ * view. VIO rows intentionally have no stage-2 leaf and report Unmapped.
+ *
+ * Key rule:
+ *   - names and encodings come from live descriptors instead of range labels;
+ *   - Stage-2 reads serialize with dynamic map/unmap in the architecture layer;
+ *   - unmapped VIO is distinguished from unknown or reserved attributes.
  */
 static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv)
 {
@@ -3846,13 +3920,29 @@ static bool shell_pm_parse_vmid(const char *arg, uint16_t *vmid)
 	return true;
 }
 
+static int32_t shell_pm_reboot_vm(uint16_t vmid)
+{
+	struct acrn_vm *vm = get_vm_from_vmid(vmid);
+
+	if (is_service_vm(vm)) {
+		shell_puts("refuse to reboot service VM from shell\r\n");
+		return -EPERM;
+	}
+	if (is_poweroff_vm(vm)) {
+		shell_puts("vm is powered off\r\n");
+		return -EINVAL;
+	}
+
+	return request_vm_cold_restart(vm);
+}
+
 static int32_t shell_pm(int32_t argc, char **argv)
 {
 	struct beau_pm_snapshot snapshot;
 	uint16_t vmid;
 
 	if ((argc < 2) || (argc > 3)) {
-		shell_puts("usage: pm <suspend|resume> <vmid> | status\r\n");
+		shell_puts("usage: pm <suspend|resume|reboot> <vmid> | status\r\n");
 		return -EINVAL;
 	}
 
@@ -3876,6 +3966,12 @@ static int32_t shell_pm(int32_t argc, char **argv)
 		}
 		return bsp_pm_resume_vm(vmid);
 	}
+	if (strcmp(argv[1], "reboot") == 0) {
+		if ((argc != 3) || !shell_pm_parse_vmid(argv[2], &vmid)) {
+			return -EINVAL;
+		}
+		return shell_pm_reboot_vm(vmid);
+	}
 
 	return -EINVAL;
 }
@@ -3891,45 +3987,6 @@ static int32_t shell_pmstat(int32_t argc, __unused char **argv)
 	shell_pm_print_snapshot(&snapshot, true);
 
 	return 0;
-}
-
-static int32_t shell_reset_vm(int32_t argc, char **argv)
-{
-	struct acrn_vm *vm;
-	int64_t param;
-	uint16_t vm_id;
-	int32_t ret;
-
-	if (argc != 2) {
-		shell_puts("usage: reset <vm id>\r\n");
-		return -EINVAL;
-	}
-
-	param = strtol_deci(argv[1]);
-	if ((param < 0) || (param >= CONFIG_MAX_VM_NUM)) {
-		shell_puts("invalid vm id\r\n");
-		return -EINVAL;
-	}
-
-	vm_id = (uint16_t)param;
-	vm = get_vm_from_vmid(vm_id);
-	if (is_service_vm(vm)) {
-		shell_puts("refuse to reset service VM from shell\r\n");
-		return -EPERM;
-	}
-	if (is_poweroff_vm(vm)) {
-		shell_puts("vm is powered off\r\n");
-		return -EINVAL;
-	}
-
-	/*
-	 * Shell reset runs from an EL2 management thread, so it can synchronously
-	 * drive the VM state machine. Guest PSCI reset uses an async request because
-	 * it originates from the vCPU being torn down.
-	 */
-	ret = restart_vm(vm);
-
-	return ret;
 }
 
 static int32_t shell_reboot(__unused int32_t argc, __unused char **argv)

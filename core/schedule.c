@@ -620,10 +620,14 @@ bool sched_clear_reschedule_if_current_only(uint16_t pcpu_id)
 	 * would select it again after clearing NEED_RESCHEDULE; doing that under
 	 * the scheduler lock avoids consuming a bounded guest IRQ rescue window on
 	 * a no-op tick. Shared pCPU fairness is preserved because the helper fails
-	 * as soon as any other runnable object exists.
+	 * as soon as any other runnable object exists. Idle-owned management work
+	 * is also excluded because schedule() must observe it and select idle even
+	 * when the current vCPU is the only runnable thread.
 	 */
 	obtain_schedule_lock(pcpu_id, &rflag);
-	if (bitmap_test(NEED_RESCHEDULE, &ctl->flags) &&
+	if (!has_system_suspend_request(pcpu_id) &&
+		!has_reset_vm_request(pcpu_id) &&
+		bitmap_test(NEED_RESCHEDULE, &ctl->flags) &&
 		sched_current_is_only_runnable_locked(ctl)) {
 		/*
 		 * A scheduler tick can request a reschedule even when the runqueue
@@ -683,7 +687,8 @@ void schedule(void)
 			}
 		}
 	}
-	if (has_system_suspend_request(pcpu_id)) {
+	if (has_system_suspend_request(pcpu_id) ||
+		has_reset_vm_request(pcpu_id)) {
 		next = &per_cpu(idle, pcpu_id);
 	} else if (scheduler->pick_next != NULL) {
 		next = scheduler->pick_next(ctl);
@@ -924,14 +929,14 @@ void run_thread(struct thread_object *obj)
 	}
 }
 
-/* [20260716] PM idle scheduler handoff
+/* [20260717] Idle management scheduler handoff
  *
- * scheduler -> idle -> PM transaction -> NEED_RESCHEDULE -> scheduler
+ * scheduler -> idle -> PM transaction / VM reset -> scheduler
  *
  * Key rule:
- *   - PM owns the suspend transaction while the idle thread executes it;
- *   - common idle owns the return handoff for BSP and secondary PM paths;
- *   - publishing the request prevents idle from entering WFI with pending work.
+ *   - PM or VM topology state owns the active management transaction;
+ *   - schedule() selects idle while management work is pending;
+ *   - common idle owns the return handoff after the transaction completes.
  */
 void default_idle(__unused struct thread_object *obj)
 {

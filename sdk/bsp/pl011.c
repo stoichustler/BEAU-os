@@ -110,6 +110,22 @@ char serial_getc(void)
 	return ret;
 }
 
+bool serial_rx_ready(void)
+{
+	uint64_t rflags;
+	bool ready;
+
+	if (!uart.enabled) {
+		return false;
+	}
+
+	spinlock_irqsave_obtain(&uart.rx_lock, &rflags);
+	ready = (pl011_read_reg(PL011_FR) & PL011_FR_RXFE) == 0U;
+	spinlock_irqrestore_release(&uart.rx_lock, rflags);
+
+	return ready;
+}
+
 static void pl011_putc(char c)
 {
 	while ((pl011_read_reg(PL011_FR) & PL011_FR_TXFF) != 0U) {

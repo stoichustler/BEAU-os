@@ -593,6 +593,12 @@ walker、页分配、拆大页和增删映射。
 **原理**：当前 host 采用易于 bring-up 的 identity map。正常 RAM 与 device MMIO
 使用不同内存属性。
 
+`devmap` 从实际 leaf descriptor 解码属性。Host Stage-1 通过 AttrIdx 查询当前
+`MAIR_EL2`，VM Stage-2 读取 `MemAttr[3:0]`；输出统一使用 13 字符 memory-type
+子列和固定 4-bit 编码，例如 `Device-nGnRE  [0b0100]`、
+`Normal Memory [0b1111]`。没有 Stage-2 leaf 的模拟设备区间显示
+`Unmapped (IPA->HPA)`。
+
 ### 9.2 VM Stage-2
 
 **定位**：`arch/arm64/guest/vm.c`。
@@ -655,6 +661,12 @@ EVT = AVT - warp_value
 
 warp 只改变短期排序，不修改长期公平账本；`warp_limit` 和 `unwarp_period` 防止
 高频事件长期霸占 CPU。
+
+BEAU host shell 使用 2 ms console timer 观察 PL011 RX-ready。timer 只在存在输入
+或 VM ownership 返回 host 时锁存事件并唤醒 shell；shell wake 使用
+`weight=1, warp_value=8, warp_limit=1, unwarp_period=4`，处理完输入后重新阻塞。
+事件 latch 和阻塞后的 RX 重检关闭 timer 与 shell sleep 之间的 lost-wakeup 窗口，
+同时不引入 host UART IRQ 路径。
 
 ### 10.4 CBS
 
@@ -1099,8 +1111,13 @@ Shell 暴露：
 pm status
 pm suspend <vmid>
 pm resume <vmid>
+pm reboot <vmid>
 pmstat
 ```
+
+`pm reboot <vmid>` 把 cold restart 排队到目标 VM BSP 所在 pCPU 的 idle thread，
+然后立即把 BEAU shell prompt 还给用户。目标 pCPU 完成 vCPU pause、device reset、
+image reload 和 BSP restart；PM topology gate 在完成或失败前阻止冲突的 STR/reset。
 
 ## 17. CPU 特性、SVE 与 CPUFreq
 
@@ -1144,6 +1161,9 @@ performance policy，并选最大 P-state。QEMU 和 rk356x platform backend 目
 - backpressure、drain budget 和 prefixed output。
 - `Ctrl-D` 从 VM console 返回 BEAU shell。
 
+host shell 无输入时保持 blocked。首次输入发现延迟由 2 ms timer 周期限定；唤醒后
+最多连续处理 64 字节，再重新经过 scheduler，以限制单次 console service 时间。
+
 `sdk/bsp/shell.c` 提供行编辑、历史、Tab completion、异步输出保护和 common command；
 `sdk/bsp/arm64/shell.c` 提供架构诊断命令。
 
@@ -1176,9 +1196,9 @@ performance policy，并选最大 P-state。QEMU 和 rk356x platform backend 目
 | `cpufreq` | policy、domain、P-state 和 backend |
 | `rttest` | 每 pCPU 1000 次 EL2 timer latency test |
 | `trace <...>` | start/stop/status/clear/dump per-pCPU trace |
-| `reset <vmid>` | 同步 cold reset 非 service VM |
 | `reboot` | 立即重启 host |
-| `pm ...` / `pmstat` | VM STR 控制与 transaction 诊断 |
+| `pm reboot <vmid>` | 异步 cold restart 非 service VM |
+| `pm ...` / `pmstat` | VM STR/reboot 控制与 transaction 诊断 |
 
 ### 18.3 Trace 与符号化
 
@@ -1200,8 +1220,8 @@ guest/vCPU 诊断。
 用于固定回归输入：
 
 - `zephyr.bin`、`rtthread.bin`、`lk.bin`。
-- VM1/VM2 Linux `Image`，VM3 默认复用 VM2 image，亦可独立指定。
-- VM1/VM2/VM3 Linux DTB、RT-Thread DTB。
+- VM2 Linux `Image`，VM3 默认复用 VM2 image，亦可独立指定。
+- VM2/VM3 Linux DTB、RT-Thread DTB。
 - 共享 `Initramfs.cpio.gz`。
 
 `scripts/repack_initramfs.sh` 可把 KBE 驱动与测试工具重新打包进默认 initramfs。
