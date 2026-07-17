@@ -10,6 +10,10 @@
 #include <types.h>
 #include <vm_config.h>
 
+/* EL2 owns one physical PMU instance per pCPU. This interface exposes
+ * capability-aware diagnostic snapshots and scoped hot-path measurements; it
+ * does not virtualize a programmable PMU for guests.
+ */
 #define ARM64_CORE_PMU_POLL_US		10000U
 #define ARM64_CORE_PMU_MAX_COUNTERS	6U
 
@@ -36,6 +40,9 @@ struct arm64_core_pmu_values {
 	uint64_t running_ticks;
 };
 
+/* Path values are inclusive. Nested MMIO, vGIC, or virtio scopes can overlap,
+ * so callers must not sum path rows as mutually exclusive execution time.
+ */
 struct arm64_core_pmu_path_values {
 	uint64_t cycles;
 	uint64_t instructions;
@@ -44,6 +51,9 @@ struct arm64_core_pmu_path_values {
 	uint64_t dropped;
 };
 
+/* Capability is probed independently on every pCPU. event_mask is the contract
+ * for consumers: an unsupported event is unavailable, not a measured zero.
+ */
 struct arm64_core_pmu_capability {
 	uint64_t pmceid0;
 	uint64_t pmceid1;
@@ -56,6 +66,10 @@ struct arm64_core_pmu_capability {
 	bool available;
 };
 
+/* Snapshot structures are caller-owned diagnostic copies. A valid pCPU entry
+ * was captured by that CPU; snapshot.complete states whether every requested
+ * pCPU responded within the bounded cross-CPU call.
+ */
 struct arm64_core_pmu_vcpu_snapshot {
 	struct arm64_core_pmu_values total;
 	struct arm64_core_pmu_path_values path[ARM64_CORE_PMU_PATH_NUM];
@@ -87,6 +101,10 @@ struct arm64_core_pmu_snapshot {
 	bool complete;
 };
 
+/* A path token is valid only within one uninterrupted accounting interval on
+ * the recorded pCPU and VM/vCPU owner. Epoch and owner_generation reject stale
+ * samples after reset, suspend, or a scheduler ownership transition.
+ */
 struct arm64_core_pmu_path_token {
 	uint64_t cycles;
 	uint64_t instructions;

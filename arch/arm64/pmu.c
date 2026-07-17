@@ -21,6 +21,22 @@
 #include <asm/pmu.h>
 #include <asm/sysreg.h>
 
+/* [20260717] EL2-owned core PMU accounting
+ *
+ * pmustat command -> per-pCPU worker -> local physical PMU
+ *                                           |
+ * vCPU switch ------------------------------+--> host/vCPU totals
+ *                                           |
+ * MMIO/vGIC/virtio token -------------------+--> path totals
+ *                                           |
+ * snapshot request -> callback on each pCPU +--> diagnostic copy
+ *
+ * Key rules:
+ *   - each pCPU owns its PMU registers, timer, baseline, and mutable totals;
+ *   - guest execution changes the accounting owner, not the hardware setup;
+ *   - guests cannot program or observe the EL2-owned physical counters;
+ *   - bounded cross-CPU operations may report partial data but never hang.
+ */
 #define ARM64_CORE_PMU_INVALID_COUNTER	0xffU
 #define ARM64_CORE_PMU_CYCLE_COUNTER	31U
 #define ARM64_CORE_PMU_COMMAND_TIMEOUT_US 100000U
@@ -67,6 +83,11 @@ struct arm64_core_pmu_vcpu_local {
 	bool seen;
 };
 
+/* This object combines four ownership domains. Capability and hardware state
+ * are pCPU-local; host/vCPU totals are updated only on that pCPU; command
+ * tokens are published by the global controller and acknowledged by the local
+ * worker; STR fields retain software intent while physical counters are lost.
+ */
 struct arm64_core_pmu_pcpu {
 	struct arm64_core_pmu_capability capability;
 	struct arm64_core_pmu_raw baseline;
@@ -289,6 +310,20 @@ static uint16_t arm64_core_pmu_arch_event_id(enum arm64_core_pmu_event event)
 	return event_id;
 }
 
+/* [20260717] Capability-driven event allocation
+ *
+ * ID_AA64DFR0_EL1 + PMCR_EL0 + PMCEID<n>_EL0
+ *                         |
+ *                         v
+ * cycles + required instructions + supported optional events
+ *                         |
+ *                         +--> unavailable: keep PMU disabled
+ *
+ * Key rules:
+ *   - software allocates only implemented counters and advertised events;
+ *   - INST_RETIRED is required on hardware for useful IPC attribution;
+ *   - QEMU may run cycles-only for control and isolation validation.
+ */
 static void arm64_core_pmu_probe(struct arm64_core_pmu_pcpu *pcpu)
 {
 	struct arm64_core_pmu_capability *capability = &pcpu->capability;
@@ -358,6 +393,21 @@ static bool arm64_core_pmu_present(const struct arm64_core_pmu_pcpu *pcpu)
 		(pcpu->capability.pmuver != ARM64_CORE_PMUVER_IMPLEMENTATION_DEFINED);
 }
 
+/* [20260717] Physical PMU programming and guest isolation
+ *
+ * disable counters/interrupts
+ *        |
+ *        v
+ * trap guest PMU control in MDCR_EL2
+ *        |
+ *        v
+ * reset and program EL2-only events -> enable selected counters
+ *
+ * Key rules:
+ *   - programming starts from a disabled counter set and clears stale state;
+ *   - filters count EL2 work while TPM/TPMCR deny guest register ownership;
+ *   - the enable step is last so no partially programmed interval is sampled.
+ */
 static void arm64_core_pmu_configure_mdcr(
 	const struct arm64_core_pmu_pcpu *pcpu)
 {
@@ -467,6 +517,18 @@ static struct arm64_core_pmu_values *arm64_core_pmu_owner_values(
 	return values;
 }
 
+/* [20260717] Baseline-to-delta accounting
+ *
+ * previous baseline -> read counters -> width-aware delta -> current owner
+ *                              |                              |
+ *                              +--> refresh baseline/ticks <--+
+ *
+ * Key rules:
+ *   - the owner is selected only after IRQ-local serialization begins;
+ *   - modular subtraction handles architectural counter wraparound;
+ *   - saturating software totals preserve monotonic diagnostics;
+ *   - polling bounds information loss because overflow IRQs stay disabled.
+ */
 static void arm64_core_pmu_account_now(struct arm64_core_pmu_pcpu *pcpu)
 {
 	struct arm64_core_pmu_values *values;
@@ -858,6 +920,16 @@ int32_t arm64_core_pmu_reset(void)
 	return arm64_core_pmu_issue_command(ARM64_CORE_PMU_COMMAND_RESET);
 }
 
+/* [20260717] Scheduler-bound accounting ownership
+ *
+ * host interval -> account old delta -> publish VM/vCPU owner
+ * guest interval -> account old delta -> publish host owner
+ *
+ * Key rules:
+ *   - closing the old interval precedes every owner transition;
+ *   - owner_generation invalidates path tokens that cross a vCPU switch;
+ *   - totals remain attached to the pCPU on which the vCPU actually ran.
+ */
 void arm64_core_pmu_vcpu_load(const struct acrn_vcpu *vcpu)
 {
 	uint16_t pcpu_id = get_pcpu_id();
@@ -907,6 +979,10 @@ void arm64_core_pmu_vcpu_unload(const struct acrn_vcpu *vcpu)
 	pcpu->owner_generation++;
 }
 
+/* Each callback runs on the pCPU whose live counters it closes. The callback
+ * then copies only software state into the caller-owned snapshot, so the shell
+ * never reads another CPU's mutable PMU state directly.
+ */
 static void arm64_core_pmu_capture_snapshot(void *data)
 {
 	struct arm64_core_pmu_snapshot *snapshot = data;
@@ -969,6 +1045,10 @@ int32_t arm64_core_pmu_take_snapshot(struct arm64_core_pmu_snapshot *snapshot)
 	return complete ? 0 : -ETIMEDOUT;
 }
 
+/* Guest PMU accesses are diagnostic evidence of a denied ownership request.
+ * The trap handler returns an inert value for reads and never forwards writes
+ * to the EL2-owned physical PMU.
+ */
 void arm64_core_pmu_record_guest_access(const struct acrn_vcpu *vcpu)
 {
 	uint16_t pcpu_id = get_pcpu_id();
@@ -1021,6 +1101,20 @@ bool arm64_core_pmu_guest_sysreg(uint64_t sysreg)
 	return pmu;
 }
 
+/* [20260717] Hot-path token validation
+ *
+ * begin: counter image + epoch + pCPU + VM/vCPU + owner generation
+ *                               |
+ * measured operation -----------+
+ *                               v
+ * end: validate same interval -> accumulate delta
+ *                               +--> changed interval: drop sample
+ *
+ * Key rules:
+ *   - begin/end must execute on the same pCPU for the same vCPU owner;
+ *   - reset, suspend, or a scheduler transition invalidates the sample;
+ *   - nested paths are inclusive measurements and may overlap by design.
+ */
 void arm64_core_pmu_path_begin(struct arm64_core_pmu_path_token *token)
 {
 	uint16_t pcpu_id = get_pcpu_id();
