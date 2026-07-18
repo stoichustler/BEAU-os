@@ -1296,13 +1296,14 @@ void arm64_core_pmu_init_pcpu(void)
 			pcpu_id, pcpu->capability.pmuver,
 			pcpu->capability.counter_num, pcpu->capability.cycle_width,
 			pcpu->capability.event_width, pcpu->capability.event_mask);
-#if defined(CONFIG_PLATFORM_QEMU)
-		if ((pcpu->capability.event_mask &
-			(1U << ARM64_CORE_PMU_INSTRUCTIONS)) == 0U) {
-			LOG_WRN("PMU:    CPU%hu QEMU cycles-only; use --pmu-icount only for INST_RETIRED validation",
-				pcpu_id);
-		}
-#endif
+		/* [20260718] QEMU specific
+		 *
+		 * if ((pcpu->capability.event_mask &
+		 *		(1U << ARM64_CORE_PMU_INSTRUCTIONS)) == 0U) {
+		 *		LOG_WRN("PMU:    CPU%hu QEMU 'cycles-only'",
+		 *			pcpu_id);
+		 * }
+		 */
 	} else {
 		if (arm64_core_pmu_present(pcpu)) {
 			arm64_core_pmu_hw_disable(pcpu);
