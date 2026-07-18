@@ -6,7 +6,7 @@
 
 #include <types.h>
 #include <bare.h>
-#include <vm_config.h>
+#include <vconfig.h>
 #include <logmsg.h>
 #include <rtl.h>
 #include <arm64_platform_dts.h>

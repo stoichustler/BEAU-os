@@ -59,6 +59,7 @@
 #define SHELL_VT100_CLEAR_LINE	"\033[2K"
 #define SHELL_VLOG_CHUNK_SIZE	128U
 #define SHELL_VLOG_CPR_QUERY_LEN	4U
+#define SHELL_BANNER_SGR_BODY_MAX_LEN	32U
 #define SHELL_EVENT_IDLE		0U
 #define SHELL_EVENT_LATCHED	1U
 #define SHELL_RX_DRAIN_BUDGET	64U
@@ -324,6 +325,119 @@ static void shell_puts_unlocked(const char *string_ptr)
 				SHELL_STRING_MAX_LEN));
 }
 
+/* [20260718] Banner SGR decoding boundary
+ *
+ * sdk/BANNER printable text
+ *          |
+ *          v
+ * generated beau_banner[]
+ *          |
+ *          +-- U+241B "control picture" or "\\033" marker
+ *          |          |
+ *          |          +-- bounded [digits;...]m --> emit ESC + SGR
+ *          |          +-- malformed -----------> emit printable source
+ *          |
+ *          +-- raw ESC ------------------------> emit printable "\\033"
+ *
+ * Key rule:
+ *   - sdk/BANNER owns presentation text; the shell owns terminal control bytes;
+ *   - only a bounded SGR sequence may cross the parser as a real ESC sequence;
+ *   - malformed or non-SGR input cannot inject cursor, erase, or query commands.
+ */
+static size_t shell_banner_marker_len(const char *text, size_t remaining)
+{
+	size_t marker_len = 0U;
+
+	if ((remaining >= 3U) && ((uint8_t)text[0] == 0xe2U) &&
+		((uint8_t)text[1] == 0x90U) && ((uint8_t)text[2] == 0x9bU)) {
+		marker_len = 3U;
+	} else if ((remaining >= 4U) && (text[0] == '\\') &&
+		(text[1] == '0') && (text[2] == '3') && (text[3] == '3')) {
+		marker_len = 4U;
+	}
+
+	return marker_len;
+}
+
+static size_t shell_banner_sgr_len(const char *text, size_t remaining,
+	size_t marker_len)
+{
+	size_t idx = marker_len;
+	size_t scan_len = 0U;
+	size_t limit = 0U;
+	size_t sgr_len = 0U;
+	bool have_digit = false;
+	bool after_separator = false;
+
+	if ((marker_len == 0U) || (remaining <= marker_len) ||
+		(text[marker_len] != '[')) {
+		return 0U;
+	}
+
+	idx++;
+	scan_len = remaining - idx;
+	if (scan_len > SHELL_BANNER_SGR_BODY_MAX_LEN) {
+		scan_len = SHELL_BANNER_SGR_BODY_MAX_LEN;
+	}
+	limit = idx + scan_len;
+	while (idx < limit) {
+		char ch = text[idx];
+
+		if ((ch >= '0') && (ch <= '9')) {
+			have_digit = true;
+			after_separator = false;
+		} else if ((ch == ';') && have_digit && !after_separator) {
+			after_separator = true;
+		} else if ((ch == 'm') && have_digit && !after_separator) {
+			sgr_len = idx + 1U;
+			break;
+		} else {
+			break;
+		}
+		idx++;
+	}
+
+	return sgr_len;
+}
+
+static void shell_write_banner_unlocked(void)
+{
+	const size_t banner_len = sizeof(beau_banner) - 1U;
+	size_t text_start = 0U;
+	size_t offset = 0U;
+
+	while (offset < banner_len) {
+		size_t remaining = banner_len - offset;
+		size_t marker_len = shell_banner_marker_len(&beau_banner[offset], remaining);
+		size_t sgr_len = shell_banner_sgr_len(&beau_banner[offset], remaining,
+			marker_len);
+
+		if (sgr_len != 0U) {
+			if (offset > text_start) {
+				(void)console_write(&beau_banner[text_start], offset - text_start);
+			}
+			(void)console_write("\033", 1U);
+			(void)console_write(&beau_banner[offset + marker_len],
+				sgr_len - marker_len);
+			offset += sgr_len;
+			text_start = offset;
+		} else if ((uint8_t)beau_banner[offset] == 0x1bU) {
+			if (offset > text_start) {
+				(void)console_write(&beau_banner[text_start], offset - text_start);
+			}
+			shell_puts_unlocked("\\033");
+			offset++;
+			text_start = offset;
+		} else {
+			offset++;
+		}
+	}
+
+	if (text_start < banner_len) {
+		(void)console_write(&beau_banner[text_start], banner_len - text_start);
+	}
+}
+
 void shell_puts(const char *string_ptr)
 {
 	uint64_t rflags;
@@ -352,7 +466,7 @@ static void shell_show_banner_prompt(void)
 
 	spinlock_irqsave_obtain(&shell_tx_lock, &rflags);
 	shell_puts_unlocked("\r\n" SHELL_COLOR_MAGENTA);
-	shell_puts_unlocked(beau_banner);
+	shell_write_banner_unlocked();
 	shell_puts_unlocked(SHELL_COLOR_RESET "\r\n" SHELL_PROMPT_STR);
 	shell_input_active = true;
 	spinlock_irqrestore_release(&shell_tx_lock, rflags);

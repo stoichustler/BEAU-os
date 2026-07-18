@@ -10,7 +10,7 @@
 #include <cpu.h>
 #include <vm.h>
 #include <vcpu.h>
-#include <vm_config.h>
+#include <vconfig.h>
 #include <guest_memory.h>
 #include <rtl.h>
 #include <asm/page.h>

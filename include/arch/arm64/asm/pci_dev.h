@@ -7,7 +7,7 @@
 #ifndef ARM64_PCI_DEV_H
 #define ARM64_PCI_DEV_H
 
-#include <vm_config.h>
+#include <vconfig.h>
 
 struct pci_pdev;
 

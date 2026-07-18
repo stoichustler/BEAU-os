@@ -5,7 +5,7 @@
  */
 
 #include <types.h>
-#include <vm_config.h>
+#include <vconfig.h>
 #include <bsp/pci.h>
 #include <bsp/vpci.h>
 #include <asm/board.h>

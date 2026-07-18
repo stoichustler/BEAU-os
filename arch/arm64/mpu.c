@@ -7,7 +7,7 @@
 #include <types.h>
 #include <asm/mpu.h>
 #include <asm/sve.h>
-#include <asm/vm_config.h>
+#include <asm/vconfig.h>
 
 struct arm64_mpu_feature_desc {
 	uint64_t feature;

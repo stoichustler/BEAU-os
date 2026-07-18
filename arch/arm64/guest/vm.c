@@ -7,7 +7,7 @@
 #include <types.h>
 #include <vm.h>
 #include <vcpu.h>
-#include <vm_config.h>
+#include <vconfig.h>
 #include <cpu.h>
 #include <mmu.h>
 #include <pgtable.h>

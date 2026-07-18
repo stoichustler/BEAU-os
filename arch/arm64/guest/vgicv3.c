@@ -38,7 +38,7 @@
 #include <bits.h>
 #include <vm.h>
 #include <vcpu.h>
-#include <vm_config.h>
+#include <vconfig.h>
 #include <bsp/io_req.h>
 #include <irq.h>
 #include <logmsg.h>

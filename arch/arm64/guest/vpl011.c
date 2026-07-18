@@ -8,7 +8,7 @@
 #include <errno.h>
 #include <vm.h>
 #include <vcpu.h>
-#include <vm_config.h>
+#include <vconfig.h>
 #include <bsp/io_req.h>
 #include <console.h>
 #include <bsp/vuart.h>

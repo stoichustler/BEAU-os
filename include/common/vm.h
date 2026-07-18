@@ -21,7 +21,7 @@
 #include <bsp/io_req.h>
 #include <bsp/vpci.h>
 #include <spinlock.h>
-#include <vm_config.h>
+#include <vconfig.h>
 #include <fdt_api.h>
 #include <asm/guest/vm.h>
 

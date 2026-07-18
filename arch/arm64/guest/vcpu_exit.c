@@ -18,7 +18,7 @@
 #include <hv_pm.h>
 #include <softirq.h>
 #include <ticks.h>
-#include <vm_config.h>
+#include <vconfig.h>
 #include <asm/platform.h>
 #include <asm/cpu.h>
 #include <asm/irq.h>

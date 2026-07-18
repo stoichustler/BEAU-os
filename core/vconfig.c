@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#include <vm_config.h>
+#include <vconfig.h>
 #include <util.h>
 #include <rtl.h>
 

@@ -16,7 +16,7 @@
 #include <reloc.h>
 #include <vm.h>
 #include <vcpu.h>
-#include <vm_config.h>
+#include <vconfig.h>
 #include <vm_wdt.h>
 #include <hv_pm.h>
 #include <schedule.h>
@@ -591,7 +591,7 @@ static int32_t shell_kusg(int32_t argc, __unused char **argv)
 		return -EINVAL;
 	}
 
-	shell_item_begin("kusg");
+	shell_item_begin("BEAU OS static memory usage");
 	shell_item_line("section      usage");
 	shell_item_line("───────────  ───────────────");
 	shell_kusg_print_section(".text",

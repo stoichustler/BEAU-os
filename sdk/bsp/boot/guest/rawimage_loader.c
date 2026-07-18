@@ -5,7 +5,7 @@
  */
 
 #include <vm.h>
-#include <vm_config.h>
+#include <vconfig.h>
 #include <vboot.h>
 #include <guest_memory.h>
 #include <pgtable.h>

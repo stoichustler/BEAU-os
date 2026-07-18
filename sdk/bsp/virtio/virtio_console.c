@@ -7,7 +7,7 @@
 #include <types.h>
 #include <errno.h>
 #include <vm.h>
-#include <vm_config.h>
+#include <vconfig.h>
 #include <console.h>
 #include <bsp/vuart.h>
 #include <rtl.h>

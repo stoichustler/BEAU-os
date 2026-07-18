@@ -19,7 +19,7 @@
 #include <timer.h>
 #include <vm.h>
 #include <vcpu.h>
-#include <vm_config.h>
+#include <vconfig.h>
 #include <vm_wdt.h>
 #include <virtio_proxy.h>
 

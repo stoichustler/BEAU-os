@@ -8,7 +8,7 @@
 #define ARM64_CORE_PMU_H
 
 #include <types.h>
-#include <vm_config.h>
+#include <vconfig.h>
 
 /* EL2 owns one physical PMU instance per pCPU. This interface exposes
  * capability-aware diagnostic snapshots and scoped hot-path measurements; it

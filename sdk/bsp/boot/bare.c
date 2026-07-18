@@ -9,7 +9,7 @@
  * Multiboot. Bare boot allows ACRN boot components to be pre-configured at
  * compile time.
  *
- * ARM64 static platforms use this path for the SDK bring-up flow: vm_config.c
+ * ARM64 static platforms use this path for the SDK bring-up flow: vconfig.c
  * provides a bare_boot_options[] table whose tags match VM kernel, ramdisk, and
  * FDT module tags. init_bare_boot_info() turns that table into the same
  * acrn_boot_info module list that Multiboot would have produced, so the later

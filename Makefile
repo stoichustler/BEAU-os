@@ -329,7 +329,7 @@ endif
 ifdef STACK_PROTECTOR
 COMMON_C_SRCS += lib/stack_protector.c
 endif
-COMMON_C_SRCS += core/vm_config.c
+COMMON_C_SRCS += core/vconfig.c
 COMMON_C_SRCS += core/event.c
 COMMON_C_SRCS += core/fdt.c
 COMMON_C_SRCS += sdk/bsp/boot/guest/vboot_info.c
@@ -515,7 +515,7 @@ endif
 endif
 
 # Escape the banner character-by-character; awk gsub backslash handling varies.
-$(BANNER_H): sdk/BANNER Makefile | $(HV_OBJDIR)/include
+$(BANNER_H): sdk/tag/BANNER-02 Makefile | $(HV_OBJDIR)/include
 	@echo "banner             $(notdir $@)"
 	@{ \
 		echo "/* Auto-generated from sdk/BANNER. */"; \

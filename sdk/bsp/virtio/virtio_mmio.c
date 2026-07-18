@@ -7,6 +7,7 @@
 #include <types.h>
 #include <errno.h>
 #include <bits.h>
+#include <barrier.h>
 #include <hv_pm.h>
 #include <vm.h>
 #include <guest_memory.h>
@@ -87,18 +88,17 @@ static uint64_t virtio_mmio_resize_value(uint64_t value, uint64_t size)
 	return ret;
 }
 
-static uint16_t virtio_mmio_read_u16(struct virtio_mmio_dev *dev, uint64_t gpa)
+static bool virtio_mmio_read_u16(struct virtio_mmio_dev *dev, uint64_t gpa,
+	uint16_t *value)
 {
-	uint16_t value = 0U;
-
-	(void)virtio_mmio_read_gpa(dev, gpa, &value, sizeof(value));
-	return value;
+	return (value != NULL) &&
+		virtio_mmio_read_gpa(dev, gpa, value, sizeof(*value));
 }
 
-static void virtio_mmio_write_u16(struct virtio_mmio_dev *dev, uint64_t gpa,
+static bool virtio_mmio_write_u16(struct virtio_mmio_dev *dev, uint64_t gpa,
 	uint16_t value)
 {
-	(void)virtio_mmio_write_gpa(dev, gpa, &value, sizeof(value));
+	return virtio_mmio_write_gpa(dev, gpa, &value, sizeof(value));
 }
 
 static void virtio_mmio_update_irq(struct virtio_mmio_dev *dev)
@@ -214,19 +214,41 @@ bool virtio_mmio_read_desc(struct virtio_mmio_dev *dev,
 	return ret;
 }
 
+/* [20260718] Split virtqueue publication ordering
+ *
+ * frontend guest                         BEAU device
+ * descriptor + avail ring stores
+ *       |
+ *       +-- release --> avail->idx ------> acquire --> read ring/descriptor
+ *
+ * BEAU payload + used entry stores
+ *       |
+ *       +-- release --> used->idx
+ *                              |
+ *                              +-- release --> used-ring vIRQ
+ *
+ * Key rule:
+ *   - the frontend owns descriptor and avail memory; BEAU owns used publication
+ *     and the trusted last_avail_idx shadow;
+ *   - a new avail index is consumed only after an acquire barrier, while payload
+ *     and used entries become visible before the used index and its interrupt;
+ *   - failed guest-memory access publishes no shadow/index progress, preventing
+ *     stale ring data from being interpreted as a valid descriptor completion.
+ */
 bool virtio_mmio_pop_avail(struct virtio_mmio_dev *dev,
 	struct virtio_mmio_queue *vq, uint16_t *head)
 {
-	uint16_t avail_idx;
-	uint64_t ring_gpa;
+	uint16_t avail_idx = 0U;
+	uint64_t ring_gpa = 0UL;
 	bool ret = false;
 
-	if ((head != NULL) && virtio_mmio_queue_valid(dev, vq)) {
-		avail_idx = virtio_mmio_read_u16(dev, vq->avail + 2UL);
-		if (vq->last_avail_idx != avail_idx) {
-			ring_gpa = vq->avail + 4UL +
-				((uint64_t)(vq->last_avail_idx % vq->num) * sizeof(uint16_t));
-			*head = virtio_mmio_read_u16(dev, ring_gpa);
+	if ((head != NULL) && virtio_mmio_queue_valid(dev, vq) &&
+		virtio_mmio_read_u16(dev, vq->avail + 2UL, &avail_idx) &&
+		(vq->last_avail_idx != avail_idx)) {
+		cpu_read_memory_barrier();
+		ring_gpa = vq->avail + 4UL +
+			((uint64_t)(vq->last_avail_idx % vq->num) * sizeof(uint16_t));
+		if (virtio_mmio_read_u16(dev, ring_gpa, head)) {
 			vq->last_avail_idx++;
 			ret = true;
 		}
@@ -238,20 +260,21 @@ bool virtio_mmio_pop_avail(struct virtio_mmio_dev *dev,
 bool virtio_mmio_add_used(struct virtio_mmio_dev *dev,
 	struct virtio_mmio_queue *vq, uint16_t id, uint32_t len)
 {
-	uint16_t used_idx;
-	uint64_t elem_gpa;
-	uint32_t elem[2];
+	uint16_t used_idx = 0U;
+	uint64_t elem_gpa = 0UL;
+	uint32_t elem[2] = { 0U, 0U };
 	bool ret = false;
 
-	if (virtio_mmio_queue_valid(dev, vq)) {
-		used_idx = virtio_mmio_read_u16(dev, vq->used + 2UL);
+	if (virtio_mmio_queue_valid(dev, vq) &&
+		virtio_mmio_read_u16(dev, vq->used + 2UL, &used_idx)) {
 		elem_gpa = vq->used + 4UL +
 			((uint64_t)(used_idx % vq->num) * sizeof(elem));
 		elem[0] = id;
 		elem[1] = len;
 		if (virtio_mmio_write_gpa(dev, elem_gpa, elem, sizeof(elem))) {
-			virtio_mmio_write_u16(dev, vq->used + 2UL, used_idx + 1U);
-			ret = true;
+			cpu_write_memory_barrier();
+			ret = virtio_mmio_write_u16(dev, vq->used + 2UL,
+				used_idx + 1U);
 		}
 	}
 
@@ -261,6 +284,7 @@ bool virtio_mmio_add_used(struct virtio_mmio_dev *dev,
 void virtio_mmio_raise_used_irq(struct virtio_mmio_dev *dev)
 {
 	if (dev != NULL) {
+		cpu_write_memory_barrier();
 		dev->interrupt_status |= VIRTIO_MMIO_INT_USED_RING;
 		virtio_mmio_update_irq(dev);
 	}

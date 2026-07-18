@@ -8,7 +8,7 @@
 #include <rtl.h>
 #include <logmsg.h>
 #include <vm.h>
-#include <vm_config.h>
+#include <vconfig.h>
 #include <bsp/vfdt.h>
 #include <bsp/pm.h>
 #include <acrn_hv_defs.h>

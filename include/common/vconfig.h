@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#ifndef VM_CONFIG_H_
-#define VM_CONFIG_H_
+#ifndef VCONFIG_H_
+#define VCONFIG_H_
 
 #include <types.h>
 #include <bsp/pci.h>
@@ -19,7 +19,7 @@
 #endif
 #include <acrn_hv_defs.h>
 #include <schedule.h>
-#include <asm/vm_config.h>
+#include <asm/vconfig.h>
 #include <bsp/vuart.h>
 
 #define AFFINITY_CPU(n)		(1UL << (n))
@@ -172,4 +172,4 @@ bool vm_has_matched_name(uint16_t vmid, const char *name);
 extern struct acrn_vm_config vm_configs[CONFIG_MAX_VM_NUM];
 extern struct acrn_vm_config *const service_vm_config;
 
-#endif /* VM_CONFIG_H_ */
+#endif /* VCONFIG_H_ */

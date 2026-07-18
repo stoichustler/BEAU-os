@@ -9,7 +9,7 @@
 #include <cpu.h>
 #include <errno.h>
 #include <bare.h>
-#include <vm_config.h>
+#include <vconfig.h>
 #include <schedule.h>
 #include <pgtable.h>
 #include <libfdt.h>

@@ -7,7 +7,7 @@
 #include <types.h>
 #include <vcpu.h>
 #include <vm.h>
-#include <vm_config.h>
+#include <vconfig.h>
 #include <asm/mpu.h>
 #include <asm/sve.h>
 #include <asm/sysreg.h>

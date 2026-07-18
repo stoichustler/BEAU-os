@@ -8,7 +8,7 @@
 #define ARM64_SVE_H
 
 #include <types.h>
-#include <asm/vm_config.h>
+#include <asm/vconfig.h>
 
 #ifndef ASSEMBLER
 

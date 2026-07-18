@@ -9,7 +9,7 @@
 #include <asm/hv_pm.h>
 #include <logmsg.h>
 #include <spinlock.h>
-#include <vm_config.h>
+#include <vconfig.h>
 
 #define HV_PM_DEFAULT_CONTROLLER_VM	2U
 #define HV_PM_MAX_HOOKS		32U

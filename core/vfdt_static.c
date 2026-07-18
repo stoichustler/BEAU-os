@@ -6,7 +6,7 @@
 
 #include <vm.h>
 #include <reloc.h>
-#include <vm_config.h>
+#include <vconfig.h>
 #if CONFIG_STATIC_VFDT
 #include <libfdt.h>
 #include <bsp/vfdt.h>

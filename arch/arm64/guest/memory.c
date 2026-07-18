@@ -7,7 +7,7 @@
 #include <types.h>
 #include <vcpu.h>
 #include <vm.h>
-#include <vm_config.h>
+#include <vconfig.h>
 #include <guest_memory.h>
 #include <errno.h>
 

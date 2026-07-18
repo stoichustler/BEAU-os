@@ -14,7 +14,7 @@
 #include <logmsg.h>
 #include <schedule.h>
 #include <asm/page.h>
-#include <asm/vm_config.h>
+#include <asm/vconfig.h>
 #include <asm/per_cpu.h>
 #include <asm/security.h>
 #include <notify.h>

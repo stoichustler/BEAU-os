@@ -11,7 +11,7 @@
 #include <softirq.h>
 #include <spinlock.h>
 #include <vm.h>
-#include <vm_config.h>
+#include <vconfig.h>
 #include <bsp/io_req.h>
 #include <asm/guest/vsmmu.h>
 

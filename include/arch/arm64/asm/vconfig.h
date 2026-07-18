@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#ifndef ARM64_VM_CONFIG_H
-#define ARM64_VM_CONFIG_H
+#ifndef ARM64_VCONFIG_H
+#define ARM64_VCONFIG_H
 
 #include <types.h>
 #ifndef CONFIG_STATIC_ARM64_PLATFORM
@@ -87,4 +87,4 @@ struct arch_vm_config {
 	struct arm64_virtio_proxy_config guest_virtio_proxy[ARM64_VIRTIO_PROXY_MAX];
 };
 
-#endif /* ARM64_VM_CONFIG_H */
+#endif /* ARM64_VCONFIG_H */

@@ -41,7 +41,7 @@
 #include <acrn_hv_defs.h>
 #include <vm.h>
 #include <vcpu.h>
-#include <vm_config.h>
+#include <vconfig.h>
 #include <guest_memory.h>
 #include <logmsg.h>
 #include <rtl.h>

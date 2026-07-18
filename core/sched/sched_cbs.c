@@ -165,7 +165,7 @@
 #include <schedule.h>
 #include <ticks.h>
 #include <util.h>
-#include <vm_config.h>
+#include <vconfig.h>
 
 #define CBS_DEFAULT_PERIOD_US	4000U
 #define CBS_DEFAULT_BUDGET_US	2000U

@@ -7,7 +7,7 @@
 #include <errno.h>
 #include <logmsg.h>
 #include <spinlock.h>
-#include <vm_config.h>
+#include <vconfig.h>
 #include <asm/vtd.h>
 #include "smmu.h"
 

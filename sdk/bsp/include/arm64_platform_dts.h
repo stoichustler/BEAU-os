@@ -9,7 +9,7 @@
 
 #include <types.h>
 #include <bare.h>
-#include <vm_config.h>
+#include <vconfig.h>
 #include <hv_pm.h>
 #include <asm/platform.h>
 
