@@ -17,7 +17,7 @@ fn:
 
 #define ASM_EMBED_BIN(bin, path)                                      \
 	.section .rodata.embed.bin, "a", %progbits;                       \
-	.align 12;                                                        \
+	.p2align 12;                                                      \
 	.globl arm64_##bin##_start;                                       \
 arm64_##bin##_start:                                                  \
 	.incbin path;                                                     \
@@ -25,6 +25,6 @@ arm64_##bin##_start:                                                  \
 arm64_##bin##_end:                                                    \
 	.globl arm64_##bin##_size;                                        \
 	.set arm64_##bin##_size, arm64_##bin##_end - arm64_##bin##_start; \
-	.align 12
+	.p2align 12
 
 #endif /* ARM64_MACRO_H */

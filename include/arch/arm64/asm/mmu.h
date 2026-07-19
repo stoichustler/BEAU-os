@@ -15,6 +15,10 @@
 #define MAX_FDT_RSVD_REGIONS	16
 #define CACHE_LINE_SIZE		64U
 
+#define ARM64_S1_ACCESS_READ	(1U << 0U)
+#define ARM64_S1_ACCESS_WRITE	(1U << 1U)
+#define ARM64_S1_ACCESS_EXECUTE	(1U << 2U)
+
 struct page_pool_stats;
 
 static inline void arm64_set_ttbr0_el2(uint64_t ttbr)
@@ -37,5 +41,6 @@ const struct mem_region *arm64_get_reserved_mem_regions(uint32_t *count);
 void arm64_get_hv_s1_page_pool_stats(struct page_pool_stats *stats);
 bool arm64_get_hv_s1_memory_attr(uint64_t addr,
 	struct arm64_memory_attr *attr);
+bool arm64_get_hv_s1_memory_access(uint64_t addr, uint8_t *access);
 
 #endif /* ARM64_MMU_H */

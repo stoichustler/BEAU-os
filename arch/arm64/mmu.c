@@ -236,9 +236,65 @@ bool arm64_get_hv_s1_memory_attr(uint64_t addr,
 	return true;
 }
 
+bool arm64_get_hv_s1_memory_access(uint64_t addr, uint8_t *access)
+{
+	const uint64_t *entry;
+	uint64_t pg_size = 0UL;
+	uint64_t descriptor;
+	bool writable;
+
+	if (access == NULL) {
+		return false;
+	}
+	*access = 0U;
+	if (ppt_mmu_top_addr == NULL) {
+		return false;
+	}
+
+	entry = pgtable_lookup_entry((uint64_t *)ppt_mmu_top_addr, addr,
+		&pg_size, &ppt_pgtable);
+	if (entry == NULL) {
+		return true;
+	}
+
+	descriptor = *entry;
+	*access = ARM64_S1_ACCESS_READ;
+	writable = (descriptor & PAGE_AP_RO_EL2) == 0UL;
+	if (writable) {
+		*access |= ARM64_S1_ACCESS_WRITE;
+	}
+	if (((descriptor & (PAGE_PXN | PAGE_UXN)) == 0UL) &&
+		(((read_sctlr_el2() & SCTLR_EL2_WXN) == 0UL) || !writable)) {
+		*access |= ARM64_S1_ACCESS_EXECUTE;
+	}
+
+	return true;
+}
+
+static void arm64_set_hv_section_permissions(const char *name,
+	uint64_t start, uint64_t end, uint64_t prot_set, uint64_t prot_clr)
+{
+	uint64_t size;
+
+	if ((end <= start) || !mem_aligned_check(start, PAGE_SIZE)) {
+		panic("arm64 mmu invalid %s range [0x%lx,0x%lx)", name, start, end);
+	}
+
+	size = round_page_up(end - start);
+	pgtable_modify_or_del_map((uint64_t *)ppt_mmu_top_addr, start, size,
+		prot_set, prot_clr, &ppt_pgtable, MR_MODIFY);
+}
+
+static void arm64_protect_hv_sections(void)
+{
+	arm64_set_hv_section_permissions("text", (uint64_t)&_text_start,
+		(uint64_t)&_text_end, PAGE_AP_RO_EL2, PAGE_PXN | PAGE_UXN);
+	arm64_set_hv_section_permissions("rodata", (uint64_t)&_rodata_start,
+		(uint64_t)&_rodata_end, PAGE_AP_RO_EL2 | PAGE_PXN | PAGE_UXN, 0UL);
+}
+
 static void init_hv_mapping(void)
 {
-	uint64_t hva_base;
 	const struct arm64_mem_region *mmio_regions;
 	uint32_t mmio_region_count;
 	uint32_t idx;
@@ -246,58 +302,22 @@ static void init_hv_mapping(void)
 
 	ppt_mmu_top_addr = (uint64_t *)alloc_page(&ppt_page_pool);
 
-	/*
-	 * EL2 stage-1 identity-map principle:
+	/* [20260719] EL2 stage-1 identity map and W^X
 	 *
-	 * BEAU keeps the host bootstrap address model simple: the virtual address
-	 * used by EL2 is the same numeric value as the host physical address placed
-	 * in the descriptor. Translation is still enabled, but it preserves the
-	 * address number while attaching ARM64 memory attributes and permissions.
+	 *   platform MMIO -> Device, RW-
+	 *   platform RAM  -> Normal, RW-
+	 *          |
+	 *          +--> remove reserved ranges
+	 *          |
+	 *          +--> .text   -> R-X
+	 *          +--> .rodata -> R--
+	 *          `--> writable sections remain RW-
 	 *
-	 *      EL2 VA / HVA                 stage-1 page table                 HPA
-	 *   +--------------+        +-----------------------------+       +--------------+
-	 *   | 0x48000000   | -----> | output address: 0x48000000  | ----> | 0x48000000   |
-	 *   +--------------+        | attr: normal/device, XN/RW  |       +--------------+
-	 *                           +-----------------------------+
-	 *
-	 * pgtable_add_map(root, paddr, vaddr, size, ...) receives the physical base
-	 * first and the virtual base second. Passing the same value for both bases
-	 * builds the 1:1 relationship:
-	 *
-	 *      paddr_base == vaddr_base
-	 *              |
-	 *              v
-	 *      [VA start, VA end) -> [same-number PA start, same-number PA end)
-	 *
-	 * 1:1 does not mean all ranges are equivalent. The address relation stays
-	 * identity, while descriptor attributes remain range-specific:
-	 *
-	 *   +---------+  device memory, no normal caching    +----------------+
-	 *   |  MMIO   | -----------------------------------> | device window  |
-	 *   +---------+                                      +----------------+
-	 *
-	 *   +---------+  normal cacheable RAM, mostly NX     +----------------+
-	 *   |  RAM    | -----------------------------------> | physical RAM   |
-	 *   +---------+                                      +----------------+
-	 *
-	 *   +---------+  same VA==PA, executable code/data   +----------------+
-	 *   | HV image| -----------------------------------> | BEAU image     |
-	 *   +---------+                                      +----------------+
-	 *
-	 * The map is built broad-to-narrow: map platform MMIO, map RAM, delete FDT
-	 * reserved ranges from the RAM map, then relax XN only for the hypervisor
-	 * image. This keeps early boot, exception vectors, memcpy, and MMIO helpers
-	 * using direct physical-looking addresses without giving reserved firmware
-	 * memory or ordinary RAM unintended execute permission.
-	 *
-	 * Attribute ownership:
-	 *
-	 *   MMIO      -> Device memory: ordered enough for registers, never execute.
-	 *   RAM       -> Normal cacheable memory: fast data access, initially XN.
-	 *   HV image  -> Same VA==PA range, but code must be executable.
-	 *
-	 * The page-table output address can be the same for all three cases only
-	 * because the descriptor attributes carry the real memory-management policy.
+	 * Key rule:
+	 *   - EL2 virtual addresses remain identical to host physical addresses;
+	 *   - RAM starts execute-never and only the page-aligned text range gains
+	 *     execute permission after becoming read-only;
+	 *   - SCTLR_EL2.WXN provides a second barrier against writable code pages.
 	 */
 	mmio_regions = arm64_get_platform_mmio_regions(&mmio_region_count);
 	for (idx = 0U; idx < mmio_region_count; idx++) {
@@ -308,16 +328,15 @@ static void init_hv_mapping(void)
 
 	pgtable_add_map((uint64_t *)ppt_mmu_top_addr, phys_mem_start,
 		phys_mem_start, phys_mem_size,
-		PAGE_ATTR_NORMAL | PAGE_BLOCK_DESC, &ppt_pgtable);
+		PAGE_ATTR_NORMAL | PAGE_PXN | PAGE_UXN | PAGE_BLOCK_DESC,
+		&ppt_pgtable);
 
 	for (i = 0; i < nr_rsvd_regions; i++) {
 		pgtable_modify_or_del_map((uint64_t *)ppt_mmu_top_addr, rsvd_regions[i].addr,
 			rsvd_regions[i].size, 0UL, 0UL, &ppt_pgtable, MR_DEL);
 	}
 
-	hva_base = get_hv_image_base();
-	pgtable_modify_or_del_map((uint64_t *)ppt_mmu_top_addr, hva_base,
-		get_hv_image_size(), 0UL, PAGE_PXN | PAGE_UXN, &ppt_pgtable, MR_MODIFY);
+	arm64_protect_hv_sections();
 
 	init_ttbr0_el2 = (uint64_t)ppt_mmu_top_addr;
 	enable_paging();
@@ -342,7 +361,7 @@ void enable_paging(void)
 	 *   MAIR_EL2  names AttrIndx encodings used by descriptors.
 	 *   TCR_EL2   selects the VA size, granule, cacheability, and PA size.
 	 *   TTBR0_EL2 points the table-walk unit at BEAU's root table.
-	 *   SCTLR_EL2.M enables translation; C/I enable data and instruction cache.
+	 *   SCTLR_EL2.M enables translation; C/I enable caches; WXN enforces W^X.
 	 *
 	 * The local TLB flush ensures no stale translation survives a rebuild of
 	 * the bootstrap page table before the MMU begins using it.

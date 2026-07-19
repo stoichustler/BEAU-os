@@ -41,6 +41,15 @@ config HV_RAM_START
 	  Link-time address where firmware or QEMU places the BEAU image. This
 	  value is substituted into arch/lds/link_ram.ld.in.
 
+config HV_RAM_SIZE
+	hex "Hypervisor reserved RAM size"
+	default 0x08000000 if PLATFORM_QEMU
+	default 0x0F600000 if PLATFORM_RK356X
+	help
+	  Maximum RAM footprint available to BEAU from CONFIG_HV_RAM_START.
+	  The linker rejects text, embedded images, data, stacks, or BSS that
+	  extend beyond this platform-owned range.
+
 config MAX_PCPU_NUM
 	int "Maximum physical CPU count"
 	default 8 if PLATFORM_QEMU

@@ -134,7 +134,9 @@ struct arm64_memory_attr {
 #define SCTLR_EL2_C			(1UL << 2U)
 #define SCTLR_EL2_I			(1UL << 12U)
 #define SCTLR_EL2_SA			(1UL << 3U)
-#define SCTLR_EL2_VALUE			(SCTLR_EL2_M | SCTLR_EL2_C | SCTLR_EL2_I | SCTLR_EL2_SA)
+#define SCTLR_EL2_WXN			(1UL << 19U)
+#define SCTLR_EL2_VALUE			(SCTLR_EL2_M | SCTLR_EL2_C | SCTLR_EL2_I | \
+						SCTLR_EL2_SA | SCTLR_EL2_WXN)
 
 #define DEFINE_PAGE_TABLES(name, nr)					\
 pgtable_t __aligned(PAGE_SIZE) name[PG_TABLE_ENTRIES * (nr)]

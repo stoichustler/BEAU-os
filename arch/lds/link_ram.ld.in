@@ -145,4 +145,8 @@ SECTIONS
 		"AArch64 Image header must be absent or 64 bytes at offset zero")
 	ASSERT(_start == ld_image_header_end,
 		"EL2 entry must immediately follow the optional AArch64 Image header")
+	ASSERT(CONFIG_HV_RAM_SIZE > 0,
+		"CONFIG_HV_RAM_SIZE must be non-zero")
+	ASSERT(ld_ram_end <= (CONFIG_HV_RAM_START + CONFIG_HV_RAM_SIZE),
+		"BEAU RAM footprint exceeds CONFIG_HV_RAM_SIZE")
 }

@@ -571,13 +571,30 @@ static int32_t shell_memstat(int32_t argc, __unused char **argv)
 	return 0;
 }
 
-static void shell_kusg_print_section(const char *name, uint64_t bytes)
+static void shell_kusg_print_usage(const char *name, const char *attribute,
+	uint64_t bytes)
 {
 	uint64_t whole = bytes / SHELL_MEM_KB_BYTES;
 	uint64_t fraction = ((bytes % SHELL_MEM_KB_BYTES) * 1000UL) /
 		SHELL_MEM_KB_BYTES;
 
-	shell_item_line("%-11s  %8lu.%03lu KB", name, whole, fraction);
+	shell_item_line("%-12s  %-15s  %8lu.%03lu KB",
+		name, attribute, whole, fraction);
+}
+
+static void shell_kusg_print_section(const char *name, uint64_t start,
+	uint64_t end)
+{
+	char attribute[4U] = { '?', '?', '?', '\0' };
+	uint8_t access;
+
+	if (arm64_get_hv_s1_memory_access(start, &access)) {
+		attribute[0] = ((access & ARM64_S1_ACCESS_READ) != 0U) ? 'R' : '-';
+		attribute[1] = ((access & ARM64_S1_ACCESS_WRITE) != 0U) ? 'W' : '-';
+		attribute[2] = ((access & ARM64_S1_ACCESS_EXECUTE) != 0U) ? 'X' : '-';
+	}
+
+	shell_kusg_print_usage(name, attribute, end - start);
 }
 
 static int32_t shell_kusg(int32_t argc, __unused char **argv)
@@ -587,21 +604,21 @@ static int32_t shell_kusg(int32_t argc, __unused char **argv)
 	}
 
 	shell_item_begin("BEAU OS static memory usage");
-	shell_item_line("section      usage");
-	shell_item_line("───────────  ───────────────");
+	shell_item_line("section       attribute        usage");
+	shell_item_line("────────────  ───────────────  ───────────────");
 	shell_kusg_print_section(".TEXT",
-		(uint64_t)&_text_end - (uint64_t)&_text_start);
+		(uint64_t)&_text_start, (uint64_t)&_text_end);
 	shell_kusg_print_section(".RODATA",
-		(uint64_t)&_rodata_end - (uint64_t)&_rodata_start);
+		(uint64_t)&_rodata_start, (uint64_t)&_rodata_end);
 	shell_kusg_print_section(".DATA",
-		(uint64_t)&_data_end - (uint64_t)&_data_start);
+		(uint64_t)&_data_start, (uint64_t)&_data_end);
 	shell_kusg_print_section(".BSS",
-		(uint64_t)&_bss_end - (uint64_t)&_bss_start);
+		(uint64_t)&_bss_start, (uint64_t)&_bss_end);
 	shell_kusg_print_section(".BOOT.STACK",
-		(uint64_t)&_boot_stack_end - (uint64_t)&_boot_stack_start);
-	shell_kusg_print_section(".IMAGE",
+		(uint64_t)&_boot_stack_start, (uint64_t)&_boot_stack_end);
+	shell_kusg_print_usage(".IMAGE", "MIXED",
 		(uint64_t)&ld_image_end - (uint64_t)&ld_ram_start);
-	shell_kusg_print_section("RAM",
+	shell_kusg_print_usage("RAM", "MIXED",
 		(uint64_t)&ld_ram_end - (uint64_t)&ld_ram_start);
 	shell_item_end();
 

@@ -65,6 +65,7 @@ int32_t init_bare_boot_info()
 	struct acrn_boot_info *abi = get_acrn_boot_info();
 	struct abi_module *m;
 	const char *tag;
+	uint64_t mod_size;
 	int i;
 
 	(void)strncpy_s((void *)abi->protocol_name, MAX_PROTOCOL_NAME_SIZE,
@@ -87,21 +88,34 @@ int32_t init_bare_boot_info()
 		nmods = MAX_MODULE_NUM;
 	}
 
-	abi->mods_count = nmods;
-
-	/*
-	 * Module addresses are stored as HVAs, matching the Multiboot conversion
-	 * path. Loader code then copies from these source addresses into guest GPA
-	 * destinations selected by VM configuration and image format.
+	/* [20260719] Bare module ABI narrowing
+	 *
+	 *   platform module (uint64_t size)
+	 *                 |
+	 *                 +--> size > UINT32_MAX --> fail closed
+	 *                 |
+	 *                 v
+	 *   populate private ABI slots -> publish mods_count
+	 *
+	 * Key rule:
+	 *   - static platform configuration owns the source address and size;
+	 *   - all sizes are validated before the module list becomes visible;
+	 *   - the common 32-bit boot ABI must never observe a truncated payload.
 	 */
 	for (i = 0; i < nmods; i++) {
 		m = &(abi->mods[i]);
 		m->start = get_mod_addr(i);
-		m->size = get_mod_size(i);
+		mod_size = get_mod_size(i);
+		if (mod_size > UINT32_MAX) {
+			panic("bareboot: module %d size 0x%lx exceeds 32-bit boot ABI",
+				i, mod_size);
+		}
+		m->size = (uint32_t)mod_size;
 		tag = get_mod_tag(i);
 		(void)strncpy_s((void *)(m->string), MAX_MOD_STRING_SIZE,
 				tag, strnlen_s(tag, MAX_MOD_STRING_SIZE));
 	}
+	abi->mods_count = nmods;
 
 	return 0;
 }
