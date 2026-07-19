@@ -1046,6 +1046,13 @@ static bool vm_wdt_process_recovery(uint16_t vm_id)
 			return false;
 		}
 
+		/*
+		 * FIXME(core/scheduler, safety): A remote vCPU may reach VCPU_PAUSED
+		 * while its scheduler thread has not acknowledged the reschedule by
+		 * entering THREAD_STS_BLOCKED. Its vCPU-ID bit then remains in
+		 * wait_vcpus, so recovery must fail closed before cold reset rather
+		 * than reload a VM with a still-running vCPU.
+		 */
 		get_vm_lock(vm);
 		wait_vcpus = pause_vm_async(vm);
 		put_vm_lock(vm);
