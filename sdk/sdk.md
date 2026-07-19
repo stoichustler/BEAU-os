@@ -80,6 +80,24 @@ Example box-drawing elements:
  */
 ```
 
+As for `FIXME` comment, use the followig structure:
+
+```text
+/* [YYYYMMDD] CASE-xx: [FIXED/UNSOLVED]
+ *
+ * FIXME(File, Type): <Issue Description>
+ *
+ * METHOD(File, Type): <Solution for this Issue>
+ */
+```
+
+- `METHOD` must comes with related code implementation.
+
+- `UNSOLVED`: Only with `FIXME`, no `METHOD` offered.
+
+- `FIXED`: issue has been solved, with `METHOD` comment and corresponding code
+  implementation.
+
 6. Diagram style examples:
 
 ```
@@ -129,6 +147,7 @@ description
   each subsequent commit.
 - Keep one blank line between the header and the description. The description
   must state the purpose of the change.
+
 
 ## BEAU OS Architecture
 

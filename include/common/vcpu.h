@@ -199,6 +199,8 @@ void reset_vcpu(struct acrn_vcpu *vcpu);
 void pause_vcpu(struct acrn_vcpu *vcpu);
 void pause_vcpu_sync(struct acrn_vcpu *vcpu);
 bool is_vcpu_paused(const struct acrn_vcpu *vcpu);
+bool request_vcpu_quiesce(struct acrn_vcpu *vcpu, uint64_t generation);
+bool is_vcpu_quiesced(const struct acrn_vcpu *vcpu, uint64_t generation);
 
 /**
  * @brief power off a vCPU in response to guest PSCI CPU_OFF

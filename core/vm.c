@@ -504,13 +504,13 @@ void pause_vm(struct acrn_vm *vm)
 	}
 }
 
-uint64_t pause_vm_async(struct acrn_vm *vm)
+uint64_t pause_vm_async(struct acrn_vm *vm, uint64_t generation)
 {
 	uint16_t i;
 	uint64_t pending_vcpus = 0UL;
 	struct acrn_vcpu *vcpu = NULL;
 
-	if (vm == NULL) {
+	if ((vm == NULL) || (generation == 0UL)) {
 		return ~0UL;
 	}
 	if (is_paused_vm(vm)) {
@@ -522,10 +522,10 @@ uint64_t pause_vm_async(struct acrn_vm *vm)
 	}
 
 	foreach_vcpu(i, vm, vcpu) {
-		pause_vcpu(vcpu);
+		(void)request_vcpu_quiesce(vcpu, generation);
 	}
 	foreach_vcpu(i, vm, vcpu) {
-		if (!is_vcpu_paused(vcpu)) {
+		if (!is_vcpu_quiesced(vcpu, generation)) {
 			bitmap_set_non_atomic(vcpu->vcpu_id, &pending_vcpus);
 		}
 	}

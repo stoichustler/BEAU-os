@@ -165,6 +165,7 @@ struct sched_control {
 	uint64_t scheduler_ticks;
 	uint64_t context_switches;
 	uint64_t reschedule_requests;
+	uint64_t quiesce_request_vm_mask;
 	/*
 	 * Fast path for deferred scheduler-specific priority requests. Producers set
 	 * this per-pCPU flag without taking scheduler_lock; schedule() consumes it
@@ -280,6 +281,9 @@ bool sched_clear_reschedule_if_current_only(uint16_t pcpu_id);
 void run_thread(struct thread_object *obj);
 void sleep_thread(struct thread_object *obj);
 void sleep_thread_sync(struct thread_object *obj);
+bool request_thread_quiesce(struct thread_object *obj, uint64_t generation);
+bool is_thread_quiesced(const struct thread_object *obj, uint64_t generation);
+void release_thread_quiesce(struct thread_object *obj);
 void wake_thread(struct thread_object *obj);
 bool freeze_thread(struct thread_object *obj, uint64_t epoch,
 	bool *wake_owned);

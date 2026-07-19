@@ -108,6 +108,7 @@ struct vm_wdt_entry {
 	enum vm_wdt_cause recovery_cause;
 	uint64_t recovery_start_tsc;
 	uint64_t recovery_wait_vcpus;
+	uint64_t recovery_quiesce_generation;
 	int32_t reset_ret;
 	uint64_t candidate_event_sequence;
 	uint64_t recovery_event_sequence;
@@ -135,6 +136,7 @@ static struct hv_timer vm_wdt_recovery_timer;
 static bool vm_wdt_started;
 static uint64_t vm_wdt_suspend_epoch;
 static uint64_t vm_wdt_suspend_ticks;
+static uint64_t vm_wdt_next_quiesce_generation;
 static bool vm_wdt_pm_suspended;
 
 static bool vm_wdt_restart_enabled(uint16_t vm_id);
@@ -784,6 +786,7 @@ static bool vm_wdt_complete_recovery(uint16_t vm_id, bool success,
 		entry->recovery_cause = VM_WDT_CAUSE_NONE;
 		entry->recovery_start_tsc = 0UL;
 		entry->recovery_wait_vcpus = 0UL;
+		entry->recovery_quiesce_generation = 0UL;
 		entry->reset_ret = 0;
 		entry->recovery_event_sequence = 0UL;
 		entry->reset_complete = false;
@@ -827,6 +830,12 @@ static bool vm_wdt_claim_restart(uint16_t vm_id,
 		entry->recovery_cause = snapshot->cause;
 		entry->recovery_start_tsc = cpu_ticks();
 		entry->recovery_wait_vcpus = 0UL;
+		vm_wdt_next_quiesce_generation++;
+		if (vm_wdt_next_quiesce_generation == 0UL) {
+			vm_wdt_next_quiesce_generation++;
+		}
+		entry->recovery_quiesce_generation =
+			vm_wdt_next_quiesce_generation;
 		entry->reset_ret = 0;
 		entry->recovery_event_sequence = entry->candidate_event_sequence;
 		entry->candidate_event_sequence = 0UL;
@@ -988,6 +997,7 @@ static bool vm_wdt_start_verification(uint16_t vm_id)
 			entry->recovery_cause = VM_WDT_CAUSE_NONE;
 			entry->recovery_start_tsc = 0UL;
 			entry->recovery_wait_vcpus = 0UL;
+			entry->recovery_quiesce_generation = 0UL;
 			entry->recovery_event_sequence = 0UL;
 			entry->restart_count++;
 			verified = true;
@@ -1031,10 +1041,12 @@ static bool vm_wdt_process_recovery(uint16_t vm_id)
 	enum vm_wdt_recovery_state state;
 	uint64_t rflags;
 	uint64_t wait_vcpus;
+	uint64_t quiesce_generation;
 	int32_t ret;
 
 	spinlock_irqsave_obtain(&vm_wdt_lock, &rflags);
 	state = vm_wdt_entries[vm_id].recovery_state;
+	quiesce_generation = vm_wdt_entries[vm_id].recovery_quiesce_generation;
 	spinlock_irqrestore_release(&vm_wdt_lock, rflags);
 
 	if (state == VM_WDT_RECOVERY_QUIESCING) {
@@ -1047,14 +1059,34 @@ static bool vm_wdt_process_recovery(uint16_t vm_id)
 		}
 
 		/*
+		 * [20260719] CASE-00: FIXED.
+		 *
 		 * FIXME(core/scheduler, safety): A remote vCPU may reach VCPU_PAUSED
 		 * while its scheduler thread has not acknowledged the reschedule by
 		 * entering THREAD_STS_BLOCKED. Its vCPU-ID bit then remains in
 		 * wait_vcpus, so recovery must fail closed before cold reset rather
 		 * than reload a VM with a still-running vCPU.
+		 *
+		 * METHOD(core/scheduler, safety): Generation-tagged quiesce ACK
+		 *
+		 * WDT poll(generation)        target pCPU scheduler / idle
+		 *        |                               |
+		 *        +-- pause + publish VM bit ---->+-- reject current-only clear
+		 *        +-- repeat reschedule SGI       +-- force idle and switch stacks
+		 *        |                               +-- verify BLOCKED; gate stale wake
+		 *        |<--------- release ACK --------+
+		 *        +-- acquire matching ACK -> cold reset
+		 *
+		 * Key rule:
+		 *   - vm_wdt_entry owns the non-zero recovery generation;
+		 *   - the target idle context publishes ACK only after the outgoing vCPU
+		 *     host stack has been switched out;
+		 *   - the generation gate rejects wake until the reset instance is launched;
+		 *   - a stale generation cannot authorize reset, and a missing ACK keeps
+		 *     recovery fail closed with the unacknowledged vCPU mask.
 		 */
 		get_vm_lock(vm);
-		wait_vcpus = pause_vm_async(vm);
+		wait_vcpus = pause_vm_async(vm, quiesce_generation);
 		put_vm_lock(vm);
 		if (wait_vcpus == 0UL) {
 			if (!vm_wdt_begin_reset(vm_id)) {
@@ -1440,6 +1472,7 @@ void vm_wdt_reset(const struct acrn_vm *vm)
 	uint64_t restart_fail_count;
 	uint64_t recovery_start_tsc;
 	uint64_t recovery_wait_vcpus;
+	uint64_t recovery_quiesce_generation;
 	uint64_t recovery_event_sequence;
 	int32_t reset_ret;
 	enum vm_wdt_recovery_state recovery_state;
@@ -1465,6 +1498,8 @@ void vm_wdt_reset(const struct acrn_vm *vm)
 		VM_WDT_CAUSE_NONE;
 	recovery_start_tsc = restart_pending ? vm_wdt_entries[vm->vm_id].recovery_start_tsc : 0UL;
 	recovery_wait_vcpus = restart_pending ? vm_wdt_entries[vm->vm_id].recovery_wait_vcpus : 0UL;
+	recovery_quiesce_generation = restart_pending ?
+		vm_wdt_entries[vm->vm_id].recovery_quiesce_generation : 0UL;
 	recovery_event_sequence = restart_pending ?
 		vm_wdt_entries[vm->vm_id].recovery_event_sequence : 0UL;
 	reset_ret = restart_pending ? vm_wdt_entries[vm->vm_id].reset_ret : 0;
@@ -1491,6 +1526,8 @@ void vm_wdt_reset(const struct acrn_vm *vm)
 	vm_wdt_entries[vm->vm_id].recovery_cause = recovery_cause;
 	vm_wdt_entries[vm->vm_id].recovery_start_tsc = recovery_start_tsc;
 	vm_wdt_entries[vm->vm_id].recovery_wait_vcpus = recovery_wait_vcpus;
+	vm_wdt_entries[vm->vm_id].recovery_quiesce_generation =
+		recovery_quiesce_generation;
 	vm_wdt_entries[vm->vm_id].recovery_event_sequence = recovery_event_sequence;
 	vm_wdt_entries[vm->vm_id].reset_ret = reset_ret;
 	vm_wdt_entries[vm->vm_id].reset_complete = reset_complete;
@@ -1551,6 +1588,7 @@ void vm_wdt_kick(const struct acrn_vm *vm, uint64_t token)
 		entry->recovery_cause = VM_WDT_CAUSE_NONE;
 		entry->recovery_start_tsc = 0UL;
 		entry->recovery_wait_vcpus = 0UL;
+		entry->recovery_quiesce_generation = 0UL;
 		entry->reset_ret = 0;
 		entry->recovery_event_sequence = 0UL;
 		entry->reset_complete = false;

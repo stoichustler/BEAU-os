@@ -253,8 +253,8 @@ int32_t create_vm(uint16_t vm_id, uint64_t pcpu_bitmap, struct acrn_vm_config *v
 void launch_vms(uint16_t pcpu_id);
 void start_vm(struct acrn_vm *vm);
 void pause_vm(struct acrn_vm *vm);
-/* Caller holds vm_state_lock. Returns online vCPUs still awaiting a stop ACK. */
-uint64_t pause_vm_async(struct acrn_vm *vm);
+/* Caller holds vm_state_lock. Returns online vCPUs still awaiting generation ACK. */
+uint64_t pause_vm_async(struct acrn_vm *vm, uint64_t generation);
 int32_t restart_vm(struct acrn_vm *vm);
 int32_t restart_vm_warm(struct acrn_vm *vm);
 int32_t destroy_vm(struct acrn_vm *vm);

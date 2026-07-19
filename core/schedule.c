@@ -24,6 +24,33 @@ static uint32_t thread_count;
 static bool thread_list_initialized;
 static struct sched_platform_config sched_platform_config;
 
+/* [20260719] Target-pCPU quiesce completion
+ *
+ * recovery CPU                    target pCPU
+ *      | request slot + VM bit         |
+ *      +------------------------------>+-- schedule idle
+ *      |                               +-- complete host stack switch
+ *      |                               +-- clear VM bit
+ *      |<--------- release ACK --------+
+ *
+ * Key rule:
+ *   - scheduler_lock owns each target slot and VM request bit;
+ *   - only the target idle context may publish completion;
+ *   - the active slot rejects wake until a new vCPU launch releases the gate;
+ *   - release/acquire generation matching rejects stale completion.
+ */
+struct sched_quiesce_slot {
+	struct thread_object *obj;
+	uint64_t request_generation;
+	uint64_t ack_generation;
+};
+
+static struct sched_quiesce_slot
+	sched_quiesce_slots[MAX_PCPU_NUM][CONFIG_MAX_VM_NUM];
+
+_Static_assert(CONFIG_MAX_VM_NUM <= 64U,
+	"scheduler quiesce VM mask supports at most 64 VMs");
+
 static void init_thread_list_once(void)
 {
 	if (!thread_list_initialized) {
@@ -383,6 +410,7 @@ void init_sched(uint16_t pcpu_id)
 	ctl->scheduler_ticks = 0UL;
 	ctl->context_switches = 0UL;
 	ctl->reschedule_requests = 0UL;
+	ctl->quiesce_request_vm_mask = 0UL;
 	ctl->priority_pending = false;
 	/*
 	 * Scheduler selection happens before idle/vCPU/helper threads are attached
@@ -607,6 +635,13 @@ static bool sched_current_is_only_runnable_locked(struct sched_control *ctl)
 	return runnable == 1U;
 }
 
+static bool sched_idle_work_pending_locked(const struct sched_control *ctl)
+{
+	return has_system_suspend_request(ctl->pcpu_id) ||
+		has_reset_vm_request(ctl->pcpu_id) ||
+		(ctl->quiesce_request_vm_mask != 0UL);
+}
+
 bool sched_clear_reschedule_if_current_only(uint16_t pcpu_id)
 {
 	struct sched_control *ctl = &per_cpu(sched_ctl, pcpu_id);
@@ -625,8 +660,7 @@ bool sched_clear_reschedule_if_current_only(uint16_t pcpu_id)
 	 * when the current vCPU is the only runnable thread.
 	 */
 	obtain_schedule_lock(pcpu_id, &rflag);
-	if (!has_system_suspend_request(pcpu_id) &&
-		!has_reset_vm_request(pcpu_id) &&
+	if (!sched_idle_work_pending_locked(ctl) &&
 		bitmap_test(NEED_RESCHEDULE, &ctl->flags) &&
 		sched_current_is_only_runnable_locked(ctl)) {
 		/*
@@ -687,8 +721,7 @@ void schedule(void)
 			}
 		}
 	}
-	if (has_system_suspend_request(pcpu_id) ||
-		has_reset_vm_request(pcpu_id)) {
+	if (sched_idle_work_pending_locked(ctl)) {
 		next = &per_cpu(idle, pcpu_id);
 	} else if (scheduler->pick_next != NULL) {
 		next = scheduler->pick_next(ctl);
@@ -764,6 +797,127 @@ void sleep_thread_sync(struct thread_object *obj)
 	}
 }
 
+bool request_thread_quiesce(struct thread_object *obj, uint64_t generation)
+{
+	struct sched_quiesce_slot *slot;
+	struct thread_object *owner;
+	struct sched_control *ctl;
+	uint64_t request_generation;
+	uint64_t ack_generation;
+	uint64_t rflag;
+	uint16_t pcpu_id;
+	bool requested = false;
+
+	if ((obj == NULL) || !obj->is_vcpu || (generation == 0UL) ||
+		(obj->pcpu_id >= MAX_PCPU_NUM) || (obj->vm_id >= CONFIG_MAX_VM_NUM)) {
+		return false;
+	}
+
+	pcpu_id = obj->pcpu_id;
+	ctl = obj->sched_ctl;
+	slot = &sched_quiesce_slots[pcpu_id][obj->vm_id];
+	obtain_schedule_lock(pcpu_id, &rflag);
+	owner = __atomic_load_n(&slot->obj, __ATOMIC_ACQUIRE);
+	request_generation = __atomic_load_n(&slot->request_generation,
+		__ATOMIC_ACQUIRE);
+	ack_generation = __atomic_load_n(&slot->ack_generation, __ATOMIC_ACQUIRE);
+	if ((ctl != NULL) && ((owner == NULL) || (owner == obj) ||
+		(request_generation == ack_generation))) {
+		__atomic_store_n(&slot->obj, obj, __ATOMIC_RELEASE);
+		__atomic_store_n(&slot->request_generation, generation,
+			__ATOMIC_RELEASE);
+		bitmap_set_non_atomic(obj->vm_id, &ctl->quiesce_request_vm_mask);
+		requested = true;
+	}
+	release_schedule_lock(pcpu_id, rflag);
+
+	if (requested) {
+		/* Reassert the SGI on every unacknowledged watchdog poll. */
+		make_reschedule_request(pcpu_id);
+	}
+
+	return requested;
+}
+
+bool is_thread_quiesced(const struct thread_object *obj, uint64_t generation)
+{
+	const struct sched_quiesce_slot *slot;
+
+	if ((obj == NULL) || !obj->is_vcpu || (generation == 0UL) ||
+		(obj->pcpu_id >= MAX_PCPU_NUM) || (obj->vm_id >= CONFIG_MAX_VM_NUM)) {
+		return false;
+	}
+
+	slot = &sched_quiesce_slots[obj->pcpu_id][obj->vm_id];
+	return (__atomic_load_n(&slot->obj, __ATOMIC_ACQUIRE) == obj) &&
+		(__atomic_load_n(&slot->request_generation, __ATOMIC_ACQUIRE) ==
+		generation) &&
+		(__atomic_load_n(&slot->ack_generation, __ATOMIC_ACQUIRE) ==
+		generation);
+}
+
+void release_thread_quiesce(struct thread_object *obj)
+{
+	struct sched_quiesce_slot *slot;
+	uint64_t rflag;
+	uint16_t pcpu_id;
+
+	if ((obj == NULL) || !obj->is_vcpu || (obj->pcpu_id >= MAX_PCPU_NUM) ||
+		(obj->vm_id >= CONFIG_MAX_VM_NUM)) {
+		return;
+	}
+
+	pcpu_id = obj->pcpu_id;
+	slot = &sched_quiesce_slots[pcpu_id][obj->vm_id];
+	obtain_schedule_lock(pcpu_id, &rflag);
+	if (__atomic_load_n(&slot->obj, __ATOMIC_ACQUIRE) == obj) {
+		bitmap_clear_non_atomic(obj->vm_id,
+			&obj->sched_ctl->quiesce_request_vm_mask);
+		__atomic_store_n(&slot->request_generation, 0UL, __ATOMIC_RELEASE);
+		__atomic_store_n(&slot->ack_generation, 0UL, __ATOMIC_RELEASE);
+		__atomic_store_n(&slot->obj, NULL, __ATOMIC_RELEASE);
+	}
+	release_schedule_lock(pcpu_id, rflag);
+}
+
+static bool sched_ack_quiesce_from_idle(uint16_t pcpu_id)
+{
+	struct sched_control *ctl = &per_cpu(sched_ctl, pcpu_id);
+	struct thread_object *idle = &per_cpu(idle, pcpu_id);
+	uint64_t request_vm_mask;
+	uint64_t rflag;
+	uint16_t vm_id;
+	bool acked = false;
+
+	obtain_schedule_lock(pcpu_id, &rflag);
+	request_vm_mask = ctl->quiesce_request_vm_mask;
+	vm_id = ffs64(request_vm_mask);
+	while (vm_id < CONFIG_MAX_VM_NUM) {
+		struct sched_quiesce_slot *slot =
+			&sched_quiesce_slots[pcpu_id][vm_id];
+		struct thread_object *obj = __atomic_load_n(&slot->obj,
+			__ATOMIC_ACQUIRE);
+		uint64_t generation = __atomic_load_n(&slot->request_generation,
+			__ATOMIC_ACQUIRE);
+
+		bitmap_clear_non_atomic(vm_id, &request_vm_mask);
+		if ((ctl->curr_obj == idle) && (obj != NULL) && obj->is_vcpu &&
+			(obj->pcpu_id == pcpu_id) && (obj->vm_id == vm_id) &&
+			(generation != 0UL) && is_blocked(obj) && !obj->be_blocking &&
+			(ctl->curr_obj != obj)) {
+			/* Clear target work before release-publishing switch completion. */
+			bitmap_clear_non_atomic(vm_id, &ctl->quiesce_request_vm_mask);
+			__atomic_store_n(&slot->ack_generation, generation,
+				__ATOMIC_RELEASE);
+			acked = true;
+		}
+		vm_id = ffs64(request_vm_mask);
+	}
+	release_schedule_lock(pcpu_id, rflag);
+
+	return acked;
+}
+
 static void wake_thread_locked(struct thread_object *obj)
 {
 	uint16_t pcpu_id = obj->pcpu_id;
@@ -783,16 +937,32 @@ static void wake_thread_locked(struct thread_object *obj)
 	}
 }
 
+static bool thread_quiesce_active_locked(const struct thread_object *obj)
+{
+	const struct sched_quiesce_slot *slot;
+
+	if (!obj->is_vcpu || (obj->pcpu_id >= MAX_PCPU_NUM) ||
+		(obj->vm_id >= CONFIG_MAX_VM_NUM)) {
+		return false;
+	}
+
+	slot = &sched_quiesce_slots[obj->pcpu_id][obj->vm_id];
+	return (__atomic_load_n(&slot->obj, __ATOMIC_ACQUIRE) == obj) &&
+		(__atomic_load_n(&slot->request_generation, __ATOMIC_ACQUIRE) != 0UL);
+}
+
 void wake_thread(struct thread_object *obj)
 {
 	uint16_t pcpu_id = obj->pcpu_id;
 	uint64_t rflag;
 
 	obtain_schedule_lock(pcpu_id, &rflag);
-	if (obj->freeze_epoch != 0UL) {
-		obj->deferred_wake = true;
-	} else {
-		wake_thread_locked(obj);
+	if (!thread_quiesce_active_locked(obj)) {
+		if (obj->freeze_epoch != 0UL) {
+			obj->deferred_wake = true;
+		} else {
+			wake_thread_locked(obj);
+		}
 	}
 	release_schedule_lock(pcpu_id, rflag);
 }
@@ -943,6 +1113,9 @@ void default_idle(__unused struct thread_object *obj)
 	uint16_t pcpu_id = get_pcpu_id();
 
 	while (1) {
+		if (sched_ack_quiesce_from_idle(pcpu_id)) {
+			make_reschedule_request(pcpu_id);
+		}
 		if (need_system_suspend(pcpu_id)) {
 			hv_pm_process_from_idle(pcpu_id);
 			make_reschedule_request(pcpu_id);

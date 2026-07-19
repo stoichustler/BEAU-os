@@ -353,6 +353,7 @@ bool launch_vcpu(struct acrn_vcpu *vcpu)
 		return false;
 	}
 
+	release_thread_quiesce(&vcpu->thread_obj);
 	wake_thread(&vcpu->thread_obj);
 
 	if (vcpu_boot_log_enabled(vcpu)) {
@@ -391,6 +392,7 @@ void reset_vcpu(struct acrn_vcpu *vcpu)
 static bool vcpu_pause(struct acrn_vcpu *vcpu)
 {
 	bool was_running = false;
+	bool pause_thread = false;
 
 	if (vcpu == NULL) {
 		return false;
@@ -400,6 +402,7 @@ static bool vcpu_pause(struct acrn_vcpu *vcpu)
 		enum vcpu_state state = vcpu_get_state(vcpu);
 
 		if (state == VCPU_PAUSED) {
+			pause_thread = true;
 			break;
 		}
 		if ((state == VCPU_OFFLINE) ||
@@ -411,8 +414,12 @@ static bool vcpu_pause(struct acrn_vcpu *vcpu)
 		}
 
 		was_running = state == VCPU_RUNNING;
-		sleep_thread(&vcpu->thread_obj);
+		pause_thread = true;
 		break;
+	}
+	if (pause_thread) {
+		/* A repeated pause reasserts scheduler removal after a delayed SGI. */
+		sleep_thread(&vcpu->thread_obj);
 	}
 
 	return was_running;
@@ -445,6 +452,26 @@ bool is_vcpu_paused(const struct acrn_vcpu *vcpu)
 {
 	return (vcpu != NULL) && (vcpu_get_state(vcpu) == VCPU_PAUSED) &&
 		(vcpu->thread_obj.status == THREAD_STS_BLOCKED);
+}
+
+bool is_vcpu_quiesced(const struct acrn_vcpu *vcpu, uint64_t generation)
+{
+	return (vcpu != NULL) && (vcpu_get_state(vcpu) == VCPU_PAUSED) &&
+		is_thread_quiesced(&vcpu->thread_obj, generation);
+}
+
+bool request_vcpu_quiesce(struct acrn_vcpu *vcpu, uint64_t generation)
+{
+	if ((vcpu == NULL) || (generation == 0UL)) {
+		return false;
+	}
+	if (is_vcpu_quiesced(vcpu, generation)) {
+		return true;
+	}
+
+	(void)vcpu_pause(vcpu);
+	return (vcpu_get_state(vcpu) == VCPU_PAUSED) &&
+		request_thread_quiesce(&vcpu->thread_obj, generation);
 }
 
 bool poweroff_vcpu(struct acrn_vcpu *vcpu)
