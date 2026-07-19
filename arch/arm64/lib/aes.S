@@ -38,8 +38,27 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-/*
- * [20260719] Note that AES port from $OpenBSD.
+/* [20260719] ARMv8 AES implementation
+ *
+ * caller checks FEAT_AES
+ *          |
+ *          v
+ * expand 128/192/256-bit key -> round keys + round count
+ *          |
+ *          +--> single-block AES encrypt/decrypt
+ *          +--> CBC encrypt/decrypt with caller-owned IV
+ *          `--> CTR32 keystream XOR with caller-owned counter block
+ *
+ * Key rule:
+ *   - this file is ported from OpenBSD and uses the ARMv8 Crypto Extension;
+ *   - all mutable input, output, key, and IV storage is caller-owned; the only
+ *     file-local data is the read-only key-expansion constant table;
+ *   - the key schedule stores up to fifteen 16-byte round keys at offset 0 and
+ *     the 10, 12, or 14 round count at byte offset 240;
+ *   - key setup validates its pointers and key size, while block operations
+ *     require valid buffers, a valid schedule, and prior FEAT_AES validation;
+ *   - CBC consumes complete 16-byte blocks and updates its IV. CTR32 requires
+ *     at least one block and treats its IV as read-only.
  */
 
 .arch	armv8-a+crypto
@@ -48,6 +67,10 @@
 
 .align	5
 .Lrcon:
+/* Key expansion uses x in GF(2^8). The first vector seeds Rcon, the byte mask
+ * rotates the last key word into SubWord order, and 0x1b reduces x^8 modulo
+ * the AES polynomial when the high bit of Rcon is carried out.
+ */
 .long	0x01,0x01,0x01,0x01
 .long	0x0c0f0e0d,0x0c0f0e0d,0x0c0f0e0d,0x0c0f0e0d	// rotate-n-splat
 .long	0x1b,0x1b,0x1b,0x1b
@@ -57,6 +80,16 @@
 .globl	aes_v8_set_encrypt_key
 .type	aes_v8_set_encrypt_key,%function
 .align	5
+/* Expand a user key into struct arm64_aes_key.
+ *
+ *   x0 = user key, w1 = key bits, x2 = output schedule
+ *   x0 = 0 on success, -1 for a NULL pointer, -2 for an invalid key size
+ *
+ * AES accepts Nk = 4, 6, or 8 input words. Each path applies RotWord,
+ * SubWord, and Rcon at the Nk boundary, then stores Nr + 1 round keys where
+ * Nr is 10, 12, or 14. The AES-256 path also applies SubWord halfway through
+ * each eight-word expansion group.
+ */
 aes_v8_set_encrypt_key:
 	bti	c
 .Lenc_key:
@@ -90,6 +123,10 @@ aes_v8_set_encrypt_key:
 
 .align	4
 .Loop128:
+	/* AES-128 derives four new words per iteration. The EXT/EOR sequence
+	 * accumulates w[i-Nk] through the preceding new words, while AESE with a
+	 * zero key supplies SubWord(RotWord(last)) and Rcon is XORed afterward.
+	 */
 	tbl	v6.16b,{v3.16b},v2.16b
 	ext	v5.16b,v0.16b,v3.16b,#12
 	st1	{v3.4s},[x2],#16
@@ -142,6 +179,10 @@ aes_v8_set_encrypt_key:
 
 .align	4
 .L192:
+	/* AES-192 carries its six-word key as v3 plus the low half of v4. The
+	 * stores alternate 16-byte and 8-byte pieces so the output remains a
+	 * contiguous sequence of 16-byte round keys.
+	 */
 	ld1	{v4.8b},[x0],#8
 	movi	v6.16b,#8			// borrow v6.16b
 	st1	{v3.4s},[x2],#16
@@ -177,6 +218,10 @@ aes_v8_set_encrypt_key:
 
 .align	4
 .L256:
+	/* AES-256 keeps the two halves in v3 and v4. One half uses
+	 * SubWord(RotWord(last)) + Rcon; the other uses SubWord(last) without
+	 * rotation or Rcon, matching the Nk = 8 key schedule rule.
+	 */
 	ld1	{v4.16b},[x0]
 	mov	w1,#7
 	mov	w12,#14
@@ -214,6 +259,9 @@ aes_v8_set_encrypt_key:
 	b	.Loop256
 
 .Ldone:
+	/* All key-size paths converge with x2 at schedule byte offset 240. Keep
+	 * this store synchronized with struct arm64_aes_key::rounds.
+	 */
 	str	w12,[x2]
 	mov	x3,#0
 
@@ -226,6 +274,13 @@ aes_v8_set_encrypt_key:
 .globl	aes_v8_set_decrypt_key
 .type	aes_v8_set_decrypt_key,%function
 .align	5
+/* Build a decryption schedule from the encryption expansion.
+ *
+ * Decryption consumes round keys in reverse order. The first and last keys
+ * are only swapped; each intermediate key is additionally transformed by
+ * AESIMC because AESD is paired with AESIMC in the block-decrypt loop.
+ * Key-expansion errors are returned unchanged.
+ */
 aes_v8_set_decrypt_key:
 	bti	c
 .inst	0xd503233f		// paciasp
@@ -268,6 +323,15 @@ aes_v8_set_decrypt_key:
 .globl	aes_v8_encrypt
 .type	aes_v8_encrypt,%function
 .align	5
+/* Encrypt one 16-byte block.
+ *
+ *   x0 = input, x1 = output, x2 = encryption schedule
+ *
+ * AESE performs AddRoundKey, SubBytes, and ShiftRows; AESMC supplies
+ * MixColumns for every non-final round. The last AESE omits AESMC and the
+ * final EOR applies the last round key. Loading the input before storing the
+ * output permits in-place operation.
+ */
 aes_v8_encrypt:
 	bti	c
 	ldr	w3,[x2,#240]
@@ -298,6 +362,12 @@ aes_v8_encrypt:
 .globl	aes_v8_decrypt
 .type	aes_v8_decrypt,%function
 .align	5
+/* Decrypt one 16-byte block with the transformed reverse schedule.
+ *
+ * AESD performs AddRoundKey, inverse ShiftRows, and inverse SubBytes;
+ * AESIMC supplies inverse MixColumns for every non-final round. The final
+ * round omits AESIMC and applies the last key with EOR.
+ */
 aes_v8_decrypt:
 	bti	c
 	ldr	w3,[x2,#240]
@@ -328,6 +398,25 @@ aes_v8_decrypt:
 .globl	aes_v8_cbc_encrypt
 .type	aes_v8_cbc_encrypt,%function
 .align	5
+/* Encrypt or decrypt complete blocks in Cipher Block Chaining mode.
+ *
+ *   x0 = input, x1 = output, x2 = byte length
+ *   x3 = matching key schedule, x4 = mutable IV, w5 = encrypt flag
+ *
+ * encryption: P[i] XOR C[i-1] -> AES encrypt -> C[i]
+ * decryption: C[i] -> AES decrypt -> XOR C[i-1] -> P[i]
+ *
+ * Key rule:
+ *   - a length below one block is a no-op; any trailing partial block is not
+ *     consumed, so callers must provide a block-aligned length when all input
+ *     bytes must be processed;
+ *   - encryption is serial because each block owns the next chaining value;
+ *     decryption pipelines independent AES operations and applies the saved
+ *     preceding ciphertext only after the final round;
+ *   - input and output may alias because ciphertext needed for later chaining
+ *     is loaded before the corresponding plaintext store;
+ *   - the IV is replaced with the last ciphertext block on either path.
+ */
 aes_v8_cbc_encrypt:
 	bti	c
 	stp	x29,x30,[sp,#-16]!
@@ -337,6 +426,10 @@ aes_v8_cbc_encrypt:
 	b.lo	.Lcbc_abort
 	csel	x8,xzr,x8,eq
 
+	/* Preserve the encrypt/decrypt decision in NZCV while w5 is repurposed
+	 * for the round count. None of the intervening setup instructions updates
+	 * flags before the branch to .Lcbc_dec.
+	 */
 	cmp	w5,#0			// en- or decrypting?
 	ldr	w5,[x3,#240]
 	and	x2,x2,#-16
@@ -373,6 +466,10 @@ aes_v8_cbc_encrypt:
 
 .align	4
 .Loop_cbc_enc:
+	/* v6 owns C[i-1] (the IV for the first block). The loop publishes C[i]
+	 * only after all rounds complete, then uses it to chain the next block.
+	 * Separate 128/192/256 setup paths account for their different round keys.
+	 */
 	aese	v0.16b,v16.16b
 	aesmc	v0.16b,v0.16b
 	st1	{v6.16b},[x1],#16
@@ -462,6 +559,10 @@ aes_v8_cbc_encrypt:
 	b	.Lcbc_done
 .align	5
 .Lcbc_dec:
+	/* CBC decryption has no AES dependency between ciphertext blocks. Keep
+	 * original ciphertext in v2/v3/v27/v28/v29 for the later chaining XOR,
+	 * while v0/v1/v24/v25/v26 advance through inverse AES rounds in parallel.
+	 */
 	ld1	{v24.16b},[x0],#16
 	subs	x2,x2,#32		// bias
 	add	w6,w5,#2
@@ -486,6 +587,10 @@ aes_v8_cbc_encrypt:
 	orr	v29.16b,v26.16b,v26.16b
 
 .Loop5x_cbc_dec:
+	/* Five interleaved blocks hide AES instruction latency. Stores occur only
+	 * after the final inverse round and XOR with each saved predecessor, which
+	 * also keeps in-place decryption safe.
+	 */
 	aesd	v0.16b,v16.16b
 	aesimc	v0.16b,v0.16b
 	aesd	v1.16b,v16.16b
@@ -650,6 +755,9 @@ aes_v8_cbc_encrypt:
 
 .align	4
 .Lcbc_tail4x:
+	/* The four-block residue already completed its AES rounds in the 5-way
+	 * pipeline; finish only the CBC predecessor XOR and ordered stores.
+	 */
 	eor	v5.16b,v4.16b,v1.16b
 	eor	v17.16b,v17.16b,v24.16b
 	eor	v30.16b,v30.16b,v25.16b
@@ -662,6 +770,9 @@ aes_v8_cbc_encrypt:
 	b	.Lcbc_done
 .align	4
 .Loop3x_cbc_dec:
+	/* Use the same parallel-decrypt rule for three-block groups. Pointer bias
+	 * selects the final loaded ciphertexts without reading beyond the input.
+	 */
 	aesd	v0.16b,v16.16b
 	aesimc	v0.16b,v0.16b
 	aesd	v1.16b,v16.16b
@@ -744,6 +855,9 @@ aes_v8_cbc_encrypt:
 	nop
 
 .Lcbc_dec_tail:
+	/* One- and two-block residues share the inverse-round work. The length
+	 * predicate selects how many chaining XOR results are committed.
+	 */
 	aesd	v1.16b,v16.16b
 	aesimc	v1.16b,v1.16b
 	aesd	v24.16b,v16.16b
@@ -796,6 +910,7 @@ aes_v8_cbc_encrypt:
 	st1	{v5.16b},[x1],#16
 
 .Lcbc_done:
+	/* v6 is C[n-1]: the encryption result or the last original ciphertext. */
 	st1	{v6.16b},[x4]
 .Lcbc_abort:
 	ldr	x29,[sp],#16
@@ -804,6 +919,22 @@ aes_v8_cbc_encrypt:
 .globl	aes_v8_ctr32_encrypt_blocks
 .type	aes_v8_ctr32_encrypt_blocks,%function
 .align	5
+/* Encrypt or decrypt blocks with a 32-bit counter-mode keystream.
+ *
+ *   x0 = input, x1 = output, x2 = block count
+ *   x3 = encryption schedule, x4 = read-only 16-byte counter block
+ *
+ * counter[0..11] remains fixed
+ * counter[12..15] (big-endian) increments modulo 2^32 for each block
+ *          |
+ *          v
+ * AES_encrypt(counter) XOR input -> output
+ *
+ * CTR uses the encryption schedule in both directions. The routine does not
+ * write the caller's counter block or report the advanced counter, and the
+ * caller must pass at least one block. Input and output may alias because each
+ * input batch is loaded before its output is stored.
+ */
 aes_v8_ctr32_encrypt_blocks:
 	bti	c
 	stp	x29,x30,[sp,#-16]!
@@ -826,6 +957,9 @@ aes_v8_ctr32_encrypt_blocks:
 	mov	w6,w5
 	csel	x12,xzr,x12,lo
 #ifndef __ARMEB__
+	/* Scalar arithmetic uses the host byte order. Convert the counter word
+	 * from its big-endian byte representation before incrementing it.
+	 */
 	rev	w8, w8
 #endif
 	orr	v1.16b,v0.16b,v0.16b
@@ -856,6 +990,10 @@ aes_v8_ctr32_encrypt_blocks:
 
 .align	4
 .Loop5x_ctr32:
+	/* Encrypt five adjacent counter values in parallel to cover AES latency.
+	 * v0/v1/v18/v24/v25 carry counter blocks; v2/v3/v19/v26/v27 carry input.
+	 * The final EOR combines each plaintext/ciphertext block with its keystream.
+	 */
 	aese	v0.16b,v16.16b
 	aesmc	v0.16b,v0.16b
 	aese	v1.16b,v16.16b
@@ -1008,6 +1146,9 @@ aes_v8_ctr32_encrypt_blocks:
 
 .align	4
 .Loop3x_ctr32:
+	/* Process three counters when fewer than five blocks remain. The counter
+	 * template is restored from v6 and only lane 3 is replaced for each block.
+	 */
 	aese	v0.16b,v16.16b
 	aesmc	v0.16b,v0.16b
 	aese	v1.16b,v16.16b
@@ -1097,6 +1238,10 @@ aes_v8_ctr32_encrypt_blocks:
 	csel	x12,xzr,x12,eq
 
 .Lctr32_tail:
+	/* The one- and two-block tail shares two AES lanes. x12 is zero for a
+	 * single block, preventing the second input load from advancing beyond the
+	 * first block; the final count check suppresses the second store.
+	 */
 	aese	v0.16b,v16.16b
 	aesmc	v0.16b,v0.16b
 	aese	v1.16b,v16.16b
