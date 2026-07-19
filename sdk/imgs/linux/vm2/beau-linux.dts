@@ -1,0 +1,155 @@
+/dts-v1/;
+
+/ {
+	compatible = "beau,linux-virt";
+	model = "BEAU Linux VM2 virtual platform";
+	#address-cells = <2>;
+	#size-cells = <2>;
+	interrupt-parent = <&gic>;
+
+	chosen {
+		stdout-path = "/virtio_mmio@a000000";
+		bootargs = "console=hvc0 rdinit=/init loglevel=7";
+		linux,initrd-start = <0x0 0x4c000000>;
+		linux,initrd-end = <0x0 0x4c500000>;
+	};
+
+	psci {
+		compatible = "arm,psci-1.0", "arm,psci-0.2", "arm,psci";
+		method = "hvc";
+		cpu_suspend = <0xc4000001>;
+		cpu_off = <0x84000002>;
+		cpu_on = <0xc4000003>;
+		migrate = <0xc4000005>;
+	};
+
+	cpus {
+		#address-cells = <2>;
+		#size-cells = <0>;
+
+		cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a57";
+			enable-method = "psci";
+			reg = <0x0 0x0>;
+			i-cache-size = <0x8000>;
+			i-cache-line-size = <64>;
+			i-cache-sets = <256>;
+			d-cache-size = <0x8000>;
+			d-cache-line-size = <64>;
+			d-cache-sets = <256>;
+			next-level-cache = <&l2_cache0>;
+		};
+
+		cpu@1 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a57";
+			enable-method = "psci";
+			reg = <0x0 0x1>;
+			i-cache-size = <0x8000>;
+			i-cache-line-size = <64>;
+			i-cache-sets = <256>;
+			d-cache-size = <0x8000>;
+			d-cache-line-size = <64>;
+			d-cache-sets = <256>;
+			next-level-cache = <&l2_cache0>;
+		};
+
+		cpu@2 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a57";
+			enable-method = "psci";
+			reg = <0x0 0x2>;
+			i-cache-size = <0x8000>;
+			i-cache-line-size = <64>;
+			i-cache-sets = <256>;
+			d-cache-size = <0x8000>;
+			d-cache-line-size = <64>;
+			d-cache-sets = <256>;
+			next-level-cache = <&l2_cache0>;
+		};
+
+		cpu@3 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a57";
+			enable-method = "psci";
+			reg = <0x0 0x3>;
+			i-cache-size = <0x8000>;
+			i-cache-line-size = <64>;
+			i-cache-sets = <256>;
+			d-cache-size = <0x8000>;
+			d-cache-line-size = <64>;
+			d-cache-sets = <256>;
+			next-level-cache = <&l2_cache0>;
+		};
+	};
+
+	l2_cache0: l2-cache0 {
+		compatible = "cache";
+		cache-level = <2>;
+		cache-unified;
+		cache-size = <0x80000>;
+		cache-line-size = <64>;
+		cache-sets = <512>;
+	};
+
+	memory@48000000 {
+		device_type = "memory";
+		reg = <0x0 0x48000000 0x0 0x08000000>;
+	};
+
+	gic: interrupt-controller@8000000 {
+		compatible = "arm,gic-v3";
+		#interrupt-cells = <3>;
+		#address-cells = <2>;
+		#size-cells = <2>;
+		interrupt-controller;
+		#redistributor-regions = <1>;
+		interrupts = <1 9 4>;
+		reg = <0x0 0x08000000 0x0 0x00010000>,
+		      <0x0 0x080a0000 0x0 0x00100000>;
+	};
+
+	its: msi-controller@8080000 {
+		compatible = "arm,gic-v3-its";
+		msi-controller;
+		#msi-cells = <1>;
+		reg = <0x0 0x08080000 0x0 0x00020000>;
+	};
+
+	pcie@e0000000 {
+		compatible = "pci-host-ecam-generic";
+		device_type = "pci";
+		#address-cells = <3>;
+		#size-cells = <2>;
+		#interrupt-cells = <1>;
+		reg = <0x0 0xe0000000 0x0 0x10000000>;
+		bus-range = <0x0 0xff>;
+		msi-map = <0x0 &its 0x0 0x10000>;
+		interrupt-map-mask = <0x0 0x0 0x0 0x7>;
+		interrupt-map = <0x0 0x0 0x0 0x1 &gic 0x0 0x0 0x0 0x30 0x4>,
+				<0x0 0x0 0x0 0x2 &gic 0x0 0x0 0x0 0x31 0x4>,
+				<0x0 0x0 0x0 0x3 &gic 0x0 0x0 0x0 0x32 0x4>,
+				<0x0 0x0 0x0 0x4 &gic 0x0 0x0 0x0 0x33 0x4>;
+		dma-coherent;
+		ranges = <0x02000000 0x0 0x80000000 0x0 0x80000000 0x0 0x60000000>;
+		status = "okay";
+	};
+
+	timer {
+		compatible = "arm,armv8-timer", "arm,armv7-timer";
+		always-on;
+		interrupts = <1 13 4>,
+			     <1 14 4>,
+			     <1 11 4>,
+			     <1 10 4>;
+	};
+
+	virtio_mmio@a000000 {
+		compatible = "virtio,mmio";
+		reg = <0x0 0x0a000000 0x0 0x00000200>;
+		interrupts = <0 16 4>;
+		status = "okay";
+	};
+
+};

@@ -99,12 +99,12 @@ def parse_args():
     parser.add_argument("-m", "--memory", default=getenv("BEAU_QEMU_MEM", "1024M"))
     parser.add_argument("--linux-image", default=None, type=relpath)
     parser.add_argument("--linux-vm1-image", default=None, type=relpath, help=argparse.SUPPRESS)
-    parser.add_argument("--linux-vm2-image", default=ROOT / "sdk/image/linux/vm2/Image", type=relpath)
-    parser.add_argument("--linux-vm3-image", default=ROOT / "sdk/image/linux/vm2/Image", type=relpath)
+    parser.add_argument("--linux-vm2-image", default=ROOT / "sdk/imgs/linux/Image", type=relpath)
+    parser.add_argument("--linux-vm3-image", default=ROOT / "sdk/imgs/linux/Image", type=relpath)
     parser.add_argument(
         "--linux-initramfs",
         dest="linux_initramfs",
-        default=ROOT / "sdk/image/linux/Initramfs.cpio.gz",
+        default=ROOT / "sdk/imgs/linux/Initramfs.cpio.gz",
         type=relpath,
     )
     parser.add_argument("--timeout", type=float, default=120.0)

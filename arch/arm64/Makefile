@@ -56,12 +56,12 @@ offsets: $(ARM64_OFFSETS_H)
 
 $(ARM64_OFFSETS_OBJ): $(ARM64_OFFSETS_SRC) $(HV_CONFIG_H) $(HV_CONFIG_TIMESTAMP) | $(HV_OBJDIR)/include/generated
 	$(Q)mkdir -p $(dir $@)
-	$(Q)echo "cc                 $(notdir $@)"
+	$(Q)echo "CC                 $(notdir $@)"
 	$(Q)$(CC) $(patsubst %, -I%, $(INCLUDE_PATH)) -I. -c $(CFLAGS) \
 		$(ARCH_CFLAGS) -fno-stack-protector $< -o $@ -MMD -MT $@
 
 $(ARM64_OFFSETS_H): $(ARM64_OFFSETS_OBJ) $(ARM64_OFFSETS_GENERATOR) $(ARM64_OFFSETS_SYMBOLS) | $(HV_OBJDIR)/include/generated
-	$(Q)echo "offsets            $(notdir $@)"
+	$(Q)echo "OFFSETS            $(notdir $@)"
 	$(Q)python3 $(ARM64_OFFSETS_GENERATOR) --input $< --output $@ \
 		--symbols $(ARM64_OFFSETS_SYMBOLS)
 
@@ -152,10 +152,10 @@ MODULES += $(HOST_MOD)
 MODULES += $(VP_MOD)
 
 $(HOST_MOD): $(HOST_C_OBJS) $(HOST_S_OBJS)
-	$(Q)echo "ar                 $(notdir $@)"
+	$(Q)echo "AR                 $(notdir $@)"
 	$(Q)rm -f $@
 	$(Q)$(AR) $(ARFLAGS) $(HOST_MOD) $(HOST_C_OBJS) $(HOST_S_OBJS)
 
 $(VP_MOD): $(VP_C_OBJS) $(VP_S_OBJS) $(VM_CFG_C_OBJS) $(VM_CFG_S_OBJS)
-	$(Q)echo "ar                 $(notdir $@)"
+	$(Q)echo "AR                 $(notdir $@)"
 	$(Q)$(AR) $(ARFLAGS) $(VP_MOD) $(VP_C_OBJS) $(VP_S_OBJS) $(VM_CFG_C_OBJS) $(VM_CFG_S_OBJS)

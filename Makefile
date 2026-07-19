@@ -125,10 +125,11 @@ RELEASE := $(CONFIG_RELEASE)
 CONFIG_ENABLE_VM1_LK_DTS := $(if $(filter y,$(CONFIG_ENABLE_VM1_LK)),1,0)
 ARM64_PLATFORM_CFG_STAMP := $(HV_CONFIG_DIR)/config-vm1-lk-$(CONFIG_ENABLE_VM1_LK_DTS).stamp
 ARM64_PLATFORM_DTB := $(HV_OBJDIR)/platform.dtb
-LINUX_VM2_IMAGE := sdk/image/linux/vm2/Image
-LINUX_VM3_IMAGE ?= $(LINUX_VM2_IMAGE)
-LINUX_INITRAMFS := sdk/image/linux/Initramfs.cpio.gz
-RTTHREAD_IMAGE := sdk/image/rtthread.bin
+LINUX_IMAGE     := sdk/imgs/linux/Image
+LINUX_VM2_IMAGE ?= $(LINUX_IMAGE)
+LINUX_VM3_IMAGE ?= $(LINUX_IMAGE)
+LINUX_INITRAMFS := sdk/imgs/linux/Initramfs.cpio.gz
+RTTHREAD_IMAGE := sdk/imgs/rtthread.bin
 CFLAGS += -include $(HV_CONFIG_H)
 ASFLAGS += -DARM64_PLATFORM_DTB_PATH=\"$(ARM64_PLATFORM_DTB)\"
 else
@@ -425,12 +426,12 @@ define RUN_GENCONFIG
 		$(HV_KCONFIG)
 	$(Q)cp $(HV_KCONFIG_DEPS_DIR)/auto.conf $(HV_CONFIG_MK)
 	$(Q)touch $(HV_CONFIG_MK) $(HV_AUTOCONF_H) $(HV_KCONFIG_FILE_LIST)
-	@echo "config             $(notdir $(HV_CONFIG_H))"
+	@echo "CONFIG             $(notdir $(HV_CONFIG_H))"
 	$(WRITE_CONFIG_HEADER)
 endef
 
 $(HV_CONFIG_MK) $(HV_AUTOCONF_H) $(HV_DOTCONFIG) $(HV_KCONFIG_FILE_LIST): Makefile $(HV_KCONFIG_FILES) $(HV_KCONFIG_GENERATOR) $(HV_KCONFIG_DEFCONFIG) $(HV_KCONFIG_SETCONFIG) $(HV_PLATFORM_BCONFIG) $(HV_KCONFIG_CHECK_STAMP) | $(HV_CONFIG_DIR) $(HV_KCONFIG_DEPS_DIR) $(HV_OBJDIR)/include/generated
-	@echo "config             $(notdir $@)"
+	@echo "CONFIG             $(notdir $@)"
 	$(Q)if [ ! -f $(HV_DOTCONFIG) ]; then \
 		KCONFIG_CONFIG=$(HV_DOTCONFIG) python3 $(HV_KCONFIG_DEFCONFIG) --kconfig $(HV_KCONFIG) $(HV_PLATFORM_BCONFIG); \
 	fi
@@ -440,7 +441,7 @@ $(HV_CONFIG_MK) $(HV_AUTOCONF_H) $(HV_DOTCONFIG) $(HV_KCONFIG_FILE_LIST): Makefi
 	$(RUN_GENCONFIG)
 
 $(HV_CONFIG_H): $(HV_AUTOCONF_H) $(HV_CONFIG_MK) Makefile | $(HV_OBJDIR)/include
-	@echo "config             $(notdir $@)"
+	@echo "CONFIG             $(notdir $@)"
 	$(WRITE_CONFIG_HEADER)
 
 $(HV_CONFIG_TIMESTAMP): $(HV_CONFIG_MK) $(HV_CONFIG_H)
@@ -448,7 +449,7 @@ $(HV_CONFIG_TIMESTAMP): $(HV_CONFIG_MK) $(HV_CONFIG_H)
 
 $(HV_KCONFIG_CHECK_STAMP): Makefile $(HV_KCONFIG_FILES) $(HV_KCONFIG_CHECKCONFIG) $(HV_PLATFORM_BCONFIGS) | $(HV_CONFIG_DIR)
 	@echo "BUILDING BEAU OS 2026\n"
-	@echo "check              Bconfig"
+	@echo "CHECK              Bconfig"
 	$(Q)python3 $(HV_KCONFIG_CHECKCONFIG) --kconfig $(HV_KCONFIG) $(HV_PLATFORM_BCONFIGS)
 	@touch $@
 
@@ -462,12 +463,12 @@ $(ARM64_PLATFORM_CFG_STAMP): $(HV_CONFIG_TIMESTAMP) | $(HV_CONFIG_DIR)
 checkconfig: $(HV_KCONFIG_CHECK_STAMP)
 
 Bconfig defconfig: $(HV_PLATFORM_BCONFIG) $(HV_KCONFIG_CHECK_STAMP) | $(HV_CONFIG_DIR) $(HV_KCONFIG_DEPS_DIR) $(HV_OBJDIR)/include/generated
-	@echo "config             $(HV_PLATFORM_BCONFIG)"
+	@echo "CONFIG             $(HV_PLATFORM_BCONFIG)"
 	$(Q)KCONFIG_CONFIG=$(HV_DOTCONFIG) python3 $(HV_KCONFIG_DEFCONFIG) --kconfig $(HV_KCONFIG) $(HV_PLATFORM_BCONFIG)
 	$(Q)$(MAKE) syncconfig ARCH=$(ARCH) PLATFORM=$(PLATFORM) HV_OBJDIR=$(HV_OBJDIR)
 
 kconfig-cli-sync: | $(HV_CONFIG_DIR) $(HV_KCONFIG_DEPS_DIR) $(HV_OBJDIR)/include/generated
-	@echo "config             command-line"
+	@echo "CONFIG             command-line"
 	$(Q)if [ ! -f $(HV_DOTCONFIG) ]; then \
 		KCONFIG_CONFIG=$(HV_DOTCONFIG) python3 $(HV_KCONFIG_DEFCONFIG) --kconfig $(HV_KCONFIG) $(HV_PLATFORM_BCONFIG); \
 	fi
@@ -477,7 +478,7 @@ kconfig-cli-sync: | $(HV_CONFIG_DIR) $(HV_KCONFIG_DEPS_DIR) $(HV_OBJDIR)/include
 	$(RUN_GENCONFIG)
 
 syncconfig: | $(HV_CONFIG_DIR) $(HV_KCONFIG_DEPS_DIR) $(HV_OBJDIR)/include/generated
-	@echo "config             $(notdir $(HV_DOTCONFIG))"
+	@echo "CONFIG             $(notdir $(HV_DOTCONFIG))"
 	$(Q)if [ ! -f $(HV_DOTCONFIG) ]; then \
 		KCONFIG_CONFIG=$(HV_DOTCONFIG) python3 $(HV_KCONFIG_DEFCONFIG) --kconfig $(HV_KCONFIG) $(HV_PLATFORM_BCONFIG); \
 	fi
@@ -495,12 +496,12 @@ menuconfig: | $(HV_CONFIG_DIR) $(HV_KCONFIG_DEPS_DIR) $(HV_OBJDIR)/include/gener
 
 ifneq ($(LINUX_IMAGE_SIZE_H),)
 $(LINUX_IMAGE_SIZE_H): Makefile $(LINUX_VM2_IMAGE) $(LINUX_VM3_IMAGE) $(LINUX_INITRAMFS) | $(HV_OBJDIR)/include
-	@echo "image              $(notdir $@)"
+	@echo "IMGS               $(notdir $@)"
 	@{ \
 		vm2_image_size=$$(stat -c %s $(LINUX_VM2_IMAGE)); \
 		vm3_image_size=$$(stat -c %s $(LINUX_VM3_IMAGE)); \
 		initramfs_size=$$(stat -c %s $(LINUX_INITRAMFS)); \
-		echo "/* Auto-generated from sdk/image. */"; \
+		echo "/* Auto-generated from sdk/imgs. */"; \
 		echo "#ifndef LINUX_IMAGE_SIZES_H"; \
 		echo "#define LINUX_IMAGE_SIZES_H"; \
 		echo "#define BEAU_LINUX_VM2_IMAGE_SIZE $${vm2_image_size}U"; \
@@ -518,7 +519,7 @@ endif
 # BANNER-02
 # BANNER-05
 $(BANNER_H): sdk/tag/BANNER-03 Makefile | $(HV_OBJDIR)/include
-	@echo "banner             $(notdir $@)"
+	@echo "BANNER             $(notdir $@)"
 	@{ \
 		echo "/* Auto-generated from sdk/BANNER. */"; \
 		echo "#ifndef BANNER_H"; \
@@ -540,7 +541,7 @@ $(BANNER_H): sdk/tag/BANNER-03 Makefile | $(HV_OBJDIR)/include
 
 ifneq ($(ARM64_PLATFORM_DTB),)
 $(ARM64_PLATFORM_DTB): arch/arm64/platform/$(PLATFORM)/platform.dts $(ARM64_PLATFORM_CFG_STAMP) | $(HV_OBJDIR)
-	@echo "dtc                $(notdir $@)"
+	@echo "DTC                $(notdir $@)"
 	$(Q)$(CC) -E -x assembler-with-cpp -P \
 		-DCONFIG_ENABLE_VM1_LK=$(CONFIG_ENABLE_VM1_LK_DTS) $< -o $(HV_OBJDIR)/platform.pp.dts
 	$(Q)$(DTC) -I dts -O dtb -o $@ $(HV_OBJDIR)/platform.pp.dts
@@ -564,30 +565,30 @@ lib: $(LIB_BUILD)
 core-mod: $(COMMON_MOD)
 
 $(COMMON_MOD): $(COMMON_C_OBJS)
-	$(Q)echo "ar                 $(notdir $@)"
+	$(Q)echo "AR                 $(notdir $@)"
 	$(Q)$(AR) $(ARFLAGS) $(COMMON_MOD) $(COMMON_C_OBJS)
 
 $(HV_OBJDIR)/$(HV_DEBUG_FILE).bin: $(HV_OBJDIR)/$(HV_DEBUG_FILE).out
-	$(Q)echo "objcopy            $(notdir $@)"
+	$(Q)echo "OBJCOPY            $(notdir $@)"
 	$(Q)$(OBJCOPY) -O binary $< $@
 	$(Q)rm -f $(UPDATE_RESULT)
 
 $(HV_OBJDIR)/$(HV_FILE).out: $(MODULES) $(ARM64_LINKER_DEPS)
-	$(Q)echo "cc                 $(notdir $@)"
+	$(Q)echo "CC                 $(notdir $@)"
 	$(Q)${BASH} ${LD_IN_TOOL} $(ARCH_LDSCRIPT_IN) $(ARCH_LDSCRIPT) ${HV_CONFIG_MK}
 	$(Q)$(CC) -Wl,-Map=$(HV_OBJDIR)/$(HV_FILE).map -o $@ $(LDFLAGS) $(ARCH_LDFLAGS) -T$(ARCH_LDSCRIPT) \
 		-Wl,--start-group $(MODULES) -Wl,--end-group
 
 $(HV_OBJDIR)/symtab.c: $(HV_OBJDIR)/$(HV_FILE).out scripts/gen_symtab.py
-	$(Q)echo "symtab             $(notdir $@)"
+	$(Q)echo "SYMTAB             $(notdir $@)"
 	$(Q)python3 scripts/gen_symtab.py --nm $(NM) --elf $< --out $@
 
 $(HV_OBJDIR)/symtab.o: $(HV_OBJDIR)/symtab.c $(HEADERS)
-	$(Q)echo "cc                 $(notdir $@)"
+	$(Q)echo "CC                 $(notdir $@)"
 	$(Q)$(CC) $(patsubst %, -I%, $(INCLUDE_PATH)) -I. -c $(CFLAGS) $(ARCH_CFLAGS) $< -o $@ -MMD -MT $@
 
 $(HV_OBJDIR)/$(HV_DEBUG_FILE).out: $(MODULES) $(HV_OBJDIR)/symtab.o $(ARM64_LINKER_DEPS)
-	$(Q)echo "cc                 $(notdir $@)"
+	$(Q)echo "CC                 $(notdir $@)"
 	$(Q)${BASH} ${LD_IN_TOOL} $(ARCH_LDSCRIPT_IN) $(ARCH_LDSCRIPT) ${HV_CONFIG_MK}
 	$(Q)$(CC) -Wl,-Map=$(HV_OBJDIR)/$(HV_DEBUG_FILE).map -o $@ $(LDFLAGS) $(ARCH_LDFLAGS) -T$(ARCH_LDSCRIPT) \
 		-Wl,--start-group $(HV_OBJDIR)/symtab.o $(MODULES) -Wl,--end-group
@@ -650,36 +651,36 @@ $(VERSION): $(HV_CONFIG_H) Makefile
 
 $(HV_OBJDIR)/%.o: %.c $(HEADERS) $(ARCH_PRE_BUILD_TARGETS)
 	$(Q)[ ! -e $@ ] && mkdir -p $(dir $@) && mkdir -p $(HV_MODDIR); \
-	echo "cc                 $(notdir $@)"; \
+	echo "CC                 $(notdir $@)"; \
 	$(CC) $(patsubst %, -I%, $(INCLUDE_PATH)) -I. -c $(CFLAGS) $(ARCH_CFLAGS) $< -o $@ -MMD -MT $@
 
 $(VM_CFG_C_SRCS): %.c: $(HV_CONFIG_TIMESTAMP)
 
 $(VM_CFG_C_OBJS): $(HV_OBJDIR)/%.o: %.c $(HEADERS) $(ARCH_PRE_BUILD_TARGETS)
 	$(Q)[ ! -e $@ ] && mkdir -p $(dir $@) && mkdir -p $(HV_MODDIR); \
-	echo "cc                 $(notdir $@)"; \
+	echo "CC                 $(notdir $@)"; \
 	$(CC) $(patsubst %, -I%, $(INCLUDE_PATH)) -I. -c $(CFLAGS) $(ARCH_CFLAGS) $< -o $@ -MMD -MT $@
 
 ifeq ($(ARCH),arm64)
-sdk/image/linux/vm2/beau-linux.dtb: sdk/image/linux/vm2/beau-linux.dts
-	$(Q)echo "dtc                $@"
+sdk/imgs/linux/vm2/beau-linux.dtb: sdk/imgs/linux/vm2/beau-linux.dts
+	$(Q)echo "DTC                $@"
 	$(Q)$(DTC) -I dts -O dtb -o $@ $<
 
-sdk/image/linux/vm3/beau-linux.dtb: sdk/image/linux/vm3/beau-linux.dts
-	$(Q)echo "dtc                $@"
+sdk/imgs/linux/vm3/beau-linux.dtb: sdk/imgs/linux/vm3/beau-linux.dts
+	$(Q)echo "DTC                $@"
 	$(Q)$(DTC) -I dts -O dtb -o $@ $<
 
-sdk/image/rtthread/beau-rtthread.dtb: sdk/image/rtthread/beau-rtthread.dts
-	$(Q)echo "dtc                $@"
+sdk/imgs/rtthread/beau-rtthread.dtb: sdk/imgs/rtthread/beau-rtthread.dts
+	$(Q)echo "DTC                $@"
 	$(Q)$(DTC) -I dts -O dtb -o $@ $<
 
-$(HV_OBJDIR)/arch/arm64/platform/$(PLATFORM)/platform.o: sdk/image/lk.bin sdk/image/zephyr.bin $(ARM64_PLATFORM_DTB)
-$(HV_OBJDIR)/arch/arm64/platform/qemu/platform.o: $(RTTHREAD_IMAGE) sdk/image/rtthread/beau-rtthread.dtb sdk/image/linux/vm2/beau-linux.dtb sdk/image/linux/vm3/beau-linux.dtb
+$(HV_OBJDIR)/arch/arm64/platform/$(PLATFORM)/platform.o: sdk/imgs/lk.bin sdk/imgs/zephyr.bin $(ARM64_PLATFORM_DTB)
+$(HV_OBJDIR)/arch/arm64/platform/qemu/platform.o: $(RTTHREAD_IMAGE) sdk/imgs/rtthread/beau-rtthread.dtb sdk/imgs/linux/vm2/beau-linux.dtb sdk/imgs/linux/vm3/beau-linux.dtb
 endif
 
 $(HV_OBJDIR)/%.o: %.S $(HEADERS) $(ARCH_PRE_BUILD_TARGETS)
 	$(Q)[ ! -e $@ ] && mkdir -p $(dir $@) && mkdir -p $(HV_MODDIR); \
-	echo "cc                 $(notdir $@)"; \
+	echo "CC                 $(notdir $@)"; \
 	$(CC) $(patsubst %, -I%, $(INCLUDE_PATH)) -I. $(ASFLAGS) $(ARCH_ASFLAGS) -c $< -o $@ -MMD -MT $@
 
 .DEFAULT_GOAL := all

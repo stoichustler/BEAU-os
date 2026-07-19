@@ -4,8 +4,8 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-ARCHIVE=${1:-"$ROOT/sdk/image/linux/Initramfs.cpio.gz"}
-EDU_TEST_SRC="$ROOT/sdk/image/linux/tools/beau-edu-test.c"
+ARCHIVE=${1:-"$ROOT/sdk/imgs/linux/Initramfs.cpio.gz"}
+EDU_TEST_SRC="$ROOT/sdk/imgs/linux/tools/beau-edu-test.c"
 EDU_TEST_CC=${EDU_TEST_CC:-aarch64-linux-gnu-gcc}
 case "$ARCHIVE" in
 /*) ;;

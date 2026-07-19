@@ -12,7 +12,7 @@ CWD = Path.cwd()
 LINUX_INITRAMFS_STAGE_ADDR = "0x74000000"
 LINUX_VM2_IMAGE_STAGE_ADDR = "0x76000000"
 LINUX_VM3_IMAGE_STAGE_ADDR = "0x7c000000"
-DEFAULT_LINUX_INITRAMFS = ROOT / "sdk/image/linux/Initramfs.cpio.gz"
+DEFAULT_LINUX_INITRAMFS = ROOT / "sdk/imgs/linux/Initramfs.cpio.gz"
 REPACK_INITRAMFS = ROOT / "scripts/repack_initramfs.sh"
 
 
@@ -55,8 +55,8 @@ def parse_args():
         help="legacy: use one Linux Image for both Linux VM2 and Linux VM3",
     )
     parser.add_argument("--linux-vm1-image", default=None, type=relpath, help=argparse.SUPPRESS)
-    parser.add_argument("--linux-vm2-image", default=ROOT / "sdk/image/linux/vm2/Image", type=relpath)
-    parser.add_argument("--linux-vm3-image", default=ROOT / "sdk/image/linux/vm2/Image", type=relpath)
+    parser.add_argument("--linux-vm2-image", default=ROOT / "sdk/imgs/linux/Image", type=relpath)
+    parser.add_argument("--linux-vm3-image", default=ROOT / "sdk/imgs/linux/Image", type=relpath)
     parser.add_argument(
         "--linux-initramfs",
         dest="linux_initramfs",
@@ -113,7 +113,7 @@ def parse_args():
 
 
 def print_image_plan(args):
-    print("[kick] VM1 RT-Thread Image: embedded sdk/image/rtthread.bin", flush=True)
+    print("[kick] VM1 RT-Thread Image: embedded sdk/imgs/rtthread.bin", flush=True)
     print(f"[kick] VM2 Linux Image: {args.linux_vm2_image}", flush=True)
     print(f"[kick] VM3 Linux Image: {args.linux_vm3_image}", flush=True)
     print(f"[kick] shared Linux initramfs: {args.linux_initramfs}", flush=True)
