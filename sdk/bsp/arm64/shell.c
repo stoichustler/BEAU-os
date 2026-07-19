@@ -35,6 +35,7 @@
 #include <bsp/vuart.h>
 #include <debug/symbol.h>
 #include <asm/mmu.h>
+#include <asm/aes.h>
 #include <asm/boot/ld_sym.h>
 #include <asm/coredump.h>
 #include <asm/irq.h>
@@ -111,6 +112,9 @@
 #define SHELL_CMD_PMUSTAT		"pmustat"
 #define SHELL_CMD_PMUSTAT_PARAM		"<start|stop|reset|dump>"
 #define SHELL_CMD_PMUSTAT_HELP		"control and dump EL2-owned core PMU statistics"
+#define SHELL_CMD_AES			"aes"
+#define SHELL_CMD_AES_PARAM		"<enc|dec> <text|hex>"
+#define SHELL_CMD_AES_HELP		"verify ARMv8 AES text encryption and decryption"
 #define VMSTAT_CPU_WAIT_WARN_US		20000UL
 #define PCISTAT_MAX_STREAMS		64U
 #define RTTEST_INTERVAL_US		1000U
@@ -124,6 +128,11 @@
 #define SHELL_MEM_MB_BYTES		(SHELL_MEM_KB_BYTES * 1024UL)
 #define SHELL_MEM_GB_BYTES		(SHELL_MEM_MB_BYTES * 1024UL)
 #define SHELL_HEALTH_CPU_PERCENT_SCALE	1000UL
+#define SHELL_AES_MAX_PLAINTEXT_LEN	31U
+#define SHELL_AES_MAX_CIPHERTEXT_LEN	32U
+#define SHELL_AES_MAX_HEX_LEN		(SHELL_AES_MAX_CIPHERTEXT_LEN * 2U)
+#define SHELL_AES_CIPHERTEXT_PREFIX	"ciphertext: "
+#define SHELL_AES_PLAINTEXT_PREFIX	"plaintext: "
 
 static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv);
 static int32_t shell_memstat(int32_t argc, __unused char **argv);
@@ -144,10 +153,15 @@ static int32_t shell_reboot(__unused int32_t argc, __unused char **argv);
 static int32_t shell_pm(int32_t argc, char **argv);
 static int32_t shell_pmstat(int32_t argc, __unused char **argv);
 static int32_t shell_pmustat(int32_t argc, char **argv);
+static int32_t shell_aes(int32_t argc, char **argv);
 static const char *shell_yes_no(bool value);
 static const char *shell_vm_state_to_str(enum vm_state state);
 static struct arm_smmu_stream_config shell_smmu_streams[PCISTAT_MAX_STREAMS];
 static struct arm64_core_pmu_snapshot shell_pmu_snapshot;
+static const uint8_t shell_aes_test_key[ARM64_AES_BLOCK_SIZE] = {
+	0x2bU, 0x7eU, 0x15U, 0x16U, 0x28U, 0xaeU, 0xd2U, 0xa6U,
+	0xabU, 0xf7U, 0x15U, 0x88U, 0x09U, 0xcfU, 0x4fU, 0x3cU,
+};
 
 struct shell_cmd arch_shell_cmds[] = {
 	{
@@ -269,6 +283,12 @@ struct shell_cmd arch_shell_cmds[] = {
 		.cmd_param	= SHELL_CMD_PMUSTAT_PARAM,
 		.help_str	= SHELL_CMD_PMUSTAT_HELP,
 		.fcn		= shell_pmustat,
+	},
+	{
+		.str		= SHELL_CMD_AES,
+		.cmd_param	= SHELL_CMD_AES_PARAM,
+		.help_str	= SHELL_CMD_AES_HELP,
+		.fcn		= shell_aes,
 	},
 };
 uint32_t arch_shell_cmds_sz = ARRAY_SIZE(arch_shell_cmds);
@@ -3916,6 +3936,224 @@ static int32_t shell_virtiostat(int32_t argc, __unused char **argv)
 
 	shell_virtiostat_print_summary();
 	return 0;
+}
+
+/* [20260719] ARM64 AES console validation flow
+ *
+ * shell argv -> bound and validate -> stack-owned key/data/IV
+ *                                      |
+ *                                      v
+ *                              OpenBSD aes.S routine
+ *                                      |
+ *                    +-----------------+-----------------+
+ *                    |                                   |
+ *                    v                                   v
+ *             validate padding                    format ciphertext
+ *                    |                                   |
+ *                    +-----------------+-----------------+
+ *                                      v
+ *                              publish console output
+ *
+ * Key rule:
+ *   - the shell command owns all mutable AES state on its stack;
+ *   - capability, length, character, hex, and padding checks complete before
+ *     plaintext or ciphertext is published;
+ *   - the AES call does not yield or invoke a shell output checkpoint while
+ *     caller-saved SIMD registers hold live cipher state;
+ *   - every exit clears the stack-owned key schedule, data, IV, and output.
+ */
+static bool shell_aes_printable_text(const uint8_t *text, size_t length)
+{
+	bool valid = (text != NULL) && (length > 0U) &&
+		(length <= SHELL_AES_MAX_PLAINTEXT_LEN);
+
+	for (size_t idx = 0U; valid && (idx < length); idx++) {
+		valid = (text[idx] >= 0x21U) && (text[idx] <= 0x7eU) &&
+			(text[idx] != (uint8_t)',');
+	}
+
+	return valid;
+}
+
+static bool shell_aes_hex_nibble(char ch, uint8_t *nibble)
+{
+	bool valid = nibble != NULL;
+
+	if (!valid) {
+		return false;
+	}
+	if ((ch >= '0') && (ch <= '9')) {
+		*nibble = (uint8_t)(ch - '0');
+	} else if ((ch >= 'a') && (ch <= 'f')) {
+		*nibble = (uint8_t)(ch - 'a') + 10U;
+	} else if ((ch >= 'A') && (ch <= 'F')) {
+		*nibble = (uint8_t)(ch - 'A') + 10U;
+	} else {
+		valid = false;
+	}
+
+	return valid;
+}
+
+static bool shell_aes_decode_hex(const char *hex, uint8_t *data, size_t *data_len)
+{
+	size_t hex_len;
+	uint8_t high;
+	uint8_t low;
+	bool valid;
+
+	if ((hex == NULL) || (data == NULL) || (data_len == NULL)) {
+		return false;
+	}
+	hex_len = strnlen_s(hex, SHELL_AES_MAX_HEX_LEN + 1U);
+	valid = (hex_len == (ARM64_AES_BLOCK_SIZE * 2U)) ||
+		(hex_len == SHELL_AES_MAX_HEX_LEN);
+	for (size_t idx = 0U; valid && (idx < hex_len); idx += 2U) {
+		valid = shell_aes_hex_nibble(hex[idx], &high) &&
+			shell_aes_hex_nibble(hex[idx + 1U], &low);
+		if (valid) {
+			data[idx / 2U] = (uint8_t)((high << 4U) | low);
+		}
+	}
+	if (valid) {
+		*data_len = hex_len / 2U;
+	}
+
+	return valid;
+}
+
+static bool shell_aes_remove_padding(uint8_t *data, size_t data_len,
+	size_t *plaintext_len)
+{
+	uint8_t padding;
+	bool valid;
+
+	if ((data == NULL) || (plaintext_len == NULL) ||
+		(data_len < ARM64_AES_BLOCK_SIZE) ||
+		(data_len > SHELL_AES_MAX_CIPHERTEXT_LEN)) {
+		return false;
+	}
+	padding = data[data_len - 1U];
+	valid = (padding > 0U) && (padding <= ARM64_AES_BLOCK_SIZE) &&
+		((size_t)padding <= data_len);
+	for (size_t idx = 0U; valid && (idx < (size_t)padding); idx++) {
+		valid = data[data_len - 1U - idx] == padding;
+	}
+	if (valid) {
+		*plaintext_len = data_len - (size_t)padding;
+		valid = shell_aes_printable_text(data, *plaintext_len);
+	}
+
+	return valid;
+}
+
+static int32_t shell_aes_encrypt_text(const char *text)
+{
+	static const char hex_digits[] = "0123456789abcdef";
+	struct arm64_aes_key key = { 0U };
+	uint8_t data[SHELL_AES_MAX_CIPHERTEXT_LEN] = { 0U };
+	uint8_t iv[ARM64_AES_BLOCK_SIZE] = { 0U };
+	char output[sizeof(SHELL_AES_CIPHERTEXT_PREFIX) + SHELL_AES_MAX_HEX_LEN + 2U] = { 0 };
+	size_t text_len;
+	size_t data_len;
+	size_t output_idx;
+	uint8_t padding;
+	int32_t status = -EINVAL;
+
+	text_len = strnlen_s(text, SHELL_AES_MAX_PLAINTEXT_LEN + 1U);
+	if (!shell_aes_printable_text((const uint8_t *)text, text_len)) {
+		shell_puts("AES plaintext must contain 1-31 printable non-comma characters\r\n");
+		goto out;
+	}
+	padding = (uint8_t)(ARM64_AES_BLOCK_SIZE - (text_len % ARM64_AES_BLOCK_SIZE));
+	data_len = text_len + (size_t)padding;
+	memcpy(data, text, text_len);
+	(void)memset(&data[text_len], padding, (size_t)padding);
+	if (aes_v8_set_encrypt_key(shell_aes_test_key, ARM64_AES_KEY_BITS_128, &key) != 0) {
+		shell_puts("AES encryption key setup failed\r\n");
+		status = -EIO;
+		goto out;
+	}
+	aes_v8_cbc_encrypt(data, data, data_len, &key, iv, 1);
+
+	memcpy(output, SHELL_AES_CIPHERTEXT_PREFIX,
+		sizeof(SHELL_AES_CIPHERTEXT_PREFIX) - 1U);
+	output_idx = sizeof(SHELL_AES_CIPHERTEXT_PREFIX) - 1U;
+	for (size_t idx = 0U; idx < data_len; idx++) {
+		output[output_idx++] = hex_digits[data[idx] >> 4U];
+		output[output_idx++] = hex_digits[data[idx] & 0x0fU];
+	}
+	output[output_idx++] = '\r';
+	output[output_idx++] = '\n';
+	output[output_idx] = '\0';
+	shell_puts(output);
+	status = 0;
+
+out:
+	(void)memset(&key, 0U, sizeof(key));
+	(void)memset(data, 0U, sizeof(data));
+	(void)memset(iv, 0U, sizeof(iv));
+	(void)memset(output, 0U, sizeof(output));
+	return status;
+}
+
+static int32_t shell_aes_decrypt_text(const char *hex)
+{
+	struct arm64_aes_key key = { 0U };
+	uint8_t data[SHELL_AES_MAX_CIPHERTEXT_LEN + 1U] = { 0U };
+	uint8_t iv[ARM64_AES_BLOCK_SIZE] = { 0U };
+	char output[sizeof(SHELL_AES_PLAINTEXT_PREFIX) + SHELL_AES_MAX_PLAINTEXT_LEN + 2U] = { 0 };
+	size_t data_len = 0U;
+	size_t plaintext_len = 0U;
+	int32_t status = -EINVAL;
+
+	if (!shell_aes_decode_hex(hex, data, &data_len)) {
+		shell_puts("AES ciphertext must contain 32 or 64 hexadecimal characters\r\n");
+		goto out;
+	}
+	if (aes_v8_set_decrypt_key(shell_aes_test_key, ARM64_AES_KEY_BITS_128, &key) != 0) {
+		shell_puts("AES decryption key setup failed\r\n");
+		status = -EIO;
+		goto out;
+	}
+	aes_v8_cbc_encrypt(data, data, data_len, &key, iv, 0);
+	if (!shell_aes_remove_padding(data, data_len, &plaintext_len)) {
+		shell_puts("AES ciphertext has invalid padding or plaintext\r\n");
+		goto out;
+	}
+	data[plaintext_len] = '\0';
+	(void)snprintf(output, sizeof(output), "%s%s\r\n",
+		SHELL_AES_PLAINTEXT_PREFIX, (const char *)data);
+	shell_puts(output);
+	status = 0;
+
+out:
+	(void)memset(&key, 0U, sizeof(key));
+	(void)memset(data, 0U, sizeof(data));
+	(void)memset(iv, 0U, sizeof(iv));
+	(void)memset(output, 0U, sizeof(output));
+	return status;
+}
+
+static int32_t shell_aes(int32_t argc, char **argv)
+{
+	if (argc != 3) {
+		shell_puts("usage: aes <enc|dec> <text|hex>\r\n");
+		return -EINVAL;
+	}
+	if (!arm64_aes_supported()) {
+		shell_puts("ARMv8 AES instructions are not supported on this pCPU\r\n");
+		return -ENOTSUP;
+	}
+	if (strcmp(argv[1], "enc") == 0) {
+		return shell_aes_encrypt_text(argv[2]);
+	}
+	if (strcmp(argv[1], "dec") == 0) {
+		return shell_aes_decrypt_text(argv[2]);
+	}
+
+	shell_puts("usage: aes <enc|dec> <text|hex>\r\n");
+	return -EINVAL;
 }
 
 static const char *shell_pm_mode_to_str(uint8_t mode)

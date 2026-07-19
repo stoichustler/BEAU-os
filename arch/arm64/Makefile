@@ -74,6 +74,7 @@ HOST_S_SRCS += arch/arm64/boot/entry.S
 HOST_S_SRCS += arch/arm64/vector.S
 HOST_S_SRCS += arch/arm64/sched.S
 HOST_S_SRCS += arch/arm64/suspend.S
+HOST_S_SRCS += arch/arm64/lib/aes.S
 
 HOST_C_SRCS += arch/arm64/init.c
 HOST_C_SRCS += arch/arm64/coredump.c
