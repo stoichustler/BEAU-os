@@ -71,7 +71,7 @@ struct shell {
 #define SHELL_CMD_LOG_LVL_PARAM		"[<console_loglevel> [<mem_loglevel> [npk_loglevel]]]"
 #define SHELL_CMD_LOG_LVL_HELP		"loglevel {0-6}"
 
-#define SHELL_CMD_DUMP_HOST_MEM		"hmm"
+#define SHELL_CMD_DUMP_HOST_MEM		"hexmem"
 #define SHELL_CMD_DUMP_HOST_MEM_PARAM	"<addr, length>"
 #define SHELL_CMD_DUMP_HOST_MEM_HELP	"dump host memory: address(hex), size(dec in bytes)"
 
@@ -81,7 +81,7 @@ struct shell {
 
 #define SHELL_CMD_THREAD_LIST		"ps"
 #define SHELL_CMD_THREAD_LIST_PARAM	NULL
-#define SHELL_CMD_THREAD_LIST_HELP	"list scheduler threads and state"
+#define SHELL_CMD_THREAD_LIST_HELP	"list scheduler threads, state, and CPU usage"
 
 #define SHELL_CMD_SCHED		"schedstat"
 #define SHELL_CMD_SCHED_PARAM		NULL
@@ -91,13 +91,9 @@ struct shell {
 #define SHELL_CMD_IRQ_STATS_PARAM	NULL
 #define SHELL_CMD_IRQ_STATS_HELP	"list host IRQ counts and ARM64 guest vIRQ latency"
 
-#define SHELL_CMD_VM_CONSOLE		"vsh"
+#define SHELL_CMD_VM_CONSOLE		"vcon"
 #define SHELL_CMD_VM_CONSOLE_PARAM	"<vm id>"
 #define SHELL_CMD_VM_CONSOLE_HELP	"switch to the vm console. type `CTRL-D` switch to BEAU"
-
-#define SHELL_CMD_VM_LOG		"vlog"
-#define SHELL_CMD_VM_LOG_PARAM		"<vm id>"
-#define SHELL_CMD_VM_LOG_HELP		"show buffered vm console history without switching to the vm"
 
 void shell_puts(const char *string_ptr);
 void shell_item_begin(const char *fmt, ...);

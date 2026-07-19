@@ -129,7 +129,7 @@
  * Linux SMP boot depends on a precise edge-SGI lifecycle. A representative
  * failure was VM2 reaching the PL011 console and then stalling with CPU0 in
  * smp_call_function_many_cond(), waiting for CPU2 to unlock a synchronous CSD
- * queued by kick_all_cpus_sync(). dumpstat showed that vCPU requests had been
+ * queued by kick_all_cpus_sync(). Diagnosis showed that vCPU requests had been
  * consumed, SGI1 had been targeted and flushed into a list register, and the
  * SGI was no longer pending/active in the saved vGIC state; however the Linux
  * CSD flags stayed locked. Symbolication of the CSD function identified the
@@ -657,23 +657,6 @@ static struct arm64_vgic_irq *vgic_irq_desc(struct acrn_vcpu *vcpu, uint32_t vir
 	return desc;
 }
 
-static void vgic_record_irq_injection(struct acrn_vcpu *source_vcpu,
-	struct acrn_vcpu *target_vcpu, uint32_t virq, bool level, int32_t status)
-{
-	struct arm64_vcpu_last_irq *last;
-
-	if (target_vcpu != NULL) {
-		last = &target_vcpu->arch.debug.last_irq;
-		last->virq = virq;
-		last->status = status;
-		last->source_vcpu_id = (source_vcpu != NULL) ?
-			source_vcpu->vcpu_id : ARM64_VCPU_DEBUG_INVALID_VCPU_ID;
-		last->target_vcpu_id = target_vcpu->vcpu_id;
-		last->level = level;
-		last->tsc = cpu_ticks();
-	}
-}
-
 static uint32_t vgic_irq_word(uint32_t virq)
 {
 	return virq / 32U;
@@ -1119,31 +1102,6 @@ static bool vgicv3_vcpu_is_running_remote(const struct acrn_vcpu *vcpu)
 	return (pcpu_id != get_pcpu_id()) && (get_running_vcpu(pcpu_id) == vcpu);
 }
 
-static void vgicv3_record_cpuif_snapshot(struct acrn_vcpu *vcpu,
-	struct arm64_vcpu_last_vgic *last, uint32_t source)
-{
-	uint32_t count = last->count + 1U;
-
-	/*
-	 * ICH_MISR/EISR/ELRSR are the hardware-visible maintenance contract.
-	 * Recording them before software consumes LRs preserves the evidence that
-	 * explains why EL2 was entered and whether EOI state was available.
-	 */
-	last->tsc = cpu_ticks();
-	last->misr = read_ich_misr_el2();
-	last->eisr = read_ich_eisr_el2();
-	last->elrsr = read_ich_elrsr_el2();
-	last->hcr = read_ich_hcr_el2();
-	last->vmcr = read_ich_vmcr_el2();
-	last->ap0r0 = read_ich_ap0r0_el2();
-	last->ap1r0 = read_ich_ap1r0_el2();
-	last->lr0 = (vgic_lr_count > 0U) ? read_ich_lr_el2(0U) : 0UL;
-	last->lr1 = (vgic_lr_count > 1U) ? read_ich_lr_el2(1U) : 0UL;
-	last->source = source;
-	last->count = count;
-	last->used_lrs = vcpu->arch.vgic.used_lrs;
-}
-
 static void vgicv3_read_loaded_lrs(struct acrn_vcpu *vcpu, bool is_current)
 {
 	if (is_current || vgicv3_vcpu_is_loaded(vcpu)) {
@@ -1419,10 +1377,8 @@ int32_t arm64_vgicv3_handle_cpuif_sysreg(struct acrn_vcpu *vcpu, uint32_t sysreg
 {
 	struct arm64_vgicv3 *vgic;
 	struct arm64_vgicv3_vcpu_ctx *ctx;
-	struct arm64_vcpu_last_cpuif *last;
 	uint64_t flags;
 	uint64_t value = 0UL;
-	uint64_t access_value;
 	bool control_changed = false;
 	bool flush_needed = false;
 	int32_t ret = 0;
@@ -1433,8 +1389,6 @@ int32_t arm64_vgicv3_handle_cpuif_sysreg(struct acrn_vcpu *vcpu, uint32_t sysreg
 
 	vgic = &vcpu->vm->arch_vm.vgic;
 	ctx = &vcpu->arch.vgic;
-	last = &vcpu->arch.debug.last_cpuif;
-	access_value = read ? 0UL : *reg;
 	spinlock_irqsave_obtain(&vgic->lock, &flags);
 	switch (sysreg) {
 	case ARM64_VGIC_SYSREG_ICC_SRE_EL1:
@@ -1511,17 +1465,7 @@ int32_t arm64_vgicv3_handle_cpuif_sysreg(struct acrn_vcpu *vcpu, uint32_t sysreg
 	if (ret == 0) {
 		if (read) {
 			*reg = value;
-			access_value = value;
 		}
-		/*
-		 * Record after emulation so reads capture the returned value and writes
-		 * can be matched against the vGIC state produced by the access.
-		 */
-		last->sysreg = sysreg;
-		last->value = access_value;
-		last->status = ret;
-		last->read = read;
-		last->tsc = cpu_ticks();
 		if (control_changed && vgicv3_vcpu_is_loaded(vcpu)) {
 			vgicv3_write_cpuif_control(ctx);
 		}
@@ -1652,8 +1596,6 @@ static bool vgicv3_complete_timer_lr(struct acrn_vcpu *vcpu,
 		*removed = true;
 	}
 	arm64_vtimer_set_host_mask(vcpu, line_asserted);
-	arm64_vcpu_trace_vtimer(vcpu, ARM64_VTIMER_TRACE_EOI, desc->virq,
-		UINT32_MAX, UINT64_MAX, false, false);
 
 	return true;
 }
@@ -1769,8 +1711,6 @@ static void vgicv3_sync_vcpu(struct acrn_vcpu *vcpu, bool is_current)
 		uint64_t live_hcr = read_ich_hcr_el2();
 
 		eoi_lrs = read_ich_eisr_el2();
-		vgicv3_record_cpuif_snapshot(vcpu, &vcpu->arch.debug.last_vgic_sync,
-			ARM64_VCPU_DEBUG_VGIC_SYNC);
 		vgicv3_sync_live_cpuif(vcpu);
 		if ((live_hcr & ICH_HCR_EOICOUNT_MASK) != 0UL) {
 			/*
@@ -1826,18 +1766,15 @@ static void vgicv3_sync_vcpu(struct acrn_vcpu *vcpu, bool is_current)
 				 */
 				timer_line_asserted = arm64_vtimer_sample_current(vcpu);
 				timer_line_sampled = true;
-				vcpu->arch.debug.vtimer_diag.lost_pending_lr++;
+				vcpu->arch.vtimer_diag.lost_pending_lr++;
 				vgic_set_pending(&vcpu->vm->arch_vm.vgic, vcpu->vcpu_id,
 					desc, timer_line_asserted);
 				if (timer_line_asserted) {
-					vcpu->arch.debug.vtimer_diag.pending_only_lr_preserve++;
+					vcpu->arch.vtimer_diag.pending_only_lr_preserve++;
 					vgicv3_requeue_lr(vcpu, desc, loaded);
 				} else {
-					vcpu->arch.debug.vtimer_diag.pending_only_lr_drop++;
+					vcpu->arch.vtimer_diag.pending_only_lr_drop++;
 				}
-				arm64_vcpu_trace_vtimer(vcpu, ARM64_VTIMER_TRACE_LOST_LR,
-					virq, UINT32_MAX, UINT64_MAX, false,
-					timer_line_asserted);
 			} else if (queued_level) {
 				/* Keep the level source queued for the next flush pass. */
 			} else if (!desc->level && old_pending && !eoi_reported) {
@@ -1906,22 +1843,19 @@ static void vgicv3_sync_vcpu(struct acrn_vcpu *vcpu, bool is_current)
 				 * maintenance armed so EL2 can unmask/re-sample the host source
 				 * when Linux completes arch_timer_handler().
 				 */
-				vcpu->arch.debug.vtimer_diag.pending_only_lr_seen++;
+				vcpu->arch.vtimer_diag.pending_only_lr_seen++;
 				vgic_set_pending(&vcpu->vm->arch_vm.vgic, vcpu->vcpu_id,
 					desc, line_asserted);
 				desc->active = false;
 				if (!line_asserted) {
 					arm64_vtimer_set_host_mask(vcpu, false);
-					vcpu->arch.debug.vtimer_diag.pending_only_lr_drop++;
+					vcpu->arch.vtimer_diag.pending_only_lr_drop++;
 					remove_lr(vcpu, idx);
 				} else {
 					arm64_vtimer_set_host_mask(vcpu, true);
-					vcpu->arch.debug.vtimer_diag.pending_only_lr_preserve++;
+					vcpu->arch.vtimer_diag.pending_only_lr_preserve++;
 					idx++;
 				}
-				arm64_vcpu_trace_vtimer(vcpu, ARM64_VTIMER_TRACE_PENDING_LR,
-					virq, UINT32_MAX, UINT64_MAX, false,
-					line_asserted);
 				continue;
 			}
 
@@ -2561,8 +2495,8 @@ int32_t arm64_vgicv3_inject_irq_locked(struct arm64_vgicv3 *vgic,
 	return vgic_inject_locked(vgic, target_vcpu, virq, level);
 }
 
-static int32_t arm64_vgicv3_inject_irq_to(struct acrn_vcpu *source_vcpu,
-	struct acrn_vcpu *target_vcpu, uint32_t virq, bool level)
+static int32_t arm64_vgicv3_inject_irq_to(struct acrn_vcpu *target_vcpu,
+	uint32_t virq, bool level)
 {
 	struct arm64_vgicv3 *vgic;
 	uint64_t flags;
@@ -2574,7 +2508,6 @@ static int32_t arm64_vgicv3_inject_irq_to(struct acrn_vcpu *source_vcpu,
 			spinlock_irqsave_obtain(&vgic->lock, &flags);
 			ret = vgic_inject_locked(vgic, target_vcpu, virq, level);
 			spinlock_irqrestore_release(&vgic->lock, flags);
-			vgic_record_irq_injection(source_vcpu, target_vcpu, virq, level, ret);
 			if (ret == 0) {
 				vcpu_make_request(target_vcpu, ARM64_VCPU_REQUEST_EVENT);
 				signal_event(&target_vcpu->events[ARM64_VCPU_EVENT_VIRTUAL_INTERRUPT]);
@@ -2599,7 +2532,6 @@ int32_t arm64_vgicv3_inject_irq(struct acrn_vcpu *vcpu, uint32_t virq, bool leve
 			target_vcpu = vgic_irq_target_vcpu(vcpu, vgic, virq);
 			ret = vgic_inject_locked(vgic, target_vcpu, virq, level);
 			spinlock_irqrestore_release(&vgic->lock, flags);
-			vgic_record_irq_injection(vcpu, target_vcpu, virq, level, ret);
 			if (ret == 0) {
 				vcpu_make_request(target_vcpu, ARM64_VCPU_REQUEST_EVENT);
 				signal_event(&target_vcpu->events[ARM64_VCPU_EVENT_VIRTUAL_INTERRUPT]);
@@ -2755,102 +2687,11 @@ static bool sgi1r_targets_vcpu(uint64_t value, uint16_t source_vcpu_id,
 	return targeted;
 }
 
-static void vgic_record_sgi(struct acrn_vcpu *source_vcpu, uint64_t value,
-	uint32_t intid, uint16_t target_mask, uint16_t delivered_mask, int32_t status)
-{
-	struct arm64_vcpu_last_sgi *last = &source_vcpu->arch.debug.last_sgi;
-
-	last->value = value;
-	last->intid = intid;
-	last->status = status;
-	last->source_vcpu_id = source_vcpu->vcpu_id;
-	last->target_mask = target_mask;
-	last->delivered_mask = delivered_mask;
-	last->tsc = cpu_ticks();
-}
-
-static void vgic_sgi_masks(const struct acrn_vcpu *vcpu, uint16_t *enabled,
-	uint16_t *pending, uint16_t *active)
-{
-	const struct arm64_vgicv3 *vgic = &vcpu->vm->arch_vm.vgic;
-	uint32_t intid;
-
-	*enabled = 0U;
-	*pending = 0U;
-	*active = 0U;
-
-	for (intid = 0U; intid < ARM64_VGIC_SGI_NUM; intid++) {
-		const struct arm64_vgic_irq *desc = &vgic->irq[vcpu->vcpu_id][intid];
-		uint16_t bit = (uint16_t)BIT32(intid);
-
-		if (desc->enabled) {
-			*enabled |= bit;
-		}
-		if (desc->pending) {
-			*pending |= bit;
-		}
-		if (desc->active) {
-			*active |= bit;
-		}
-	}
-}
-
-static void vgic_record_sgi_target(struct acrn_vcpu *source_vcpu,
-	struct acrn_vcpu *target_vcpu, uint64_t value, uint32_t intid, int32_t status)
-{
-	struct arm64_vcpu_last_sgi_target *last = &target_vcpu->arch.debug.last_sgi_target;
-	const struct arm64_vgic_irq *desc = vgic_irq_desc(target_vcpu, intid);
-	bool target_current = vgicv3_vcpu_is_loaded(target_vcpu);
-	uint16_t enabled;
-	uint16_t pending;
-	uint16_t active;
-
-	/*
-	 * Remote target state can only be sampled from the saved vGIC context.
-	 * Live ICH_* registers are read only when the target vCPU is the current
-	 * guest on this pCPU; otherwise they would describe the source vCPU.
-	 */
-	vgic_sgi_masks(target_vcpu, &enabled, &pending, &active);
-	last->source_value = value;
-	last->intid = intid;
-	last->status = status;
-	last->source_vcpu_id = source_vcpu->vcpu_id;
-	last->target_vcpu_id = target_vcpu->vcpu_id;
-	last->local_enabled = enabled;
-	last->local_pending = pending;
-	last->local_active = active;
-	last->used_lrs = target_vcpu->arch.vgic.used_lrs;
-	last->request_pending = vcpu_has_pending_request(target_vcpu);
-	last->target_running = is_vcpu_running(target_vcpu);
-	last->target_current = target_current;
-	last->desc_enabled = (desc != NULL) && desc->enabled;
-	last->desc_pending = (desc != NULL) && desc->pending;
-	last->desc_active = (desc != NULL) && desc->active;
-	last->desc_level = (desc != NULL) && desc->level;
-	if (target_current) {
-		last->hcr = read_ich_hcr_el2();
-		last->misr = read_ich_misr_el2();
-		last->lr0 = read_ich_lr_el2(0U);
-		last->lr1 = read_ich_lr_el2(1U);
-	} else {
-		last->hcr = target_vcpu->arch.vgic.hcr;
-		last->misr = 0UL;
-		last->lr0 = (target_vcpu->arch.vgic.used_lrs > 0U) ?
-			target_vcpu->arch.vgic.lr[0U] : 0UL;
-		last->lr1 = (target_vcpu->arch.vgic.used_lrs > 1U) ?
-			target_vcpu->arch.vgic.lr[1U] : 0UL;
-	}
-	last->tsc = cpu_ticks();
-}
-
 int32_t arm64_vgicv3_handle_sgi1r(struct acrn_vcpu *vcpu, uint64_t value)
 {
 	uint32_t intid = (uint32_t)((value >> ICC_SGI1R_INTID_SHIFT) & ICC_SGI1R_INTID_MASK);
 	uint16_t idx;
-	uint16_t target_mask = 0U;
-	uint16_t delivered_mask = 0U;
 	struct acrn_vcpu *target_vcpu;
-	int32_t last_status = 0;
 
 	/*
 	 * Guest SGI sends are trapped from ICC_SGI1R_EL1 and translated into
@@ -2863,22 +2704,14 @@ int32_t arm64_vgicv3_handle_sgi1r(struct acrn_vcpu *vcpu, uint64_t value)
 	 *        -> kick running target vCPU
 	 */
 	foreach_vcpu(idx, vcpu->vm, target_vcpu) {
-		if (sgi1r_targets_vcpu(value, vcpu->vcpu_id, target_vcpu->vcpu_id)) {
-			target_mask |= BIT32(target_vcpu->vcpu_id);
-		}
 		if ((vcpu_get_state(target_vcpu) != VCPU_OFFLINE) &&
-			((target_mask & BIT32(target_vcpu->vcpu_id)) != 0U)) {
-			last_status = arm64_vgicv3_inject_irq_to(vcpu, target_vcpu, intid, false);
-			vgic_record_sgi_target(vcpu, target_vcpu, value, intid, last_status);
-			if (last_status == 0) {
-				delivered_mask |= BIT32(target_vcpu->vcpu_id);
-			}
+			sgi1r_targets_vcpu(value, vcpu->vcpu_id, target_vcpu->vcpu_id)) {
+			(void)arm64_vgicv3_inject_irq_to(target_vcpu, intid, false);
 			if (is_vcpu_running(target_vcpu)) {
 				kick_vcpu(target_vcpu);
 			}
 		}
 	}
-	vgic_record_sgi(vcpu, value, intid, target_mask, delivered_mask, last_status);
 
 	return 0;
 }
@@ -2895,15 +2728,12 @@ void arm64_vgicv3_maintenance_irq_handler(__unused uint32_t irq, __unused void *
 		 * Maintenance IRQs are the hardware notification that LR state
 		 * needs service. Read back guest-consumed state, then refill LRs
 		 * from software pending state while still on the running pCPU.
-		 * Arm reports this as a PPI; BEAU wires it as INTID 25 and uses
-		 * ICH_MISR/EISR/ELRSR snapshots to decide what software state changed.
+		 * Arm reports this as a PPI; BEAU wires it as INTID 25 and reads back
+		 * ICH_MISR/EISR/ELRSR while synchronizing software state.
 		 *
-		 *   maintenance PPI -> CPU interface snapshot
-		 *        -> sync LRs -> flush pending backlog
+		 *   maintenance PPI -> sync LRs -> flush pending backlog
 		 */
 		spinlock_irqsave_obtain(&vgic->lock, &flags);
-		vgicv3_record_cpuif_snapshot(vcpu, &vcpu->arch.debug.last_vgic_maintenance,
-			ARM64_VCPU_DEBUG_VGIC_MAINTENANCE);
 		vgicv3_sync_vcpu(vcpu, true);
 		vgicv3_flush_vcpu(vcpu, true);
 		spinlock_irqrestore_release(&vgic->lock, flags);

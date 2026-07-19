@@ -18,6 +18,7 @@
 #include <hv_pm.h>
 #include <softirq.h>
 #include <ticks.h>
+#include <trace.h>
 #include <vconfig.h>
 #include <asm/platform.h>
 #include <asm/cpu.h>
@@ -63,6 +64,8 @@
  * register information, so only data aborts may become MMIO emulation.
  */
 #define HPFAR_EL2_FIPA_MASK	0xfffffffff0UL
+#define ARM64_TRACE_EXIT_SYNC	1U
+#define ARM64_TRACE_EXIT_IRQ	2U
 #define FAR_EL2_PAGE_MASK	0xfffUL
 #define VM_STACK_TRACE_DEPTH	16U
 
@@ -461,83 +464,6 @@ static struct acrn_vcpu *schedule_without_guest_resume(uint16_t pcpu_id,
 	return vcpu;
 }
 
-static void record_vcpu_exit(struct acrn_vcpu *vcpu, uint32_t source, int32_t status)
-{
-	struct arm64_vcpu_last_exit *last = &vcpu->arch.debug.last_exit;
-	const struct cpu_regs *regs = &vcpu->arch.regs;
-
-	last->esr = regs->esr;
-	last->elr = regs->elr;
-	last->far = regs->far;
-	last->hpfar = regs->hpfar;
-	last->ec = (source == ARM64_VCPU_DEBUG_EXIT_SYNC) ?
-		(uint32_t)ESR_EL2_EC(regs->esr) : ARM64_VCPU_DEBUG_EXIT_EC_INVALID;
-	last->abort_type = ARM64_VCPU_DEBUG_ABORT_NONE;
-	last->abort_fsc = 0U;
-	if (source == ARM64_VCPU_DEBUG_EXIT_SYNC) {
-		last->abort_fsc = arm64_abort_fsc(regs->esr);
-		switch (ESR_EL2_EC(regs->esr)) {
-		case ESR_EL2_EC_IABT_LOW:
-		case ESR_EL2_EC_IABT_CUR:
-			last->abort_type = ARM64_VCPU_DEBUG_ABORT_INSTRUCTION;
-			break;
-		case ESR_EL2_EC_DABT_LOW:
-		case ESR_EL2_EC_DABT_CUR:
-			last->abort_type = ARM64_VCPU_DEBUG_ABORT_DATA;
-			break;
-		default:
-			break;
-		}
-	}
-	last->source = source;
-	last->status = status;
-	last->tsc = arm64_vcpu_trace_guest_boundary(vcpu, ARM64_VCPU_GUEST_TRACE_EXIT,
-		source, status);
-}
-
-static void record_vcpu_resume(struct acrn_vcpu *vcpu, uint32_t source)
-{
-	struct arm64_vcpu_guest_resume *last = &vcpu->arch.debug.last_resume;
-	const struct arm64_vcpu_guest_ctx *gctx = &vcpu->arch.gctx;
-	uint32_t virq = ARM64_GIC_PPI_VIRTUAL_TIMER;
-	uint64_t host_now = read_cntpct_el0();
-	uint64_t host_cval = read_cnthp_cval_el2();
-	uint64_t now = read_cntvct_el0();
-	uint64_t cval = read_cntv_cval_el0();
-	uint32_t host_ctl = read_cnthp_ctl_el2() &
-		(CNTV_CTL_ENABLE | CNTV_CTL_IMASK | CNTV_CTL_ISTATUS);
-	uint32_t ctl = read_cntv_ctl_el0() &
-		(CNTV_CTL_ENABLE | CNTV_CTL_IMASK | CNTV_CTL_ISTATUS);
-
-	last->tsc = arm64_vcpu_trace_guest_boundary(vcpu, ARM64_VCPU_GUEST_TRACE_RESUME,
-		source, 0);
-	last->elr = vcpu->arch.regs.elr;
-	last->spsr = vcpu->arch.regs.spsr;
-	last->host_cntpct = host_now;
-	last->host_timer_cval = host_cval;
-	last->cntvct = now;
-	last->cntv_cval = cval;
-	last->hcr = read_ich_hcr_el2();
-	last->vmcr = read_ich_vmcr_el2();
-	last->misr = read_ich_misr_el2();
-	last->eisr = read_ich_eisr_el2();
-	last->elrsr = read_ich_elrsr_el2();
-	last->ap0r0 = read_ich_ap0r0_el2();
-	last->ap1r0 = read_ich_ap1r0_el2();
-	last->sw_lr0 = (vcpu->arch.vgic.used_lrs > 0U) ? vcpu->arch.vgic.lr[0U] : 0UL;
-	last->sw_lr1 = (vcpu->arch.vgic.used_lrs > 1U) ? vcpu->arch.vgic.lr[1U] : 0UL;
-	last->live_lr0 = read_ich_lr_el2(0U);
-	last->live_lr1 = read_ich_lr_el2(1U);
-	last->host_timer_ctl = host_ctl;
-	last->cntv_ctl = ctl;
-	last->source = source;
-	last->timer_virq = virq;
-	last->used_lrs = vcpu->arch.vgic.used_lrs;
-	last->cntv_expired = ((ctl & CNTV_CTL_ENABLE) != 0U) &&
-		((ctl & CNTV_CTL_IMASK) == 0U) && ((int64_t)(cval - now) <= 0L);
-	last->cntv_el2_masked = gctx->cntv_el2_masked;
-}
-
 static uint64_t *arm64_gpr(struct cpu_regs *regs, uint32_t idx)
 {
 	return (idx < 31U) ? (&regs->x0 + idx) : NULL;
@@ -699,37 +625,6 @@ static struct acrn_vcpu *psci_target_vcpu(struct acrn_vm *vm, uint64_t mpidr)
 	return NULL;
 }
 
-static void record_psci_call(struct acrn_vcpu *vcpu, uint32_t fn,
-	const struct acrn_vcpu *target, int64_t ret)
-{
-	struct arm64_vcpu_last_psci *last = &vcpu->arch.debug.last_psci;
-
-	last->fn = fn;
-	last->target_mpidr = vcpu->arch.regs.x1;
-	last->entry = vcpu->arch.regs.x2;
-	last->context = vcpu->arch.regs.x3;
-	last->ret = ret;
-	last->source_vcpu_id = vcpu->vcpu_id;
-	last->target_vcpu_id = (target != NULL) ?
-		target->vcpu_id : ARM64_VCPU_DEBUG_INVALID_VCPU_ID;
-	last->tsc = cpu_ticks();
-}
-
-static void record_psci_suspend_call(struct acrn_vcpu *vcpu, uint32_t fn,
-	uint64_t power_state, uint64_t entry_point, uint64_t context_id, int64_t ret)
-{
-	struct arm64_vcpu_last_psci *last = &vcpu->arch.debug.last_psci;
-
-	last->fn = fn;
-	last->target_mpidr = power_state;
-	last->entry = entry_point;
-	last->context = context_id;
-	last->ret = ret;
-	last->source_vcpu_id = vcpu->vcpu_id;
-	last->target_vcpu_id = vcpu->vcpu_id;
-	last->tsc = cpu_ticks();
-}
-
 static int64_t handle_psci_cpu_on(struct acrn_vcpu *vcpu)
 {
 	struct acrn_vcpu *target = psci_target_vcpu(vcpu->vm, vcpu->arch.regs.x1);
@@ -737,7 +632,6 @@ static int64_t handle_psci_cpu_on(struct acrn_vcpu *vcpu)
 
 	if (hv_pm_begin_vm_topology_change(vcpu->vm->vm_id) != 0) {
 		ret = PSCI_RET_DENIED;
-		record_psci_call(vcpu, (uint32_t)vcpu->arch.regs.x0, target, ret);
 		return ret;
 	}
 	if (target != NULL) {
@@ -755,7 +649,6 @@ static int64_t handle_psci_cpu_on(struct acrn_vcpu *vcpu)
 		put_vm_lock(vcpu->vm);
 	}
 	hv_pm_end_vm_topology_change(vcpu->vm->vm_id);
-	record_psci_call(vcpu, (uint32_t)vcpu->arch.regs.x0, target, ret);
 
 	return ret;
 }
@@ -815,8 +708,6 @@ static int32_t handle_psci64(struct acrn_vcpu *vcpu, bool advance_elr)
 			vcpu->arch.regs.x3 : (uint64_t)(uint32_t)vcpu->arch.regs.x3;
 		ret = arm64_vpsci_cpu_suspend(vcpu, power_state, entry_point,
 			context_id, advance_elr);
-		record_psci_suspend_call(vcpu, fn, power_state, entry_point,
-			context_id, ret);
 		response_prepared = (ret == PSCI_RET_SUCCESS);
 		break;
 	case PSCI_0_2_FN_CPU_ON:
@@ -836,15 +727,12 @@ static int32_t handle_psci64(struct acrn_vcpu *vcpu, bool advance_elr)
 		target = psci_target_vcpu(vcpu->vm, vcpu->arch.regs.x1);
 		ret = ((target != NULL) && is_vcpu_running(target)) ?
 			PSCI_AFFINITY_LEVEL_ON : PSCI_AFFINITY_LEVEL_OFF;
-		record_psci_call(vcpu, fn, target, ret);
 		break;
 	case PSCI_0_2_FN_SYSTEM_OFF:
 		ret = arm64_vpsci_system_off(vcpu);
-		record_psci_call(vcpu, fn, vcpu, ret);
 		break;
 	case PSCI_0_2_FN_SYSTEM_RESET:
 		ret = arm64_vpsci_system_reset(vcpu);
-		record_psci_call(vcpu, fn, vcpu, ret);
 		break;
 	case PSCI_1_0_FN_SYSTEM_SUSPEND:
 	case PSCI_1_0_FN64_SYSTEM_SUSPEND:
@@ -853,14 +741,12 @@ static int32_t handle_psci64(struct acrn_vcpu *vcpu, bool advance_elr)
 		context_id = (fn == PSCI_1_0_FN64_SYSTEM_SUSPEND) ?
 			vcpu->arch.regs.x2 : (uint64_t)(uint32_t)vcpu->arch.regs.x2;
 		ret = arm64_vpsci_system_suspend(vcpu, entry_point, context_id);
-		record_psci_suspend_call(vcpu, fn, 0UL, entry_point, context_id, ret);
 		response_prepared = (ret == PSCI_RET_SUCCESS);
 		break;
 	default:
 		LOG_WRN("vm%u:vcpu%u unsupported psci call 0x%x",
 			vcpu->vm->vm_id, vcpu->vcpu_id, fn);
 		ret = PSCI_RET_NOT_SUPPORTED;
-		record_psci_call(vcpu, fn, NULL, ret);
 		break;
 	}
 
@@ -1000,7 +886,6 @@ static int32_t handle_wfx(struct acrn_vcpu *vcpu)
 	bool irq_masked;
 	bool request_pending;
 	bool should_yield;
-	struct arm64_vcpu_last_wfx *last = &vcpu->arch.debug.last_wfx;
 
 	advance_vcpu_elr(vcpu);
 
@@ -1027,42 +912,17 @@ static int32_t handle_wfx(struct acrn_vcpu *vcpu)
 	 */
 	should_yield = is_wfe || (!request_pending && !pending_irq);
 
-	last->esr = vcpu->arch.regs.esr;
-	last->elr = vcpu->arch.regs.elr;
-	last->cntvct = read_cntvct_el0();
-	last->cntv_cval = read_cntv_cval_el0();
-	last->cntv_ctl = read_cntv_ctl_el0() & (CNTV_CTL_ENABLE | CNTV_CTL_IMASK | CNTV_CTL_ISTATUS);
-	last->hcr = read_ich_hcr_el2();
-	last->misr = read_ich_misr_el2();
-	last->ap0r0 = read_ich_ap0r0_el2();
-	last->ap1r0 = read_ich_ap1r0_el2();
-	last->lr0 = (vcpu->arch.vgic.used_lrs > 0U) ? vcpu->arch.vgic.lr[0U] : 0UL;
-	last->lr1 = (vcpu->arch.vgic.used_lrs > 1U) ? vcpu->arch.vgic.lr[1U] : 0UL;
-	last->live_lr0 = read_ich_lr_el2(0U);
-	last->live_lr1 = read_ich_lr_el2(1U);
-	last->used_lrs = vcpu->arch.vgic.used_lrs;
-	last->is_wfe = is_wfe;
-	last->pending_irq = pending_irq;
-	last->irq_masked = irq_masked;
-	last->request_pending = request_pending;
-	last->yielded = should_yield;
-	last->cntv_expired = ((last->cntv_ctl & CNTV_CTL_ENABLE) != 0U) &&
-		((last->cntv_ctl & CNTV_CTL_IMASK) == 0U) &&
-		((int64_t)(last->cntv_cval - last->cntvct) <= 0L);
-	last->cntv_el2_masked = vcpu->arch.gctx.cntv_el2_masked;
-	last->tsc = cpu_ticks();
 	/*
-	 * WFI itself is common and already has a last_wfx snapshot. Count the
-	 * interesting predicates here, but leave the trace ring for rarer edges such
-	 * as pending-only LR preservation.
+	 * Keep only cumulative predicates needed by vmstat/health. WFI can be a hot
+	 * path, so it must not populate a per-vCPU trace or register snapshot.
 	 */
 	if (!is_wfe) {
-		vcpu->arch.debug.vtimer_diag.wfi_trap++;
+		vcpu->arch.vtimer_diag.wfi_trap++;
 		if (irq_masked) {
-			vcpu->arch.debug.vtimer_diag.wfi_irq_masked++;
+			vcpu->arch.vtimer_diag.wfi_irq_masked++;
 		}
 		if (pending_irq) {
-			vcpu->arch.debug.vtimer_diag.wfi_pending_irq++;
+			vcpu->arch.vtimer_diag.wfi_pending_irq++;
 		}
 	}
 
@@ -1118,7 +978,9 @@ int32_t vcpu_exit_handler(struct acrn_vcpu *vcpu)
 		break;
 	}
 
-	record_vcpu_exit(vcpu, ARM64_VCPU_DEBUG_EXIT_SYNC, ret);
+	TRACE_4I(TRACE_VM_EXIT, vcpu->vm->vm_id, vcpu->vcpu_id,
+		ARM64_TRACE_EXIT_SYNC,
+		(uint32_t)ret);
 
 	if (ret == 0) {
 		return 0;
@@ -1189,7 +1051,6 @@ void dispatch_vcpu_trap(struct cpu_regs *regs)
 	}
 
 	prepare_current_guest_resume(vcpu);
-	record_vcpu_resume(vcpu, ARM64_VCPU_DEBUG_EXIT_SYNC);
 	restore_exit_regs(regs, vcpu);
 }
 
@@ -1212,7 +1073,8 @@ void dispatch_vcpu_irq(struct cpu_regs *regs)
 	 *        -> poll/update vtimer -> process vCPU requests -> ERET
 	 */
 	save_exit_regs(vcpu, regs);
-	record_vcpu_exit(vcpu, ARM64_VCPU_DEBUG_EXIT_IRQ, 0);
+	TRACE_4I(TRACE_VM_EXIT, vcpu->vm->vm_id, vcpu->vcpu_id,
+		ARM64_TRACE_EXIT_IRQ, 0U);
 
 	dispatch_interrupt_no_softirq((const struct intr_excp_ctx *)regs);
 	local_irq_disable();
@@ -1234,6 +1096,5 @@ void dispatch_vcpu_irq(struct cpu_regs *regs)
 	}
 
 	prepare_current_guest_resume(vcpu);
-	record_vcpu_resume(vcpu, ARM64_VCPU_DEBUG_EXIT_IRQ);
 	restore_exit_regs(regs, vcpu);
 }

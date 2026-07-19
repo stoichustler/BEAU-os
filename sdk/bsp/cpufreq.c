@@ -416,9 +416,9 @@ void cpufreq_dump(void)
 {
 	uint32_t idx;
 
-	shell_item_begin("CPUFreq");
-	shell_item_line("enabled:%s initialized:%s", cpufreq_ctx.enabled ? "yes" : "no",
-		cpufreq_ctx.initialized ? "yes" : "no");
+	shell_item_begin("CPUFreq Status");
+	shell_item_line("enabled:%s initialized:%s", cpufreq_ctx.enabled ? "Y" : "N",
+		cpufreq_ctx.initialized ? "Y" : "N");
 
 	if (cpufreq_ctx.enabled) {
 		shell_item_line("policy:%s backend:%s domains:%u failures:%u last-error:%d",

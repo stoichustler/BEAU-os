@@ -575,7 +575,7 @@ class QemuSession:
         try:
             self.send(CTRL_D)
             self.expect(PROMPT, f"return to BEAU shell for {label}", timeout=5.0, keepalive=ENTER)
-            for line in ("vcpus", "schedstat", "vmstat", "irqstat", f"dumpstat {vmid}"):
+            for line in ("vcpus", "schedstat", "vmstat", "irqstat", "hwtdbg"):
                 self.send(line + ENTER)
                 self.expect(PROMPT, f"{line} diagnostics", timeout=15.0, keepalive=ENTER)
         except Exception as err:
@@ -584,8 +584,8 @@ class QemuSession:
             self.ignore_fatal = old_ignore_fatal
 
 
-def vsh_enter(qemu, vmid, prompt, name, timeout=30.0):
-    qemu.send(f"vsh {vmid}" + ENTER)
+def vcon_enter(qemu, vmid, prompt, name, timeout=30.0):
+    qemu.send(f"vcon {vmid}" + ENTER)
     try:
         qemu.expect(prompt, name, timeout=timeout, keepalive=ENTER)
     except Exception:
@@ -593,7 +593,7 @@ def vsh_enter(qemu, vmid, prompt, name, timeout=30.0):
         raise
 
 
-def vsh_return(qemu, name, vmid=None):
+def vcon_return(qemu, name, vmid=None):
     qemu.send(CTRL_D)
     try:
         qemu.expect(PROMPT, name, timeout=10.0, keepalive=ENTER)
@@ -605,21 +605,48 @@ def vsh_return(qemu, name, vmid=None):
 
 def run_wdt_restart_smoke(qemu):
     """Delay VM3's next kick and verify the watchdog recovers it end to end."""
-    vsh_enter(qemu, 3, LINUX_PROMPT, "WDT smoke: VM3 Linux shell", timeout=60.0)
+    vcon_enter(qemu, 3, LINUX_PROMPT, "WDT smoke: VM3 Linux shell", timeout=60.0)
     vm3_command(
         qemu,
         "test -w /sys/module/vwdt/parameters/period_ms && echo 60000 > /sys/module/vwdt/parameters/period_ms",
         "WDT smoke: delay VM3 heartbeat",
     )
-    vsh_return(qemu, "WDT smoke: return from VM3", vmid=3)
+    vcon_return(qemu, "WDT smoke: return from VM3", vmid=3)
 
     qemu.expect("HWT: VM3 restart cause:timeout", "WDT smoke: timeout detected", timeout=45.0)
     qemu.expect("HWT: VM3 quiesced; cold restart", "WDT smoke: vCPUs quiesced", timeout=5.0)
     qemu.expect("VM3: load KERNEL", "WDT smoke: kernel reloaded", timeout=5.0)
-    qemu.expect("HWT: VM3 restart launched; wait-kick", "WDT smoke: restart launched", timeout=10.0)
+    qemu.expect("HWT: VM3 restart launched", "WDT smoke: restart launched", timeout=10.0)
     qemu.expect("HWT: VM3 restart verified", "WDT smoke: restart verified", timeout=45.0)
-    vsh_enter(qemu, 3, LINUX_PROMPT, "WDT smoke: VM3 shell after recovery", timeout=60.0)
-    vsh_return(qemu, "WDT smoke: return from recovered VM3", vmid=3)
+    vcon_enter(qemu, 3, LINUX_PROMPT, "WDT smoke: VM3 shell after recovery", timeout=60.0)
+    vcon_return(qemu, "WDT smoke: return from recovered VM3", vmid=3)
+    qemu.command_retry(
+        "hwtdbg",
+        [
+            "┌─  HWTDBG (vm3 seq:",
+            "timeout:runtime",
+            "capture:",
+            "live:req:",
+            "recovery:verified",
+            "├─  vm/vcpu",
+            "guest regs:",
+            "elr:0x",
+            "guest stack:",
+            "host stack:",
+            "├─  irq/virtio",
+            "irq:total:",
+            "virtio:devices:",
+        ],
+        [
+            "checksum:invalid",
+            "capture:corrupt",
+            "guest exit trace:",
+            "vgic/vtimer",
+            "irq/console/virtio",
+            "console:buffered:",
+            "console tail:",
+        ],
+    )
     print("[pass] watchdog cold-restart smoke complete", flush=True)
 
 
@@ -682,7 +709,7 @@ def run_smmu_passthrough_smoke(qemu):
         "owner:vm2 ipa:44",
     ])
     net_watchdog = False
-    qemu.send("vsh 2" + ENTER)
+    qemu.send("vcon 2" + ENTER)
     try:
         qemu.expect(LINUX_PROMPT, "VM2 passthrough Linux shell", timeout=60.0,
                     keepalive=ENTER)
@@ -879,18 +906,120 @@ def expect_rttest(qemu, command, pcpu_count):
     print(f"[pass] {command}: per-pCPU output found", flush=True)
 
 
+def shell_table_row(text, row_id):
+    pattern = re.compile(rf"^│\s+{re.escape(str(row_id))}\s+")
+
+    for line in text.splitlines():
+        if pattern.search(line):
+            return line
+    raise RuntimeError(f"shell table output missing row {row_id!r}")
+
+
+def expect_ps_cpu_usage(qemu):
+    common = [
+        "ps threads:",
+        "lifecycle",
+        "thread",
+        "current",
+        "cpu%",
+        "run.us",
+        "idle-00",
+        "vm0:vcpu0",
+    ]
+    qemu.command_retry(
+        "ps",
+        common + ["window:baseline"],
+        ["current  entry"],
+    )
+    qemu.drain_for(0.2)
+    output = qemu.command_retry(
+        "ps",
+        common + ["window:"],
+        ["window:baseline", "current  entry"],
+    )
+
+    window = re.search(r"window:(\d+)ms", output)
+    if (window is None) or (int(window.group(1)) == 0):
+        raise RuntimeError("second ps output does not contain a non-zero sampling window")
+
+    for thread_name in ("idle-00", "vm0:vcpu0"):
+        row = next(
+            (line for line in output.splitlines() if thread_name in line),
+            None,
+        )
+        if row is None:
+            raise RuntimeError(f"second ps output missing {thread_name!r} row")
+        if re.search(r"\s\d+\.\d\s+\d+\s*$", row) is None:
+            raise RuntimeError(
+                f"second ps output lacks numeric cpu%/run.us for {thread_name!r}: {row!r}"
+            )
+
+    print("[pass] ps: independent baseline and per-thread CPU usage", flush=True)
+
+
+def expect_health_vcpu_usage(qemu):
+    common = [
+        "overall:",
+        "Host",
+        "Virtual machines",
+        "vCPU utilization window:",
+        "vmid",
+        "vcpu0",
+        "vcpu1",
+        "vcpu2",
+        "vcpu3",
+        "total",
+        "[Tip] %:running  NC:not configured  NA:not active  --:baseline pending",
+        "Findings",
+        "vm0",
+        "vm1",
+        "vm2",
+        "vm3",
+    ]
+    baseline = qemu.command_retry("health", common + ["window:baseline"])
+    header = next(
+        (line for line in baseline.splitlines() if "vmid" in line and "vcpu0" in line),
+        None,
+    )
+    if header is None:
+        raise RuntimeError("health output missing vCPU utilization header")
+    if "vcpu4" in header:
+        raise RuntimeError(f"health output has a non-topology vCPU column: {header!r}")
+    vm0_baseline = shell_table_row(baseline, 0)
+    if vm0_baseline.count("NC") != 2:
+        raise RuntimeError(
+            f"health VM0 row does not mark two unconfigured vCPUs as NC: {vm0_baseline!r}"
+        )
+
+    qemu.drain_for(0.2)
+    output = qemu.command_retry(
+        "health",
+        common,
+        ["vCPU utilization window:baseline"],
+    )
+    window = re.search(r"vCPU utilization window:(\d+)ms", output)
+    if (window is None) or (int(window.group(1)) == 0):
+        raise RuntimeError("second health output does not contain a non-zero sampling window")
+    vm0_row = shell_table_row(output, 0)
+    if re.search(r"\d+\.\d%", vm0_row) is None:
+        raise RuntimeError(
+            f"second health VM0 row lacks numeric running-vCPU utilization: {vm0_row!r}"
+        )
+
+    print("[pass] health: dynamic vCPU columns and utilization history", flush=True)
+
+
 def expect_vm2_cpu1_lifecycle(qemu):
     online = "/sys/devices/system/cpu/cpu1/online"
 
     vm_command(qemu, 2, f"test -w {online} && echo 0 > {online}",
                "VM2 CPU1 offline", timeout=30.0)
-    vsh_return(qemu, "return from VM2 after CPU1 offline", vmid=2)
+    vcon_return(qemu, "return from VM2 after CPU1 offline", vmid=2)
 
-    for command in ("vcpus", "ps", "schedstat", "vmstat", "dumpstat 2"):
-        vcpu_name = "vm2/vcpu1" if command.startswith("dumpstat") else "vm2:vcpu1"
-        qemu.command_retry(command, [vcpu_name, "poweroff"])
+    for command in ("vcpus", "ps", "schedstat", "vmstat"):
+        qemu.command_retry(command, ["vm2:vcpu1", "poweroff"])
 
-    vsh_enter(qemu, 2, LINUX_PROMPT, "VM2 shell for CPU1 online", timeout=30.0)
+    vcon_enter(qemu, 2, LINUX_PROMPT, "VM2 shell for CPU1 online", timeout=30.0)
     vm_command(qemu, 2, f"echo 1 > {online} && test \"$(cat {online})\" = 1",
                "VM2 CPU1 online", timeout=30.0)
     print("[pass] VM2 CPU1 lifecycle poweroff -> running", flush=True)
@@ -921,9 +1050,9 @@ def run_vsh_help_stress(qemu, args):
         label = idx + 1
         for vmid, prompt, guest_name, timeout in HELP_STRESS_TARGETS:
             name = f"help stress round {label}: {guest_name}"
-            vsh_enter(qemu, vmid, prompt, f"{name} shell", timeout=timeout)
+            vcon_enter(qemu, vmid, prompt, f"{name} shell", timeout=timeout)
             run_guest_help(qemu, vmid, prompt, name, timeout)
-            vsh_return(qemu, f"{name}: return to BEAU shell", vmid=vmid)
+            vcon_return(qemu, f"{name}: return to BEAU shell", vmid=vmid)
 
     print("[pass] VM console help stress complete", flush=True)
 
@@ -932,41 +1061,41 @@ def run_vsh_switch_stress(qemu, args):
     if args.stress_rounds < 1:
         return
 
-    vsh_enter(qemu, 2, LINUX_PROMPT, "stress VM2 Linux shell", timeout=30.0)
+    vcon_enter(qemu, 2, LINUX_PROMPT, "stress VM2 Linux shell", timeout=30.0)
     send_enter_burst(qemu, args.stress_enters, args.stress_enter_delay, "VM2 initial", vmid=2)
     expect_vm2_id(qemu, "VM2 Linux identity after initial Enter burst")
-    vsh_return(qemu, "return from stress VM2 initial", vmid=2)
+    vcon_return(qemu, "return from stress VM2 initial", vmid=2)
 
-    vsh_enter(qemu, 1, RTTHREAD_PROMPT, "stress VM1 RT-Thread shell", timeout=30.0)
+    vcon_enter(qemu, 1, RTTHREAD_PROMPT, "stress VM1 RT-Thread shell", timeout=30.0)
     send_enter_burst(qemu, args.stress_enters, args.stress_enter_delay, "VM1 RT-Thread", vmid=1)
-    vsh_return(qemu, "return from stress VM1", vmid=1)
+    vcon_return(qemu, "return from stress VM1", vmid=1)
 
     for idx in range(args.stress_rounds):
         label = idx + 1
-        vsh_enter(qemu, 0, ZEPHYR_PROMPT, f"stress round {label}: VM0 Zephyr shell")
+        vcon_enter(qemu, 0, ZEPHYR_PROMPT, f"stress round {label}: VM0 Zephyr shell")
         send_enter_burst(qemu, max(1, args.stress_enters // 4),
             args.stress_enter_delay, f"round {label} VM0", vmid=0)
-        vsh_return(qemu, f"stress round {label}: return from VM0", vmid=0)
+        vcon_return(qemu, f"stress round {label}: return from VM0", vmid=0)
 
-        vsh_enter(qemu, 1, RTTHREAD_PROMPT, f"stress round {label}: VM1 RT-Thread shell",
+        vcon_enter(qemu, 1, RTTHREAD_PROMPT, f"stress round {label}: VM1 RT-Thread shell",
             timeout=30.0)
         send_enter_burst(qemu, max(1, args.stress_enters // 4),
             args.stress_enter_delay, f"round {label} VM1", vmid=1)
-        vsh_return(qemu, f"stress round {label}: return from VM1", vmid=1)
+        vcon_return(qemu, f"stress round {label}: return from VM1", vmid=1)
 
-        vsh_enter(qemu, 2, LINUX_PROMPT, f"stress round {label}: VM2 Linux shell",
+        vcon_enter(qemu, 2, LINUX_PROMPT, f"stress round {label}: VM2 Linux shell",
             timeout=30.0)
         send_enter_burst(qemu, args.stress_enters, args.stress_enter_delay,
             f"round {label} VM2", vmid=2)
         expect_vm2_id(qemu, f"stress round {label}: VM2 identity after switch")
-        vsh_return(qemu, f"stress round {label}: return from VM2", vmid=2)
+        vcon_return(qemu, f"stress round {label}: return from VM2", vmid=2)
 
-        vsh_enter(qemu, 3, LINUX_PROMPT, f"stress round {label}: VM3 Linux shell",
+        vcon_enter(qemu, 3, LINUX_PROMPT, f"stress round {label}: VM3 Linux shell",
             timeout=30.0)
         send_enter_burst(qemu, args.stress_enters, args.stress_enter_delay,
             f"round {label} VM3", vmid=3)
         expect_linux_id(qemu, 3, f"stress round {label}: VM3 identity after switch")
-        vsh_return(qemu, f"stress round {label}: return from VM3", vmid=3)
+        vcon_return(qemu, f"stress round {label}: return from VM3", vmid=3)
 
     print("[pass] VM console switch stress complete", flush=True)
 
@@ -980,22 +1109,22 @@ def assert_qmp_status(qmp, expected, name):
 
 def check_str_guest_heartbeats(qemu, cycle):
     label = f"STR cycle {cycle}"
-    vsh_enter(qemu, 0, ZEPHYR_PROMPT, f"{label}: VM0 heartbeat")
+    vcon_enter(qemu, 0, ZEPHYR_PROMPT, f"{label}: VM0 heartbeat")
     run_guest_help(qemu, 0, ZEPHYR_PROMPT, f"{label}: VM0", 15.0)
     check_zephyr_thread_list(qemu, f"{label}: VM0 SMP runtime stats")
-    vsh_return(qemu, f"{label}: return from VM0", vmid=0)
+    vcon_return(qemu, f"{label}: return from VM0", vmid=0)
 
-    vsh_enter(qemu, 1, RTTHREAD_PROMPT, f"{label}: VM1 heartbeat", timeout=30.0)
+    vcon_enter(qemu, 1, RTTHREAD_PROMPT, f"{label}: VM1 heartbeat", timeout=30.0)
     run_guest_help(qemu, 1, RTTHREAD_PROMPT, f"{label}: VM1", 15.0)
-    vsh_return(qemu, f"{label}: return from VM1", vmid=1)
+    vcon_return(qemu, f"{label}: return from VM1", vmid=1)
 
-    vsh_enter(qemu, 2, LINUX_PROMPT, f"{label}: VM2 heartbeat", timeout=30.0)
+    vcon_enter(qemu, 2, LINUX_PROMPT, f"{label}: VM2 heartbeat", timeout=30.0)
     expect_linux_id(qemu, 2, f"{label}: VM2 identity")
-    vsh_return(qemu, f"{label}: return from VM2", vmid=2)
+    vcon_return(qemu, f"{label}: return from VM2", vmid=2)
 
-    vsh_enter(qemu, 3, LINUX_PROMPT, f"{label}: VM3 heartbeat", timeout=30.0)
+    vcon_enter(qemu, 3, LINUX_PROMPT, f"{label}: VM3 heartbeat", timeout=30.0)
     expect_linux_id(qemu, 3, f"{label}: VM3 identity")
-    vsh_return(qemu, f"{label}: return from VM3", vmid=3)
+    vcon_return(qemu, f"{label}: return from VM3", vmid=3)
 
 
 def run_str_cycle(qemu, args, cycle):
@@ -1247,27 +1376,30 @@ def run_qemu(args, cmd):
             "vm2:vcpu2",
             "vm3:vcpu0",
         ])
-        qemu.command_retry("schedstat", [
-            "schedstat pcpus:",
-            "Per-pCPU hybrid scheduler counters:",
-            "pcpu",
-            "role",
-            "scheduler",
-            "exclusive",
-            "shared",
-            "sched_bvt",
-            "sched_cbs",
-            "busy%",
-            "timer",
-            "switches",
-            "resched",
-            "runqueue",
-            "current",
-            "CPU usage since previous schedstat:",
-            "cpu%",
-            "BVT stats:",
-            "CBS stats:",
-        ])
+        expect_ps_cpu_usage(qemu)
+        qemu.command_retry(
+            "schedstat",
+            [
+                "schedstat pcpus:",
+                "Per-pCPU hybrid scheduler counters:",
+                "pcpu",
+                "role",
+                "scheduler",
+                "exclusive",
+                "shared",
+                "sched_bvt",
+                "sched_cbs",
+                "busy%",
+                "timer",
+                "switches",
+                "resched",
+                "runqueue",
+                "current",
+                "BVT stats:",
+                "CBS stats:",
+            ],
+            ["CPU usage since previous schedstat:"],
+        )
         pcpu_count = int(args.smp)
         expect_rttest(qemu, "rttest", pcpu_count)
         qemu.command_retry(
@@ -1300,10 +1432,7 @@ def run_qemu(args, cmd):
             "memstat",
             ["Page-table pools", "hv-s1", "vm-s2", "Stage-2 ownership", "accounted:"],
         )
-        qemu.command_retry(
-            "health",
-            ["overall:", "Host", "Virtual machines", "Findings", "vm0", "vm1", "vm2", "vm3"],
-        )
+        expect_health_vcpu_usage(qemu)
         qemu.command_retry("irqstat", ["host pirq:", "guest virq:"])
         qemu.command_retry(
             "virtiostat",
@@ -1322,50 +1451,25 @@ def run_qemu(args, cmd):
             ],
         )
         qemu.command_retry(
-            "dumpstat 0",
-            [
-                "┌─  dumpstat vm0",
-                "┌─  vm0/vcpu0",
-                "sched:",
-                "├─  vcpu stats",
-                "guest regs:",
-                "elr:0x",
-                "spsr:0x",
-                "x00:0x",
-                "gt[",
-                "├─  vgic/vtimer",
-                "PPI27 live:",
-                "vgic:en:",
-                "route:saved-lr:",
-                "hcr:0x",
-                "wfi:trap:",
-                "lr-pending-only:",
-                "el2-mask:",
-                "pre-eret-flush:",
-                "vt[",
-                "vcpu stack:",
-                "pcpu stack:",
-                "+0x",
-            ],
-            ["depth:", "vcpu saved stack", "vcpu vm stack", "host stack source:", "fp   0x",
-             "live pcpu sample timed out", "source:", "source-vcpu:", "target-vcpu:",
-             "target-mask:"],
+            "hwtdbg",
+            ["hwtdbg: no watchdog timeout events"],
+            ["checksum:invalid", "capture:corrupt"],
         )
 
-        qemu.send("vsh 0" + ENTER)
+        qemu.send("vcon 0" + ENTER)
         qemu.expect(ZEPHYR_PROMPT, "VM0 Zephyr shell", keepalive=ENTER)
         run_guest_help(qemu, 0, ZEPHYR_PROMPT, "VM0 Zephyr", 15.0)
         check_zephyr_thread_list(qemu, "VM0 Zephyr SMP runtime stats")
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM0 shell")
 
-        qemu.send("vsh 1" + ENTER)
+        qemu.send("vcon 1" + ENTER)
         qemu.expect(RTTHREAD_PROMPT, "VM1 RT-Thread shell", timeout=60.0, keepalive=ENTER)
         run_guest_help(qemu, 1, RTTHREAD_PROMPT, "VM1 RT-Thread", 15.0)
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM1 shell")
 
-        qemu.send("vsh 2" + ENTER)
+        qemu.send("vcon 2" + ENTER)
         try:
             qemu.expect(LINUX_PROMPT, "VM2 Linux initramfs shell", timeout=60.0, keepalive=ENTER)
         except Exception:
@@ -1377,7 +1481,7 @@ def run_qemu(args, cmd):
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM2 shell")
 
-        qemu.send("vsh 3" + ENTER)
+        qemu.send("vcon 3" + ENTER)
         try:
             qemu.expect(LINUX_PROMPT, "VM3 Linux initramfs shell", timeout=60.0, keepalive=ENTER)
         except Exception:
@@ -1406,13 +1510,13 @@ def main():
         if not args.no_build:
             print(render(build, args.toolchains))
         print(quote(qemu))
-        checks = "prompt, vcpus, schedstat, vmstat, devmap, irqstat, virtiostat, vsh 0, ctrl-d, vsh 1, RT-Thread shell, ctrl-d, vsh 2, Linux-2 backend shell, ctrl-d, vsh 3, Linux-3 frontend shell"
+        checks = "prompt, vcpus, ps, schedstat, vmstat, health, hwtdbg empty, devmap, irqstat, virtiostat, vcon 0, ctrl-d, vcon 1, RT-Thread shell, ctrl-d, vcon 2, Linux-2 backend shell, ctrl-d, vcon 3, Linux-3 frontend shell"
         if args.stress_vsh_switch:
             checks += ", VM console switch/Enter stress"
         if args.stress_vsh_help:
             checks += f", VM console help stress x{args.stress_help_rounds}"
         if args.wdt_restart_smoke:
-            checks = "VM3 watchdog timeout, quiesce, cold restart, verification kick, VM3 shell"
+            checks = "VM3 watchdog timeout, retained hwtdbg evidence, quiesce, cold restart, verification kick, VM3 shell"
         if args.smmu_no_s2_smoke:
             checks = "SMMUv3 no-S2 fail-closed state"
         if args.smmu_passthrough_smoke:

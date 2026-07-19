@@ -184,7 +184,7 @@ RTOS console
     -> guest PL011 MMIO trap
     -> arch/arm64/guest/vpl011.c
     -> sdk/bsp console ring
-    -> vsh/vlog/host shell
+    -> vcon/host shell
 
 Linux console and backend IO
     -> virtio-console or virtio-mmio frontend
@@ -203,7 +203,9 @@ PCIe passthrough
 watchdog and observability
     -> guest WDT driver HVC
     -> BEAU watchdog state
-    -> shell commands: vmstat, vcpus, schedstat, irqstat, pcistat, vlog
+    -> timeout capture: durable state + bounded live pCPU sample
+    -> async cold reset on the VM BSP pCPU, then heartbeat verification
+    -> shell commands: hwtdbg, vmstat, vcpus, schedstat, irqstat, pcistat
 ```
 
 ## Core Invariants

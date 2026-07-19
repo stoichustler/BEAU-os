@@ -219,7 +219,6 @@ void arm64_vtimer_init_vcpu(struct acrn_vcpu *vcpu);
 void arm64_vtimer_load_current(struct acrn_vcpu *vcpu);
 void arm64_vtimer_save_current(struct acrn_vcpu *vcpu);
 void arm64_vtimer_disable_current(void);
-void arm64_vtimer_trace_switch(struct acrn_vcpu *vcpu, uint32_t event);
 void arm64_vtimer_set_host_mask(struct acrn_vcpu *vcpu, bool masked);
 bool arm64_vtimer_sample_current(struct acrn_vcpu *vcpu);
 bool arm64_vtimer_guest_expired(const struct acrn_vcpu *vcpu);

@@ -214,22 +214,6 @@ static bool vtimer_guest_ctx_expired(const struct arm64_vcpu_guest_ctx *gctx)
 	return vtimer_virtual_expired(gctx);
 }
 
-static void vtimer_record_last(struct acrn_vcpu *vcpu, uint32_t virq,
-	uint32_t ctl, uint64_t cval, uint32_t sysreg, int32_t status,
-	bool write, bool injected)
-{
-	struct arm64_vcpu_last_timer *last = &vcpu->arch.debug.last_timer;
-
-	last->cval = cval;
-	last->ctl = ctl;
-	last->virq = virq;
-	last->sysreg = sysreg;
-	last->status = status;
-	last->write = write;
-	last->injected = injected;
-	last->tsc = cpu_ticks();
-}
-
 static void cntp_timer_disarm(struct acrn_vcpu *vcpu)
 {
 	if ((vcpu != NULL) && vcpu->arch.cntp_timer_initialized) {
@@ -240,8 +224,7 @@ static void cntp_timer_disarm(struct acrn_vcpu *vcpu)
 	}
 }
 
-static int32_t vtimer_inject_current(struct acrn_vcpu *vcpu, uint32_t virq,
-	uint32_t guest_ctl, uint64_t guest_cval);
+static int32_t vtimer_inject_current(struct acrn_vcpu *vcpu, uint32_t virq);
 
 static void cntv_timer_arm(struct acrn_vcpu *vcpu);
 static void cntp_timer_arm(struct acrn_vcpu *vcpu);
@@ -251,8 +234,6 @@ static void cntp_timer_handler(void *data)
 {
 	struct acrn_vcpu *vcpu = (struct acrn_vcpu *)data;
 	struct arm64_vcpu_guest_ctx *gctx;
-	uint32_t ctl;
-	uint64_t cval;
 
 	if ((vcpu == NULL) || (vcpu->vm == NULL) || !is_vcpu_running(vcpu)) {
 		return;
@@ -263,12 +244,8 @@ static void cntp_timer_handler(void *data)
 		return;
 	}
 
-	ctl = vtimer_ctl_value(gctx->cntp_ctl_el0, gctx->cntp_cval_el0, cpu_ticks());
-	cval = gctx->cntp_cval_el0;
 	gctx->timer_virq = ARM64_GIC_PPI_PHYSICAL_TIMER;
-	arm64_vcpu_trace_vtimer(vcpu, ARM64_VTIMER_TRACE_BACKUP,
-		ARM64_GIC_PPI_PHYSICAL_TIMER, ctl, cval, false, false);
-	(void)vtimer_inject_current(vcpu, ARM64_GIC_PPI_PHYSICAL_TIMER, ctl, cval);
+	(void)vtimer_inject_current(vcpu, ARM64_GIC_PPI_PHYSICAL_TIMER);
 }
 
 static void cntp_timer_update(struct acrn_vcpu *vcpu, bool deassert_inactive)
@@ -356,7 +333,7 @@ static void vtimer_set_host_mask(struct acrn_vcpu *vcpu, bool masked)
 	}
 
 	gctx = &vcpu->arch.gctx;
-	diag = &vcpu->arch.debug.vtimer_diag;
+	diag = &vcpu->arch.vtimer_diag;
 	now = cpu_ticks();
 	if (masked && !gctx->cntv_el2_masked) {
 		/*
@@ -372,8 +349,6 @@ static void vtimer_set_host_mask(struct acrn_vcpu *vcpu, bool masked)
 		arm64_gicv3_set_irq_priority(ARM64_GIC_PPI_VIRTUAL_TIMER,
 			ARM64_GIC_PRIORITY_MASKED);
 		vtimer_refresh_live_condition();
-		arm64_vcpu_trace_vtimer(vcpu, ARM64_VTIMER_TRACE_MASK,
-			ARM64_GIC_PPI_VIRTUAL_TIMER, UINT32_MAX, UINT64_MAX, false, true);
 	} else if (masked) {
 		gctx->cntv_el2_masked = true;
 		arm64_gicv3_set_irq_priority(ARM64_GIC_PPI_VIRTUAL_TIMER,
@@ -393,8 +368,6 @@ static void vtimer_set_host_mask(struct acrn_vcpu *vcpu, bool masked)
 		arm64_gicv3_set_irq_priority(ARM64_GIC_PPI_VIRTUAL_TIMER,
 			ARM64_GIC_PRIORITY_DEFAULT);
 		arm64_gicv3_enable_irq(ARM64_GIC_PPI_VIRTUAL_TIMER);
-		arm64_vcpu_trace_vtimer(vcpu, ARM64_VTIMER_TRACE_MASK,
-			ARM64_GIC_PPI_VIRTUAL_TIMER, UINT32_MAX, UINT64_MAX, false, false);
 	}
 }
 
@@ -542,48 +515,6 @@ static uint32_t vtimer_sysreg_virq(uint64_t sysreg,
 	}
 }
 
-static bool vtimer_has_irq_state(const struct acrn_vcpu *vcpu, uint32_t virq)
-{
-	const struct arm64_vgic_irq *desc;
-
-	if ((vcpu == NULL) || (vcpu->vm == NULL) ||
-		(vcpu->vcpu_id >= ARM64_VGIC_MAX_VCPUS) || (virq >= ARM64_VGIC_IRQ_NUM)) {
-		return false;
-	}
-
-	desc = &vcpu->vm->arch_vm.vgic.irq[vcpu->vcpu_id][virq];
-	return desc->pending || desc->active;
-}
-
-void arm64_vtimer_trace_switch(struct acrn_vcpu *vcpu, uint32_t event)
-{
-	struct arm64_vcpu_guest_ctx *gctx;
-	uint32_t virq;
-	uint32_t ctl;
-	uint64_t cval;
-	uint64_t now;
-
-	if (vcpu == NULL) {
-		return;
-	}
-
-	gctx = &vcpu->arch.gctx;
-	virq = ARM64_GIC_PPI_VIRTUAL_TIMER;
-	ctl = read_cntv_ctl_el0();
-	cval = read_cntv_cval_el0();
-	now = read_cntvct_el0();
-
-	/*
-	 * vCPU switches can be very frequent on shared pCPUs. Record only switch
-	 * edges that could explain timer delivery: an expired deadline, EL2's
-	 * temporary host mask, or an in-flight vGIC timer IRQ.
-	 */
-	if (gctx->cntv_el2_masked || vtimer_has_irq_state(vcpu, virq) ||
-		(((ctl & CNTV_CTL_ENABLE) != 0U) && ((int64_t)(cval - now) <= 0L))) {
-		arm64_vcpu_trace_vtimer(vcpu, event, virq, ctl, cval, false, false);
-	}
-}
-
 static void vtimer_load_live_cntv(struct acrn_vcpu *vcpu)
 {
 	struct arm64_vcpu_guest_ctx *gctx = &vcpu->arch.gctx;
@@ -607,8 +538,6 @@ int32_t arm64_vtimer_handle_sysreg(struct acrn_vcpu *vcpu, uint64_t sysreg,
 	uint64_t write_value = (reg != NULL) ? *reg : 0UL;
 	uint32_t write_ctl = (uint32_t)(write_value & (CNTV_CTL_ENABLE | CNTV_CTL_IMASK));
 	uint32_t access_virq;
-	uint32_t ctl;
-	uint64_t cval;
 	uint64_t val;
 	int32_t ret = 0;
 
@@ -710,14 +639,6 @@ int32_t arm64_vtimer_handle_sysreg(struct acrn_vcpu *vcpu, uint64_t sysreg,
 		break;
 	}
 
-	if (access_virq == ARM64_GIC_PPI_PHYSICAL_TIMER) {
-		ctl = vtimer_ctl_value(gctx->cntp_ctl_el0, gctx->cntp_cval_el0, cntp_now);
-		cval = gctx->cntp_cval_el0;
-	} else {
-		ctl = vtimer_ctl_value(gctx->cntv_ctl_el0, gctx->cntv_cval_el0, cntv_now);
-		cval = gctx->cntv_cval_el0;
-	}
-	vtimer_record_last(vcpu, access_virq, ctl, cval, (uint32_t)sysreg, ret, !read, false);
 	if (!read && (ret == 0)) {
 		if (access_virq == ARM64_GIC_PPI_PHYSICAL_TIMER) {
 			cntp_timer_sync_line(vcpu);
@@ -725,8 +646,6 @@ int32_t arm64_vtimer_handle_sysreg(struct acrn_vcpu *vcpu, uint64_t sysreg,
 			gctx->timer_virq = ARM64_GIC_PPI_VIRTUAL_TIMER;
 			vtimer_load_live_cntv(vcpu);
 		}
-		arm64_vcpu_trace_vtimer(vcpu, ARM64_VTIMER_TRACE_SYSREG,
-			access_virq, ctl, cval, true, false);
 	}
 
 	return ret;
@@ -792,15 +711,14 @@ static void cntv_timer_arm(struct acrn_vcpu *vcpu)
 	}
 }
 
-static int32_t vtimer_inject_current(struct acrn_vcpu *vcpu, uint32_t virq,
-	uint32_t guest_ctl, uint64_t guest_cval)
+static int32_t vtimer_inject_current(struct acrn_vcpu *vcpu, uint32_t virq)
 {
 	int32_t ret = 0;
 
 	/*
 	 * Injection is the single boundary between timer expiry and guest-visible
 	 * PPIs. PPI27 comes from live/saved CNTV; PPI30 comes from the software
-	 * CNTP emulation. Keep the debug shadow next to the vGIC request.
+	 * CNTP emulation.
 	 */
 	if (virq == ARM64_GIC_PPI_VIRTUAL_TIMER) {
 		cntv_timer_disarm(vcpu);
@@ -825,12 +743,6 @@ static int32_t vtimer_inject_current(struct acrn_vcpu *vcpu, uint32_t virq,
 	} else {
 		ret = -EINVAL;
 	}
-	vtimer_record_last(vcpu, virq,
-		(guest_ctl & (CNTV_CTL_ENABLE | CNTV_CTL_IMASK)) | CNTV_CTL_ISTATUS,
-		guest_cval, 0U, ret, false, true);
-	arm64_vcpu_trace_vtimer(vcpu, ARM64_VTIMER_TRACE_INJECT, virq,
-		vcpu->arch.debug.last_timer.ctl, guest_cval, false, true);
-
 	return ret;
 }
 
@@ -866,14 +778,10 @@ static void cntv_timer_handler(void *data)
 		if (!vtimer_source_expired(ctl, cval, now)) {
 			return;
 		}
-		ctl = vtimer_ctl_value(ctl, cval, now);
 	} else {
 		if (!vtimer_guest_ctx_expired(gctx)) {
 			return;
 		}
-		ctl = vtimer_ctl_value(gctx->cntv_ctl_el0, gctx->cntv_cval_el0,
-			vtimer_virtual_now(gctx));
-		cval = gctx->cntv_cval_el0;
 	}
 
 	/*
@@ -881,10 +789,8 @@ static void cntv_timer_handler(void *data)
 	 * guest deadline is still expired, inject through the same vGIC path as a
 	 * host PPI27 hit.
 	 */
-	vcpu->arch.debug.vtimer_diag.cntv_backup++;
-	arm64_vcpu_trace_vtimer(vcpu, ARM64_VTIMER_TRACE_BACKUP,
-		ARM64_GIC_PPI_VIRTUAL_TIMER, ctl, cval, false, false);
-	(void)vtimer_inject_current(vcpu, ARM64_GIC_PPI_VIRTUAL_TIMER, ctl, cval);
+	vcpu->arch.vtimer_diag.cntv_backup++;
+	(void)vtimer_inject_current(vcpu, ARM64_GIC_PPI_VIRTUAL_TIMER);
 }
 
 void arm64_vtimer_init_vcpu(struct acrn_vcpu *vcpu)
@@ -1000,15 +906,13 @@ int32_t arm64_vtimer_resume_vm(struct acrn_vm *vm, uint64_t epoch)
 		}
 		if (vtimer_virtual_expired(gctx)) {
 			status = vtimer_inject_current(vcpu,
-				ARM64_GIC_PPI_VIRTUAL_TIMER,
-				gctx->cntv_ctl_el0, gctx->cntv_cval_el0);
+				ARM64_GIC_PPI_VIRTUAL_TIMER);
 		} else {
 			cntv_timer_arm(vcpu);
 		}
 		if (vtimer_physical_expired(gctx)) {
 			int32_t physical_status = vtimer_inject_current(vcpu,
-				ARM64_GIC_PPI_PHYSICAL_TIMER,
-				gctx->cntp_ctl_el0, gctx->cntp_cval_el0);
+				ARM64_GIC_PPI_PHYSICAL_TIMER);
 
 			if (status == 0) {
 				status = physical_status;
@@ -1048,10 +952,6 @@ void arm64_vgicv3_update_current_vtimer(struct acrn_vcpu *vcpu)
 	 */
 	level = arm64_vtimer_sample_current(vcpu);
 	arm64_vgicv3_sync_current_timer_line(vcpu, level);
-	if (level || vcpu->arch.gctx.cntv_el2_masked) {
-		arm64_vcpu_trace_vtimer(vcpu, ARM64_VTIMER_TRACE_UPDATE,
-			ARM64_GIC_PPI_VIRTUAL_TIMER, UINT32_MAX, UINT64_MAX, false, false);
-	}
 }
 
 void arm64_vgicv3_virtual_timer_irq_handler(__unused uint32_t irq, __unused void *data)
@@ -1059,11 +959,8 @@ void arm64_vgicv3_virtual_timer_irq_handler(__unused uint32_t irq, __unused void
 	struct acrn_vcpu *vcpu = get_running_vcpu(get_pcpu_id());
 
 	if (vcpu != NULL) {
-		uint32_t guest_ctl;
-		uint64_t guest_cval;
-
 		vcpu->arch.gctx.timer_virq = ARM64_GIC_PPI_VIRTUAL_TIMER;
-		vcpu->arch.debug.vtimer_diag.cntv_ppi++;
+		vcpu->arch.vtimer_diag.cntv_ppi++;
 		/*
 		 * Host PPI27 means the loaded guest timer fired. EL2 snapshots live
 		 * CNTV, masks host PPI27 priority to avoid immediate re-entry, and asks
@@ -1073,12 +970,7 @@ void arm64_vgicv3_virtual_timer_irq_handler(__unused uint32_t irq, __unused void
 		vcpu->arch.gctx.cntv_ctl_el0 = vtimer_live_ctl(vcpu);
 
 		vtimer_set_host_mask(vcpu, true);
-		guest_ctl = vcpu->arch.gctx.cntv_ctl_el0;
-		guest_cval = vcpu->arch.gctx.cntv_cval_el0;
-		arm64_vcpu_trace_vtimer(vcpu, ARM64_VTIMER_TRACE_PPI,
-			ARM64_GIC_PPI_VIRTUAL_TIMER, guest_ctl, guest_cval, false, false);
-		(void)vtimer_inject_current(vcpu, ARM64_GIC_PPI_VIRTUAL_TIMER,
-			guest_ctl, guest_cval);
+		(void)vtimer_inject_current(vcpu, ARM64_GIC_PPI_VIRTUAL_TIMER);
 	}
 }
 
@@ -1113,10 +1005,7 @@ void arm64_vgicv3_poll_current_vtimer(struct acrn_vcpu *vcpu)
 	vcpu->arch.gctx.timer_virq = ARM64_GIC_PPI_VIRTUAL_TIMER;
 	vcpu->arch.gctx.cntv_cval_el0 = cval;
 	vcpu->arch.gctx.cntv_ctl_el0 = ctl & (CNTV_CTL_ENABLE | CNTV_CTL_IMASK);
-	vcpu->arch.debug.vtimer_diag.cntv_poll++;
+	vcpu->arch.vtimer_diag.cntv_poll++;
 	vtimer_set_host_mask(vcpu, true);
-	arm64_vcpu_trace_vtimer(vcpu, ARM64_VTIMER_TRACE_POLL,
-		ARM64_GIC_PPI_VIRTUAL_TIMER, ctl, cval, false, false);
-	(void)vtimer_inject_current(vcpu, ARM64_GIC_PPI_VIRTUAL_TIMER,
-		vcpu->arch.gctx.cntv_ctl_el0, cval);
+	(void)vtimer_inject_current(vcpu, ARM64_GIC_PPI_VIRTUAL_TIMER);
 }

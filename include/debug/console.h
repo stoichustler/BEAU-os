@@ -95,7 +95,6 @@ void console_vm_ring_drain(uint16_t vmid);
 bool console_vm_vuart_bind(uint16_t vmid);
 void console_vm_vuart_unbind(uint16_t vmid);
 bool console_vm_ring_get_stats(uint16_t vmid, struct console_vm_ring_stats *stats);
-uint32_t console_vm_ring_copy(uint16_t vmid, uint32_t offset, char *buf, uint32_t len);
 bool console_vm_input_get_stats(struct console_vm_input_stats *stats);
 void console_vm_exception_log(uint16_t vmid, const char *buf, size_t len);
 uint32_t console_vm_exception_count(void);

@@ -143,8 +143,7 @@ publish software ownership / guest visibility
 
 - RTOS 使用 vPL011，适合简单 MMIO 串口和早期启动。
 - Linux 优先使用内建 virtio-console，避免大量 PL011 寄存器轮询导致 VM-exit。
-- 两种前端最终都进入 BEAU 的 per-VM console ring，由 `vsh`、`vlog` 和宿主 shell
-  统一消费。
+- 两种前端最终都进入 BEAU 的 per-VM console ring，由 `vcon` 和宿主 shell 消费。
 
 ### 3.5 安全导向的 C 规则
 
@@ -815,7 +814,7 @@ RTOS UART MMIO
     -> arm64_vpl011_mmio_handler()
     -> console_vm_tx_put()/RX refill
     -> console ring
-    -> vsh/vlog/host terminal
+    -> vcon/host terminal
 ```
 
 ### 12.3 virtio-mmio 公共层
@@ -1029,16 +1028,48 @@ cause: HEARTBEAT/TIMEOUT/VCPU_STALL/IRQ_STORM/CONSOLE_STUCK/VIRTIO_STUCK
 ```text
 detect stuck
     -> QUIESCING: async pause and wait all vCPU switch out
-    -> warm reset architecture/device state
-    -> restart BSP vCPU
+    -> RESETTING: queue WDT-owned cold reset to the VM BSP pCPU
+    -> BSP pCPU idle: reset architecture/device state, reload image, start BSP
+    -> report reset completion to the WDT control thread
     -> VERIFYING: wait for new heartbeat
     -> success or bounded retry/failure
 ```
 
 `CONFIG_VM_WDT_RESTART_VM_MASK` 选择允许恢复的 VM，service VM 永不自动重启；
-`CONFIG_VM_WDT_RESTART_MAX` 防止无限重启。
+`CONFIG_VM_WDT_RESTART_MAX` 防止无限重启。WDT 控制线程保持在 pCPU0，只负责检测、
+排队和验证；每个 VM 的 cold reset 在其独占 BSP pCPU 上执行。因此 VM2 的镜像重载
+不会累积 BVT runtime 并延迟 VM3 的恢复。若目标 pCPU 未完成 reset，该 VM 保持
+`RESETTING` 可观测状态，其他 VM 的检测和恢复仍可继续。
 
-### 15.2 客体驱动
+### 15.2 超时现场保留
+
+`sdk/bsp/arm64/hwtdbg.c` 在每次 heartbeat timeout 转换发生时、VM quiesce/restart
+之前冻结现场。首次启动一直未 kick 和运行后长期未 kick 使用同一采集路径：
+
+```text
+timeout false -> true
+    -> WDT lock 下排队轻量 metadata，立即解锁
+    -> durable vCPU GPR/异常寄存器、调度状态和 pCPU owner snapshot
+    -> 一次 batched pCPU live capture，SMP 槽忙立即回退，等待上限 1 ms
+    -> guest/host stack 各最多 16 frame
+    -> pending request/IRQ、IRQ 和 virtio 汇总
+    -> checksum + barrier，最后发布 valid
+    -> VM recovery；按事件 sequence 回写 verified 或失败原因
+```
+
+每个受监控 VM 在 BSS 中保留 4 个事件，写满后覆盖最老事件。远端回调只写
+per-pCPU generation mailbox；超时后的晚到回调不能修改事件槽。`hwtdbg` 无参数，
+按 VM 分组并按 sequence 从旧到新打印所有 checksum 有效事件；读取不清除数据，
+但 Hypervisor 重启后数据不保留。没有超时事件时输出
+`hwtdbg: no watchdog timeout events`。
+
+为避免超时报告被高频轨迹和底层寄存器细节淹没，事件不保留 guest exit、vGIC
+或 vtimer trace，也不冻结 vGIC/vtimer context。每个 vCPU 只保留完整 GPR/异常寄存器、
+guest/host stack、调度延迟、pCPU 当前 owner、pending request/IRQ；VM 级另保留 WDT/
+recovery、IRQ 和 virtio 信息。架构持续态只维护 `vmstat/health` 使用的
+`vtimer_diag` 聚合计数，不维护 trace ring。
+
+### 15.3 客体驱动
 
 - `sdk/kbe/vwdt.c`：Linux `core_initcall` 尽早发送第一次 kick，默认 5 秒周期。
 - `sdk/zsh/beau_wdt.c`：Zephyr 静态线程，默认 5 秒周期。
@@ -1177,15 +1208,14 @@ host shell 无输入时保持 blocked。首次输入发现延迟由 2 ms timer �
 | `loglevel [console [mem [npk]]]` | 修改 0..6 日志级别 |
 | `hmm <addr> <len>` | dump host memory |
 | `vcpus` | 列出 vCPU、pCPU、状态和 switch 信息 |
-| `ps` | 列出所有 scheduler thread |
-| `schedstat` | pCPU policy、runqueue、CPU%、BVT/CBS 统计 |
+| `ps` | scheduler thread 状态、current owner 和相邻命令间 CPU% |
+| `schedstat` | pCPU policy、busy%、runqueue、BVT/CBS 统计 |
 | `irqstat` | host IRQ 和 guest vIRQ latency |
-| `vsh <vmid>` | 切到客体 console，`Ctrl-D` 返回 |
-| `vlog <vmid>` | 不切换 console，查看 buffered history |
+| `vcon <vmid>` | 切到客体 console，`Ctrl-D` 返回 |
 | `devmap` | host Stage-1 与每 VM Stage-2 map |
 | `memstat` | 页表池和 Stage-2 ownership |
 | `health` | host/VM 运行健康摘要与 findings |
-| `dumpstat [vmid]` | vCPU regs、栈、vGIC、vtimer、最近 exit |
+| `hwtdbg` | 打印所有已保留 WDT 超时现场，读取不清除 |
 | `coredump <print\|erase>` | 查看或清除最近一次 ARM64 panic/异常快照 |
 | `vmstat` | VM 配置、状态、affinity、boot、timer、WDT |
 | `cachestat` | cache topology 和 LLC domain |
@@ -1200,6 +1230,18 @@ host shell 无输入时保持 blocked。首次输入发现延迟由 2 ms timer �
 | `pm reboot <vmid>` | 异步 cold restart 非 service VM |
 | `pm ...` / `pmstat` | VM STR/reboot 控制与 transaction 诊断 |
 
+`health` 的 vCPU utilization 表使用相邻两次命令之间的 scheduler runtime 差值。
+列数取所有已配置 VM 中最大的 vCPU 数；某 VM 未配置的列显示 `NC`，已配置但 VM
+或 vCPU 不处于 running 生命周期时显示 `NA`。首次命令只建立基线并以 `--` 表示
+running vCPU；后续命令仅对当前快照为 running 的 vCPU 显示百分比。`total` 是该 VM
+各 running vCPU 百分比之和，可能超过 100%。利用率表示调度时间，不替代 WDT
+heartbeat 对 guest forward progress 的判断。
+
+`ps` 把 idle、shell、helper 和 vCPU thread 放在同一张表中，`cpu%/run.us` 使用相邻
+两次 `ps` 的独立 runtime 快照；首次采样、线程首次出现、计数回退或快照容量不足
+时显示 `--`。执行 `schedstat` 不会改变 `ps` 的采样窗口。`schedstat` 只保留 pCPU
+busy%、policy 和 BVT/RTDS/CBS 诊断，不再重复 per-thread CPU usage。
+
 ### 18.3 Trace 与符号化
 
 `core/trace.c` 为每 pCPU 分配固定 32-byte record ring，默认 256 条，满后覆盖最老
@@ -1210,8 +1252,8 @@ ARM64 build 保留 frame pointer；debug image 由 `gen_symtab.py` 生成地址�
 `arch/arm64/coredump.c` 只在已登记的 thread、per-pCPU 或 boot stack 边界内读取
 frame record，并限制原始栈快照和回溯深度；panic 与同步异常共用该 fail-closed
 host 栈回溯路径。每个 pCPU 保留一个带版本和校验和的内存快照，shell 可通过
-`coredump print` 查看最新快照或通过 `coredump erase` 清除；`dumpstat` 继续提供
-guest/vCPU 诊断。
+`coredump print` 查看最新快照或通过 `coredump erase` 清除；`hwtdbg` 提供重启前
+冻结的 guest/vCPU WDT 超时证据。
 
 ## 19. SDK 模块
 
@@ -1274,7 +1316,7 @@ python3 scripts/regress.py
 - PM policy、`vcpus`、hybrid `schedstat`、`rttest`。
 - `vmstat`、`devmap`、`memstat`、`health`、`irqstat`。
 - `virtiostat` 的 VM3 fs/rng/blk/i2c proxy。
-- `dumpstat` 的 guest regs、栈、vGIC/vtimer 证据。
+- 正常启动时 `hwtdbg` 无事件；WDT smoke 后保留 guest regs、栈和恢复结果。
 - VM0 Zephyr、VM1 RT-Thread、VM2 Linux backend、VM3 Linux frontend shell。
 - VM2 KBE backend startup 与 VM3 virtio-proxy smoke。
 - 可选 VM console stress、help stress、WDT recovery、STR cycles 和故障注入。
@@ -1298,10 +1340,10 @@ console:\> vmstat
 console:\> schedstat
 console:\> irqstat
 console:\> virtiostat
-console:\> vsh 2
+console:\> vcon 2
 uos ~ dmesg | grep -i 'BEAU virtio-'
 <Ctrl-D>
-console:\> vsh 3
+console:\> vcon 3
 uos ~ dmesg | grep -i virtio
 ```
 
@@ -1359,7 +1401,7 @@ host banner/pCPU all running
     -> boot kernel/load/entry/FDT address
     -> devmap: RAM Stage-2 exists
     -> vcpus: BSP runnable/running
-    -> dumpstat <vmid>: ELR/ESR/FAR/HPFAR
+    -> hwtdbg: 若已发生 WDT timeout，检查重启前 ELR/ESR/FAR/HPFAR
 ```
 
 常见原因：image staging 地址错误、load range 越界、FDT overlap、entry 未对齐、
@@ -1370,22 +1412,24 @@ affinity 指向未初始化 scheduler。
 查看：
 
 ```text
-dumpstat <vmid>
+hwtdbg
 irqstat
 vmstat
 schedstat
 ```
 
-重点字段：PPI27 live、saved LR、CNTV ctl/cval、backup/poll/PPI count、EL2 mask、
-pre-ERET flush、vCPU wait latency。Linux 有 arch_timer IRQ 不代表 softirq 一定推进；
-还要确认 PPI27 没有在错误时机丢失或保持 active。
+`hwtdbg` 重点查看超时前 GPR/异常寄存器、guest/host stack、`pcpu-owner`、pending
+request/IRQ 和 vCPU wait latency；`vmstat` 查看 CNTV ctl/cval、PPI descriptor、
+backup/poll/PPI count、EL2 mask 和 pre-ERET flush 聚合；`irqstat` 核对 host/guest
+IRQ 是否持续推进。Linux 有 arch_timer IRQ 不代表 softirq 一定推进，需要结合三类
+证据判断是 vCPU 未获调度、guest 执行卡死还是 timer delivery 停滞。
 
 ### 22.3 virtio-proxy 不工作
 
 ```text
 virtiostat
-vsh 2 -> dmesg | grep -i 'BEAU virtio-'
-vsh 3 -> dmesg | grep -i virtio
+vcon 2 -> dmesg | grep -i 'BEAU virtio-'
+vcon 3 -> dmesg | grep -i virtio
 ```
 
 区分：frontend queue 未 ready、backend 未 register、heartbeat stale、pending full、
@@ -1507,7 +1551,7 @@ sdk/bsp/pm.c
 sdk/bsp/arm64/shell.c
 ```
 
-目标：能用 `schedstat/dumpstat/health/pmstat` 给出有代码证据的故障判断。
+目标：能用 `schedstat/hwtdbg/health/pmstat` 给出有代码证据的故障判断。
 
 ## 25. 关键结构速查
 
@@ -1524,7 +1568,7 @@ sdk/bsp/arm64/shell.c
 | `virtio_proxy_dev` | proxy | frontend queue、pending、backend、统计 |
 | `iommu_domain` | SMMU/vPCI | VMID、Stage-2 root、StreamID owner |
 | `beau_pm_snapshot` | PM core | epoch、scope、phase、hook/vCPU mask、错误 |
-| `vm_wdt_entry` | WDT core | heartbeat、分类、恢复状态与次数 |
+| `vm_wdt_entry` | WDT core | heartbeat、QUIESCING/RESETTING/VERIFYING 状态与恢复次数 |
 
 ## 26. 总结
 

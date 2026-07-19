@@ -199,7 +199,7 @@ const char *arm64_cache_type_str(uint8_t type)
 		return "D";
 	}
 	if (type == ARM64_CACHE_TYPE_UNIFIED) {
-		return "Unified";
+		return "U";
 	}
 	return "None";
 }

@@ -57,7 +57,7 @@
  *   TX FIFO
  *          |
  *          v
- *   console/vsh backend drains bytes
+ *   console/vcon backend drains bytes
  *
  * Key rule:
  *   - frontend models own register or virtqueue semantics;
@@ -915,4 +915,3 @@ void deinit_legacy_vuarts(struct acrn_vm *vm)
 		}
 	}
 }
-

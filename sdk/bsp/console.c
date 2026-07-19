@@ -50,11 +50,11 @@
  *      v
  *   per-VM console ring
  *      |
- *      +-- bound by vsh   -> drain to host UART with VM prefix
+ *      +-- bound by vcon  -> drain to host UART with VM prefix
  *      +-- not selected   -> keep recent output for later replay
  *
  * RTOS VMs use vPL011/vUART, Linux VMs use virtio-console, and both converge
- * at the same per-VM console ring before vsh prints data to the host UART.
+ * at the same per-VM console ring before vcon prints data to the host UART.
  *
  * Key rule:
  *   - only one endpoint owns host input at a time;
@@ -165,11 +165,11 @@ static spinlock_t console_log_lock;
  * hiding the current prompt.
  *
  * pending marks queued bytes for shell diagnostics. draining prevents nested
- * timer/vsh paths from replaying the same VM stream concurrently. line_start,
+ * timer/vcon paths from replaying the same VM stream concurrently. line_start,
  * last_cr, and terminal_query_* are host-serial presentation state used while
  * adding VM prefixes and hiding terminal cursor-position probes. vuart_bound
- * records whether vsh has bound the host vuart to this VM console; guest
- * output is kept in the FIFO while unbound, then drained to the host when vsh
+ * records whether vcon has bound the host vuart to this VM console; guest
+ * output is kept in the FIFO while unbound, then drained to the host when vcon
  * binds.
  */
 struct vm_console_ringbuf {
@@ -391,7 +391,7 @@ bool console_vm_vuart_bind(uint16_t vmid)
 		 *
 		 *   vPL011 TX -> per-VM receive FIFO -> optional host vuart binding
 		 *
-		 * vsh is the single host vuart binding. Binding it marks existing
+		 * vcon is the single host vuart binding. Binding it marks existing
 		 * FIFO bytes pending so the timer/backend can drain backlog after
 		 * ownership is visible on the serial stream.
 		 */
@@ -692,50 +692,6 @@ bool console_vm_ring_get_stats(uint16_t vmid, struct console_vm_ring_stats *stat
 	}
 
 	return valid;
-}
-
-uint32_t console_vm_ring_copy(uint16_t vmid, uint32_t offset, char *buf, uint32_t len)
-{
-	struct vm_console_ringbuf *rb;
-	uint64_t rflags;
-	uint32_t queued;
-	uint32_t count = 0U;
-	uint32_t cons;
-	uint32_t first;
-
-	if ((buf != NULL) && (vmid < CONFIG_VM_CONSOLE_RINGBUF_VM_NUM)) {
-		rb = &vm_console_ringbufs[vmid];
-		spinlock_irqsave_obtain(&rb->lock, &rflags);
-		/*
-		 * vlog is a read-only diagnostic path:
-		 *
-		 *   producer cons/prod snapshot -> copy bytes -> leave cons unchanged
-		 *
-		 * vsh remains the only live-drain owner. This lets the shell inspect
-		 * buffered boot output without stealing it from a later VM console
-		 * session.
-		 */
-		queued = console_ring_queued(rb->prod, rb->cons, VM_CONSOLE_RINGBUF_CAPACITY);
-		if (offset < queued) {
-			count = queued - offset;
-			if (count > len) {
-				count = len;
-			}
-			cons = rb->cons + offset;
-			first = CONFIG_VM_CONSOLE_RINGBUF_SIZE -
-				(cons & VM_CONSOLE_RINGBUF_MASK);
-			if (first > count) {
-				first = count;
-			}
-			(void)memcpy(buf, &rb->buf[cons & VM_CONSOLE_RINGBUF_MASK], first);
-			if (first < count) {
-				(void)memcpy(&buf[first], rb->buf, count - first);
-			}
-		}
-		spinlock_irqrestore_release(&rb->lock, rflags);
-	}
-
-	return count;
 }
 
 void console_vm_exception_log(uint16_t vmid, const char *buf, size_t len)
@@ -1128,7 +1084,7 @@ static void console_vm_ring_write_prefixed(uint16_t vmid, struct vm_console_ring
 	size_t prefix_len;
 
 	/*
-	 * vsh is a multiplexed debug console rather than a transparent terminal.
+	 * vcon is a multiplexed debug console rather than a transparent terminal.
 	 * Prefix each visible guest line so interleaved host/guest diagnostics can
 	 * still be attributed after copying logs from a single serial stream.
 	 */
@@ -1141,7 +1097,7 @@ static void console_vm_ring_write_prefixed(uint16_t vmid, struct vm_console_ring
 
 		/*
 		 * BusyBox ash queries terminal cursor position with ESC[6n after
-		 * prompt redraws. The BEAU vsh path is a console multiplexer, not a
+		 * prompt redraws. The BEAU vcon path is a console multiplexer, not a
 		 * transparent terminal, so answer the query internally and hide it
 		 * from the host serial stream.
 		 */
@@ -1256,7 +1212,7 @@ void console_setup_timer(void)
 {
 	uint64_t period_in_cycle, fire_tsc;
 
-	/* Fixed-period bounded polling keeps vsh input/output latency predictable. */
+	/* Fixed-period bounded polling keeps vcon input/output latency predictable. */
 	period_in_cycle = TICKS_PER_MS * CONSOLE_KICK_TIMER_TIMEOUT;
 	fire_tsc = cpu_ticks() + period_in_cycle;
 	initialize_timer(&console_timer,

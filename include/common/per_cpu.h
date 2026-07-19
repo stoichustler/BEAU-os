@@ -53,6 +53,7 @@ struct per_cpu_region {
 	uint8_t stack[CONFIG_STACK_SIZE] __aligned(16);
 	uint64_t shutdown_vm_bitmap;
 	uint64_t reset_vm_bitmap;
+	uint64_t wdt_reset_vm_bitmap;
 	/*
 	 * We maintain a per-pCPU array of vCPUs. vCPUs of a VM won't
 	 * share same pCPU. So the maximum possible # of vCPUs that can

@@ -10,6 +10,7 @@
 #include <vm.h>
 #include <errno.h>
 #include <types.h>
+#include <barrier.h>
 #include <vboot.h>
 #include <logmsg.h>
 #include <sbuf.h>
@@ -634,10 +635,9 @@ static int32_t restart_vm_locked(struct acrn_vm *vm, bool reload_image)
 		ret = reset_vm(vm);
 		if ((ret == 0) && reload_image) {
 			/*
-			 * A cold management reset reloads the boot payload before waking the
-			 * BSP. Watchdog recovery deliberately skips this copy: arch_reset_vm()
-			 * has already reset vCPU/device state, while the guest RAM image remains
-			 * mapped and is used as the warm-reset boot payload.
+			 * A cold management or watchdog reset reloads the boot payload before
+			 * waking the BSP. Warm restart deliberately skips this copy and reuses
+			 * the guest RAM image after vCPU and device state has been reset.
 			 */
 			ret = prepare_os_image(vm);
 		}
@@ -660,10 +660,10 @@ static int32_t restart_vm_with_mode(struct acrn_vm *vm, bool reload_image)
 	int32_t ret;
 
 	/*
-	 * Synchronous restart is for stable lifecycle owners such as the idle or
-	 * watchdog thread. Interactive shell and target-vCPU exit paths must use an
-	 * asynchronous request so they do not block their control path or overwrite
-	 * a register frame that is still being consumed.
+	 * Synchronous restart is reserved for stable lifecycle owners. Interactive
+	 * shell, watchdog, and target-vCPU exit paths use asynchronous requests so
+	 * they do not block control work or overwrite a register frame that is still
+	 * being consumed.
 	 */
 	if (vm == NULL) {
 		return -EINVAL;
@@ -691,36 +691,26 @@ int32_t restart_vm_warm(struct acrn_vm *vm)
 	return restart_vm_with_mode(vm, false);
 }
 
-/* [20260717] Asynchronous cold-restart ownership
+/* [20260718] Asynchronous cold-restart ownership
  *
- *   shell / guest PSCI producer
+ *   shell / guest PSCI / WDT producer
  *            |
  *            v
- *   target BSP pCPU reset bitmap + reschedule
+ *   optional WDT owner bit -> reset bitmap -> reschedule
  *            |
  *            v
  *   target pCPU idle -> pause -> reset -> reload -> start
+ *            |
+ *            +--> WDT-owned request -> completion callback
  *
  * Key rule:
  *   - PM topology state owns exclusion from suspend and duplicate restart;
- *   - the atomic bitmap is published before the scheduler request;
- *   - reset work runs outside the interactive shell and vCPU exit frames.
+ *   - the owner bit is published before the reset request becomes visible;
+ *   - reset work runs outside control threads and vCPU exit frames;
+ *   - only WDT-owned requests report completion into the recovery state machine.
  */
-int32_t request_vm_cold_restart(struct acrn_vm *vm)
-{
-	struct acrn_vcpu *bsp;
-
-	if ((vm == NULL) || (vm->vm_id >= CONFIG_MAX_VM_NUM) ||
-		(vm->hw.created_vcpus == 0U) || is_poweroff_vm(vm) ||
-		is_service_vm(vm)) {
-		return -EINVAL;
-	}
-
-	bsp = vcpu_from_vid(vm, BSP_CPU_ID);
-	return make_reset_vm_request(pcpuid_from_vcpu(bsp), vm->vm_id);
-}
-
-int32_t make_reset_vm_request(uint16_t pcpu_id, uint16_t vm_id)
+static int32_t make_reset_vm_request_internal(uint16_t pcpu_id,
+	uint16_t vm_id, bool wdt_owned)
 {
 	struct acrn_vm *vm;
 	int32_t ret = -EINVAL;
@@ -735,6 +725,10 @@ int32_t make_reset_vm_request(uint16_t pcpu_id, uint16_t vm_id)
 
 	vm = get_vm_from_vmid(vm_id);
 	if ((vm != NULL) && !is_poweroff_vm(vm) && !is_service_vm(vm)) {
+		if (wdt_owned) {
+			bitmap_set(vm_id, &per_cpu(wdt_reset_vm_bitmap, pcpu_id));
+			cpu_write_memory_barrier();
+		}
 		bitmap_set(vm_id, &per_cpu(reset_vm_bitmap, pcpu_id));
 		bitmap_set(NEED_RESET_VM, &per_cpu(pcpu_flag, pcpu_id));
 		make_reschedule_request(pcpu_id);
@@ -745,6 +739,36 @@ int32_t make_reset_vm_request(uint16_t pcpu_id, uint16_t vm_id)
 	}
 
 	return ret;
+}
+
+static int32_t request_vm_restart(struct acrn_vm *vm, bool wdt_owned)
+{
+	struct acrn_vcpu *bsp;
+
+	if ((vm == NULL) || (vm->vm_id >= CONFIG_MAX_VM_NUM) ||
+		(vm->hw.created_vcpus == 0U) || is_poweroff_vm(vm) ||
+		is_service_vm(vm)) {
+		return -EINVAL;
+	}
+
+	bsp = vcpu_from_vid(vm, BSP_CPU_ID);
+	return make_reset_vm_request_internal(pcpuid_from_vcpu(bsp),
+		vm->vm_id, wdt_owned);
+}
+
+int32_t request_vm_cold_restart(struct acrn_vm *vm)
+{
+	return request_vm_restart(vm, false);
+}
+
+int32_t request_vm_wdt_restart(struct acrn_vm *vm)
+{
+	return request_vm_restart(vm, true);
+}
+
+int32_t make_reset_vm_request(uint16_t pcpu_id, uint16_t vm_id)
+{
+	return make_reset_vm_request_internal(pcpu_id, vm_id, false);
 }
 
 bool has_reset_vm_request(uint16_t pcpu_id)
@@ -764,15 +788,24 @@ void reset_vm_from_idle(uint16_t pcpu_id)
 {
 	uint16_t vm_id;
 	volatile uint64_t *vms = &per_cpu(reset_vm_bitmap, pcpu_id);
+	volatile uint64_t *wdt_vms = &per_cpu(wdt_reset_vm_bitmap, pcpu_id);
 	struct acrn_vm *vm;
 
 	for (vm_id = fls64(*vms); vm_id < CONFIG_MAX_VM_NUM; vm_id = fls64(*vms)) {
+		bool wdt_owned;
+		int32_t reset_ret;
+
+		cpu_read_memory_barrier();
+		wdt_owned = bitmap_test_and_clear(vm_id, wdt_vms);
 		vm = get_vm_from_vmid(vm_id);
 		get_vm_lock(vm);
-		(void)restart_vm_locked(vm, true);
+		reset_ret = restart_vm_locked(vm, true);
 		put_vm_lock(vm);
 		bitmap_clear(vm_id, vms);
 		hv_pm_end_vm_topology_change(vm_id);
+		if (wdt_owned) {
+			vm_wdt_restart_complete(vm_id, reset_ret);
+		}
 	}
 }
 

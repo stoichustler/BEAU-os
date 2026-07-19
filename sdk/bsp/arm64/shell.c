@@ -7,8 +7,6 @@
 #include <types.h>
 #include <cpu.h>
 #include <errno.h>
-#include <guest_memory.h>
-#include <notify.h>
 #include <per_cpu.h>
 #include <rtl.h>
 #include <sprintf.h>
@@ -29,6 +27,7 @@
 #include <acrn_hv_defs.h>
 #include <virtio_console.h>
 #include <virtio_proxy.h>
+#include <hwtdbg.h>
 #include <bsp/cpufreq.h>
 #include <bsp/pm.h>
 #include <bsp/pci.h>
@@ -64,9 +63,9 @@
 #define SHELL_CMD_HEALTH		"health"
 #define SHELL_CMD_HEALTH_PARAM		NULL
 #define SHELL_CMD_HEALTH_HELP		"summarize current host and VM operational health"
-#define SHELL_CMD_DUMPSTAT		"dumpstat"
-#define SHELL_CMD_DUMPSTAT_PARAM	"[vm id]"
-#define SHELL_CMD_DUMPSTAT_HELP		"dump arm64 vcpu stats and vgic/vtimer diagnostics"
+#define SHELL_CMD_HWTDBG		"hwtdbg"
+#define SHELL_CMD_HWTDBG_PARAM		NULL
+#define SHELL_CMD_HWTDBG_HELP		"show retained VM watchdog timeout evidence"
 #define SHELL_CMD_COREDUMP		"coredump"
 #define SHELL_CMD_COREDUMP_PARAM	"<print|erase>"
 #define SHELL_CMD_COREDUMP_HELP		"print or erase the latest ARM64 coredump"
@@ -112,10 +111,6 @@
 #define SHELL_CMD_PMUSTAT		"pmustat"
 #define SHELL_CMD_PMUSTAT_PARAM		"<start|stop|reset|dump>"
 #define SHELL_CMD_PMUSTAT_HELP		"control and dump EL2-owned core PMU statistics"
-#define DUMPSTAT_SMP_CALL_TIMEOUT_US	1000U
-#define DUMPSTAT_STACK_DEPTH		16U
-#define DUMPSTAT_REG_KEY_FMT		"%5s:0x%016lx"
-#define DUMPSTAT_REGS_PER_LINE_MAX	4U
 #define VMSTAT_CPU_WAIT_WARN_US		20000UL
 #define PCISTAT_MAX_STREAMS		64U
 #define RTTEST_INTERVAL_US		1000U
@@ -128,12 +123,12 @@
 #define SHELL_MEM_KB_BYTES		1024UL
 #define SHELL_MEM_MB_BYTES		(SHELL_MEM_KB_BYTES * 1024UL)
 #define SHELL_MEM_GB_BYTES		(SHELL_MEM_MB_BYTES * 1024UL)
+#define SHELL_HEALTH_CPU_PERCENT_SCALE	1000UL
 
 static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv);
 static int32_t shell_memstat(int32_t argc, __unused char **argv);
 static int32_t shell_kusg(int32_t argc, __unused char **argv);
 static int32_t shell_health(int32_t argc, __unused char **argv);
-static int32_t shell_dumpstat(int32_t argc, char **argv);
 static int32_t shell_coredump(int32_t argc, char **argv);
 static int32_t shell_vmstat(int32_t argc, __unused char **argv);
 static int32_t shell_cachestat(int32_t argc, __unused char **argv);
@@ -180,10 +175,10 @@ struct shell_cmd arch_shell_cmds[] = {
 		.fcn		= shell_health,
 	},
 	{
-		.str		= SHELL_CMD_DUMPSTAT,
-		.cmd_param	= SHELL_CMD_DUMPSTAT_PARAM,
-		.help_str	= SHELL_CMD_DUMPSTAT_HELP,
-		.fcn		= shell_dumpstat,
+		.str		= SHELL_CMD_HWTDBG,
+		.cmd_param	= SHELL_CMD_HWTDBG_PARAM,
+		.help_str	= SHELL_CMD_HWTDBG_HELP,
+		.fcn		= shell_hwtdbg,
 	},
 	{
 		.str		= SHELL_CMD_COREDUMP,
@@ -381,7 +376,7 @@ static void shell_print_host_mem_map(const char *type, uint64_t addr,
 	}
 	(void)memset(attr_text, 0U, sizeof(attr_text));
 	shell_format_memory_attr(attr_text, sizeof(attr_text), &attr, false);
-	shell_print_mem_map("host s1", type, attr_text, addr, size);
+	shell_print_mem_map("HOST s1", type, attr_text, addr, size);
 }
 
 static void shell_print_stage2_mem_map(struct acrn_vm *vm, const char *domain,
@@ -429,7 +424,7 @@ static void shell_print_vm_stage2_maps(struct acrn_vm *vm)
 	const struct arch_vm_config *arch_config = &get_vm_config(vm->vm_id)->arch;
 	char domain[16];
 
-	snprintf(domain, sizeof(domain), "vm-%u s2", vm->vm_id);
+	snprintf(domain, sizeof(domain), "VM-%u s2", vm->vm_id);
 	shell_print_stage2_mem_map(vm, domain, "RAM",
 		arch_config->guest_ram_start,
 		arch_config->guest_ram_size);
@@ -485,7 +480,7 @@ static void shell_memstat_format_usage(char *buf, size_t size,
 	if ((stats != NULL) && (stats->total_pages != 0UL)) {
 		permille = (stats->used_pages * 1000UL) / stats->total_pages;
 	}
-	(void)snprintf(buf, size, "%lu.%01lu%%", permille / 10UL, permille % 10UL);
+	(void)snprintf(buf, size, "%02lu.%01lu%%", permille / 10UL, permille % 10UL);
 }
 
 static void shell_memstat_print_pool(const char *name,
@@ -547,8 +542,8 @@ static int32_t shell_memstat(int32_t argc, __unused char **argv)
 	shell_item_section("Page-table pools");
 	shell_item_line("pool    total  used   free   usage");
 	shell_item_line("──────  ─────  ─────  ─────  ──────");
-	shell_memstat_print_pool("hv-s1", &hv_s1);
-	shell_memstat_print_pool("vm-s2", &vm_s2);
+	shell_memstat_print_pool("HV-s1", &hv_s1);
+	shell_memstat_print_pool("VM-s2", &vm_s2);
 
 	shell_item_section("Stage-2 ownership");
 	shell_item_line("vm    state      root                L3   L2   L1   L0   total  malformed");
@@ -594,17 +589,17 @@ static int32_t shell_kusg(int32_t argc, __unused char **argv)
 	shell_item_begin("BEAU OS static memory usage");
 	shell_item_line("section      usage");
 	shell_item_line("───────────  ───────────────");
-	shell_kusg_print_section(".text",
+	shell_kusg_print_section(".TEXT",
 		(uint64_t)&_text_end - (uint64_t)&_text_start);
-	shell_kusg_print_section(".rodata",
+	shell_kusg_print_section(".RODATA",
 		(uint64_t)&_rodata_end - (uint64_t)&_rodata_start);
-	shell_kusg_print_section(".data",
+	shell_kusg_print_section(".DATA",
 		(uint64_t)&_data_end - (uint64_t)&_data_start);
-	shell_kusg_print_section(".bss",
+	shell_kusg_print_section(".BSS",
 		(uint64_t)&_bss_end - (uint64_t)&_bss_start);
-	shell_kusg_print_section(".boot.stack",
+	shell_kusg_print_section(".BOOT.STACK",
 		(uint64_t)&_boot_stack_end - (uint64_t)&_boot_stack_start);
-	shell_kusg_print_section("Image",
+	shell_kusg_print_section(".IMAGE",
 		(uint64_t)&ld_image_end - (uint64_t)&ld_ram_start);
 	shell_kusg_print_section("RAM",
 		(uint64_t)&ld_ram_end - (uint64_t)&ld_ram_start);
@@ -2173,684 +2168,9 @@ static const char *thread_state_to_str(enum thread_object_state state)
 	return str;
 }
 
-static const char *vcpu_sched_state_to_str(const struct acrn_vcpu *vcpu)
-{
-	return (vcpu_get_state(vcpu) == VCPU_OFFLINE) ?
-		"offline" : thread_state_to_str(vcpu->thread_obj.status);
-}
-
-static void shell_dumpstat_format_reg(char *buf, size_t size, const char *name,
-	uint64_t value)
-{
-	snprintf(buf, size, DUMPSTAT_REG_KEY_FMT, name, value);
-}
-
-static void shell_dumpstat_reg_line(uint32_t count, ...)
-{
-	char reg[DUMPSTAT_REGS_PER_LINE_MAX][32U];
-	va_list args;
-	uint32_t idx;
-
-	if ((count == 0U) || (count > DUMPSTAT_REGS_PER_LINE_MAX)) {
-		return;
-	}
-
-	va_start(args, count);
-	for (idx = 0U; idx < count; idx++) {
-		const char *name = __builtin_va_arg(args, const char *);
-		uint64_t value = __builtin_va_arg(args, uint64_t);
-
-		shell_dumpstat_format_reg(reg[idx], sizeof(reg[idx]), name, value);
-	}
-	va_end(args);
-
-	switch (count) {
-	case 1U:
-		shell_item_line("%s", reg[0U]);
-		break;
-	case 2U:
-		shell_item_line("%s %s", reg[0U], reg[1U]);
-		break;
-	case 3U:
-		shell_item_line("%s %s %s", reg[0U], reg[1U], reg[2U]);
-		break;
-	default:
-		shell_item_line("%s %s %s %s", reg[0U], reg[1U], reg[2U], reg[3U]);
-		break;
-	}
-	shell_output_checkpoint();
-}
-
-static void shell_dumpstat_regs(const struct cpu_regs *regs)
-{
-	shell_dumpstat_reg_line(3U, "elr", regs->elr, "spsr", regs->spsr, "esr", regs->esr);
-	shell_dumpstat_reg_line(2U, "far", regs->far, "hpfar", regs->hpfar);
-	shell_dumpstat_reg_line(4U, "x00", regs->x0, "x01", regs->x1, "x02", regs->x2, "x03", regs->x3);
-	shell_dumpstat_reg_line(4U, "x04", regs->x4, "x05", regs->x5, "x06", regs->x6, "x07", regs->x7);
-	shell_dumpstat_reg_line(4U, "x08", regs->x8, "x09", regs->x9, "x10", regs->x10, "x11", regs->x11);
-	shell_dumpstat_reg_line(4U, "x12", regs->x12, "x13", regs->x13, "x14", regs->x14, "x15", regs->x15);
-	shell_dumpstat_reg_line(4U, "x16", regs->x16, "x17", regs->x17, "x18", regs->x18, "x19", regs->x19);
-	shell_dumpstat_reg_line(4U, "x20", regs->x20, "x21", regs->x21, "x22", regs->x22, "x23", regs->x23);
-	shell_dumpstat_reg_line(4U, "x24", regs->x24, "x25", regs->x25, "x26", regs->x26, "x27", regs->x27);
-	shell_dumpstat_reg_line(4U, "x28", regs->x28, "x29", regs->x29, "lr", regs->lr, "sp", regs->sp);
-}
-
 static const char *shell_yes_no(bool value)
 {
 	return value ? "Y" : "N";
-}
-
-static uint32_t shell_lr_state(uint64_t lr)
-{
-	return (uint32_t)((lr >> ICH_LR_STATE_SHIFT) & 0x3UL);
-}
-
-static const char *shell_vtimer_trace_event_to_str(uint32_t event)
-{
-	const char *str;
-
-	/*
-	 * dumpstat prints short event names in the vtimer ring:
-	 * load/unload : vCPU switch boundary saved or restored timer state.
-	 * sysreg      : guest timer sysreg access updated the EL2 shadow.
-	 * ppi         : host generic-timer PPI reached EL2.
-	 * poll        : EL2 sampled an expired timer at a bounded sync point.
-	 * update      : timer state was synchronized into the vGIC line.
-	 * inject      : an expired timer became a guest-visible PPI.
-	 * eoi         : guest completed the virtual timer interrupt.
-	 * requeue     : timer line was queued again after vGIC/timer sync.
-	 * backup      : offline backup timer fired for an unloaded vCPU.
-	 * lr-pending  : pending-only timer PPI already resides in a guest LR.
-	 * lr-noeoi    : old pending timer LR is absent and no EOI was reported.
-	 * mask        : EL2 live CNTV IMASK ownership changed.
-	 * stall       : stale pending LR/host handoff stall was detected.
-	 */
-	switch (event) {
-	case ARM64_VTIMER_TRACE_LOAD:
-		str = "load";
-		break;
-	case ARM64_VTIMER_TRACE_UNLOAD:
-		str = "unload";
-		break;
-	case ARM64_VTIMER_TRACE_SYSREG:
-		str = "sysreg";
-		break;
-	case ARM64_VTIMER_TRACE_PPI:
-		str = "ppi";
-		break;
-	case ARM64_VTIMER_TRACE_POLL:
-		str = "poll";
-		break;
-	case ARM64_VTIMER_TRACE_UPDATE:
-		str = "update";
-		break;
-	case ARM64_VTIMER_TRACE_INJECT:
-		str = "inject";
-		break;
-	case ARM64_VTIMER_TRACE_EOI:
-		str = "eoi";
-		break;
-	case ARM64_VTIMER_TRACE_REQUEUE:
-		str = "requeue";
-		break;
-	case ARM64_VTIMER_TRACE_BACKUP:
-		str = "backup";
-		break;
-	case ARM64_VTIMER_TRACE_PENDING_LR:
-		str = "lr-pending";
-		break;
-	case ARM64_VTIMER_TRACE_LOST_LR:
-		str = "lr-noeoi";
-		break;
-	case ARM64_VTIMER_TRACE_MASK:
-		str = "mask";
-		break;
-	case ARM64_VTIMER_TRACE_STALL:
-		str = "stall";
-		break;
-	default:
-		str = "unknown";
-		break;
-	}
-
-	return str;
-}
-
-static const char *shell_guest_trace_event_to_str(uint8_t event)
-{
-	const char *str;
-
-	/*
-	 * Guest trace event names describe EL1/EL2 control boundaries:
-	 * enter  : vCPU thread is about to enter guest EL1.
-	 * exit   : guest returned to EL2 because of a trap or IRQ.
-	 * resume : EL2 handled the exit and is about to return to EL1.
-	 */
-	switch (event) {
-	case ARM64_VCPU_GUEST_TRACE_ENTER:
-		str = "enter";
-		break;
-	case ARM64_VCPU_GUEST_TRACE_EXIT:
-		str = "exit";
-		break;
-	case ARM64_VCPU_GUEST_TRACE_RESUME:
-		str = "resume";
-		break;
-	default:
-		str = "unknown";
-		break;
-	}
-
-	return str;
-}
-
-static void shell_dumpstat_guest_trace(const struct arm64_vcpu_guest_trace *trace)
-{
-	uint32_t count = trace->count;
-	uint32_t start;
-	uint32_t idx;
-	uint64_t prev_tsc = 0UL;
-
-	if (count > ARM64_VCPU_GUEST_TRACE_NUM) {
-		count = ARM64_VCPU_GUEST_TRACE_NUM;
-	}
-	if (count == 0U) {
-		shell_item_line("guest-trace:none");
-		return;
-	}
-
-	start = (trace->head + ARM64_VCPU_GUEST_TRACE_NUM - count) %
-		ARM64_VCPU_GUEST_TRACE_NUM;
-	/*
-	 * src identifies sync versus IRQ exits, ec is the ESR exception class
-	 * when available, and delta.us is time since the previous boundary row.
-	 */
-	for (idx = 0U; idx < count; idx++) {
-		uint32_t ring_idx = (start + idx) % ARM64_VCPU_GUEST_TRACE_NUM;
-		const struct arm64_vcpu_guest_trace_entry *entry = &trace->entry[ring_idx];
-		uint64_t delta_us = ((prev_tsc == 0UL) || (entry->tsc < prev_tsc)) ?
-			0UL : ticks_to_us(entry->tsc - prev_tsc);
-
-		if (entry->ec == ARM64_VCPU_DEBUG_EXIT_EC_INVALID) {
-			shell_item_line("gt[%02u] %-6s pcpu:%hu src:0x%02x ec:N/A  status:%3d delta.us:%8lu",
-				idx, shell_guest_trace_event_to_str(entry->event),
-				entry->pcpu_id, entry->source, entry->status,
-				delta_us);
-		} else {
-			shell_item_line("gt[%02u] %-6s pcpu:%hu src:0x%02x ec:0x%02x status:%3d delta.us:%8lu",
-				idx, shell_guest_trace_event_to_str(entry->event),
-				entry->pcpu_id, entry->source, entry->ec, entry->status,
-				delta_us);
-		}
-		shell_item_line("       elr:0x%016lx esr:0x%016lx far:0x%016lx hpfar:0x%016lx",
-			entry->elr, entry->esr, entry->far, entry->hpfar);
-		prev_tsc = entry->tsc;
-		shell_output_checkpoint();
-	}
-}
-
-static void shell_dumpstat_vtimer_trace(const struct arm64_vcpu_vtimer_trace *trace)
-{
-	uint32_t count = trace->count;
-	uint32_t start;
-	uint32_t idx;
-
-	if (count > ARM64_VCPU_VTIMER_TRACE_NUM) {
-		count = ARM64_VCPU_VTIMER_TRACE_NUM;
-	}
-	if (count == 0U) {
-		shell_item_line("trace:none");
-		return;
-	}
-
-	start = (trace->head + ARM64_VCPU_VTIMER_TRACE_NUM - count) %
-		ARM64_VCPU_VTIMER_TRACE_NUM;
-	for (idx = 0U; idx < count; idx++) {
-		uint32_t ring_idx = (start + idx) % ARM64_VCPU_VTIMER_TRACE_NUM;
-		const struct arm64_vcpu_vtimer_trace_entry *entry = &trace->entry[ring_idx];
-		int64_t delta = (int64_t)(entry->cval - entry->cntvct);
-
-		shell_item_line("vt[%02u] %-10s pcpu:%hu virq:%u ctl:0x%08x exp:%s mask:%s p/a/l:%s/%s/%s wr:%s inj:%s delta:%ld",
-			idx, shell_vtimer_trace_event_to_str(entry->event),
-			entry->pcpu_id, entry->virq, entry->ctl,
-			shell_yes_no(entry->expired), shell_yes_no(entry->masked),
-			shell_yes_no(entry->pending), shell_yes_no(entry->active),
-			shell_yes_no(entry->level), shell_yes_no(entry->write),
-			shell_yes_no(entry->injected), delta);
-		shell_item_line("       cval:0x%016lx cntvct:0x%016lx lr0:0x%016lx hcr:0x%016lx",
-			entry->cval, entry->cntvct, entry->lr0, entry->hcr);
-		shell_output_checkpoint();
-	}
-}
-
-static bool shell_stack_contains(uint64_t start, uint64_t end, uint64_t addr, uint64_t bytes)
-{
-	uint64_t left;
-
-	if ((addr < start) || (addr >= end)) {
-		return false;
-	}
-
-	left = end - addr;
-	return bytes <= left;
-}
-
-static void shell_dumpstat_print_frame(uint32_t idx, uint64_t fp, uint64_t lr, bool symbolize)
-{
-	char sym[96U];
-
-	if (symbolize) {
-		dbg_format_symbol(lr, sym, sizeof(sym));
-		shell_item_line("[%02u] fp:0x%016lx  lr:0x%016lx  %s",
-			idx, fp, lr, sym);
-	} else {
-		shell_item_line("[%02u] fp:0x%016lx  lr:0x%016lx",
-			idx, fp, lr);
-	}
-	shell_output_checkpoint();
-}
-
-static void shell_dumpstat_unwind_host_stack(uint64_t sp, uint64_t fp, uint64_t lr,
-	uint64_t stack_start, uint64_t stack_end)
-{
-	uint64_t frame_fp[DUMPSTAT_STACK_DEPTH];
-	uint64_t frame_lr[DUMPSTAT_STACK_DEPTH];
-	uint32_t count = 0U;
-	uint32_t idx;
-
-	if (!shell_stack_contains(stack_start, stack_end, sp, sizeof(uint64_t))) {
-		shell_item_line("trace unavailable: sp is outside the stack");
-		return;
-	}
-
-	for (idx = 0U; idx < DUMPSTAT_STACK_DEPTH; idx++) {
-		uint64_t next_fp = 0UL;
-
-		frame_fp[count] = fp;
-		frame_lr[count] = lr;
-		count++;
-
-		if (!shell_stack_contains(stack_start, stack_end, fp, sizeof(uint64_t) * 2UL)) {
-			break;
-		}
-
-		next_fp = *((const uint64_t *)fp);
-		lr = *(((const uint64_t *)fp) + 1UL);
-		if ((next_fp == SP_BOTTOM_MAGIC) || (next_fp <= fp)) {
-			break;
-		}
-
-		fp = next_fp;
-	}
-
-	for (idx = 0U; idx < count; idx++) {
-		shell_dumpstat_print_frame(idx, frame_fp[idx], frame_lr[idx], true);
-	}
-}
-
-struct dumpstat_guest_frame {
-	uint64_t fp;
-	uint64_t lr;
-};
-
-static void shell_dumpstat_vm_stack(struct acrn_vcpu *vcpu, const struct cpu_regs *regs)
-{
-	struct dumpstat_guest_frame frame;
-	struct dumpstat_guest_frame frames[DUMPSTAT_STACK_DEPTH];
-	uint64_t fp = regs->x29;
-	uint64_t lr = regs->lr;
-	uint32_t count = 0U;
-	uint32_t idx;
-
-	if ((fp == 0UL) && (lr == 0UL)) {
-		shell_item_line("trace unavailable: empty frame registers");
-		return;
-	}
-
-	for (idx = 0U; idx < DUMPSTAT_STACK_DEPTH; idx++) {
-		frames[count].fp = fp;
-		frames[count].lr = lr;
-		count++;
-
-		if (fp == 0UL) {
-			break;
-		}
-
-		if (copy_from_gpa(vcpu->vm, &frame, fp, sizeof(frame)) != 0) {
-			break;
-		}
-		if ((frame.fp == 0UL) || (frame.fp <= fp)) {
-			break;
-		}
-
-		fp = frame.fp;
-		lr = frame.lr;
-	}
-
-	for (idx = 0U; idx < count; idx++) {
-		shell_dumpstat_print_frame(idx, frames[idx].fp, frames[idx].lr, false);
-	}
-}
-
-static void shell_dumpstat_host_stack(const struct acrn_vcpu *vcpu)
-{
-	const struct stack_frame *saved_frame = (const struct stack_frame *)vcpu->thread_obj.host_sp;
-	uint64_t stack_start = (uint64_t)&vcpu->stack[0];
-	uint64_t stack_end = (uint64_t)&vcpu->stack[CONFIG_STACK_SIZE];
-
-	if (!shell_stack_contains(stack_start, stack_end, vcpu->thread_obj.host_sp, sizeof(*saved_frame))) {
-		shell_item_line("trace unavailable: saved sp is outside the vcpu thread stack");
-		return;
-	}
-
-	shell_dumpstat_unwind_host_stack(vcpu->thread_obj.host_sp,
-		saved_frame->x29, saved_frame->lr, stack_start, stack_end);
-}
-
-struct dumpstat_snapshot {
-	struct acrn_vcpu *vcpu;
-	struct cpu_regs regs;
-	struct arm64_vcpu_debug_info debug;
-	struct arm64_vcpu_guest_ctx gctx;
-	struct arm64_vgicv3_vcpu_ctx vgic_ctx;
-	struct arm64_vgic_irq timer_irq;
-	uint64_t live_cntvct_el0;
-	uint64_t live_cntv_cval_el0;
-	uint64_t live_ich_hcr_el2;
-	uint64_t live_ich_vmcr_el2;
-	uint64_t live_ich_lr[4U];
-	uint64_t pending_req;
-	uint64_t irqs_pending;
-	uint64_t irqs_pending_mask;
-	uint32_t timer_pending_word;
-	uint32_t live_cntv_ctl_el0;
-	bool has_timer_irq;
-	bool has_live_timer;
-	bool captured;
-};
-
-static void shell_dumpstat_snapshot_timer_irq(struct dumpstat_snapshot *snapshot)
-{
-	const struct acrn_vcpu *vcpu = snapshot->vcpu;
-	uint32_t virq = ARM64_GIC_PPI_VIRTUAL_TIMER;
-
-	if ((vcpu != NULL) && (vcpu->vm != NULL) && vcpu->vm->arch_vm.vgic.initialized &&
-		(vcpu->vcpu_id < ARM64_VGIC_MAX_VCPUS) && (virq < ARM64_VGIC_IRQ_NUM)) {
-		const struct arm64_vgicv3 *vgic = &vcpu->vm->arch_vm.vgic;
-		uint32_t word = virq / 32U;
-
-		snapshot->timer_irq = vgic->irq[vcpu->vcpu_id][virq];
-		snapshot->timer_pending_word = vgic->pending_bitmap[vcpu->vcpu_id][word];
-		snapshot->has_timer_irq = true;
-	}
-}
-
-static void shell_dumpstat_capture(void *data)
-{
-	struct dumpstat_snapshot *snapshot = (struct dumpstat_snapshot *)data;
-
-	if (get_running_vcpu(get_pcpu_id()) == snapshot->vcpu) {
-		(void)memcpy_s(&snapshot->regs, sizeof(snapshot->regs),
-			&snapshot->vcpu->arch.regs, sizeof(snapshot->regs));
-		(void)memcpy_s(&snapshot->debug, sizeof(snapshot->debug),
-			&snapshot->vcpu->arch.debug, sizeof(snapshot->debug));
-		(void)memcpy_s(&snapshot->gctx, sizeof(snapshot->gctx),
-			&snapshot->vcpu->arch.gctx, sizeof(snapshot->gctx));
-		(void)memcpy_s(&snapshot->vgic_ctx, sizeof(snapshot->vgic_ctx),
-			&snapshot->vcpu->arch.vgic, sizeof(snapshot->vgic_ctx));
-		snapshot->pending_req = snapshot->vcpu->pending_req;
-		snapshot->irqs_pending = snapshot->vcpu->arch.irqs_pending;
-		snapshot->irqs_pending_mask = snapshot->vcpu->arch.irqs_pending_mask;
-		shell_dumpstat_snapshot_timer_irq(snapshot);
-		snapshot->live_cntvct_el0 = read_cntvct_el0();
-		snapshot->live_cntv_cval_el0 = read_cntv_cval_el0();
-		snapshot->live_cntv_ctl_el0 = read_cntv_ctl_el0();
-		snapshot->live_ich_hcr_el2 = read_ich_hcr_el2();
-		snapshot->live_ich_vmcr_el2 = read_ich_vmcr_el2();
-		/*
-		 * Live LRs can differ from the saved software copy while the vCPU
-		 * is running. Capturing both views identifies save/restore drift
-		 * versus hardware state that is genuinely stuck at the CPU interface.
-		 */
-		snapshot->live_ich_lr[0U] = read_ich_lr_el2(0U);
-		snapshot->live_ich_lr[1U] = read_ich_lr_el2(1U);
-		snapshot->live_ich_lr[2U] = read_ich_lr_el2(2U);
-		snapshot->live_ich_lr[3U] = read_ich_lr_el2(3U);
-		snapshot->has_live_timer = true;
-		snapshot->captured = true;
-	}
-}
-
-static const struct cpu_regs *shell_dumpstat_get_regs(struct acrn_vcpu *vcpu,
-	struct dumpstat_snapshot *snapshot)
-{
-	uint16_t pcpu_id = vcpu->thread_obj.pcpu_id;
-
-	(void)memset(snapshot, 0U, sizeof(*snapshot));
-	snapshot->vcpu = vcpu;
-	(void)memcpy_s(&snapshot->regs, sizeof(snapshot->regs),
-		&vcpu->arch.regs, sizeof(snapshot->regs));
-	(void)memcpy_s(&snapshot->debug, sizeof(snapshot->debug),
-		&vcpu->arch.debug, sizeof(snapshot->debug));
-	(void)memcpy_s(&snapshot->gctx, sizeof(snapshot->gctx),
-		&vcpu->arch.gctx, sizeof(snapshot->gctx));
-	(void)memcpy_s(&snapshot->vgic_ctx, sizeof(snapshot->vgic_ctx),
-		&vcpu->arch.vgic, sizeof(snapshot->vgic_ctx));
-	snapshot->pending_req = vcpu->pending_req;
-	snapshot->irqs_pending = vcpu->arch.irqs_pending;
-	snapshot->irqs_pending_mask = vcpu->arch.irqs_pending_mask;
-	shell_dumpstat_snapshot_timer_irq(snapshot);
-	snapshot->has_live_timer = false;
-	snapshot->captured = false;
-
-	if (is_vcpu_running(vcpu) &&
-		(sched_get_current(pcpu_id) == &vcpu->thread_obj) &&
-		(pcpu_id != get_pcpu_id())) {
-		(void)smp_call_function_timeout(1UL << pcpu_id, shell_dumpstat_capture,
-			snapshot, DUMPSTAT_SMP_CALL_TIMEOUT_US);
-	}
-
-	return &snapshot->regs;
-}
-
-/* [20260630] dumpstat monitor:
- *
- * dumpstat is a per-vCPU deep snapshot. If the target vCPU is current on a
- * remote pCPU, an IPI samples live EL2 timer and vGIC state; otherwise the
- * command falls back to the durable vCPU state saved in memory. Printing both
- * saved and live fields separates context-save bugs from guest-visible stalls.
- *
- *   target vCPU current on remote pCPU
- *        -> IPI live capture -> regs/vGIC/vtimer + stacks
- *      otherwise
- *        -> saved vCPU image -> regs/vGIC/vtimer + stacks
- */
-static int32_t shell_find_valid_lr_for_virq(const uint64_t *lrs, uint32_t count, uint32_t virq)
-{
-	uint32_t idx;
-
-	for (idx = 0U; idx < count; idx++) {
-		uint64_t lr = lrs[idx];
-
-		if ((shell_lr_state(lr) != ICH_LR_STATE_INVALID) &&
-			((uint32_t)(lr & ICH_LR_VINTID_MASK) == virq)) {
-			return (int32_t)idx;
-		}
-	}
-
-	return -1;
-}
-
-static void shell_dumpstat_timer_irq_state(const struct dumpstat_snapshot *snapshot)
-{
-	uint32_t virq = ARM64_GIC_PPI_VIRTUAL_TIMER;
-	uint32_t bit = 1U << (virq % 32U);
-	uint64_t vmcr = snapshot->has_live_timer ?
-		snapshot->live_ich_vmcr_el2 : snapshot->vgic_ctx.vmcr;
-	int32_t saved_lr = shell_find_valid_lr_for_virq(snapshot->vgic_ctx.lr,
-		snapshot->vgic_ctx.used_lrs, virq);
-	int32_t live_lr = snapshot->has_live_timer ?
-		shell_find_valid_lr_for_virq(snapshot->live_ich_lr,
-			ARRAY_SIZE(snapshot->live_ich_lr), virq) : -1;
-	bool gicd_g1 = ((snapshot->vcpu->vm->arch_vm.vgic.gicd_ctlr & (1U << 1U)) != 0U);
-	bool vmcr_g1 = ((vmcr & ICH_VMCR_VENG1) != 0UL);
-	bool bitmap = ((snapshot->timer_pending_word & bit) != 0U);
-
-	if (!snapshot->has_timer_irq) {
-		shell_item_line("      vgic:desc:none");
-		return;
-	}
-
-	shell_item_line("      vgic:en:%s pend:%s act:%s level:%s bitmap:%s deliverable:%s",
-		shell_yes_no(snapshot->timer_irq.enabled),
-		shell_yes_no(snapshot->timer_irq.pending),
-		shell_yes_no(snapshot->timer_irq.active),
-		shell_yes_no(snapshot->timer_irq.level),
-		shell_yes_no(bitmap),
-		shell_yes_no(gicd_g1 && vmcr_g1 && snapshot->timer_irq.enabled));
-	shell_item_line("      route:saved-lr:%d live-lr:%d hcr:0x%016lx live-hcr:0x%016lx",
-		saved_lr, live_lr, snapshot->vgic_ctx.hcr, snapshot->live_ich_hcr_el2);
-}
-
-static void shell_dumpstat_timer_state(const struct dumpstat_snapshot *snapshot)
-{
-	const struct arm64_vcpu_guest_ctx *gctx = &snapshot->gctx;
-
-	if (snapshot->has_live_timer) {
-		uint64_t guest_now = snapshot->live_cntvct_el0;
-
-		shell_item_line("PPI%u cntv_ctl:0x%08x guest_ctl:0x%08x cntv_cval:0x%08lx cntvct:0x%08lx delta:%ld el2_mask:%s",
-			gctx->timer_virq, snapshot->live_cntv_ctl_el0,
-			gctx->cntv_ctl_el0, snapshot->live_cntv_cval_el0,
-			snapshot->live_cntvct_el0,
-			(int64_t)(snapshot->live_cntv_cval_el0 - guest_now),
-			shell_yes_no(gctx->cntv_el2_masked));
-	} else {
-		shell_item_line("PPI%u live:none el2_mask:%s",
-			gctx->timer_virq, shell_yes_no(gctx->cntv_el2_masked));
-	}
-	shell_dumpstat_timer_irq_state(snapshot);
-}
-
-static void shell_dumpstat_vtimer_diag(const struct arm64_vcpu_vtimer_diag *diag)
-{
-	uint64_t mask_ticks = diag->max_el2_mask_ticks;
-
-	if (diag->el2_mask_since_ticks != 0UL) {
-		uint64_t now = cpu_ticks();
-		uint64_t active_ticks = (now > diag->el2_mask_since_ticks) ?
-			(now - diag->el2_mask_since_ticks) : 0UL;
-
-		if (active_ticks > mask_ticks) {
-			mask_ticks = active_ticks;
-		}
-	}
-
-	/*
-	 * This section deliberately avoids repeating raw CNTV/LR fields from
-	 * "timer/vgic state" and "vtimer trace". It gives cumulative counters for
-	 * the four transitions that matter when Linux reports timer-softirq stalls:
-	 * WFI wakeup, pending-only LR preservation, EL2 host-timer masking, and the
-	 * last-chance flush before ERET.
-	 */
-	shell_item_line("wfi:trap:%lu irq-masked:%lu pending-irq:%lu",
-		diag->wfi_trap, diag->wfi_irq_masked, diag->wfi_pending_irq);
-	shell_item_line("lr-pending-only:seen:%lu preserve:%lu drop:%lu missing-no-eoi:%lu",
-		diag->pending_only_lr_seen, diag->pending_only_lr_preserve,
-		diag->pending_only_lr_drop, diag->lost_pending_lr);
-	shell_item_line("el2-mask:set:%lu clear:%lu max-age.us:%lu active:%s",
-		diag->el2_mask_set, diag->el2_mask_clear,
-		ticks_to_us(mask_ticks),
-		shell_yes_no(diag->el2_mask_since_ticks != 0UL));
-	shell_item_line("pre-eret-flush:run:%lu expired:%lu",
-		diag->pre_eret_flush,
-		diag->pre_eret_flush_expired);
-}
-
-static int32_t shell_dumpstat_vcpu(struct acrn_vcpu *vcpu)
-{
-	struct thread_object *current;
-	struct dumpstat_snapshot snapshot;
-	const struct cpu_regs *regs;
-	const struct arm64_vcpu_debug_info *debug;
-
-	current = (vcpu_get_state(vcpu) == VCPU_OFFLINE) ?
-		NULL : sched_get_current(vcpu->thread_obj.pcpu_id);
-	regs = shell_dumpstat_get_regs(vcpu, &snapshot);
-	debug = &snapshot.debug;
-
-	shell_item_begin("vm%hu/vcpu%hu", vcpu->vm->vm_id, vcpu->vcpu_id);
-	/*
-	 * Header fields identify CPU binding, scheduler state, whether this vCPU
-	 * is the current thread, and whether live EL2 state was sampled by IPI.
-	 */
-	shell_item_line("pcpu:%hu sched:%s current:%s live:%s", vcpu->thread_obj.pcpu_id,
-		vcpu_sched_state_to_str(vcpu),
-		shell_yes_no(current == &vcpu->thread_obj),
-		shell_yes_no(snapshot.captured));
-	shell_item_line("lifecycle:%s thread:%s",
-		vcpu_state_to_str(vcpu_get_state(vcpu)),
-		thread_state_to_str(vcpu->thread_obj.status));
-	shell_item_line("requests:pending:0x%016lx arch-irqs:0x%016lx mask:0x%016lx",
-		snapshot.pending_req, snapshot.irqs_pending,
-		snapshot.irqs_pending_mask);
-	shell_item_section("vcpu stats");
-	/*
-	 * vcpu stats keeps the execution context compact. Timer/vGIC-specific
-	 * evidence is printed below without the older shadow-register block.
-	 */
-	shell_item_line("guest regs:");
-	shell_dumpstat_regs(regs);
-	shell_dumpstat_guest_trace(&debug->guest_trace);
-	if (vcpu_get_state(vcpu) != VCPU_OFFLINE) {
-		shell_item_line("vcpu stack:");
-		shell_dumpstat_vm_stack(vcpu, regs);
-		shell_item_line("pcpu stack:");
-		shell_dumpstat_host_stack(vcpu);
-	}
-	shell_item_section("vgic/vtimer");
-	shell_dumpstat_timer_state(&snapshot);
-	shell_dumpstat_vtimer_diag(&debug->vtimer_diag);
-	shell_dumpstat_vtimer_trace(&debug->vtimer_trace);
-	shell_item_end();
-
-	return 0;
-}
-
-static int32_t shell_dumpstat(int32_t argc, char **argv)
-{
-	struct acrn_vm *vm;
-	int64_t param;
-	uint16_t vm_id = 0U;
-	uint16_t vcpu_id;
-
-	if (argc > 2) {
-		return -EINVAL;
-	}
-
-	if (argc == 2) {
-		param = strtol_deci(argv[1]);
-		if ((param < 0) || (param >= CONFIG_MAX_VM_NUM)) {
-			return -EINVAL;
-		}
-		vm_id = (uint16_t)param;
-	}
-
-	vm = get_vm_from_vmid(vm_id);
-	if (is_poweroff_vm(vm)) {
-		return -EINVAL;
-	}
-
-	shell_item_begin("dumpstat vm%hu:%s", vm_id, vm->name);
-	shell_item_line("vcpus:%hu", vm->hw.created_vcpus);
-	shell_item_end();
-
-	for (vcpu_id = 0U; vcpu_id < vm->hw.created_vcpus; vcpu_id++) {
-		(void)shell_dumpstat_vcpu(vcpu_from_vid(vm, vcpu_id));
-		shell_output_checkpoint();
-	}
-
-	return 0;
 }
 
 static int32_t shell_coredump(int32_t argc, char **argv)
@@ -2906,9 +2226,10 @@ static const char *shell_vm_state_to_str(enum vm_state state)
 
 /* [20260630] vmstat monitor:
  *
- * vmstat is the broad health summary before using dumpstat. It keeps one VM
- * visible at a time: configured resources, runtime state, watchdog and console
- * status, scheduler diagnostics, and the guest timer/vGIC delivery summary.
+ * vmstat is the broad health summary before using retained hwtdbg evidence. It
+ * keeps one VM visible at a time: configured resources, runtime state,
+ * watchdog and console status, scheduler diagnostics, and the guest timer/vGIC
+ * delivery summary.
  *
  *   VM config + runtime VM object
  *        -> VM resource/state rows
@@ -2972,9 +2293,9 @@ static void shell_cachestat_print_vm_affinity(uint16_t vm_id,
 
 		llc_id = arm64_cache_llc_id_for_pcpu(pcpu_id);
 		if (llc_id == UINT32_MAX) {
-			shell_item_line("vm%hu:%s vcpu%hu pcpu:- llc:-", vm_id, name, vcpu_id);
+			shell_item_line("vm%hu:%9s vcpu%hu pcpu:- llc:-", vm_id, name, vcpu_id);
 		} else {
-			shell_item_line("vm%hu:%s vcpu%hu pcpu:%hu llc:%u",
+			shell_item_line("vm%hu:%9s vcpu%hu pcpu:%hu llc:%u",
 				vm_id, name, vcpu_id, pcpu_id, llc_id);
 		}
 		shell_output_checkpoint();
@@ -2996,7 +2317,7 @@ static int32_t shell_cachestat(int32_t argc, __unused char **argv)
 	shell_item_line("valid:%s ctr:0x%016lx clidr:0x%016lx line:d:%u i:%u",
 		shell_yes_no(info.valid), info.ctr_el0, info.clidr_el1,
 		info.dcache_line_size, info.icache_line_size);
-	shell_item_line("llc:domains:%u level:%u type:%s size:%luKB mask:0x%016lx",
+	shell_item_line("LLC:domains:%u level:%u type:%s size:%luKB mask:0x%016lx",
 		info.llc_domain_count, info.llc_level, arm64_cache_type_str(info.llc_type),
 		info.llc_size / 1024UL, info.llc_pcpu_mask);
 
@@ -3004,7 +2325,7 @@ static int32_t shell_cachestat(int32_t argc, __unused char **argv)
 		shell_item_line("cache:none");
 	} else {
 		shell_item_line("cache leaves:");
-		shell_item_line("level  type     line  sets   ways   sizeKB  shared-pcpu-mask");
+		shell_item_line("level  type     line  sets   ways   size    shared-pcpu-mask");
 		shell_item_line("─────  ───────  ────  ─────  ─────  ──────  ────────────────");
 		for (idx = 0U; idx < info.leaf_count; idx++) {
 			const struct arm64_cache_leaf *leaf = &info.leaves[idx];
@@ -3017,7 +2338,7 @@ static int32_t shell_cachestat(int32_t argc, __unused char **argv)
 		}
 	}
 
-	shell_item_line("vm llc placement:");
+	shell_item_line("vm LLC placement:");
 	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
 		struct acrn_vm_config *vm_config = get_vm_config(vm_id);
 		struct acrn_vm *vm = get_vm_from_vmid(vm_id);
@@ -3219,6 +2540,9 @@ static const char *shell_vmstat_wdt_recovery_to_str(enum vm_wdt_recovery_state s
 	case VM_WDT_RECOVERY_QUIESCING:
 		str = "quiescing";
 		break;
+	case VM_WDT_RECOVERY_RESETTING:
+		str = "resetting";
+		break;
 	case VM_WDT_RECOVERY_VERIFYING:
 		str = "verifying";
 		break;
@@ -3290,6 +2614,45 @@ struct shell_health_vm {
 	uint64_t virtio_timeouts;
 };
 
+/* [20260718] Bounded health snapshot storage
+ *
+ * shell command parser stack
+ *             |
+ *             v
+ * static VM snapshots -> collect every slot -> print -> reuse on next command
+ *
+ * Key rule:
+ *   - the single shell thread owns the snapshots, so no lock is required;
+ *   - each collector fully initializes its slot before the output reads it;
+ *   - keeping the VM array out of the 8 KiB shell stack prevents nested WDT
+ *     and output snapshots from exhausting the command stack.
+ */
+static struct shell_health_vm shell_health_vms[CONFIG_MAX_VM_NUM];
+
+/* [20260718] On-demand vCPU utilization
+ *
+ * scheduler runtime[N] at previous health
+ *                  |
+ *                  v
+ * scheduler runtime[N] now -> bounded delta/window -> display percentage
+ *                  |
+ *                  +--> no baseline or counter rollback -> "--"
+ *
+ * Key rule:
+ *   - the single shell thread owns the history, so no periodic worker or lock
+ *     is needed;
+ *   - lifecycle state gates presentation before a percentage is emitted;
+ *   - scheduler accounting remains unchanged and the command is read-only.
+ */
+struct shell_health_cpu_history {
+	uint64_t sample_ticks;
+	uint64_t runtime_ticks[CONFIG_MAX_VM_NUM][MAX_VCPUS_PER_VM];
+	bool runtime_valid[CONFIG_MAX_VM_NUM][MAX_VCPUS_PER_VM];
+	bool valid;
+};
+
+static struct shell_health_cpu_history shell_health_cpu_history;
+
 static enum shell_health_level shell_health_max(enum shell_health_level left,
 	enum shell_health_level right)
 {
@@ -3322,6 +2685,174 @@ static const char *shell_health_level_to_str(enum shell_health_level level)
 	}
 
 	return str;
+}
+
+static uint64_t shell_health_cpu_permille(uint64_t runtime_ticks,
+	uint64_t window_ticks)
+{
+	uint64_t permille;
+
+	if ((window_ticks == 0UL) || (runtime_ticks >= window_ticks) ||
+		(runtime_ticks > (UINT64_MAX / SHELL_HEALTH_CPU_PERCENT_SCALE))) {
+		permille = (window_ticks == 0UL) ? 0UL :
+			SHELL_HEALTH_CPU_PERCENT_SCALE;
+	} else {
+		permille = (runtime_ticks * SHELL_HEALTH_CPU_PERCENT_SCALE) /
+			window_ticks;
+	}
+
+	return permille;
+}
+
+static void shell_health_cpu_format(char *buf, size_t size, uint64_t permille)
+{
+	(void)snprintf(buf, size, "%lu.%01lu%%", permille / 10UL,
+		permille % 10UL);
+}
+
+static void shell_health_cpu_append(char *line, size_t size, const char *cell)
+{
+	size_t offset = strnlen_s(line, size);
+
+	if (offset < size) {
+		(void)snprintf(&line[offset], size - offset, "%-8s", cell);
+	}
+}
+
+static uint16_t shell_health_max_vcpus(const struct shell_health_vm *vms)
+{
+	uint16_t max_vcpus = 0U;
+	uint16_t vm_id;
+
+	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
+		if (vms[vm_id].present &&
+			(vms[vm_id].configured_vcpus > max_vcpus)) {
+			max_vcpus = vms[vm_id].configured_vcpus;
+		}
+	}
+
+	return (max_vcpus <= MAX_VCPUS_PER_VM) ? max_vcpus :
+		MAX_VCPUS_PER_VM;
+}
+
+static void shell_health_print_cpu_usage(const struct shell_health_vm *vms)
+{
+	uint64_t sample_ticks = cpu_ticks();
+	uint64_t window_ticks = 0UL;
+	uint16_t max_vcpus = shell_health_max_vcpus(vms);
+	bool has_window = shell_health_cpu_history.valid &&
+		(sample_ticks > shell_health_cpu_history.sample_ticks);
+	char line[MAX_STR_SIZE];
+	uint16_t vm_id;
+	uint16_t vcpu_id;
+
+	if (has_window) {
+		window_ticks = sample_ticks - shell_health_cpu_history.sample_ticks;
+		shell_item_section("vCPU utilization window:%lums", ticks_to_ms(window_ticks));
+	} else {
+		shell_item_section("vCPU utilization window:baseline");
+	}
+	if (max_vcpus == 0U) {
+		shell_item_line("no configured vCPUs");
+		(void)memset(shell_health_cpu_history.runtime_valid, 0U,
+			sizeof(shell_health_cpu_history.runtime_valid));
+		shell_health_cpu_history.sample_ticks = sample_ticks;
+		shell_health_cpu_history.valid = true;
+		return;
+	}
+
+	(void)snprintf(line, sizeof(line), "vmid  ");
+	for (vcpu_id = 0U; vcpu_id < max_vcpus; vcpu_id++) {
+		char cell[16U];
+
+		(void)snprintf(cell, sizeof(cell), "vcpu%hu", vcpu_id);
+		shell_health_cpu_append(line, sizeof(line), cell);
+	}
+	shell_health_cpu_append(line, sizeof(line), "total");
+	shell_item_line("%s", line);
+
+	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
+		const struct shell_health_vm *health = &vms[vm_id];
+		struct acrn_vm *vm = get_vm_from_vmid(vm_id);
+		uint64_t total_permille = 0UL;
+		uint16_t running_vcpus = 0U;
+		bool total_complete = true;
+
+		if (!health->present) {
+			(void)memset(shell_health_cpu_history.runtime_valid[vm_id], 0U,
+				sizeof(shell_health_cpu_history.runtime_valid[vm_id]));
+			continue;
+		}
+
+		(void)snprintf(line, sizeof(line), "%-6hu", vm_id);
+		for (vcpu_id = 0U; vcpu_id < max_vcpus; vcpu_id++) {
+			struct acrn_vcpu *vcpu = NULL;
+			struct sched_latency_stats latency = { 0U };
+			uint64_t permille = 0UL;
+			bool runtime_valid = false;
+			bool running = false;
+			char cell[16U];
+
+			if (vcpu_id >= health->configured_vcpus) {
+				(void)snprintf(cell, sizeof(cell), "NC");
+			} else if (vcpu_id >= health->created_vcpus) {
+				(void)snprintf(cell, sizeof(cell), "NA");
+			} else {
+				vcpu = vcpu_from_vid(vm, vcpu_id);
+				if (vcpu != NULL) {
+					sched_get_latency(&vcpu->thread_obj, &latency);
+					runtime_valid = true;
+					running = (health->state == VM_RUNNING) &&
+						(vcpu_get_state(vcpu) == VCPU_RUNNING);
+				}
+
+				if (!running) {
+					(void)snprintf(cell, sizeof(cell), "NA");
+				} else {
+					running_vcpus++;
+					if (has_window &&
+						shell_health_cpu_history.runtime_valid[vm_id][vcpu_id] &&
+						(latency.runtime_ticks >=
+						 shell_health_cpu_history.runtime_ticks[vm_id][vcpu_id])) {
+						permille = shell_health_cpu_permille(
+							latency.runtime_ticks -
+							shell_health_cpu_history.runtime_ticks[vm_id][vcpu_id],
+							window_ticks);
+						shell_health_cpu_format(cell, sizeof(cell), permille);
+						total_permille += permille;
+					} else {
+						(void)snprintf(cell, sizeof(cell), "--");
+						total_complete = false;
+					}
+				}
+			}
+
+			shell_health_cpu_history.runtime_ticks[vm_id][vcpu_id] =
+				latency.runtime_ticks;
+			shell_health_cpu_history.runtime_valid[vm_id][vcpu_id] =
+				runtime_valid;
+			shell_health_cpu_append(line, sizeof(line), cell);
+		}
+		for (; vcpu_id < MAX_VCPUS_PER_VM; vcpu_id++) {
+			shell_health_cpu_history.runtime_valid[vm_id][vcpu_id] = false;
+		}
+
+		if (running_vcpus == 0U) {
+			shell_health_cpu_append(line, sizeof(line), "NA");
+		} else if (!total_complete) {
+			shell_health_cpu_append(line, sizeof(line), "--");
+		} else {
+			char total[16U];
+
+			shell_health_cpu_format(total, sizeof(total), total_permille);
+			shell_health_cpu_append(line, sizeof(line), total);
+		}
+		shell_item_line("%s", line);
+		shell_output_checkpoint();
+	}
+	shell_item_line("[Tip] %%:running  NC:not configured  NA:not active  --:baseline pending");
+	shell_health_cpu_history.sample_ticks = sample_ticks;
+	shell_health_cpu_history.valid = true;
 }
 
 static void shell_health_collect_host(struct shell_health_host *health)
@@ -3510,7 +3041,7 @@ static void shell_health_print_vm(const struct shell_health_vm *health)
 		(void)snprintf(wdt_age, sizeof(wdt_age), "-");
 	}
 	if (health->console_valid) {
-		(void)snprintf(console, sizeof(console), "%u/%u d:%lu",
+		(void)snprintf(console, sizeof(console), "%5u/%5u d:%lu",
 			health->console_queued, health->console_capacity,
 			health->console_dropped);
 	} else {
@@ -3631,7 +3162,7 @@ static void shell_health_print_findings(const struct shell_health_host *host,
 static int32_t shell_health(int32_t argc, __unused char **argv)
 {
 	struct shell_health_host host;
-	struct shell_health_vm vms[CONFIG_MAX_VM_NUM];
+	struct shell_health_vm *vms = shell_health_vms;
 	enum shell_health_level overall;
 	uint16_t vm_id;
 
@@ -3656,7 +3187,7 @@ static int32_t shell_health(int32_t argc, __unused char **argv)
 	shell_item_line("pcpus:active:%hu/%hu current:%hu/%hu result:%s",
 		host.pcpu_active, host.pcpu_total, host.pcpu_current, host.pcpu_total,
 		shell_health_level_to_str(host.level));
-	shell_item_line("pages:hv-s1:%lu/%lu vm-s2:%lu/%lu accounted:%lu unowned:%lu over:%lu malformed:%lu",
+	shell_item_line("pages:HV-s1:%lu/%lu VM-s2:%lu/%lu accounted:%lu unowned:%lu over:%lu malformed:%lu",
 		host.hv_s1.used_pages, host.hv_s1.total_pages,
 		host.vm_s2.used_pages, host.vm_s2.total_pages,
 		host.stage2_accounted, host.stage2_unowned,
@@ -3669,6 +3200,7 @@ static int32_t shell_health(int32_t argc, __unused char **argv)
 			shell_health_print_vm(&vms[vm_id]);
 		}
 	}
+	shell_health_print_cpu_usage(vms);
 	shell_item_section("Findings");
 	shell_health_print_findings(&host, vms);
 	shell_item_end();
@@ -3706,7 +3238,7 @@ static void shell_vmstat_collect_timer_summary(const struct acrn_vm *vm,
 		const struct acrn_vcpu *vcpu = vcpu_from_vid((struct acrn_vm *)vm, vcpu_id);
 
 		if (vcpu != NULL) {
-			const struct arm64_vcpu_vtimer_diag *diag = &vcpu->arch.debug.vtimer_diag;
+			const struct arm64_vcpu_vtimer_diag *diag = &vcpu->arch.vtimer_diag;
 
 			summary->cntv_ppi += diag->cntv_ppi;
 			summary->cntv_backup += diag->cntv_backup;
@@ -3930,7 +3462,7 @@ static const char *shell_vmstat_scheduler_label(bool has_bvt, bool has_rtds,
 static void shell_vmstat_vcpu_timer(const struct acrn_vcpu *vcpu)
 {
 	const struct arm64_vcpu_guest_ctx *gctx = &vcpu->arch.gctx;
-	const struct arm64_vcpu_vtimer_diag *diag = &vcpu->arch.debug.vtimer_diag;
+	const struct arm64_vcpu_vtimer_diag *diag = &vcpu->arch.vtimer_diag;
 	const struct arm64_vgicv3 *vgic = &vcpu->vm->arch_vm.vgic;
 	const struct arm64_vgic_irq *timer_irq = NULL;
 	uint64_t now = cpu_ticks() - gctx->cntvoff_el2;

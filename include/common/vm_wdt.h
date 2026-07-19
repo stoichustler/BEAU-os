@@ -64,6 +64,7 @@ enum vm_wdt_cause {
 enum vm_wdt_recovery_state {
 	VM_WDT_RECOVERY_IDLE = 0U,
 	VM_WDT_RECOVERY_QUIESCING,
+	VM_WDT_RECOVERY_RESETTING,
 	VM_WDT_RECOVERY_VERIFYING,
 };
 
@@ -78,11 +79,21 @@ struct vm_wdt_snapshot {
 	uint64_t restart_fail_count;
 	uint64_t last_token;
 	uint64_t recovery_wait_vcpus;
+	uint64_t observed_tsc;
+	uint64_t start_tsc;
+	uint64_t last_kick_tsc;
+	uint64_t irq_total;
+	uint64_t irq_delta;
+	uint32_t timeout_ms;
 	bool restart_pending;
+	bool heartbeat_started;
+	bool timeout_active;
+	bool restart_enabled;
 };
 
 void vm_wdt_start(void);
 void vm_wdt_reset(const struct acrn_vm *vm);
+void vm_wdt_restart_complete(uint16_t vm_id, int32_t reset_ret);
 void vm_wdt_kick(const struct acrn_vm *vm, uint64_t token);
 int32_t vm_wdt_get_snapshot(uint16_t vm_id, struct vm_wdt_snapshot *snapshot);
 int32_t vm_wdt_pm_suspend(uint64_t epoch);
