@@ -83,11 +83,24 @@ execution. If the test plan changes, stop and request approval again.
 
 #### Manual Testing
 
-When the user selects manual testing or validation, stop all AI-side test
-activity and wait for the human result. Do not prepare a test plan, inspect
-prerequisites, run commands, start or monitor an environment, request or verify
-evidence, inspect processes, or perform cleanup. Act only when the user later
-requests specific assistance, and keep that action within the explicit scope.
+When the user selects manual testing or validation, provide a suggested test
+method tailored to the approved design, actual changes, and target platform
+before waiting for the human result. Include:
+
+- the behavior or contract to validate;
+- prerequisites, environment, and safety precautions;
+- ordered human actions and inputs;
+- the expected result for each action;
+- evidence to record;
+- cleanup or recovery actions;
+- explicit pass, fail, and stop criteria;
+- known limitations or behavior not covered by the method.
+
+After providing the suggested method, stop all AI-side test activity and wait
+for the human result. Do not run commands, start or monitor an environment,
+request or verify evidence, inspect processes, or perform cleanup unless the
+user later requests specific assistance. Keep that action within the explicit
+scope.
 
 Accept an explicit human pass or fail report as the authoritative test result
 without performing corroborating work. Enter Phase 6 after a reported pass.
@@ -213,6 +226,13 @@ For non-trivial C logic, use the dated design-comment form required by
  *   - state the failure or isolation violation being prevented.
  */
 ```
+
+Apply the `FIXME` state rules from `sdk/sdk.md`:
+
+- For `UNSOLVED`, include `FIXME` only and omit `METHOD`.
+- Mark an issue `FIXED` only when the same change includes `METHOD` and the
+  corresponding code implementation.
+- Never mark an issue `FIXED` in a comment-only change.
 
 Do not add comments that merely repeat assignments or branch conditions. Use
 plain ASCII in low-level C diagrams and fatal diagnostics.
