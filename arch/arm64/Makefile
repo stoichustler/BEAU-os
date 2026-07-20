@@ -109,6 +109,9 @@ HOST_C_SRCS += arch/arm64/trap.c
 HOST_C_SRCS += arch/arm64/security.c
 HOST_C_SRCS += arch/arm64/pm.c
 HOST_C_SRCS += arch/arm64/pmu.c
+ifeq ($(CONFIG_PERF),y)
+HOST_C_SRCS += arch/arm64/perf.c
+endif
 HOST_C_SRCS += arch/arm64/sve.c
 HOST_C_SRCS += arch/arm64/mpu.c
 HOST_C_SRCS += arch/arm64/smmu/smmu.c

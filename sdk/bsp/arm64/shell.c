@@ -43,6 +43,9 @@
 #include <asm/irq.h>
 #include <asm/cache.h>
 #include <asm/pmu.h>
+#ifdef CONFIG_PERF
+#include <asm/perf.h>
+#endif
 #include <asm/platform.h>
 #include <asm/guest/stage2.h>
 #include <asm/guest/vcpu.h>
@@ -102,6 +105,11 @@
 #define SHELL_CMD_TRACE			"trace"
 #define SHELL_CMD_TRACE_PARAM		"<status|start|stop|clear|dump> [category|count]"
 #define SHELL_CMD_TRACE_HELP		"capture and dump per-pCPU EL2 trace events"
+#ifdef CONFIG_PERF
+#define SHELL_CMD_PERF			"perf"
+#define SHELL_CMD_PERF_PARAM		"<record|status|stop|clear|dump> [duration-ms frequency-hz|count]"
+#define SHELL_CMD_PERF_HELP		"sample and dump bounded ARM64 EL2 call stacks"
+#endif
 #define SHELL_CMD_REBOOT		"reboot"
 #define SHELL_CMD_REBOOT_PARAM		NULL
 #define SHELL_CMD_REBOOT_HELP		"trigger a system reboot (immediately)"
@@ -129,6 +137,9 @@
 #define RTTEST_LINE_SIZE		160U
 #define RTTEST_OUTPUT_SIZE		(((MAX_PCPU_NUM + 1U) * RTTEST_LINE_SIZE) + 1U)
 #define TRACE_DUMP_DEFAULT_COUNT	64U
+#ifdef CONFIG_PERF
+#define PERF_DUMP_DEFAULT_COUNT		32U
+#endif
 #define SHELL_MEM_KB_BYTES		1024UL
 #define SHELL_MEM_MB_BYTES		(SHELL_MEM_KB_BYTES * 1024UL)
 #define SHELL_MEM_GB_BYTES		(SHELL_MEM_MB_BYTES * 1024UL)
@@ -157,6 +168,9 @@ static int32_t shell_pcistat(int32_t argc, char **argv);
 static int32_t shell_cpufreq(int32_t argc, __unused char **argv);
 static int32_t shell_rttest(int32_t argc, __unused char **argv);
 static int32_t shell_trace(int32_t argc, char **argv);
+#ifdef CONFIG_PERF
+static int32_t shell_perf(int32_t argc, char **argv);
+#endif
 static int32_t shell_reboot(__unused int32_t argc, __unused char **argv);
 static int32_t shell_pm(int32_t argc, char **argv);
 static int32_t shell_pmstat(int32_t argc, __unused char **argv);
@@ -277,6 +291,14 @@ struct shell_cmd arch_shell_cmds[] = {
 		.help_str	= SHELL_CMD_TRACE_HELP,
 		.fcn		= shell_trace,
 	},
+#ifdef CONFIG_PERF
+	{
+		.str		= SHELL_CMD_PERF,
+		.cmd_param	= SHELL_CMD_PERF_PARAM,
+		.help_str	= SHELL_CMD_PERF_HELP,
+		.fcn		= shell_perf,
+	},
+#endif
 	{
 		.str		= SHELL_CMD_REBOOT,
 		.cmd_param	= SHELL_CMD_REBOOT_PARAM,
@@ -1694,6 +1716,215 @@ static int32_t shell_trace(int32_t argc, char **argv)
 
 	return ret;
 }
+
+#ifdef CONFIG_PERF
+struct shell_perf_cursor {
+	struct arm64_perf_sample sample;
+	uint32_t index;
+	bool valid;
+};
+
+static struct shell_perf_cursor shell_perf_cursors[MAX_PCPU_NUM];
+
+static void shell_perf_status(void)
+{
+	struct arm64_perf_status perf;
+	uint16_t pcpu_id;
+
+	arm64_perf_get_status(&perf);
+	shell_item_begin("perf");
+	shell_item_line("state:%s readable:%s controller:%hu session:%lu generation:%lu",
+		perf.running ? "running" : "stopped", perf.readable ? "Y" : "N",
+		perf.controller_pcpu, perf.epoch, perf.generation);
+	shell_item_line("duration:%ums frequency:%uHz period:%uus capacity:%u/pCPU",
+		perf.duration_ms, perf.frequency_hz, perf.period_us,
+		ARM64_PERF_RECORDS_PER_CPU);
+	shell_item_line("pCPU  records  captured  attempts  no-stack  missed  overwritten  writer  pending");
+	for (pcpu_id = 0U; pcpu_id < perf.pcpu_num; pcpu_id++) {
+		struct arm64_perf_cpu_status status;
+
+		arm64_perf_get_cpu_status(pcpu_id, &status);
+		shell_item_line("%4hu  %7u  %8lu  %8lu  %8lu  %6lu  %11lu  %-6s  %lu",
+			pcpu_id, status.count, status.captured, status.attempts,
+			status.no_stack, status.missed, status.overwritten,
+			status.writer_active ? "active" : "idle",
+			status.pending_generation);
+		shell_output_checkpoint();
+	}
+	shell_item_end();
+}
+
+static void shell_perf_print_sample(uint32_t sequence, uint64_t base_tsc,
+	const struct arm64_perf_sample *sample)
+{
+	uint64_t delta_us = (sample->tsc >= base_tsc) ?
+		ticks_to_us(sample->tsc - base_tsc) : 0UL;
+	uint16_t frame;
+
+	if (sample->owner == ARM64_PERF_OWNER_GUEST) {
+		if ((sample->vm_id == ARM64_PERF_INVALID_ID) ||
+			(sample->vcpu_id == ARM64_PERF_INVALID_ID)) {
+			shell_item_line("[%04u] +%8luus cpu:%hu session:%lu gen:%lu owner:guest unknown",
+				sequence, delta_us, sample->pcpu_id, sample->epoch,
+				sample->generation);
+		} else {
+			shell_item_line("[%04u] +%8luus cpu:%hu session:%lu gen:%lu owner:vm%hu:v%hu",
+				sequence, delta_us, sample->pcpu_id, sample->epoch,
+				sample->generation,
+				sample->vm_id, sample->vcpu_id);
+		}
+		return;
+	}
+
+	shell_item_line("[%04u] +%8luus cpu:%hu session:%lu gen:%lu owner:host thread:%s frames:%hu stop:%s",
+		sequence, delta_us, sample->pcpu_id, sample->epoch,
+		sample->generation,
+		(sample->thread_name[0] != '\0') ? sample->thread_name : "unknown",
+		sample->frame_count,
+		arm64_perf_unwind_stop_name(sample->unwind_stop));
+	for (frame = 0U; frame < sample->frame_count; frame++) {
+		char symbol[96U];
+
+		dbg_format_symbol(sample->frames[frame], symbol, sizeof(symbol));
+		shell_item_line("         #%02hu 0x%016lx %s", frame,
+			sample->frames[frame], symbol);
+	}
+}
+
+static int32_t shell_perf_dump(int32_t argc, char **argv)
+{
+	struct arm64_perf_status perf;
+	struct shell_perf_cursor *cursors = shell_perf_cursors;
+	uint32_t requested = PERF_DUMP_DEFAULT_COUNT;
+	uint32_t total = 0U;
+	uint32_t skipped;
+	uint32_t consumed = 0U;
+	uint32_t printed = 0U;
+	uint64_t base_tsc = 0UL;
+	uint16_t pcpu_id;
+
+	arm64_perf_get_status(&perf);
+	if (!perf.readable) {
+		shell_puts("perf dump requires stopped, quiescent capture\r\n");
+		return -EBUSY;
+	}
+	if ((argc < 2) || (argc > 3)) {
+		return -EINVAL;
+	}
+	if (argc == 3) {
+		int64_t value = strtol_deci(argv[2]);
+		uint32_t max_records = ARM64_PERF_RECORDS_PER_CPU * perf.pcpu_num;
+
+		if ((value <= 0) || ((uint64_t)value > max_records)) {
+			shell_puts("usage: perf dump [count]\r\n");
+			return -EINVAL;
+		}
+		requested = (uint32_t)value;
+	}
+
+	(void)memset(cursors, 0U,
+		MAX_PCPU_NUM * sizeof(struct shell_perf_cursor));
+	for (pcpu_id = 0U; pcpu_id < perf.pcpu_num; pcpu_id++) {
+		struct arm64_perf_cpu_status status;
+
+		arm64_perf_get_cpu_status(pcpu_id, &status);
+		cursors[pcpu_id].valid = arm64_perf_get_sample(pcpu_id, 0U,
+			&cursors[pcpu_id].sample);
+		total += status.count;
+	}
+	if (requested > total) {
+		requested = total;
+	}
+	skipped = total - requested;
+
+	shell_item_begin("perf dump");
+	shell_item_line("samples:%u shown:%u", total, requested);
+	while (consumed < total) {
+		uint16_t best = INVALID_CPU_ID;
+
+		for (pcpu_id = 0U; pcpu_id < perf.pcpu_num; pcpu_id++) {
+			if (cursors[pcpu_id].valid &&
+				((best == INVALID_CPU_ID) ||
+				 (cursors[pcpu_id].sample.tsc < cursors[best].sample.tsc))) {
+				best = pcpu_id;
+			}
+		}
+		if (best == INVALID_CPU_ID) {
+			break;
+		}
+		if (consumed >= skipped) {
+			if (printed == 0U) {
+				base_tsc = cursors[best].sample.tsc;
+			}
+			shell_perf_print_sample(printed, base_tsc, &cursors[best].sample);
+			printed++;
+		}
+		consumed++;
+		cursors[best].index++;
+		cursors[best].valid = arm64_perf_get_sample(best,
+			cursors[best].index, &cursors[best].sample);
+		shell_output_checkpoint();
+	}
+	shell_item_end();
+	return 0;
+}
+
+static int32_t shell_perf(int32_t argc, char **argv)
+{
+	int32_t ret;
+
+	if (argc < 2) {
+		shell_puts("usage: perf <record|status|stop|clear|dump> [duration-ms frequency-hz|count]\r\n");
+		return -EINVAL;
+	}
+	if (strcmp(argv[1], "record") == 0) {
+		int64_t duration;
+		int64_t frequency;
+
+		if (argc != 4) {
+			return -EINVAL;
+		}
+		duration = strtol_deci(argv[2]);
+		frequency = strtol_deci(argv[3]);
+		if ((duration <= 0) || ((uint64_t)duration > UINT32_MAX) ||
+			(frequency <= 0) || ((uint64_t)frequency > UINT32_MAX)) {
+			return -EINVAL;
+		}
+		ret = arm64_perf_record((uint32_t)duration, (uint32_t)frequency);
+		if (ret == 0) {
+			shell_perf_status();
+		}
+	} else if (strcmp(argv[1], "status") == 0) {
+		if (argc != 2) {
+			return -EINVAL;
+		}
+		shell_perf_status();
+		ret = 0;
+	} else if (strcmp(argv[1], "stop") == 0) {
+		if (argc != 2) {
+			return -EINVAL;
+		}
+		ret = arm64_perf_stop();
+		if (ret == 0) {
+			shell_perf_status();
+		}
+	} else if (strcmp(argv[1], "clear") == 0) {
+		if (argc != 2) {
+			return -EINVAL;
+		}
+		ret = arm64_perf_clear();
+		if (ret == 0) {
+			shell_perf_status();
+		}
+	} else if (strcmp(argv[1], "dump") == 0) {
+		ret = shell_perf_dump(argc, argv);
+	} else {
+		shell_puts("usage: perf <record|status|stop|clear|dump> [duration-ms frequency-hz|count]\r\n");
+		ret = -EINVAL;
+	}
+	return ret;
+}
+#endif
 
 /* [20260709] SMMU monitor:
  *

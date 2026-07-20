@@ -1283,6 +1283,7 @@ host shell 无输入时保持 blocked。首次输入发现延迟由 2 ms timer �
 | `cpufreq` | policy、domain、P-state 和 backend |
 | `rttest` | 每 pCPU 1000 次 EL2 timer latency test |
 | `trace <...>` | start/stop/status/clear/dump per-pCPU trace |
+| `perf <...>` | 在 `CONFIG_PERF=y` 时采样并输出 EL2 Host 调用栈 |
 | `reboot` | 立即重启 host |
 | `pm reboot <vmid>` | 异步 cold restart 非 service VM |
 | `pm ...` / `pmstat` | VM STR/reboot 控制与 transaction 诊断 |
@@ -1311,6 +1312,22 @@ frame record，并限制原始栈快照和回溯深度；panic 与同步异常�
 host 栈回溯路径。每个 pCPU 保留一个带版本和校验和的内存快照，shell 可通过
 `coredump print` 查看最新快照或通过 `coredump erase` 清除；`hwtdbg` 提供重启前
 冻结的 guest/vCPU WDT 超时证据。
+
+### 18.4 Perf
+
+`CONFIG_PERF` 默认关闭。启用后，`perf record <duration-ms> <frequency-hz>` 使用
+一个 controller pCPU timer 产生 `1..1000 Hz` 的采样节拍，并通过 Host SGI 请求
+其他 pCPU 在各自 IRQ 入口记录现场。每个 pCPU 独占一个固定 128 条的 sample ring；
+满后覆盖最老记录并累计 `overwritten`，采样路径不分配内存，也不执行符号解析。
+
+Host 样本从异常入口保存的 ELR、LR、SP 和 x29 开始，只在已登记的 thread、per-pCPU
+或 boot stack 范围内回溯，最多保留 12 层。Guest-origin IRQ 只记录 VM/vCPU owner，
+不会读取 guest stack。采样自动结束后可执行 `perf dump [count]`，由 shell 使用内置
+符号表解析地址；`perf status` 查看各 pCPU 的 captured、missed、no-stack 和 overwrite
+计数，`perf stop` 提前停止，`perf clear` 清空已停止的 rings。
+
+QEMU 只能验证控制流、SMP ring ownership 和回溯边界，不能作为真实热点或采样开销
+结论；性能分析结果需要在目标硬件上确认。
 
 ## 19. SDK 模块
 

@@ -75,6 +75,14 @@ config ARM64_MTE
 	  path. The initial implementation protects BEAU-owned page-table pools
 	  and does not expose MTE to guests.
 
+config PERF
+	bool "ARM64 EL2 sampling profiler"
+	default n
+	help
+	  Build the bounded host sampling profiler and its shell command. The
+	  profiler is stopped at boot, records raw Host text addresses in fixed
+	  per-pCPU rings, and never unwinds a guest stack.
+
 source "arch/arm64/platform/Kconfig"
 source "arch/arm64/gic/Kconfig"
 source "arch/arm64/guest/Kconfig"

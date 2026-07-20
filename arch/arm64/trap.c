@@ -15,6 +15,9 @@
 #include <asm/trap.h>
 #include <asm/ddb.h>
 #include <asm/mte.h>
+#ifdef CONFIG_PERF
+#include <asm/perf.h>
+#endif
 
 /* [20260710] EL2 trap routing principle:
  *
@@ -114,7 +117,8 @@ static void dispatch_exception(struct intr_excp_ctx *ctx, uint64_t trap_type)
 	unexpected_trap_handler(ctx, trap_type);
 }
 
-static void dispatch_interrupt_common(const struct intr_excp_ctx *ctx, bool handle_softirq)
+static void dispatch_interrupt_common(const struct intr_excp_ctx *ctx,
+	bool handle_softirq, __unused bool guest_context)
 {
 	uint32_t intid = arm64_gicv3_ack_irq();
 	uint32_t acrn_irq;
@@ -133,6 +137,10 @@ static void dispatch_interrupt_common(const struct intr_excp_ctx *ctx, bool hand
 		}
 		return;
 	}
+
+#ifdef CONFIG_PERF
+	arm64_perf_sample_irq(ctx, guest_context);
+#endif
 
 	/*
 	 * GICv3 LPIs are architecturally separate from SGI/PPI/SPI INTIDs. Keep
@@ -160,12 +168,12 @@ static void dispatch_interrupt_common(const struct intr_excp_ctx *ctx, bool hand
 
 void dispatch_interrupt(const struct intr_excp_ctx *ctx)
 {
-	dispatch_interrupt_common(ctx, true);
+	dispatch_interrupt_common(ctx, true, false);
 }
 
 void dispatch_interrupt_no_softirq(const struct intr_excp_ctx *ctx)
 {
-	dispatch_interrupt_common(ctx, false);
+	dispatch_interrupt_common(ctx, false, true);
 }
 
 void dispatch_trap(struct intr_excp_ctx *ctx, uint64_t trap_type)
