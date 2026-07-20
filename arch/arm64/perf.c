@@ -25,6 +25,8 @@
 #define ARM64_PERF_USEC_PER_SEC		1000000U
 #define ARM64_PERF_USEC_PER_MSEC		1000U
 #define ARM64_PERF_STOP_TIMEOUT_US	1000U
+#define ARM64_PERF_PRODUCER_CLOSED	(1UL << 63U)
+#define ARM64_PERF_PRODUCER_COUNT_MASK	(~ARM64_PERF_PRODUCER_CLOSED)
 
 struct arm64_perf_stack {
 	uint64_t start;
@@ -58,6 +60,7 @@ struct arm64_perf_context {
 	uint64_t stop_ticks;
 	volatile uint64_t epoch;
 	volatile uint64_t generation;
+	volatile uint64_t producer_state;
 	uint32_t duration_ms;
 	uint32_t frequency_hz;
 	uint32_t period_us;
@@ -68,7 +71,9 @@ struct arm64_perf_context {
 };
 
 static struct arm64_perf_cpu_ring arm64_perf_rings[MAX_PCPU_NUM];
-static struct arm64_perf_context arm64_perf_ctx;
+static struct arm64_perf_context arm64_perf_ctx = {
+	.producer_state = ARM64_PERF_PRODUCER_CLOSED,
+};
 
 /* [20260721] Bounded EL2 sampling ownership
  *
@@ -183,8 +188,6 @@ static void arm64_perf_capture_host(const struct intr_excp_ctx *ctx,
 		(void)strncpy_s(sample->thread_name, sizeof(sample->thread_name),
 			stack.thread->name, sizeof(sample->thread_name) - 1U);
 	}
-	arm64_perf_append_frame(sample, ctx->regs.lr);
-
 	while ((sample->frame_count < ARM64_PERF_MAX_FRAMES) &&
 		(records < ARM64_PERF_MAX_FRAMES)) {
 		const struct arm64_perf_frame_record *frame;
@@ -266,6 +269,50 @@ static void arm64_perf_publish_sample(struct arm64_perf_cpu_ring *ring,
 	(void)__atomic_add_fetch(&ring->captured, 1UL, __ATOMIC_RELAXED);
 }
 
+static bool arm64_perf_producer_enter(void)
+{
+	uint64_t state = __atomic_load_n(&arm64_perf_ctx.producer_state,
+		__ATOMIC_ACQUIRE);
+
+	for (;;) {
+		if ((state & ARM64_PERF_PRODUCER_CLOSED) != 0UL) {
+			return false;
+		}
+		if ((state & ARM64_PERF_PRODUCER_COUNT_MASK) ==
+			ARM64_PERF_PRODUCER_COUNT_MASK) {
+			return false;
+		}
+		if (__atomic_compare_exchange_n(&arm64_perf_ctx.producer_state,
+			&state, state + 1UL, false, __ATOMIC_ACQ_REL,
+			__ATOMIC_ACQUIRE)) {
+			return true;
+		}
+	}
+}
+
+static void arm64_perf_producer_exit(void)
+{
+	(void)__atomic_sub_fetch(&arm64_perf_ctx.producer_state, 1UL,
+		__ATOMIC_RELEASE);
+}
+
+static void arm64_perf_close_producers(void)
+{
+	(void)__atomic_or_fetch(&arm64_perf_ctx.producer_state,
+		ARM64_PERF_PRODUCER_CLOSED, __ATOMIC_ACQ_REL);
+}
+
+static void arm64_perf_open_producers(void)
+{
+	__atomic_store_n(&arm64_perf_ctx.producer_state, 0UL, __ATOMIC_RELEASE);
+}
+
+static bool arm64_perf_producers_idle(void)
+{
+	return (__atomic_load_n(&arm64_perf_ctx.producer_state,
+		__ATOMIC_ACQUIRE) & ARM64_PERF_PRODUCER_COUNT_MASK) == 0UL;
+}
+
 void arm64_perf_sample_irq(const struct intr_excp_ctx *ctx, bool guest_context)
 {
 	uint16_t pcpu_id = get_pcpu_id();
@@ -275,32 +322,40 @@ void arm64_perf_sample_irq(const struct intr_excp_ctx *ctx, bool guest_context)
 	uint64_t generation;
 	uint64_t now;
 
-	if ((ctx == NULL) || (pcpu_id >= arm64_perf_ctx.pcpu_num) ||
-		!__atomic_load_n(&arm64_perf_ctx.running, __ATOMIC_ACQUIRE)) {
+	if ((ctx == NULL) || (pcpu_id >= MAX_PCPU_NUM)) {
 		return;
 	}
 	ring = &arm64_perf_rings[pcpu_id];
+	if (((__atomic_load_n(&arm64_perf_ctx.producer_state, __ATOMIC_ACQUIRE) &
+		ARM64_PERF_PRODUCER_CLOSED) != 0UL) ||
+		(__atomic_load_n(&ring->pending_generation, __ATOMIC_ACQUIRE) == 0UL) ||
+		!arm64_perf_producer_enter()) {
+		return;
+	}
+	if ((pcpu_id >= arm64_perf_ctx.pcpu_num) ||
+		!__atomic_load_n(&arm64_perf_ctx.running, __ATOMIC_ACQUIRE)) {
+		goto out;
+	}
 	generation = __atomic_load_n(&ring->pending_generation, __ATOMIC_ACQUIRE);
 	if (generation == 0UL) {
-		return;
+		goto out;
 	}
 	now = cpu_ticks();
 	if (now < __atomic_load_n(&ring->due_ticks, __ATOMIC_RELAXED)) {
-		return;
+		goto out;
 	}
 	epoch = __atomic_load_n(&ring->pending_epoch, __ATOMIC_RELAXED);
 	if (!__atomic_compare_exchange_n(&ring->pending_generation, &generation, 0UL,
 		false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-		return;
+		goto out;
 	}
 
-	(void)__atomic_add_fetch(&ring->attempts, 1UL, __ATOMIC_RELAXED);
-	__atomic_store_n(&ring->writer_active, true, __ATOMIC_RELEASE);
 	if (!__atomic_load_n(&arm64_perf_ctx.running, __ATOMIC_ACQUIRE) ||
 		(epoch != __atomic_load_n(&arm64_perf_ctx.epoch, __ATOMIC_RELAXED))) {
-		__atomic_store_n(&ring->writer_active, false, __ATOMIC_RELEASE);
-		return;
+		goto out;
 	}
+	(void)__atomic_add_fetch(&ring->attempts, 1UL, __ATOMIC_RELAXED);
+	__atomic_store_n(&ring->writer_active, true, __ATOMIC_RELEASE);
 
 	(void)memset(&sample, 0U, sizeof(sample));
 	sample.tsc = now;
@@ -320,19 +375,23 @@ void arm64_perf_sample_irq(const struct intr_excp_ctx *ctx, bool guest_context)
 	}
 	arm64_perf_publish_sample(ring, &sample);
 	__atomic_store_n(&ring->writer_active, false, __ATOMIC_RELEASE);
+out:
+	arm64_perf_producer_exit();
 }
 
 static void arm64_perf_publish_generation(uint16_t pcpu_id,
 	uint64_t epoch, uint64_t generation, uint64_t due_ticks)
 {
 	struct arm64_perf_cpu_ring *ring = &arm64_perf_rings[pcpu_id];
+	uint64_t previous;
 
-	if (__atomic_load_n(&ring->pending_generation, __ATOMIC_ACQUIRE) != 0UL) {
-		(void)__atomic_add_fetch(&ring->missed, 1UL, __ATOMIC_RELAXED);
-	}
 	__atomic_store_n(&ring->pending_epoch, epoch, __ATOMIC_RELAXED);
 	__atomic_store_n(&ring->due_ticks, due_ticks, __ATOMIC_RELAXED);
-	__atomic_store_n(&ring->pending_generation, generation, __ATOMIC_RELEASE);
+	previous = __atomic_exchange_n(&ring->pending_generation, generation,
+		__ATOMIC_ACQ_REL);
+	if (previous != 0UL) {
+		(void)__atomic_add_fetch(&ring->missed, 1UL, __ATOMIC_RELAXED);
+	}
 }
 
 static uint64_t arm64_perf_next_due(const struct hv_timer *timer, uint64_t now)
@@ -365,6 +424,7 @@ static void arm64_perf_timer(void *data)
 	if (now >= perf->stop_ticks) {
 		perf->timer.mode = TICK_MODE_ONESHOT;
 		perf->timer_started = false;
+		arm64_perf_close_producers();
 		__atomic_store_n(&perf->running, false, __ATOMIC_RELEASE);
 		for (pcpu_id = 0U; pcpu_id < perf->pcpu_num; pcpu_id++) {
 			__atomic_store_n(&arm64_perf_rings[pcpu_id].pending_generation,
@@ -403,25 +463,12 @@ static void arm64_perf_reset_ring(struct arm64_perf_cpu_ring *ring)
 	__atomic_store_n(&ring->count, 0U, __ATOMIC_RELEASE);
 }
 
-static bool arm64_perf_writers_idle(void)
-{
-	uint16_t pcpu_id;
-
-	for (pcpu_id = 0U; pcpu_id < arm64_perf_ctx.pcpu_num; pcpu_id++) {
-		if (__atomic_load_n(&arm64_perf_rings[pcpu_id].writer_active,
-			__ATOMIC_ACQUIRE)) {
-			return false;
-		}
-	}
-	return true;
-}
-
 static int32_t arm64_perf_wait_writers(void)
 {
 	uint64_t deadline = cpu_ticks() + us_to_ticks(ARM64_PERF_STOP_TIMEOUT_US);
 
 	do {
-		if (arm64_perf_writers_idle()) {
+		if (arm64_perf_producers_idle()) {
 			return 0;
 		}
 		cpu_relax();
@@ -437,6 +484,7 @@ int32_t arm64_perf_clear(void)
 	if (__atomic_load_n(&arm64_perf_ctx.running, __ATOMIC_ACQUIRE)) {
 		return -EBUSY;
 	}
+	arm64_perf_close_producers();
 	ret = arm64_perf_wait_writers();
 	if (ret == 0) {
 		for (pcpu_id = 0U; pcpu_id < MAX_PCPU_NUM; pcpu_id++) {
@@ -498,13 +546,16 @@ int32_t arm64_perf_record(uint32_t duration_ms, uint32_t frequency_hz)
 	epoch = (epoch == UINT64_MAX) ? 1UL : epoch + 1UL;
 	__atomic_store_n(&arm64_perf_ctx.epoch, epoch, __ATOMIC_RELAXED);
 	arm64_perf_ctx.generation = 1UL;
+	arm64_perf_ctx.timer_started = false;
 	initialize_timer(&arm64_perf_ctx.timer, arm64_perf_timer,
 		&arm64_perf_ctx, now + period_ticks, period_ticks);
 	arm64_perf_publish_generation(arm64_perf_ctx.controller_pcpu, epoch, 1UL,
 		now + period_ticks);
 	__atomic_store_n(&arm64_perf_ctx.running, true, __ATOMIC_RELEASE);
+	arm64_perf_open_producers();
 	ret = add_timer(&arm64_perf_ctx.timer);
 	if (ret != 0) {
+		arm64_perf_close_producers();
 		__atomic_store_n(&arm64_perf_ctx.running, false, __ATOMIC_RELEASE);
 		__atomic_store_n(
 			&arm64_perf_rings[arm64_perf_ctx.controller_pcpu].pending_generation,
@@ -523,6 +574,7 @@ int32_t arm64_perf_stop(void)
 		(get_pcpu_id() != arm64_perf_ctx.controller_pcpu)) {
 		return -EPERM;
 	}
+	arm64_perf_close_producers();
 	__atomic_store_n(&arm64_perf_ctx.running, false, __ATOMIC_RELEASE);
 	if (arm64_perf_ctx.timer_started) {
 		del_timer(&arm64_perf_ctx.timer);
@@ -554,7 +606,7 @@ void arm64_perf_get_status(struct arm64_perf_status *status)
 	status->controller_pcpu = arm64_perf_ctx.controller_pcpu;
 	status->pcpu_num = arm64_perf_ctx.pcpu_num;
 	status->running = running;
-	status->readable = !running && arm64_perf_writers_idle();
+	status->readable = !running && arm64_perf_producers_idle();
 }
 
 void arm64_perf_get_cpu_status(uint16_t pcpu_id,
@@ -591,7 +643,7 @@ bool arm64_perf_get_sample(uint16_t pcpu_id, uint32_t index,
 
 	if ((sample == NULL) || (pcpu_id >= arm64_perf_ctx.pcpu_num) ||
 		__atomic_load_n(&arm64_perf_ctx.running, __ATOMIC_ACQUIRE) ||
-		!arm64_perf_writers_idle()) {
+		!arm64_perf_producers_idle()) {
 		return false;
 	}
 	ring = &arm64_perf_rings[pcpu_id];

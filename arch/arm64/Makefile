@@ -36,6 +36,9 @@ endif
 ARCH_CFLAGS += -mgeneral-regs-only
 ARCH_CFLAGS += -mstrict-align
 ARCH_CFLAGS += -fno-omit-frame-pointer
+ifeq ($(CONFIG_PERF),y)
+ARCH_CFLAGS += -mno-omit-leaf-frame-pointer
+endif
 ARCH_CFLAGS += -mno-outline-atomics
 
 ARCH_ASFLAGS +=
@@ -114,8 +117,8 @@ HOST_C_SRCS += arch/arm64/perf.c
 endif
 HOST_C_SRCS += arch/arm64/sve.c
 HOST_C_SRCS += arch/arm64/mpu.c
-HOST_C_SRCS += arch/arm64/smmu/smmu.c
-HOST_C_SRCS += arch/arm64/smmu/iommu.c
+HOST_C_SRCS += arch/arm64/iommu/smmu.c
+HOST_C_SRCS += arch/arm64/iommu/iommu.c
 ifeq ($(PLATFORM),qemu)
 HOST_C_SRCS += arch/arm64/platform/qemu/pm.c
 endif

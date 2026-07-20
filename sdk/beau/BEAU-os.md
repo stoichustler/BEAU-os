@@ -1016,8 +1016,8 @@ Stage-2 device mapping 后才对客体有效；客体写入的 MSI message 被�
 
 **定位**：
 
-- `arch/arm64/smmu/iommu.c`：domain 生命周期、StreamID ownership broker。
-- `arch/arm64/smmu/smmu.c`：物理 SMMUv3、STE/CMDQ/EVTQ、故障 containment。
+- `arch/arm64/iommu/iommu.c`：domain 生命周期、StreamID ownership broker。
+- `arch/arm64/iommu/smmu.c`：物理 SMMUv3、STE/CMDQ/EVTQ、故障 containment。
 - `arch/arm64/guest/vsmmu.c`：guest synthetic registers/queues；不访问物理寄存器。
 
 **能力**：
@@ -1320,7 +1320,7 @@ host 栈回溯路径。每个 pCPU 保留一个带版本和校验和的内存快
 其他 pCPU 在各自 IRQ 入口记录现场。每个 pCPU 独占一个固定 128 条的 sample ring；
 满后覆盖最老记录并累计 `overwritten`，采样路径不分配内存，也不执行符号解析。
 
-Host 样本从异常入口保存的 ELR、LR、SP 和 x29 开始，只在已登记的 thread、per-pCPU
+Host 样本从异常入口保存的 ELR、SP 和 x29 开始，只在已登记的 thread、per-pCPU
 或 boot stack 范围内回溯，最多保留 12 层。Guest-origin IRQ 只记录 VM/vCPU owner，
 不会读取 guest stack。采样自动结束后可执行 `perf dump [count]`，由 shell 使用内置
 符号表解析地址；`perf status` 查看各 pCPU 的 captured、missed、no-stack 和 overwrite
@@ -1605,8 +1605,8 @@ sdk/kbe/virtio-proxy-backend.c
 sdk/bsp/pci/pci.c
 sdk/bsp/vpci/*
 sdk/bsp/passthrough.c
-arch/arm64/smmu/iommu.c
-arch/arm64/smmu/smmu.c
+arch/arm64/iommu/iommu.c
+arch/arm64/iommu/smmu.c
 arch/arm64/guest/vsmmu.c
 ```
 
