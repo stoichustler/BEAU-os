@@ -9,9 +9,19 @@
 
 #include <multiboot_std.h>
 
+/*
+ * Private protocol-selection boundary shared by the Multiboot1 dispatcher and
+ * the optional Multiboot2 tag parser. These helpers recognize the entry
+ * register contract; they do not validate or take ownership of the information
+ * block referenced by the companion register.
+ */
+
 #ifdef CONFIG_MULTIBOOT2
 /*
- * @post boot_regs[1] stores the address pointer that point to a valid multiboot2 info
+ * Multiboot2 selection follows the protocol magic alone. Unlike the
+ * Multiboot1 path below, a zero information address is not rejected here for
+ * compatibility with older GRUB versions that could place the information
+ * block at physical address zero.
  */
 static inline bool boot_from_multiboot2(uint32_t magic)
 {
@@ -30,6 +40,7 @@ static inline bool boot_from_multiboot2(uint32_t magic)
 int32_t multiboot2_to_acrn_bi(struct acrn_boot_info *abi, void *mb2_info);
 #endif
 
+/* Multiboot1 requires both its entry magic and a nonzero information address. */
 static inline bool boot_from_multiboot(uint32_t magic, uint32_t info)
 {
 	return ((magic == MULTIBOOT_INFO_MAGIC) && (info != 0U));

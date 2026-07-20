@@ -11,7 +11,35 @@
 #include <rtl.h>
 #include "multiboot_priv.h"
 
+/* [20260720] Multiboot2 tag-stream normalization
+ *
+ * total_size + reserved
+ *        |
+ *        v
+ * 8-byte-aligned tag stream
+ *        |
+ *        +--> strings ---------> copied into acrn_boot_info
+ *        +--> mmap/modules ----> bounded ABI entries
+ *        `--> ACPI/EFI --------> retained early-boot pointers
+ *        |
+ *        +--> zero size or unsupported future type -> fail conversion
+ *        |
+ *        v
+ * terminating tag -> record normalized module count
+ *
+ * Key rule:
+ *   - the bootloader owns the tag buffer and all referenced payloads;
+ *   - this parser copies only stable metadata and records borrowed payload
+ *     mappings for later boot consumers;
+ *   - tag size excludes alignment padding, so cursor movement rounds up to the
+ *     protocol's 8-byte boundary before examining the next tag.
+ */
+
 /**
+ * Copy the Multiboot2 memory-map payload into BEAU's fixed-capacity ABI table.
+ * The tag header is excluded from the entry count and any excess records are
+ * deliberately omitted rather than overrunning the normalized table.
+ *
  * @pre abi != NULL && mb2_tag_mmap != NULL
  */
 static void mb2_mmap_to_abi(struct acrn_boot_info *abi, const struct multiboot2_tag_mmap *mb2_tag_mmap)
@@ -33,6 +61,10 @@ static void mb2_mmap_to_abi(struct acrn_boot_info *abi, const struct multiboot2_
 }
 
 /**
+ * Normalize one module descriptor. The module label is copied, while the module
+ * bytes stay in bootloader-owned memory and are referenced through an early
+ * host virtual mapping until the VM image loader copies them.
+ *
  * @pre abi != NULL && mb2_tag_mods != NULL
  */
 static void mb2_mods_to_abi(struct acrn_boot_info *abi,
@@ -49,6 +81,9 @@ static void mb2_mods_to_abi(struct acrn_boot_info *abi,
 }
 
 /**
+ * Preserve the 64-bit EFI system-table address in the split fields used by the
+ * protocol-neutral boot ABI.
+ *
  * @pre abi != NULL && mb2_tag_efi64 != 0
  */
 static void mb2_efi64_to_abi(struct acrn_boot_info *abi, const struct multiboot2_tag_efi64 *mb2_tag_efi64)
@@ -58,6 +93,10 @@ static void mb2_efi64_to_abi(struct acrn_boot_info *abi, const struct multiboot2
 }
 
 /**
+ * Record the EFI descriptor format and the map embedded in the Multiboot2 tag.
+ * The descriptor bytes are not copied; their address remains valid only while
+ * the bootloader-provided information storage is retained.
+ *
  * @pre abi != NULL && mb2_tag_efimmap != 0
  */
 static void mb2_efimmap_to_abi(struct acrn_boot_info *abi,
@@ -72,6 +111,12 @@ static void mb2_efimmap_to_abi(struct acrn_boot_info *abi,
 }
 
 /**
+ * Walk a Multiboot2 information block and translate the subset consumed by
+ * BEAU: command line, loader name, memory map, modules, ACPI RSDP, and EFI
+ * metadata. Standard tags not consumed by BEAU are skipped; types beyond the
+ * known specification range and tags that cannot advance the cursor fail the
+ * conversion.
+ *
  * @pre abi != NULL
  */
 int32_t multiboot2_to_acrn_bi(struct acrn_boot_info *abi, void *mb2_info)
@@ -82,11 +127,12 @@ int32_t multiboot2_to_acrn_bi(struct acrn_boot_info *abi, void *mb2_info)
 	uint32_t mod_idx = 0U;
 	void *str;
 
-	/* The start part of multiboot2 info: total mbi size (4 bytes), reserved (4 bytes) */
+	/* The fixed prefix is total_size followed by one reserved 32-bit field. */
 	mb2_tag = (struct multiboot2_tag *)((uint8_t *)mb2_info + 8U);
 	mb2_tag_end = (struct multiboot2_tag *)((uint8_t *)mb2_info + mb2_info_size);
 
 	while ((mb2_tag->type != MULTIBOOT2_TAG_TYPE_END) && (mb2_tag < mb2_tag_end)) {
+		/* Translate only fields owned by acrn_boot_info; other standard tags are ignored. */
 		switch (mb2_tag->type) {
 		case MULTIBOOT2_TAG_TYPE_CMDLINE:
 			str = ((struct multiboot2_tag_string *)mb2_tag)->string;
@@ -122,6 +168,7 @@ int32_t multiboot2_to_acrn_bi(struct acrn_boot_info *abi, void *mb2_info)
 			}
 			break;
 		}
+		/* A zero-sized tag would leave the cursor unchanged and make the walk unbounded. */
 		if (mb2_tag->size == 0U) {
 			ret = -EINVAL;
 		}
@@ -130,13 +177,14 @@ int32_t multiboot2_to_acrn_bi(struct acrn_boot_info *abi, void *mb2_info)
 			break;
 		}
 		/*
-		 * tag->size does not include padding whearas each tag
-		 * start at 8-bytes aligned address.
+		 * tag->size includes the tag header but not trailing padding. Round the
+		 * cursor up so every next tag starts at the required 8-byte boundary.
 		 */
 		mb2_tag = (struct multiboot2_tag *)((uint8_t *)mb2_tag
 				+ ((mb2_tag->size + (MULTIBOOT2_INFO_ALIGN - 1U)) & ~(MULTIBOOT2_INFO_ALIGN - 1U)));
 	}
 
+	/* Record entries converted so far; the caller selects this protocol only when ret is zero. */
 	abi->mods_count = mod_idx;
 
 	return ret;

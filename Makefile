@@ -4,7 +4,7 @@
 
 API_MAJOR_VERSION=1
 API_MINOR_VERSION=0
-BEAU_OS_VERSION ?= 0.0.8
+BEAU_OS_VERSION ?= 0.0.9
 
 ifneq ($(filter command line,$(origin RELEASE)),)
 $(error RELEASE is no longer supported; BEAU always builds the full image)
@@ -331,7 +331,7 @@ COMMON_C_SRCS += core/fdt.c
 COMMON_C_SRCS += sdk/bsp/boot/guest/vboot_info.c
 COMMON_C_SRCS += core/vm_load.c
 ifeq ($(CONFIG_GUEST_KERNEL_RAWIMAGE),y)
-COMMON_C_SRCS += sdk/bsp/boot/guest/rawimage_loader.c
+COMMON_C_SRCS += sdk/bsp/boot/guest/rwloader.c
 endif
 COMMON_C_SRCS += sdk/bsp/boot/boot.c
 COMMON_C_SRCS += sdk/bsp/boot/multiboot/multiboot.c

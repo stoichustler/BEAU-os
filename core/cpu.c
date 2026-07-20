@@ -149,6 +149,6 @@ void cpu_dead(void)
 
 void print_hv_banner(void)
 {
-	LOG_INF("BEAU OS (HYPERVISOR) v%s [%s] %s (%s)", BEAU_OS_VERSION,
+	LOG_INF("BEAU OS <HYPERVISOR> %s [%s] %s (%s)", BEAU_OS_VERSION,
 		HV_BUILD_TYPE, HV_COMMIT_TIME, HV_COMMIT_DIRTY);
 }

@@ -1800,7 +1800,7 @@ static int32_t shell_smmustat(int32_t argc, __unused char **argv)
 		ARRAY_SIZE(shell_smmu_streams));
 
 	shell_puts("\r\nsmmustat:\r\n");
-	shell_item_begin("smmu");
+	shell_item_begin("SMMU");
 	shell_item_line("discovered:%s probed:%s abort:%s ready:%s",
 		shell_yes_no(info.discovered), shell_yes_no(info.probed),
 		shell_yes_no(info.aborted), shell_yes_no(info.ready));
@@ -1905,7 +1905,7 @@ static int32_t shell_smmustat(int32_t argc, __unused char **argv)
 static void shell_vsmmustat_one(uint16_t vm_id,
 	const struct arm64_vsmmu_debug *debug)
 {
-	shell_item_begin("vm%hu vsmmu", vm_id);
+	shell_item_begin("vm%hu vSMMU", vm_id);
 	shell_item_line("configured:%s available:%s mmio:0x%016lx+0x%016lx",
 		shell_yes_no(debug->size != 0UL), shell_yes_no(debug->available),
 		debug->base, debug->size);
@@ -1951,7 +1951,7 @@ static int32_t shell_vsmmustat(int32_t argc, __unused char **argv)
 		}
 	}
 	if (!found) {
-		shell_item_begin("vsmmu");
+		shell_item_begin("vSMMU");
 		shell_item_line("instances:none");
 		shell_item_end();
 	}
@@ -2129,13 +2129,13 @@ static void shell_pcistat_vm(uint16_t vm_id,
 	uint16_t idx;
 
 	if ((vm_config->pci_devs == NULL) || (vm_config->pci_dev_num == 0U)) {
-		shell_item_begin("vm%hu pci", vm_id);
+		shell_item_begin("vm%hu PCI", vm_id);
 		shell_item_line("devices:none");
 		shell_item_end();
 		return;
 	}
 
-	shell_item_begin("vm%hu pci:%s", vm_id, vm_config->name);
+	shell_item_begin("vm%hu PCI:%s", vm_id, vm_config->name);
 	shell_item_line("state:%s configured:%hu vpci:%s",
 		is_poweroff_vm(vm) ? "poweroff" : "created",
 		vm_config->pci_dev_num,
@@ -3138,15 +3138,15 @@ static void shell_health_print_findings(const struct shell_health_host *host,
 		printed = true;
 	}
 	if ((host->reasons & SHELL_HEALTH_HOST_HV_S1_FULL) != 0UL) {
-		shell_item_line("host: hv-s1 page-table pool exhausted");
+		shell_item_line("host: HV-s1 page-table pool exhausted");
 		printed = true;
 	}
 	if ((host->reasons & SHELL_HEALTH_HOST_VM_S2_FULL) != 0UL) {
-		shell_item_line("host: vm-s2 page-table pool exhausted");
+		shell_item_line("host: VM-s2 page-table pool exhausted");
 		printed = true;
 	}
 	if ((host->reasons & SHELL_HEALTH_HOST_S2_OWNERSHIP) != 0UL) {
-		shell_item_line("host: vm-s2 ownership mismatch unowned:%lu over:%lu",
+		shell_item_line("host: VM-s2 ownership mismatch unowned:%lu over:%lu",
 			host->stage2_unowned, host->stage2_overaccounted);
 		printed = true;
 	}
@@ -3241,7 +3241,7 @@ static int32_t shell_health(int32_t argc, __unused char **argv)
 		}
 	}
 
-	shell_item_begin("health");
+	shell_item_begin("HEALTH");
 	shell_item_line("overall:%s uptime:%lums",
 		shell_health_level_to_str(overall), ticks_to_ms(cpu_ticks()));
 	shell_item_section("Host");
@@ -3351,19 +3351,19 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 	shell_item_line("its:enabled:%s typer:0x%08lx ctlr:0x%08x",
 		shell_yes_no(vgic->its_enabled), vgic->its.typer, vgic->its.ctlr);
 	if (has_vits) {
-		shell_item_line("vits:q ctlr:%s cbaser:%s writer:0x%016lx reader:0x%016lx cmds:%lu invalid:%lu unsupported:%lu qerr:%lu copy-fail:%lu budget:%lu",
+		shell_item_line("vITS:q ctlr:%s cbaser:%s writer:0x%016lx reader:0x%016lx cmds:%lu invalid:%lu unsupported:%lu qerr:%lu copy-fail:%lu budget:%lu",
 			shell_yes_no(vits.ctlr_enabled), shell_yes_no(vits.cbaser_valid),
 			vits.cwriter, vits.creadr, vits.cmd_processed,
 			vits.cmd_invalid, vits.cmd_unsupported,
 			vits.cmd_queue_errors, vits.cmd_copy_fail,
 			vits.cmd_budget_exhausted);
-		shell_item_line("vits:tables dev:%u evt:%u col:%u cfg:%lu/%lu mmio:%lu/%lu trans:%lu inject:%lu/%lu no-event:%lu bad-target:%lu",
+		shell_item_line("vITS:tables dev:%u evt:%u col:%u cfg:%lu/%lu mmio:%lu/%lu trans:%lu inject:%lu/%lu no-event:%lu bad-target:%lu",
 			vits.devices, vits.events, vits.collections,
 			vits.config_update_ok, vits.config_update_fail,
 			vits.mmio_read, vits.mmio_write, vits.translater_write,
 			vits.inject_ok, vits.inject_fail,
 			vits.inject_no_event, vits.inject_bad_target);
-		shell_item_line("vits:last op:0x%02x dev:%u event:%u lpi:%u col:%hu target:%hu ret:%d",
+		shell_item_line("vITS:last op:0x%02x dev:%u event:%u lpi:%u col:%hu target:%hu ret:%d",
 			vits.last_opcode, vits.last_device, vits.last_event,
 			vits.last_lpi, vits.last_collection,
 			vits.last_target, vits.last_status);

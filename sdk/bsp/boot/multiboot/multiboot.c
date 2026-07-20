@@ -11,7 +11,39 @@
 #include <boot.h>
 #include "multiboot_priv.h"
 
+/* [20260720] Multiboot handoff normalization
+ *
+ * boot entry registers
+ *        |
+ *        v
+ * detect Multiboot1 or Multiboot2
+ *        |
+ *        v
+ * translate early physical pointers
+ *        |
+ *        +--> copy command line, loader name, and bounded table entries
+ *        |
+ *        `--> retain early mappings for module payloads
+ *        |
+ *        v
+ * publish protocol name in the global acrn_boot_info
+ *
+ * Key rule:
+ *   - the bootloader owns the raw information and module storage;
+ *   - this layer normalizes protocol metadata before VM loading consumes it;
+ *   - a failed or absent protocol is not published, allowing boot.c to select
+ *     the bare-boot provider instead.
+ */
+
 /**
+ * Convert the fixed-layout Multiboot1 information into BEAU's protocol-neutral
+ * boot ABI. Bootloader physical addresses are accessed through the early host
+ * mapping because normal paging is not available at this point.
+ *
+ * Memory-map records and module labels are copied into bounded ABI arrays. The
+ * module bytes themselves are not copied: each ABI module retains an early HVA
+ * for the payload that the later VM image loader will consume.
+ *
  * @pre abi != NULL
  */
 int32_t multiboot_to_acrn_bi(struct acrn_boot_info *abi, void *mb_info) {
@@ -30,7 +62,7 @@ int32_t multiboot_to_acrn_bi(struct acrn_boot_info *abi, void *mb_info) {
 	abi->mmap_entries = mbi->mi_mmap_length / sizeof(struct multiboot_mmap);
 
 	if (((mbi->mi_flags & MULTIBOOT_INFO_HAS_MMAP) != 0U) && (abi->mmap_entries != 0U) && (mmap != NULL)) {
-
+		/* Keep bootloader-provided entry counts within the normalized ABI. */
 		if (abi->mmap_entries > MAX_MMAP_ENTRIES) {
 			abi->mmap_entries = MAX_MMAP_ENTRIES;
 		}
@@ -46,6 +78,7 @@ int32_t multiboot_to_acrn_bi(struct acrn_boot_info *abi, void *mb_info) {
 
 	abi->mods_count = mbi->mi_mods_count;
 	if (((mbi->mi_flags & MULTIBOOT_INFO_HAS_MODS) != 0U) && (mbi->mi_mods_count != 0U) && (mods != NULL)) {
+		/* Module payload ownership stays with boot memory; only metadata is normalized. */
 		if (abi->mods_count > MAX_MODULE_NUM) {
 			abi->mods_count = MAX_MODULE_NUM;
 		}
@@ -66,6 +99,15 @@ int32_t multiboot_to_acrn_bi(struct acrn_boot_info *abi, void *mb_info) {
 	return 0;
 }
 
+/**
+ * Select the parser indicated by the boot entry magic and normalize its output.
+ * The protocol name is written only after the matching converter succeeds, so
+ * callers can use a negative result as the boundary for bare-boot fallback.
+ *
+ * @retval 0 a supported Multiboot handoff was normalized
+ * @retval -ENODEV no supported handoff was available
+ * @pre registers != NULL
+ */
 int32_t init_multiboot_info(uint32_t *registers)
 {
 	int32_t ret = -ENODEV;

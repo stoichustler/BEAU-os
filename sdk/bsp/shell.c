@@ -1514,8 +1514,8 @@ static int32_t shell_version(__unused int32_t argc, __unused char **argv)
 {
 	char temp_str[MAX_STR_SIZE];
 
-	snprintf(temp_str, MAX_STR_SIZE, "hv: %s-%s-%s %s%s%s%s %s@%s build by %s %s\r\n",
-		HV_BRANCH_VERSION, HV_COMMIT_TIME, HV_COMMIT_DIRTY, HV_BUILD_TYPE,
+	snprintf(temp_str, MAX_STR_SIZE, "BEAU OS-%s %s-%s %s%s%s%s %s@%s build by %s %s\r\n",
+		BEAU_OS_VERSION, HV_COMMIT_TIME, HV_COMMIT_DIRTY, HV_BUILD_TYPE,
 		(sizeof(HV_COMMIT_TAGS) > 1) ? "(tag: " : "", HV_COMMIT_TAGS, 
 		(sizeof(HV_COMMIT_TAGS) > 1) ? ")" : "",
 		HV_BUILD_SCENARIO, HV_BUILD_BOARD, HV_BUILD_USER, HV_BUILD_TIME);
