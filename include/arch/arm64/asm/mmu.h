@@ -10,6 +10,7 @@
 #include <types.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
+#include <asm/mte.h>
 #include <asm/sysreg.h>
 
 #define MAX_FDT_RSVD_REGIONS	16
@@ -20,6 +21,24 @@
 #define ARM64_S1_ACCESS_EXECUTE	(1U << 2U)
 
 struct page_pool_stats;
+struct page_pool;
+
+static inline void *arch_page_pool_alloc(const struct page_pool *pool,
+	void *page)
+{
+	return arm64_mte_page_alloc(pool, page);
+}
+
+static inline bool arch_page_pool_free(const struct page_pool *pool,
+	const void *page)
+{
+	return arm64_mte_page_free(pool, page);
+}
+
+static inline void *arch_page_pool_untag(const void *page)
+{
+	return (void *)arm64_mte_untag_address((uint64_t)page);
+}
 
 static inline void arm64_set_ttbr0_el2(uint64_t ttbr)
 {
@@ -28,7 +47,7 @@ static inline void arm64_set_ttbr0_el2(uint64_t ttbr)
 }
 
 void init_paging(void);
-void enable_paging(void);
+bool enable_paging(void);
 bool arm64_mmu_is_enabled(void);
 void flush_tlb(uint64_t addr);
 void flush_tlb_range(uint64_t addr, uint64_t size);

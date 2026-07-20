@@ -12,6 +12,8 @@
 #include <fdt_api.h>
 #include <acrn_hv_defs.h>
 #include <asm/platform.h>
+#include <asm/boot/ld_sym.h>
+#include <asm/mte.h>
 #include <asm/sysreg.h>
 
 void set_paging_supervisor(__unused uint64_t base, __unused uint64_t size)
@@ -103,8 +105,9 @@ void arm64_get_hv_s1_page_pool_stats(struct page_pool_stats *stats)
 #define PPT_PAGE_NUM_SUM	(PPT_PGTL3_PAGE_NUM + PPT_PGTL2_PAGE_NUM + PPT_PGTL1_PAGE_NUM + PPT_PGTL0_PAGE_NUM)
 #define PPT_PAGE_NUM		roundup(PPT_PAGE_NUM_SUM, 64U)
 
-DEFINE_PAGE_TABLES(ppt_pages, PPT_PAGE_NUM);
+DEFINE_MTE_PAGE_TABLES(ppt_pages, PPT_PAGE_NUM);
 DEFINE_PAGE_TABLE(ppt_pages_bitmap);
+static uint8_t ppt_page_tag_states[PPT_PAGE_NUM];
 
 static bool large_page_support(enum _page_table_level level, __unused uint64_t prot)
 {
@@ -293,6 +296,35 @@ static void arm64_protect_hv_sections(void)
 		(uint64_t)&_rodata_end, PAGE_AP_RO_EL2 | PAGE_PXN | PAGE_UXN, 0UL);
 }
 
+static void arm64_map_mte_page_pools(void)
+{
+	uint64_t start;
+	uint64_t end;
+
+	if (!arm64_mte_is_enabled()) {
+		return;
+	}
+	start = (uint64_t)&_mte_page_pool_start;
+	end = (uint64_t)&_mte_page_pool_end;
+	if ((end <= start) || ((start & (PAGE_SIZE - 1UL)) != 0UL) ||
+		((end & (PAGE_SIZE - 1UL)) != 0UL)) {
+		panic("MTE: invalid page-pool section [0x%lx,0x%lx)", start, end);
+	}
+
+	/* [20260720] EL2 MTE page-pool mapping
+	 *
+	 *   RAM block map -> split dedicated pool range -> Normal-Tagged leaves
+	 *
+	 * Key rule:
+	 *   - the linker owns a single page-aligned physical range;
+	 *   - the range is converted before the MMU and tag checking are enabled;
+	 *   - no second virtual alias retains a conflicting Normal-WB attribute.
+	 */
+	pgtable_modify_or_del_map((uint64_t *)ppt_mmu_top_addr, start, end - start,
+		PAGE_ATTR_IDX_NORMAL_TAGGED, PAGE_ATTR_IDX_MASK,
+		&ppt_pgtable, MR_MODIFY);
+}
+
 static void init_hv_mapping(void)
 {
 	const struct arm64_mem_region *mmio_regions;
@@ -336,23 +368,36 @@ static void init_hv_mapping(void)
 			rsvd_regions[i].size, 0UL, 0UL, &ppt_pgtable, MR_DEL);
 	}
 
+	arm64_map_mte_page_pools();
 	arm64_protect_hv_sections();
 
 	init_ttbr0_el2 = (uint64_t)ppt_mmu_top_addr;
-	enable_paging();
+	if (!enable_paging()) {
+		panic("MTE: failed to enable EL2 paging controls on bsp");
+	}
 }
 
 void init_paging(void)
 {
+	int32_t status;
+
 	init_phys_mem_range();
+	arm64_mte_bootstrap_init();
 	init_page_pool(&ppt_page_pool, (uint64_t *)ppt_pages,
 		(uint64_t *)ppt_pages_bitmap, PPT_PAGE_NUM);
+	status = arm64_mte_register_page_pool(&ppt_page_pool, ppt_pages,
+		PPT_PAGE_NUM, ppt_page_tag_states);
+	if (status != 0) {
+		panic("MTE: failed to register stage-1 page pool status:%d", status);
+	}
 
 	init_hv_mapping();
 }
 
-void enable_paging(void)
+bool enable_paging(void)
 {
+	uint64_t mair = MAIR_EL2_VALUE;
+	uint64_t tcr = TCR_EL2_VALUE;
 	uint64_t sctlr;
 
 	/*
@@ -366,14 +411,18 @@ void enable_paging(void)
 	 * The local TLB flush ensures no stale translation survives a rebuild of
 	 * the bootstrap page table before the MMU begins using it.
 	 */
-	write_mair_el2(MAIR_EL2_VALUE);
-	write_tcr_el2(TCR_EL2_VALUE);
+	sctlr = read_sctlr_el2() | SCTLR_EL2_VALUE;
+	if (!arm64_mte_prepare_pcpu(&mair, &tcr, &sctlr)) {
+		return false;
+	}
+	write_mair_el2(mair);
+	write_tcr_el2(tcr);
 	write_ttbr0_el2(init_ttbr0_el2);
 	flush_tlb_local();
 
-	sctlr = read_sctlr_el2();
-	sctlr |= SCTLR_EL2_VALUE;
 	write_sctlr_el2(sctlr);
+	arm64_mte_mark_pcpu_enabled();
+	return true;
 }
 
 bool arm64_mmu_is_enabled(void)

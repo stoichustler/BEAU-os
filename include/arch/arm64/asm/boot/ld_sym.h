@@ -19,6 +19,9 @@ extern char		_data_end;
 extern char		_bss_start;
 extern char		_bss_end;
 
+extern char		_mte_page_pool_start;
+extern char		_mte_page_pool_end;
+
 extern char		ld_ram_start;
 extern char		ld_image_end;
 extern char		ld_ram_end;

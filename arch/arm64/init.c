@@ -174,8 +174,7 @@ void init_secondary_pcpu(uint64_t mpidr)
 	}
 
 	set_pcpu_active(pcpu_id);
-	enable_paging();
-	if (!arm64_mmu_is_enabled()) {
+	if (!enable_paging() || !arm64_mmu_is_enabled()) {
 		panic("arm64 mmu is not enabled on ap");
 	}
 

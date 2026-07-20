@@ -9,6 +9,7 @@
 #define COMMON_PGTABLE_H
 #include <asm/page.h>
 #include <asm/mm_common.h>
+#include <asm/mte.h>
 
 uint64_t arch_pgtl_page_paddr(uint64_t pgtle);
 uint64_t arch_pgtl_large(uint64_t pgtle);
@@ -36,7 +37,7 @@ uint64_t arch_hva2hpa_early(void *x);
  */
 static inline void *hpa2hva(uint64_t hpa)
 {
-	return (void *)hpa;
+	return arm64_mte_hpa_to_hva(hpa);
 }
 
 /**
@@ -60,7 +61,7 @@ static inline void *hpa2hva(uint64_t hpa)
  */
 static inline uint64_t hva2hpa(const void *va)
 {
-	return (uint64_t)va;
+	return arm64_mte_hva_to_hpa(va);
 }
 
 static inline uint64_t round_page_up(uint64_t addr)

@@ -66,6 +66,15 @@ config STACK_SIZE
 	  Stack size in bytes for BEAU threads, vCPUs, shell, watchdog, and
 	  per-pCPU stacks.
 
+config ARM64_MTE
+	bool "ARM64 EL2 Memory Tagging Extension"
+	default y
+	help
+	  Build BEAU EL2 Memory Tagging Extension support. FEAT_MTE2 or newer
+	  is detected at runtime; older CPUs keep the existing untagged memory
+	  path. The initial implementation protects BEAU-owned page-table pools
+	  and does not expose MTE to guests.
+
 source "arch/arm64/platform/Kconfig"
 source "arch/arm64/gic/Kconfig"
 source "arch/arm64/guest/Kconfig"

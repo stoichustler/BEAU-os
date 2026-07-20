@@ -11,9 +11,15 @@ The shell masks the password argument and excludes the command from history.
 The credential itself is managed out of band and is represented in the image
 only by its SHA-256 digest.
 
-Developers may also call `arm64_ddb_break()` from Host code. Only the reserved
-`BRK #0x0DDB` immediate enters DDB. Guest exceptions and all other Host traps
-retain their normal handling.
+Developers may also call `arm64_ddb_break()` from Host code. The reserved
+`BRK #0x0DDB` immediate identifies a manual break, while `BRK #0x0DDC`
+identifies a panic. Guest exceptions and all other Host traps retain their
+normal handling.
+
+An ARM64 Host `panic()` persists its coredump and then enters DDB through the
+dedicated `BRK #0x0DDC` panic entry. This path does not use Shell authentication.
+The banner reports `reason:panic`; `continue` returns to the panic path's
+permanent halt instead of resuming normal execution.
 
 ## FreeBSD Design Origin
 
@@ -25,6 +31,8 @@ Its primary design references are:
 - `sys/arm64/arm64/db_interface.c` for register exposure and fault-recoverable
   debugger memory inspection;
 - `sys/arm64/arm64/db_trace.c` for frame-pointer-based ARM64 stack unwinding.
+- `sys/kern/kern_shutdown.c` and `sys/sys/kdb.h` for debugger entry with the
+  explicit `KDB_WHY_PANIC` reason after panic reporting.
 
 No FreeBSD source file is incorporated. The mechanism is reimplemented for
 BEAU Host EL2 with Guest isolation, an authenticated shell entry, a reserved

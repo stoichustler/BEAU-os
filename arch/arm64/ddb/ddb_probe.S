@@ -14,6 +14,13 @@ arm64_ddb_break:
 	ret
 	.size arm64_ddb_break, . - arm64_ddb_break
 
+	.globl arm64_ddb_panic_break
+	.type arm64_ddb_panic_break, %function
+arm64_ddb_panic_break:
+	brk	#0x0ddc
+	ret
+	.size arm64_ddb_panic_break, . - arm64_ddb_panic_break
+
 	.globl arm64_ddb_probe_read8
 	.type arm64_ddb_probe_read8, %function
 arm64_ddb_probe_read8:

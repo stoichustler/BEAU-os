@@ -127,6 +127,15 @@ SECTIONS
 	 */
 	.bss (NOLOAD) : {
 		_bss_start = .;
+		. = ALIGN(0x1000);
+		/*
+		 * Page-table pools are isolated so EL2 can map this physical range
+		 * with the Normal-Tagged MAIR attribute without aliasing ordinary BSS.
+		 */
+		_mte_page_pool_start = .;
+		KEEP(*(.bss.mte_page_pool))
+		. = ALIGN(0x1000);
+		_mte_page_pool_end = .;
 		*(.bss)
 		*(.bss.*)
 		*(COMMON)

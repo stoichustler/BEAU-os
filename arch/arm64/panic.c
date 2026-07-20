@@ -10,8 +10,26 @@
 #include <vm.h>
 #include <logmsg.h>
 #include <asm/coredump.h>
+#include <asm/ddb.h>
 #include <asm/sysreg.h>
 
+/* [20260720] FreeBSD-derived panic debugger entry
+ *
+ *   panic log -> durable coredump -> panic BRK -> DDB command loop
+ *                                           |
+ *                                           `--> continue -> panic halt
+ *
+ * Design origin:
+ *   - FreeBSD sys/kern/kern_shutdown.c enters KDB with KDB_WHY_PANIC after
+ *     reporting the panic and before completing the fatal path;
+ *   - BEAU encodes the panic reason in a dedicated Host BRK immediate.
+ *
+ * Key rule:
+ *   - coredump evidence is complete before interactive debugger ownership;
+ *   - panic entry bypasses Shell authentication but remains Host-only;
+ *   - returning from DDB reaches the panic macro's permanent halt, never
+ *     normal execution.
+ */
 void panic_dump_context(void)
 {
 	struct arm64_coredump_context context;
@@ -46,4 +64,7 @@ void panic_dump_context(void)
 		LOG_FTL("vcpu: none");
 	}
 	arm64_coredump_log(&context, pcpu_id, LOG_FATAL);
+	if (pcpu_id < MAX_PCPU_NUM) {
+		arm64_ddb_panic_break();
+	}
 }

@@ -228,11 +228,19 @@ static bool arm64_vsve_read_id_value(const struct acrn_vcpu *vcpu,
 		if (!arm64_vcpu_mpu_sve_enabled(vcpu)) {
 			val &= ~ID_AA64PFR0_SVE_MASK;
 		}
-		*value = val;
-		break;
-	case SYSREG_ID_AA64PFR1_EL1:
-		*value = read_id_aa64pfr1_el1();
-		break;
+			*value = val;
+			break;
+		case SYSREG_ID_AA64PFR1_EL1:
+			/*
+			 * BEAU does not virtualize guest allocation tags. Hide the base,
+			 * fractional, and extended MTE fields together so EL1 cannot infer
+			 * a feature whose state HCR_EL2 deliberately blocks.
+			 */
+			val = read_id_aa64pfr1_el1();
+			val &= ~(ID_AA64PFR1_MTE_MASK |
+				ID_AA64PFR1_MTE_FRAC_MASK | ID_AA64PFR1_MTEX_MASK);
+			*value = val;
+			break;
 	case SYSREG_ID_AA64ZFR0_EL1:
 		*value = arm64_vcpu_mpu_sve_enabled(vcpu) ? read_id_aa64zfr0_el1() : 0UL;
 		break;

@@ -108,7 +108,9 @@ static void arm64_init_guest_control_context(struct acrn_vcpu *vcpu)
 	(void)memset(gctx, 0U, sizeof(*gctx));
 	gctx->vttbr_el2 = arm64_stage2_vttbr(vcpu->vm);
 	gctx->vtcr_el2 = VTCR_EL2_VALUE;
-	gctx->hcr_el2 = HCR_VM | HCR_RW | HCR_IMO | HCR_FMO | HCR_AMO | HCR_TSC;
+	/* Guest MTE is not virtualized; HCR_EL2.ATA must remain fail-closed. */
+	gctx->hcr_el2 = (HCR_VM | HCR_RW | HCR_IMO | HCR_FMO | HCR_AMO |
+		HCR_TSC) & ~HCR_ATA;
 	gctx->cntvoff_el2 = (uint64_t)vcpu->vm->arch_vm.time_delta;
 	gctx->timer_virq = ARM64_GIC_PPI_VIRTUAL_TIMER;
 	gctx->sctlr_el1 = ARM64_GUEST_SCTLR_EL1_INIT;

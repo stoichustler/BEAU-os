@@ -5,6 +5,9 @@
  */
 
 #include <types.h>
+#include <atomic.h>
+#include <delay.h>
+#include <errno.h>
 #include <vm.h>
 #include <vcpu.h>
 #include <vconfig.h>
@@ -19,6 +22,7 @@
 #include <acrn_hv_defs.h>
 #include <bsp/io_req.h>
 #include <asm/sysreg.h>
+#include <asm/mte.h>
 #include <asm/guest/vcpu_priv.h>
 #include <asm/guest/vgicv3.h>
 #include <asm/guest/stage2.h>
@@ -68,12 +72,21 @@
  */
 #define ARM64_STAGE2_PAGES_PER_VM	64UL
 #define ARM64_STAGE2_PAGE_NUM		(CONFIG_MAX_VM_NUM * ARM64_STAGE2_PAGES_PER_VM)
+#define ARM64_STAGE2_RETIRED_WORDS	((ARM64_STAGE2_PAGE_NUM + 63UL) >> 6U)
+#define ARM64_STAGE2_SYNC_TIMEOUT_US	100000U
+#define ARM64_STAGE2_OWNER_RETRY_US	10U
+#define ARM64_STAGE2_OWNER_RETRIES	(ARM64_STAGE2_SYNC_TIMEOUT_US / ARM64_STAGE2_OWNER_RETRY_US)
+#define ARM64_STAGE2_ADDRESS_LIMIT	(1UL << 48U)
+#define ARM64_STAGE2_MAP_FLAG_MASK	(ARM64_STAGE2_MAP_READ | ARM64_STAGE2_MAP_WRITE | \
+	ARM64_STAGE2_MAP_DEVICE | ARM64_STAGE2_MAP_NORMAL)
 
 /* A single static pool backs all per-VM stage-2 page tables for QEMU bring-up. */
 static struct page_pool stage2_page_pool;
-DEFINE_PAGE_TABLES(stage2_pages, ARM64_STAGE2_PAGE_NUM);
+DEFINE_MTE_PAGE_TABLES(stage2_pages, ARM64_STAGE2_PAGE_NUM);
 DEFINE_PAGE_TABLE(stage2_pages_bitmap);
+static uint8_t stage2_page_tag_states[ARM64_STAGE2_PAGE_NUM];
 static uint8_t stage2_zero_page[PAGE_SIZE] __aligned(PAGE_SIZE);
+static spinlock_t stage2_page_pool_init_lock;
 static bool stage2_page_pool_initialized;
 static bool arm64_boot_vdev_logged;
 
@@ -100,7 +113,7 @@ static uint64_t arm64_vm_range_end(uint64_t base, uint64_t size)
 
 static bool stage2_large_page_support(enum _page_table_level level, __unused uint64_t prot)
 {
-	return (level == PGT_LVL1) || (level == PGT_LVL2);
+	return level == PGT_LVL1;
 }
 
 static void stage2_flush_cache_pagewalk(const void *entry)
@@ -145,20 +158,128 @@ static void arm64_stage2_flush_vttbr(void *data)
 	write_vttbr_el2(old_vttbr);
 }
 
-static void arm64_stage2_flush_vm_tlb(struct acrn_vm *vm)
+static int32_t arm64_stage2_flush_vm_tlb(struct acrn_vm *vm)
 {
 	uint64_t target_vttbr;
 	uint64_t mask;
+	uint32_t retry;
+	int32_t status = 0;
 
 	if ((vm == NULL) || (vm->root_stg2ptp == NULL) || (vm->hw.cpu_affinity == 0UL)) {
-		return;
+		return 0;
 	}
 
 	target_vttbr = arm64_stage2_vttbr(vm);
 	mask = vm->hw.cpu_affinity & ALL_CPUS_MASK;
 	if (mask != 0UL) {
-		smp_call_function(mask, arm64_stage2_flush_vttbr, &target_vttbr);
+		for (retry = 0U; retry < ARM64_STAGE2_OWNER_RETRIES; retry++) {
+			status = smp_try_call_function_timeout(mask,
+				arm64_stage2_flush_vttbr, &target_vttbr,
+				ARM64_STAGE2_SYNC_TIMEOUT_US);
+			if (status != -EBUSY) {
+				break;
+			}
+			udelay(ARM64_STAGE2_OWNER_RETRY_US);
+		}
 	}
+
+	return status;
+}
+
+static int32_t arm64_stage2_sync_translation(struct acrn_vm *vm)
+{
+	int32_t status;
+
+	status = arm64_stage2_flush_vm_tlb(vm);
+	if (status == 0) {
+		status = arm_smmu_sync_vm_stage2(vm->vm_id,
+			hva2hpa(vm->root_stg2ptp));
+	}
+
+	return status;
+}
+
+static uint64_t arm64_stage2_update_owner(const struct acrn_vm *vm)
+{
+	return __atomic_load_n(&vm->arch_vm.stage2_update_owner, __ATOMIC_ACQUIRE);
+}
+
+static uint64_t arm64_stage2_acquire_update(struct acrn_vm *vm,
+	uint64_t ipa, uint64_t size)
+{
+	uint64_t owner = (uint64_t)get_pcpu_id() + 1UL;
+	uint64_t previous = 0UL;
+	uint32_t retry;
+
+	for (retry = 0U; retry < ARM64_STAGE2_OWNER_RETRIES; retry++) {
+		previous = atomic_cmpxchg64(&vm->arch_vm.stage2_update_owner, 0UL, owner);
+		if (previous == 0UL) {
+			return owner;
+		}
+		if (previous == owner) {
+			panic("vm-%u reentrant stage-2 update ipa=0x%lx size=0x%lx",
+				vm->vm_id, ipa, size);
+		}
+		udelay(ARM64_STAGE2_OWNER_RETRY_US);
+	}
+
+	panic("vm-%u stage-2 update owner timeout ipa=0x%lx size=0x%lx owner:%lu",
+		vm->vm_id, ipa, size, previous);
+	return owner;
+}
+
+static void arm64_stage2_release_update(struct acrn_vm *vm, uint64_t owner)
+{
+	if (atomic_cmpxchg64(&vm->arch_vm.stage2_update_owner, owner, 0UL) != owner) {
+		panic("vm-%u stage-2 update owner corruption", vm->vm_id);
+	}
+}
+
+static void arm64_stage2_sync_or_panic(struct acrn_vm *vm, uint64_t ipa,
+	uint64_t size, const char *phase)
+{
+	int32_t status = arm64_stage2_sync_translation(vm);
+
+	if (status != 0) {
+		panic("vm-%u stage-2 %s sync failed ipa=0x%lx size=0x%lx status:%d",
+			vm->vm_id, phase, ipa, size, status);
+	}
+}
+
+/* [20260720] Stage-2 break-before-make replacement
+ *
+ *   valid block/page descriptor
+ *       -> invalidate and clean while stg2pt_lock is held
+ *       -> release stg2pt_lock
+ *       -> CPU VMID TLBI and bound SMMU VMID TLBI/CMD_SYNC
+ *       -> reacquire stg2pt_lock and publish the replacement
+ *
+ * Key rule:
+ *   - stage2_update_owner excludes a second writer while the lock is released;
+ *   - readers either observe the old descriptor, the invalid gap, or the final
+ *     descriptor, but never a partially initialized child table;
+ *   - synchronization failure leaves the new table allocated and fails closed.
+ */
+static void stage2_replace_pgentry(uint64_t *pte, uint64_t new_pte,
+	uint64_t ipa, uint64_t size, const struct pgtable *table)
+{
+	struct acrn_vm *vm = table->private_data;
+	uint64_t owner = (uint64_t)get_pcpu_id() + 1UL;
+
+	if ((vm == NULL) || (arm64_stage2_update_owner(vm) != owner)) {
+		panic("invalid stage-2 BBM owner ipa=0x%lx size=0x%lx", ipa, size);
+	}
+
+	sanitize_pte_entry(pte, table);
+	spinlock_release(&vm->stg2pt_lock);
+	arm64_stage2_sync_or_panic(vm, ipa, size, "BBM");
+	spinlock_obtain(&vm->stg2pt_lock);
+	if (table->pgentry_present(*pte)) {
+		panic("vm-%u stage-2 BBM descriptor republished early ipa=0x%lx",
+			vm->vm_id, ipa);
+	}
+	*pte = new_pte;
+	table->flush_cache_pagewalk(pte);
 }
 
 /*
@@ -188,10 +309,21 @@ static void stage2_set_pgentry(uint64_t *pte, uint64_t page, uint64_t prot,
 
 static void init_stage2_page_pool(void)
 {
+	int32_t status = 0;
+
+	spinlock_obtain(&stage2_page_pool_init_lock);
 	if (!stage2_page_pool_initialized) {
 		init_page_pool(&stage2_page_pool, (uint64_t *)stage2_pages,
 			(uint64_t *)stage2_pages_bitmap, ARM64_STAGE2_PAGE_NUM);
-		stage2_page_pool_initialized = true;
+		status = arm64_mte_register_page_pool(&stage2_page_pool,
+			stage2_pages, ARM64_STAGE2_PAGE_NUM, stage2_page_tag_states);
+		if (status == 0) {
+			stage2_page_pool_initialized = true;
+		}
+	}
+	spinlock_release(&stage2_page_pool_init_lock);
+	if (status != 0) {
+		panic("MTE: failed to register stage-2 page pool status:%d", status);
 	}
 }
 
@@ -202,7 +334,7 @@ void arm64_get_stage2_page_pool_stats(struct page_pool_stats *stats)
 
 static bool arm64_stage2_page_index(const uint64_t *page, uint64_t *page_index)
 {
-	uint64_t address = (uint64_t)page;
+	uint64_t address = arm64_mte_untag_address((uint64_t)page);
 	uint64_t pool_start = (uint64_t)stage2_pages;
 	uint64_t pool_end = pool_start + sizeof(stage2_pages);
 	bool allocated;
@@ -288,6 +420,10 @@ bool arm64_get_stage2_vm_stats(struct acrn_vm *vm,
 	stats->root_address = (uint64_t)vm->root_stg2ptp;
 
 	spinlock_obtain(&vm->stg2pt_lock);
+	if (arm64_stage2_update_owner(vm) != 0UL) {
+		spinlock_release(&vm->stg2pt_lock);
+		return false;
+	}
 	arm64_stage2_count_table(&context, vm->root_stg2ptp, PGT_LVL3);
 	spinlock_release(&vm->stg2pt_lock);
 
@@ -344,6 +480,10 @@ bool arm64_get_stage2_memory_attr(struct acrn_vm *vm, uint64_t ipa,
 	attr->encoding = 0U;
 
 	spinlock_obtain(&vm->stg2pt_lock);
+	if (arm64_stage2_update_owner(vm) != 0UL) {
+		spinlock_release(&vm->stg2pt_lock);
+		return false;
+	}
 	entry = pgtable_lookup_entry((uint64_t *)vm->root_stg2ptp, ipa,
 		&pg_size, &vm->stg2_pgtable);
 	mapped = entry != NULL;
@@ -438,13 +578,16 @@ static void validate_stage2_ram_identity(const struct acrn_vm *vm, uint64_t mem_
 		panic("vm-%u stage-2 ram is not 1:1 ipa=0x%lx pa=0x%lx",
 			vm->vm_id, mem_start, mem_hpa);
 	}
-	if ((mem_size == 0UL) || ((mem_start + mem_size) <= mem_start)) {
+	if ((mem_size == 0UL) || (mem_start >= ARM64_STAGE2_ADDRESS_LIMIT) ||
+		(mem_hpa >= ARM64_STAGE2_ADDRESS_LIMIT) ||
+		(mem_size > (ARM64_STAGE2_ADDRESS_LIMIT - mem_start)) ||
+		(mem_size > (ARM64_STAGE2_ADDRESS_LIMIT - mem_hpa))) {
 		panic("vm-%u has invalid stage-2 ram window", vm->vm_id);
 	}
-	if (!mem_aligned_check(mem_start, PGTL1_SIZE) ||
-		!mem_aligned_check(mem_hpa, PGTL1_SIZE) ||
-		!mem_aligned_check(mem_size, PGTL1_SIZE)) {
-		panic("vm-%u stage-2 ram is not block-map aligned ipa=0x%lx pa=0x%lx size=0x%lx",
+	if (!mem_aligned_check(mem_start, PAGE_SIZE) ||
+		!mem_aligned_check(mem_hpa, PAGE_SIZE) ||
+		!mem_aligned_check(mem_size, PAGE_SIZE)) {
+		panic("vm-%u stage-2 ram is not page aligned ipa=0x%lx pa=0x%lx size=0x%lx",
 			vm->vm_id, mem_start, mem_hpa, mem_size);
 	}
 }
@@ -462,11 +605,14 @@ static void init_stage2_identity_map(struct acrn_vm *vm)
 		.pgentry_present = stage2_pgentry_present,
 		.flush_cache_pagewalk = stage2_flush_cache_pagewalk,
 		.set_pgentry = stage2_set_pgentry,
+		.replace_pgentry = stage2_replace_pgentry,
 	};
 
 	init_stage2_page_pool();
 
+	__atomic_store_n(&vm->arch_vm.stage2_update_owner, 0UL, __ATOMIC_RELEASE);
 	vm->stg2_pgtable = stage2_pgtable_template;
+	vm->stg2_pgtable.private_data = vm;
 	vm->root_stg2ptp = pgtable_create_root(&vm->stg2_pgtable);
 	if (vm->root_stg2ptp == NULL) {
 		panic("failed to create arm64 stage-2 root page table");
@@ -519,39 +665,70 @@ static uint64_t arm64_stage2_map_prot(uint32_t flags)
 	return prot | PAGE_BLOCK_DESC;
 }
 
+static void arm64_stage2_validate_range(const struct acrn_vm *vm,
+	uint64_t hpa, uint64_t ipa, uint64_t size, bool has_hpa)
+{
+	if ((vm == NULL) || (vm->root_stg2ptp == NULL) || (size == 0UL) ||
+		!mem_aligned_check(ipa, PAGE_SIZE) ||
+		!mem_aligned_check(size, PAGE_SIZE) ||
+		(ipa >= ARM64_STAGE2_ADDRESS_LIMIT) ||
+		(size > (ARM64_STAGE2_ADDRESS_LIMIT - ipa))) {
+		panic("invalid arm64 stage-2 range ipa=0x%lx size=0x%lx", ipa, size);
+	}
+	if (has_hpa && (!mem_aligned_check(hpa, PAGE_SIZE) ||
+		(hpa >= ARM64_STAGE2_ADDRESS_LIMIT) ||
+		(size > (ARM64_STAGE2_ADDRESS_LIMIT - hpa)))) {
+		panic("invalid arm64 stage-2 output range hpa=0x%lx size=0x%lx",
+			hpa, size);
+	}
+}
+
 void arm64_stage2_map(struct acrn_vm *vm, uint64_t hpa, uint64_t ipa,
 	uint64_t size, uint32_t flags)
 {
+	uint64_t owner;
 	uint64_t prot;
 
-	if ((vm == NULL) || (vm->root_stg2ptp == NULL) || (size == 0UL)) {
-		return;
-	}
+	arm64_stage2_validate_range(vm, hpa, ipa, size, true);
 	if (((flags & (ARM64_STAGE2_MAP_DEVICE | ARM64_STAGE2_MAP_NORMAL)) == 0U) ||
 		((flags & (ARM64_STAGE2_MAP_DEVICE | ARM64_STAGE2_MAP_NORMAL)) ==
-			(ARM64_STAGE2_MAP_DEVICE | ARM64_STAGE2_MAP_NORMAL))) {
+			(ARM64_STAGE2_MAP_DEVICE | ARM64_STAGE2_MAP_NORMAL)) ||
+		((flags & (ARM64_STAGE2_MAP_READ | ARM64_STAGE2_MAP_WRITE)) == 0U) ||
+		((flags & ~ARM64_STAGE2_MAP_FLAG_MASK) != 0U)) {
 		panic("invalid arm64 stage-2 map flags 0x%x", flags);
 	}
 
 	prot = arm64_stage2_map_prot(flags);
+	owner = arm64_stage2_acquire_update(vm, ipa, size);
 	spinlock_obtain(&vm->stg2pt_lock);
 	pgtable_add_map((uint64_t *)vm->root_stg2ptp, hpa, ipa, size, prot,
 		&vm->stg2_pgtable);
 	spinlock_release(&vm->stg2pt_lock);
-	arm64_stage2_flush_vm_tlb(vm);
+	arm64_stage2_sync_or_panic(vm, ipa, size, "map");
+	arm64_stage2_release_update(vm, owner);
 }
 
 void arm64_stage2_unmap(struct acrn_vm *vm, uint64_t ipa, uint64_t size)
 {
-	if ((vm == NULL) || (vm->root_stg2ptp == NULL) || (size == 0UL)) {
-		return;
-	}
+	uint64_t retired_bitmap[ARM64_STAGE2_RETIRED_WORDS];
+	struct pgtable_update update;
+	uint64_t owner;
 
+	arm64_stage2_validate_range(vm, 0UL, ipa, size, false);
+	owner = arm64_stage2_acquire_update(vm, ipa, size);
+	pgtable_update_init(&update, retired_bitmap, ARRAY_SIZE(retired_bitmap),
+		&vm->stg2_pgtable);
 	spinlock_obtain(&vm->stg2pt_lock);
-	pgtable_modify_or_del_map((uint64_t *)vm->root_stg2ptp, ipa, size, 0UL, 0UL,
-		&vm->stg2_pgtable, MR_DEL);
+	pgtable_modify_or_del_map_deferred((uint64_t *)vm->root_stg2ptp,
+		ipa, size, 0UL, 0UL, &vm->stg2_pgtable, MR_DEL, &update);
 	spinlock_release(&vm->stg2pt_lock);
-	arm64_stage2_flush_vm_tlb(vm);
+	if (update.changed) {
+		arm64_stage2_sync_or_panic(vm, ipa, size, "unmap");
+	}
+	if (update.retired_pages != 0UL) {
+		pgtable_free_retired_pages(&update, &vm->stg2_pgtable);
+	}
+	arm64_stage2_release_update(vm, owner);
 }
 
 static void register_arm64_vio_mmio(struct acrn_vm *vm)

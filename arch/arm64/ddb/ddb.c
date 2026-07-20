@@ -29,6 +29,12 @@ struct ddb_command {
 	ddb_command_fn_t handler;
 };
 
+enum ddb_entry_reason {
+	DDB_ENTRY_NONE = 0U,
+	DDB_ENTRY_BREAK,
+	DDB_ENTRY_PANIC,
+};
+
 static volatile uint64_t ddb_owner;
 
 static int32_t ddb_cmd_help(struct ddb_session *session, uint32_t argc,
@@ -59,11 +65,47 @@ static uint64_t ddb_owner_token(uint16_t pcpu_id)
 	return (pcpu_id < MAX_PCPU_NUM) ? (uint64_t)pcpu_id + 1UL : 0UL;
 }
 
-static bool ddb_break_trap(const struct intr_excp_ctx *ctx)
+static enum ddb_entry_reason ddb_get_entry_reason(
+	const struct intr_excp_ctx *ctx)
 {
-	return (ESR_EL2_EC(ctx->regs.esr) == ESR_EL2_EC_BRK64) &&
-		((ctx->regs.esr & ESR_EL2_IL) != 0UL) &&
-		((ctx->regs.esr & ESR_EL2_BRK_IMM_MASK) == ARM64_DDB_BRK_IMM);
+	enum ddb_entry_reason reason = DDB_ENTRY_NONE;
+
+	if ((ESR_EL2_EC(ctx->regs.esr) == ESR_EL2_EC_BRK64) &&
+		((ctx->regs.esr & ESR_EL2_IL) != 0UL)) {
+		switch (ctx->regs.esr & ESR_EL2_BRK_IMM_MASK) {
+		case ARM64_DDB_BRK_IMM:
+			reason = DDB_ENTRY_BREAK;
+			break;
+		case ARM64_DDB_PANIC_BRK_IMM:
+			reason = DDB_ENTRY_PANIC;
+			break;
+		default:
+			reason = DDB_ENTRY_NONE;
+			break;
+		}
+	}
+
+	return reason;
+}
+
+static const char *ddb_entry_reason_name(enum ddb_entry_reason reason)
+{
+	const char *name;
+
+	switch (reason) {
+	case DDB_ENTRY_BREAK:
+		name = "break";
+		break;
+	case DDB_ENTRY_PANIC:
+		name = "panic";
+		break;
+	case DDB_ENTRY_NONE:
+	default:
+		name = "unknown";
+		break;
+	}
+
+	return name;
 }
 
 static int32_t ddb_cmd_help(__unused struct ddb_session *session,
@@ -95,14 +137,14 @@ static int32_t ddb_cmd_regs(struct ddb_session *session, uint32_t argc,
 		return -EINVAL;
 	}
 	for (index = 0U; index < 30U; index += 2U) {
-		ddb_printf("x%02u:0x%016lx x%02u:0x%016lx\n",
+		ddb_printf("x%02u:0x%016lx  x%02u:0x%016lx\n",
 			index, gpr[index], index + 1U, gpr[index + 1U]);
 	}
-	ddb_printf("x30:0x%016lx sp :0x%016lx\n",
+	ddb_printf("x30:0x%016lx   sp:0x%016lx\n",
 		session->ctx->regs.lr, session->ctx->regs.sp);
 	ddb_printf("elr:0x%016lx spsr:0x%016lx\n",
 		session->ctx->regs.elr, session->ctx->regs.spsr);
-	ddb_printf("esr:0x%016lx far :0x%016lx hpfar:0x%016lx\n",
+	ddb_printf("esr:0x%016lx  far:0x%016lx hpfar:0x%016lx\n",
 		session->ctx->regs.esr, session->ctx->regs.far,
 		session->ctx->regs.hpfar);
 	return 0;
@@ -147,14 +189,15 @@ static int32_t ddb_cmd_reboot(struct ddb_session *session, uint32_t argc,
 	return 0;
 }
 
-static void ddb_run_session(struct ddb_session *session)
+static void ddb_run_session(struct ddb_session *session,
+	enum ddb_entry_reason reason)
 {
 	char line[DDB_LINE_SIZE];
 	char *argv[DDB_MAX_ARGS];
 
-	ddb_printf("\nBEAU DDB cpu%hu elr:0x%016lx esr:0x%016lx\n",
-		session->pcpu_id, session->ctx->regs.elr,
-		session->ctx->regs.esr);
+	ddb_printf("\nBEAU DDB cpu%hu reason:%s elr:0x%016lx esr:0x%016lx\n",
+		session->pcpu_id, ddb_entry_reason_name(reason),
+		session->ctx->regs.elr, session->ctx->regs.esr);
 	ddb_puts("type 'help' for commands\n");
 	while (!session->done) {
 		uint32_t argc;
@@ -190,7 +233,7 @@ static void ddb_run_session(struct ddb_session *session)
 
 /* [20260720] FreeBSD-derived Host DDB exception ownership
  *
- *   reserved Host BRK -> atomic owner -> raw UART -> command loop
+ *   manual/panic Host BRK -> atomic owner -> raw UART -> command loop
  *          |                                |
  *          |                                `--> continue -> release -> ERET
  *          |
@@ -205,7 +248,7 @@ static void ddb_run_session(struct ddb_session *session)
  *
  * Key rule:
  *   - Guest exceptions never call this interface;
- *   - only the reserved immediate creates an interactive session;
+ *   - only the reserved manual and panic immediates create a session;
  *   - an unexpected DDB-time fault retains raw UART ownership so fatal logging
  *     cannot deadlock on a lock held below the exception frame.
  */
@@ -215,6 +258,7 @@ bool arm64_ddb_handle_trap(struct intr_excp_ctx *ctx, uint64_t trap_type)
 	uint64_t token = ddb_owner_token(pcpu_id);
 	uint64_t current_owner;
 	uint64_t irq_flags;
+	enum ddb_entry_reason reason;
 	struct ddb_session session;
 
 	if ((ctx == NULL) || (trap_type != ARM64_TRAP_SYNC) || (token == 0UL)) {
@@ -224,8 +268,9 @@ bool arm64_ddb_handle_trap(struct intr_excp_ctx *ctx, uint64_t trap_type)
 		return true;
 	}
 
+	reason = ddb_get_entry_reason(ctx);
 	current_owner = __atomic_load_n(&ddb_owner, __ATOMIC_ACQUIRE);
-	if (!ddb_break_trap(ctx)) {
+	if (reason == DDB_ENTRY_NONE) {
 		if (current_owner == token) {
 			ddb_mem_cancel(pcpu_id);
 			__atomic_store_n(&ddb_owner, 0UL, __ATOMIC_RELEASE);
@@ -234,7 +279,8 @@ bool arm64_ddb_handle_trap(struct intr_excp_ctx *ctx, uint64_t trap_type)
 	}
 	ctx->regs.elr += 4UL;
 	if (current_owner == token) {
-		ddb_puts("ddb: nested breakpoint skipped\n");
+		ddb_printf("ddb: nested %s breakpoint skipped\n",
+			ddb_entry_reason_name(reason));
 		return true;
 	}
 	if (atomic_cmpxchg64(&ddb_owner, 0UL, token) != 0UL) {
@@ -250,7 +296,7 @@ bool arm64_ddb_handle_trap(struct intr_excp_ctx *ctx, uint64_t trap_type)
 	session.ctx = ctx;
 	session.pcpu_id = pcpu_id;
 	session.done = false;
-	ddb_run_session(&session);
+	ddb_run_session(&session, reason);
 	ddb_mem_cancel(pcpu_id);
 	serial_debug_release();
 	__atomic_store_n(&ddb_owner, 0UL, __ATOMIC_RELEASE);

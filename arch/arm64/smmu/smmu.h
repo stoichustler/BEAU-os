@@ -33,6 +33,7 @@ int32_t arm_smmu_hw_detach_stream(const struct arm_smmu_s2_config *config,
 	uint32_t stream_id);
 int32_t arm_smmu_hw_detach_domain(const struct arm_smmu_s2_config *config);
 bool arm_smmu_hw_domain_bound(const struct arm_smmu_s2_config *config);
+int32_t arm_smmu_hw_sync_s2(const struct arm_smmu_s2_config *config);
 bool arm_smmu_ready(void);
 
 #endif /* ARM64_SMMU_H */

@@ -243,12 +243,11 @@
 #define ARM_SMMU_VTCR_S2TG_SHIFT	14U
 #define ARM_SMMU_VTCR_S2PS_SHIFT	16U
 #define ARM_SMMU_CMDQ_OP_CFGI_STE	0x03UL
-#define ARM_SMMU_CMDQ_OP_TLBI_S2_IPA	0x2aUL
+#define ARM_SMMU_CMDQ_OP_TLBI_S12_VMALL	0x28UL
 #define ARM_SMMU_CMDQ_OP_CMD_SYNC	0x46UL
 #define ARM_SMMU_CMDQ_0_OP_SHIFT	0U
 #define ARM_SMMU_CMDQ_CFGI_0_SID_SHIFT	32U
 #define ARM_SMMU_CMDQ_TLBI_0_VMID_SHIFT	32U
-#define ARM_SMMU_CMDQ_TLBI_1_IPA_MASK	0x000fffffffff000UL
 #define ARM_SMMU_CMDQ_CFGI_1_LEAF	(1UL << 0U)
 #define ARM_SMMU_CMDQ_SYNC_0_CS_SHIFT	12U
 #define ARM_SMMU_CMDQ_SYNC_0_CS_SEV	2UL
@@ -430,11 +429,6 @@ static bool arm_smmu_stream_in_strtab(uint32_t stream_id)
 		(stream_id < (1U << arm_smmu_hw.strtab_log2_entries));
 }
 
-static uint16_t arm_smmu_vm_vmid(uint16_t vm_id)
-{
-	return (uint16_t)(vm_id + 1U);
-}
-
 static uint64_t arm_smmu_ste_vtcr(uint32_t ipa_width)
 {
 	uint64_t vtcr = 0UL;
@@ -604,36 +598,22 @@ static int32_t arm_smmu_sync_ste_locked(uint32_t stream_id)
 	return ret;
 }
 
-static int32_t arm_smmu_tlbi_ipa_locked(uint16_t vm_id, uint64_t iova)
+static int32_t arm_smmu_tlbi_s12_vmall_locked(uint16_t hw_vmid)
 {
 	uint64_t cmd0 = 0UL;
-	uint64_t cmd1;
 	int32_t ret;
 
 	if (!arm_smmu_assignment_hw_ready) {
 		return -ENODEV;
 	}
 
-	cmd0 |= ARM_SMMU_CMDQ_OP_TLBI_S2_IPA << ARM_SMMU_CMDQ_0_OP_SHIFT;
-	cmd0 |= (uint64_t)arm_smmu_vm_vmid(vm_id) << ARM_SMMU_CMDQ_TLBI_0_VMID_SHIFT;
-	cmd1 = iova & ARM_SMMU_CMDQ_TLBI_1_IPA_MASK;
+	cmd0 |= ARM_SMMU_CMDQ_OP_TLBI_S12_VMALL << ARM_SMMU_CMDQ_0_OP_SHIFT;
+	cmd0 |= (uint64_t)hw_vmid << ARM_SMMU_CMDQ_TLBI_0_VMID_SHIFT;
 
-	ret = arm_smmu_cmdq_issue_locked(cmd0, cmd1);
+	ret = arm_smmu_cmdq_issue_locked(cmd0, 0UL);
 	if (ret == 0) {
 		ret = arm_smmu_cmdq_sync_locked();
 	}
-
-	return ret;
-}
-
-static int32_t arm_smmu_flush_vm_iotlb(uint16_t vm_id, uint64_t iova)
-{
-	uint64_t flags;
-	int32_t ret;
-
-	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);
-	ret = arm_smmu_tlbi_ipa_locked(vm_id, iova);
-	spinlock_irqrestore_release(&arm_smmu_lock, flags);
 
 	return ret;
 }
@@ -1929,6 +1909,33 @@ int32_t arm_smmu_hw_prepare_s2(struct arm_smmu_s2_config *config)
 	return ret;
 }
 
+int32_t arm_smmu_hw_sync_s2(const struct arm_smmu_s2_config *config)
+{
+	uint64_t flags;
+	int32_t ret;
+
+	/* [20260720] Physical SMMU Stage-2 invalidation
+	 *
+	 *   shared CPU/SMMU Stage-2 descriptor update
+	 *       -> TLBI_S12_VMALL(hw_vmid)
+	 *       -> CMD_SYNC completion
+	 *       -> software may recycle detached table pages
+	 *
+	 * Key rule:
+	 *   - arm_smmu_lock owns CMDQ producer ordering;
+	 *   - one VMID-wide command covers every changed IPA and walk-cache entry;
+	 *   - queue errors and timeouts are returned to the fail-closed VM caller.
+	 */
+	spinlock_irqsave_obtain(&arm_smmu_lock, &flags);
+	ret = arm_smmu_validate_s2_config_locked(config);
+	if (ret == 0) {
+		ret = arm_smmu_tlbi_s12_vmall_locked(config->hw_vmid);
+	}
+	spinlock_irqrestore_release(&arm_smmu_lock, flags);
+
+	return ret;
+}
+
 int32_t arm_smmu_hw_attach_stream(const struct arm_smmu_s2_config *config,
 	uint32_t stream_id)
 {
@@ -2154,14 +2161,7 @@ static int32_t arm64_ptdev_map_msi_doorbell(struct acrn_vm *vm,
 	 * instead of mapping the guest vITS page, so normal vITS MMIO still traps.
 	 */
 	if (!arm64_pt_msi_doorbell_mapped[vm_id]) {
-		int32_t ret;
-
 		arm64_stage2_map_device(vm, host_base, iova_base, PAGE_SIZE, true);
-		ret = arm_smmu_flush_vm_iotlb(vm_id, iova_base);
-		if (ret != 0) {
-			LOG_WRN("vm%u ptdev MSI doorbell iotlb flush failed: %d", vm_id, ret);
-			return ret;
-		}
 		arm64_pt_msi_doorbell_hpa[vm_id] = host_base;
 		arm64_pt_msi_doorbell_mapped[vm_id] = true;
 	} else if (arm64_pt_msi_doorbell_hpa[vm_id] != host_base) {

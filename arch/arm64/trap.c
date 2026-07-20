@@ -14,6 +14,7 @@
 
 #include <asm/trap.h>
 #include <asm/ddb.h>
+#include <asm/mte.h>
 
 /* [20260710] EL2 trap routing principle:
  *
@@ -102,6 +103,11 @@ static void dispatch_exception(struct intr_excp_ctx *ctx, uint64_t trap_type)
 	}
 	if ((trap_type == ARM64_TRAP_SYNC) && dispatch_wfi_wfe_trap(ctx)) {
 		return;
+	}
+	if ((trap_type == ARM64_TRAP_SYNC) &&
+		arm64_mte_is_sync_fault(ctx->regs.esr)) {
+		arm64_mte_report_sync_fault(ctx->regs.esr, ctx->regs.far,
+			ctx->regs.elr, pcpu_id);
 	}
 
 	dump_exception(ctx, pcpu_id);

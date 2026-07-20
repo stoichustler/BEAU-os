@@ -46,6 +46,7 @@
 #define PAGE_ATTR_IDX_MASK		(0x7UL << PAGE_ATTR_IDX_SHIFT)
 #define PAGE_ATTR_IDX_NORMAL		(0UL << PAGE_ATTR_IDX_SHIFT)
 #define PAGE_ATTR_IDX_DEVICE		(1UL << PAGE_ATTR_IDX_SHIFT)
+#define PAGE_ATTR_IDX_NORMAL_TAGGED	(2UL << PAGE_ATTR_IDX_SHIFT)
 #define PAGE_AP_RW_EL2			(0UL << 6U)
 #define PAGE_AP_RO_EL2			(1UL << 7U)
 #define PAGE_SH_INNER			(3UL << 8U)
@@ -54,6 +55,7 @@
 #define PAGE_UXN			(1UL << 54U)
 
 #define PAGE_ATTR_NORMAL		(PAGE_ATTR_IDX_NORMAL | PAGE_SH_INNER | PAGE_AF)
+#define PAGE_ATTR_NORMAL_TAGGED		(PAGE_ATTR_IDX_NORMAL_TAGGED | PAGE_SH_INNER | PAGE_AF)
 #define PAGE_ATTR_DEVICE		(PAGE_ATTR_IDX_DEVICE | PAGE_SH_INNER | PAGE_AF | PAGE_PXN | PAGE_UXN)
 
 #define PAGE_S2_MEMATTR_MASK		(0xfUL << 2U)
@@ -91,7 +93,9 @@
 #define MAIR_ATTR_DEVICE_nGRE		0x08UL
 #define MAIR_ATTR_DEVICE_GRE		0x0cUL
 #define MAIR_ATTR_NORMAL_WB		0xffUL
+#define MAIR_ATTR_NORMAL_TAGGED		0xf0UL
 #define MAIR_EL2_VALUE			(MAIR_ATTR_NORMAL_WB | (MAIR_ATTR_DEVICE_nGnRE << 8U))
+#define MAIR_EL2_NORMAL_TAGGED		(MAIR_ATTR_NORMAL_TAGGED << 16U)
 
 enum arm64_memory_type {
 	ARM64_MEMORY_UNKNOWN = 0,
@@ -114,6 +118,7 @@ struct arm64_memory_attr {
 #define TCR_ORGN0_WBWA			(1UL << 10U)
 #define TCR_IRGN0_WBWA			(1UL << 8U)
 #define TCR_PS_48BIT			(5UL << 16U)
+#define TCR_EL2_TBI			(1UL << 20U)
 #define TCR_EL2_VALUE			(TCR_T0SZ_48BIT | TCR_TG0_4K | TCR_SH0_INNER | \
 					TCR_ORGN0_WBWA | TCR_IRGN0_WBWA | TCR_PS_48BIT)
 
@@ -135,11 +140,19 @@ struct arm64_memory_attr {
 #define SCTLR_EL2_I			(1UL << 12U)
 #define SCTLR_EL2_SA			(1UL << 3U)
 #define SCTLR_EL2_WXN			(1UL << 19U)
+#define SCTLR_EL2_TCF_SHIFT		40U
+#define SCTLR_EL2_TCF_MASK		(3UL << SCTLR_EL2_TCF_SHIFT)
+#define SCTLR_EL2_TCF_SYNC		(1UL << SCTLR_EL2_TCF_SHIFT)
+#define SCTLR_EL2_ATA			(1UL << 43U)
 #define SCTLR_EL2_VALUE			(SCTLR_EL2_M | SCTLR_EL2_C | SCTLR_EL2_I | \
 						SCTLR_EL2_SA | SCTLR_EL2_WXN)
 
 #define DEFINE_PAGE_TABLES(name, nr)					\
 pgtable_t __aligned(PAGE_SIZE) name[PG_TABLE_ENTRIES * (nr)]
+
+#define DEFINE_MTE_PAGE_TABLES(name, nr)				\
+pgtable_t __aligned(PAGE_SIZE) __attribute__((section(".bss.mte_page_pool"))) \
+	name[PG_TABLE_ENTRIES * (nr)]
 
 #define DEFINE_PAGE_TABLE(name) DEFINE_PAGE_TABLES(name, 1)
 

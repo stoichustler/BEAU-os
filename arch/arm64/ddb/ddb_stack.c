@@ -333,12 +333,12 @@ static void ddb_cpu_print_sample(const struct ddb_cpu_sample *sample,
 	char symbol[96U];
 
 	if (sample->guest) {
-		ddb_printf("cpu%hu %-11s owner:%s guest:vm%hu:v%hu pc:0x%016lx sp:0x%016lx\n",
+		ddb_printf("cpu%hu %-11s owner:%11s vm%hu:v%hu pc:0x%016lx sp:0x%016lx\n",
 			sample->pcpu_id, kind, sample->owner, sample->vm_id,
 			sample->vcpu_id, sample->pc, sample->sp);
 	} else {
 		dbg_format_symbol(sample->pc, symbol, sizeof(symbol));
-		ddb_printf("cpu%hu %-11s owner:%s pc:0x%016lx %s sp:0x%016lx fp:0x%016lx\n",
+		ddb_printf("cpu%hu %-11s owner:%11s pc:0x%016lx %s sp:0x%016lx fp:0x%016lx\n",
 			sample->pcpu_id, kind, sample->owner, sample->pc, symbol,
 			sample->sp, sample->fp);
 	}

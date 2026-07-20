@@ -21,6 +21,7 @@
 
 struct vm_arch {
 	int64_t time_delta;
+	volatile uint64_t stage2_update_owner;
 	/*
 	 * Common ptdev uses this as an interrupt-storm throttle. ARM64 keeps the
 	 * same field so the shared passthrough IRQ path can compile unchanged;

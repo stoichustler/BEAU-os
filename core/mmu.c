@@ -49,19 +49,28 @@
  */
 void init_page_pool(struct page_pool *pool, uint64_t *page_base, uint64_t *bitmap_base, int page_num)
 {
-       uint64_t bitmap_size = page_num / 8;
-       pool->bitmap = (uint64_t *)bitmap_base;
-       pool->start_page = (struct page *)page_base;
-       pool->bitmap_size = bitmap_size / sizeof(uint64_t);
-       pool->dummy_page = NULL;
+	uint64_t bitmap_size;
 
-       memset(pool->bitmap, 0, bitmap_size);
+	if ((pool == NULL) || (page_base == NULL) || (bitmap_base == NULL) ||
+		(page_num <= 0) || (((uint32_t)page_num & 0x3fU) != 0U)) {
+		panic("invalid page pool configuration");
+	}
+
+	bitmap_size = (uint64_t)(uint32_t)page_num / 8UL;
+	pool->bitmap = bitmap_base;
+	pool->start_page = (struct page *)page_base;
+	pool->bitmap_size = bitmap_size / sizeof(uint64_t);
+	pool->last_hint_id = 0UL;
+	pool->dummy_page = NULL;
+	spinlock_init(&pool->lock);
+	(void)memset(pool->bitmap, 0U, bitmap_size);
 }
 
 struct page *alloc_page(struct page_pool *pool)
 {
 	struct page *page = NULL;
 	uint64_t loop_idx, idx, bit;
+	bool tag_error = false;
 
 	spinlock_obtain(&pool->lock);
 	for (loop_idx = pool->last_hint_id;
@@ -71,12 +80,20 @@ struct page *alloc_page(struct page_pool *pool)
 			bit = ffz64(*(pool->bitmap + idx));
 			bitmap_set_non_atomic(bit, pool->bitmap + idx);
 			page = pool->start_page + ((idx << 6U) + bit);
+			page = (struct page *)arch_page_pool_alloc(pool, page);
+			if (page == NULL) {
+				bitmap_clear_non_atomic(bit, pool->bitmap + idx);
+				tag_error = true;
+			}
 
 			pool->last_hint_id = idx;
 			break;
 		}
 	}
 	spinlock_release(&pool->lock);
+	if (tag_error) {
+		panic("page pool MTE allocation failed");
+	}
 
 	ASSERT(page != NULL, "no page aviable!");
 	page = (page != NULL) ? page : pool->dummy_page;
@@ -95,11 +112,37 @@ struct page *alloc_page(struct page_pool *pool)
 
 void free_page(struct page_pool *pool, struct page *page)
 {
-	uint64_t idx, bit;
+	uint64_t page_address;
+	uint64_t pool_start;
+	uint64_t pool_size;
+	uint64_t page_id;
+	uint64_t idx;
+	uint64_t bit;
+
+	if ((pool == NULL) || (page == NULL)) {
+		panic("invalid page pool free request");
+	}
+	page_address = (uint64_t)arch_page_pool_untag(page);
+	pool_start = (uint64_t)pool->start_page;
+	pool_size = (pool->bitmap_size << 6U) * sizeof(struct page);
+	if (((page_address & (PAGE_SIZE - 1UL)) != 0UL) ||
+		(page_address < pool_start) ||
+		((page_address - pool_start) >= pool_size)) {
+		panic("page pool free address out of range: 0x%lx", page_address);
+	}
+	page_id = (page_address - pool_start) / sizeof(struct page);
+	idx = page_id >> 6U;
+	bit = page_id & 0x3fUL;
 
 	spinlock_obtain(&pool->lock);
-	idx = (page - pool->start_page) >> 6U;
-	bit = (page - pool->start_page) & 0x3fUL;
+	if ((pool->bitmap[idx] & (1UL << bit)) == 0UL) {
+		spinlock_release(&pool->lock);
+		panic("page pool double free index:%lu", page_id);
+	}
+	if (!arch_page_pool_free(pool, page)) {
+		spinlock_release(&pool->lock);
+		panic("page pool MTE free validation failed index:%lu", page_id);
+	}
 	bitmap_clear_non_atomic(bit, pool->bitmap + idx);
 	spinlock_release(&pool->lock);
 }
@@ -156,8 +199,102 @@ void init_sanitized_page(uint64_t *sanitized_page, uint64_t hpa)
 	}
 }
 
+void pgtable_update_init(struct pgtable_update *update, uint64_t *retired_bitmap,
+	uint64_t retired_bitmap_words, const struct pgtable *table)
+{
+	if ((update == NULL) || (retired_bitmap == NULL) || (table == NULL) ||
+		(table->pool == NULL) ||
+		(retired_bitmap_words < table->pool->bitmap_size)) {
+		panic("invalid deferred page-table update");
+	}
+
+	(void)memset(retired_bitmap, 0U,
+		retired_bitmap_words * sizeof(retired_bitmap[0]));
+	update->retired_bitmap = retired_bitmap;
+	update->retired_bitmap_words = retired_bitmap_words;
+	update->retired_pages = 0UL;
+	update->changed = false;
+}
+
+static void defer_pgtable_page(const struct pgtable *table, uint64_t *pt_page,
+	struct pgtable_update *update)
+{
+	uint64_t page_address;
+	uint64_t pool_start;
+	uint64_t pool_pages;
+	uint64_t page_id;
+
+	if (update == NULL) {
+		free_page(table->pool, (void *)pt_page);
+		return;
+	}
+
+	page_address = (uint64_t)arch_page_pool_untag(pt_page);
+	pool_start = (uint64_t)table->pool->start_page;
+	pool_pages = table->pool->bitmap_size << 6U;
+	if ((page_address < pool_start) ||
+		((page_address - pool_start) >= (pool_pages * sizeof(struct page))) ||
+		(((page_address - pool_start) % sizeof(struct page)) != 0UL)) {
+		panic("deferred page-table page is outside its pool: 0x%lx",
+			page_address);
+	}
+	page_id = (page_address - pool_start) / sizeof(struct page);
+	if ((page_id >> 6U) >= update->retired_bitmap_words) {
+		panic("deferred page-table bitmap overflow index:%lu", page_id);
+	}
+	if (bitmap_test(page_id, update->retired_bitmap)) {
+		panic("duplicate deferred page-table page index:%lu", page_id);
+	}
+
+	bitmap_set_non_atomic(page_id, update->retired_bitmap);
+	update->retired_pages++;
+}
+
+void pgtable_free_retired_pages(struct pgtable_update *update,
+	const struct pgtable *table)
+{
+	uint64_t page_id;
+	uint64_t pool_pages;
+	uint64_t freed_pages = 0UL;
+
+	if ((update == NULL) || (table == NULL) || (table->pool == NULL) ||
+		(update->retired_bitmap == NULL) ||
+		(update->retired_bitmap_words < table->pool->bitmap_size)) {
+		panic("invalid retired page-table batch");
+	}
+
+	pool_pages = table->pool->bitmap_size << 6U;
+	for (page_id = 0UL; page_id < pool_pages; page_id++) {
+		if (bitmap_test(page_id, update->retired_bitmap)) {
+			struct page *raw_page = table->pool->start_page + page_id;
+			struct page *page = hpa2hva(hva2hpa(raw_page));
+
+			free_page(table->pool, page);
+			bitmap_clear_non_atomic(page_id, update->retired_bitmap);
+			freed_pages++;
+		}
+	}
+	if (freed_pages != update->retired_pages) {
+		panic("retired page-table count mismatch expected:%lu freed:%lu",
+			update->retired_pages, freed_pages);
+	}
+	update->retired_pages = 0UL;
+}
+
+static void replace_pgtable_entry(uint64_t *pte, uint64_t new_pte,
+	uint64_t vaddr, uint64_t size, const struct pgtable *table)
+{
+	if (table->replace_pgentry != NULL) {
+		table->replace_pgentry(pte, new_pte, vaddr, size, table);
+	} else {
+		*pte = new_pte;
+		table->flush_cache_pagewalk(pte);
+	}
+}
+
 static void try_to_free_pgtable_page(const struct pgtable *table,
-			uint64_t *pgte, uint64_t *pt_page, uint32_t type)
+	uint64_t *pgte, uint64_t *pt_page, uint32_t type,
+	struct pgtable_update *update)
 {
 	if (type == MR_DEL) {
 		uint64_t index;
@@ -170,17 +307,21 @@ static void try_to_free_pgtable_page(const struct pgtable *table,
 		}
 
 		if (index == PTRS_PER_PGTL0E) {
-			free_page(table->pool, (void *)pt_page);
 			sanitize_pte_entry(pgte, table);
+			if (update != NULL) {
+				update->changed = true;
+			}
+			defer_pgtable_page(table, pt_page, update);
 		}
 	}
 }
 
 static void split_large_page(uint64_t *pte, enum _page_table_level level,
-		__unused uint64_t vaddr, const struct pgtable *table)
+	uint64_t vaddr, const struct pgtable *table,
+	struct pgtable_update *update)
 {
 	uint64_t *pbase;
-	uint64_t ref_paddr, paddr, paddrinc;
+	uint64_t ref_paddr, paddr, paddrinc, new_pte = 0UL;
 	uint64_t i, ref_prot;
 
 	if (level == PGT_LVL0)
@@ -199,20 +340,32 @@ static void split_large_page(uint64_t *pte, enum _page_table_level level,
 		paddr += paddrinc;
 	}
 
-	table->set_pgentry(pte, hva2hpa((void *)pbase), 0, level, 0, table);
+	table->set_pgentry(&new_pte, hva2hpa((void *)pbase), 0, level, 0, table);
+	replace_pgtable_entry(pte, new_pte, vaddr, get_level_size(level), table);
+	if (update != NULL) {
+		update->changed = true;
+	}
 }
 
 static inline void local_modify_or_del_pte(uint64_t *pte,
-		uint64_t prot_set, uint64_t prot_clr, uint32_t type, const struct pgtable *table)
+	uint64_t vaddr, uint64_t size, uint64_t prot_set, uint64_t prot_clr,
+	uint32_t type, const struct pgtable *table, struct pgtable_update *update)
 {
 	if (type == MR_MODIFY) {
 		uint64_t new_pte = *pte;
 		new_pte &= ~prot_clr;
 		new_pte |= prot_set;
-		*pte = new_pte;
-		table->flush_cache_pagewalk(pte);
+		if (new_pte != *pte) {
+			replace_pgtable_entry(pte, new_pte, vaddr, size, table);
+			if (update != NULL) {
+				update->changed = true;
+			}
+		}
 	} else {
 		sanitize_pte_entry(pte, table);
+		if (update != NULL) {
+			update->changed = true;
+		}
 	}
 }
 
@@ -224,7 +377,8 @@ static inline void local_modify_or_del_pte(uint64_t *pte,
  * delete [vaddr_start, vaddr_end) MT PT mapping
  */
 static void modify_or_del_pgtl0(uint64_t *pgtl1e, uint64_t vaddr_start, uint64_t vaddr_end,
-		uint64_t prot_set, uint64_t prot_clr, const struct pgtable *table, uint32_t type)
+	uint64_t prot_set, uint64_t prot_clr, const struct pgtable *table,
+	uint32_t type, struct pgtable_update *update)
 {
 	uint64_t *pgtl0_page = page_addr(*pgtl1e);
 	uint64_t vaddr = vaddr_start;
@@ -239,7 +393,8 @@ static void modify_or_del_pgtl0(uint64_t *pgtl1e, uint64_t vaddr_start, uint64_t
 				LOG_WRN("%s, vaddr: 0x%lx pgtl0e is not present.\n", __func__, vaddr);
 			}
 		} else {
-			local_modify_or_del_pte(pgtl0e, prot_set, prot_clr, type, table);
+			local_modify_or_del_pte(pgtl0e, vaddr, PGTL0_SIZE,
+				prot_set, prot_clr, type, table, update);
 		}
 
 		vaddr += PGTL0_SIZE;
@@ -248,7 +403,7 @@ static void modify_or_del_pgtl0(uint64_t *pgtl1e, uint64_t vaddr_start, uint64_t
 		}
 	}
 
-	try_to_free_pgtable_page(table, pgtl1e, pgtl0_page, type);
+	try_to_free_pgtable_page(table, pgtl1e, pgtl0_page, type, update);
 }
 
 /*
@@ -259,7 +414,8 @@ static void modify_or_del_pgtl0(uint64_t *pgtl1e, uint64_t vaddr_start, uint64_t
  * delete [vaddr_start, vaddr_end) MT PT mapping
  */
 static void modify_or_del_pgtl1(uint64_t *pgtl2e, uint64_t vaddr_start, uint64_t vaddr_end,
-		uint64_t prot_set, uint64_t prot_clr, const struct pgtable *table, uint32_t type)
+	uint64_t prot_set, uint64_t prot_clr, const struct pgtable *table,
+	uint32_t type, struct pgtable_update *update)
 {
 	uint64_t *pgtl1_page = page_addr(*pgtl2e);
 	uint64_t vaddr = vaddr_start;
@@ -277,9 +433,10 @@ static void modify_or_del_pgtl1(uint64_t *pgtl2e, uint64_t vaddr_start, uint64_t
 		} else {
 			if (is_pgtl_large(*pgtl1e) != 0UL) {
 				if ((vaddr_next > vaddr_end) || (!mem_aligned_check(vaddr, PGTL1_SIZE))) {
-					split_large_page(pgtl1e, PGT_LVL1, vaddr, table);
+					split_large_page(pgtl1e, PGT_LVL1, vaddr, table, update);
 				} else {
-					local_modify_or_del_pte(pgtl1e, prot_set, prot_clr, type, table);
+					local_modify_or_del_pte(pgtl1e, vaddr, PGTL1_SIZE,
+						prot_set, prot_clr, type, table, update);
 					if (vaddr_next < vaddr_end) {
 						vaddr = vaddr_next;
 						continue;
@@ -287,7 +444,8 @@ static void modify_or_del_pgtl1(uint64_t *pgtl2e, uint64_t vaddr_start, uint64_t
 					break;	/* done */
 				}
 			}
-			modify_or_del_pgtl0(pgtl1e, vaddr, vaddr_end, prot_set, prot_clr, table, type);
+			modify_or_del_pgtl0(pgtl1e, vaddr, vaddr_end, prot_set,
+				prot_clr, table, type, update);
 		}
 		if (vaddr_next >= vaddr_end) {
 			break;	/* done */
@@ -295,7 +453,7 @@ static void modify_or_del_pgtl1(uint64_t *pgtl2e, uint64_t vaddr_start, uint64_t
 		vaddr = vaddr_next;
 	}
 
-	try_to_free_pgtable_page(table, pgtl2e, pgtl1_page, type);
+	try_to_free_pgtable_page(table, pgtl2e, pgtl1_page, type, update);
 }
 
 /*
@@ -305,8 +463,9 @@ static void modify_or_del_pgtl1(uint64_t *pgtl2e, uint64_t vaddr_start, uint64_t
  * type: MR_DEL
  * delete [vaddr_start, vaddr_end) MT PT mapping
  */
-static void modify_or_del_pgtl2(const uint64_t *pgtl3e, uint64_t vaddr_start, uint64_t vaddr_end,
-		uint64_t prot_set, uint64_t prot_clr, const struct pgtable *table, uint32_t type)
+static void modify_or_del_pgtl2(uint64_t *pgtl3e, uint64_t vaddr_start,
+	uint64_t vaddr_end, uint64_t prot_set, uint64_t prot_clr,
+	const struct pgtable *table, uint32_t type, struct pgtable_update *update)
 {
 	uint64_t *pgtl2_page = page_addr(*pgtl3e);
 	uint64_t vaddr = vaddr_start;
@@ -325,9 +484,10 @@ static void modify_or_del_pgtl2(const uint64_t *pgtl3e, uint64_t vaddr_start, ui
 			if (is_pgtl_large(*pgtl2e) != 0UL) {
 				if ((vaddr_next > vaddr_end) ||
 						(!mem_aligned_check(vaddr, PGTL2_SIZE))) {
-					split_large_page(pgtl2e, PGT_LVL2, vaddr, table);
+					split_large_page(pgtl2e, PGT_LVL2, vaddr, table, update);
 				} else {
-					local_modify_or_del_pte(pgtl2e, prot_set, prot_clr, type, table);
+					local_modify_or_del_pte(pgtl2e, vaddr, PGTL2_SIZE,
+						prot_set, prot_clr, type, table, update);
 					if (vaddr_next < vaddr_end) {
 						vaddr = vaddr_next;
 						continue;
@@ -335,16 +495,19 @@ static void modify_or_del_pgtl2(const uint64_t *pgtl3e, uint64_t vaddr_start, ui
 					break;	/* done */
 				}
 			}
-			modify_or_del_pgtl1(pgtl2e, vaddr, vaddr_end, prot_set, prot_clr, table, type);
+			modify_or_del_pgtl1(pgtl2e, vaddr, vaddr_end, prot_set,
+				prot_clr, table, type, update);
 		}
 		if (vaddr_next >= vaddr_end) {
 			break;	/* done */
 		}
 		vaddr = vaddr_next;
 	}
+
+	try_to_free_pgtable_page(table, pgtl3e, pgtl2_page, type, update);
 }
 
-/* [20260712] page-table modify/delete ordering
+/* [20260720] Page-table replacement and retirement ordering
  *
  * Range update flow:
  *
@@ -357,22 +520,28 @@ static void modify_or_del_pgtl2(const uint64_t *pgtl3e, uint64_t vaddr_start, ui
  *        |       modify/delete that leaf directly
  *        |
  *        +-- large leaf partially overlaps target chunk:
- *        |       split large leaf, then continue at lower level
+ *        |       populate child table, replace through architecture BBM hook,
+ *        |       then continue at lower level
  *        |
  *        +-- type == MR_MODIFY:
  *        |       clear prot_clr bits, set prot_set bits
  *        |
  *        +-- type == MR_DEL:
- *                sanitize leaf entry and free now-empty child tables
+ *                sanitize leaf entry, detach empty child tables, and either
+ *                free immediately or record them in the caller's retire batch
  *
  * Key rule:
  *   - callers own range validation and architecture permission encodings;
- *   - this path owns split-before-change ordering and child-table cleanup;
+ *   - this path owns split-before-change ordering and table detachment;
+ *   - a deferred caller must synchronize every hardware walker before calling
+ *     pgtable_free_retired_pages(), which may retag and reuse those pages;
  *   - missing top-level entries are invalid for modify, while lower missing
  *     entries are skipped so sparse mappings can be updated safely.
  */
-void pgtable_modify_or_del_map(uint64_t *pgtl3_page, uint64_t vaddr_base, uint64_t size,
-		uint64_t prot_set, uint64_t prot_clr, const struct pgtable *table, uint32_t type)
+void pgtable_modify_or_del_map_deferred(uint64_t *pgtl3_page,
+	uint64_t vaddr_base, uint64_t size, uint64_t prot_set,
+	uint64_t prot_clr, const struct pgtable *table, uint32_t type,
+	struct pgtable_update *update)
 {
 	uint64_t vaddr = round_page_up(vaddr_base);
 	uint64_t vaddr_next, vaddr_end;
@@ -385,13 +554,24 @@ void pgtable_modify_or_del_map(uint64_t *pgtl3_page, uint64_t vaddr_base, uint64
 	while (vaddr < vaddr_end) {
 		vaddr_next = (vaddr & PGTL3_MASK) + PGTL3_SIZE;
 		pgtl3e = pgtl3e_offset(pgtl3_page, vaddr);
-		if ((!table->pgentry_present(*pgtl3e)) && (type == MR_MODIFY)) {
-			ASSERT(false, "invalid op, pgtl3e not present");
+		if (!table->pgentry_present(*pgtl3e)) {
+			if (type == MR_MODIFY) {
+				ASSERT(false, "invalid op, pgtl3e not present");
+			}
 		} else {
-			modify_or_del_pgtl2(pgtl3e, vaddr, vaddr_end, prot_set, prot_clr, table, type);
-			vaddr = vaddr_next;
+			modify_or_del_pgtl2(pgtl3e, vaddr, vaddr_end,
+				prot_set, prot_clr, table, type, update);
 		}
+		vaddr = vaddr_next;
 	}
+}
+
+void pgtable_modify_or_del_map(uint64_t *pgtl3_page, uint64_t vaddr_base,
+	uint64_t size, uint64_t prot_set, uint64_t prot_clr,
+	const struct pgtable *table, uint32_t type)
+{
+	pgtable_modify_or_del_map_deferred(pgtl3_page, vaddr_base, size,
+		prot_set, prot_clr, table, type, NULL);
 }
 
 /*
@@ -412,7 +592,11 @@ static void add_pgtl0(const uint64_t *pgtl1e, uint64_t paddr_start, uint64_t vad
 		uint64_t *pgtl0e = pgtl0_page + index;
 
 		if (table->pgentry_present(*pgtl0e)) {
-			LOG_FTL("%s, pgtl0e 0x%lx is already present!\n", __func__, vaddr);
+			if (table->replace_pgentry != NULL) {
+				panic("%s stage-2 mapping overlap at 0x%lx", __func__, vaddr);
+			}
+			LOG_FTL("%s, pgtl0e 0x%lx is already present!\n",
+				__func__, vaddr);
 		} else {
 			table->set_pgentry(pgtl0e, paddr, prot, PGT_LVL0, 1, table);
 		}
@@ -436,7 +620,7 @@ static void add_pgtl1(const uint64_t *pgtl2e, uint64_t paddr_start, uint64_t vad
 	uint64_t vaddr = vaddr_start;
 	uint64_t paddr = paddr_start;
 	uint64_t index = pgtl1e_index(vaddr);
-	uint64_t local_prot = prot;
+		uint64_t local_prot = prot;
 
 	dev_dbg(DBG_LEVEL_MMU, "%s, paddr: 0x%lx, vaddr: [0x%lx - 0x%lx]\n",
 		__func__, paddr, vaddr, vaddr_end);
@@ -445,7 +629,11 @@ static void add_pgtl1(const uint64_t *pgtl2e, uint64_t paddr_start, uint64_t vad
 		uint64_t vaddr_next = (vaddr & PGTL1_MASK) + PGTL1_SIZE;
 
 		if (is_pgtl_large(*pgtl1e) != 0UL) {
-			LOG_FTL("%s, pgtl1e 0x%lx is already present!\n", __func__, vaddr);
+			if (table->replace_pgentry != NULL) {
+				panic("%s stage-2 mapping overlap at 0x%lx", __func__, vaddr);
+			}
+			LOG_FTL("%s, pgtl1e 0x%lx is already present!\n",
+				__func__, vaddr);
 		} else {
 			if (!table->pgentry_present(*pgtl1e)) {
 				if (table->large_page_support(PGT_LVL1, prot) &&
@@ -493,7 +681,11 @@ static void add_pgtl2(const uint64_t *pgtl3e, uint64_t paddr_start, uint64_t vad
 		uint64_t vaddr_next = (vaddr & PGTL2_MASK) + PGTL2_SIZE;
 
 		if (is_pgtl_large(*pgtl2e) != 0UL) {
-			LOG_FTL("%s, pgtl2e 0x%lx is already present!\n", __func__, vaddr);
+			if (table->replace_pgentry != NULL) {
+				panic("%s stage-2 mapping overlap at 0x%lx", __func__, vaddr);
+			}
+			LOG_FTL("%s, pgtl2e 0x%lx is already present!\n",
+				__func__, vaddr);
 		} else {
 			if (!table->pgentry_present(*pgtl2e)) {
 				if (table->large_page_support(PGT_LVL2, prot) &&

@@ -605,13 +605,39 @@ walker、页分配、拆大页和增删映射。
 **能力**：
 
 - 每 VM 创建独立 Stage-2 root。
-- 将配置 RAM 以 block/page 映射。
+- 使用 4 KiB translation granule；配置 RAM 优先使用 2 MiB block，地址或长度边缘
+  自动回退为 4 KiB page，不生成 1 GiB Guest Stage-2 leaf。
 - IPA 0 额外映射一页只读 zero page。
 - 为 PCI BAR、MSI doorbell 等受控设备窗口动态 map/unmap。
 - 导出每 VM 页表级别和 page-pool 统计。
 
-**不变量**：默认静态平台要求 RAM 起点、后端 HPA 和大小都满足 L1 block 对齐，且
-`guest_ram_hpa == guest_ram_start`。
+**不变量**：默认静态平台要求 RAM 起点、后端 HPA 和大小满足 4 KiB 对齐，且
+`guest_ram_hpa == guest_ram_start`。Host EL2 Stage-1 仍可使用 1 GiB、2 MiB 和
+4 KiB 映射，不受 Guest Stage-2 上限影响。
+
+动态删除 2 MiB block 中的局部 4 KiB 范围时，walker 先创建并填充 512 个
+4 KiB leaf，再执行 break-before-make。页表更新由 VM 私有事务所有权串行化，
+`stg2pt_lock` 只保护短暂的软件描述符临界区：
+
+```text
+invalidate old descriptor
+    -> CPU VMID TLBI on configured pCPUs
+    -> bound SMMU TLBI_S12_VMALL + CMD_SYNC
+    -> publish replacement descriptor
+    -> apply final leaf deletion
+    -> CPU/SMMU synchronization
+    -> release retired table pages to the MTE-aware pool
+```
+
+空子页表在最终 CPU 和 SMMU 同步完成前只记录在私有 retire bitmap 中，不清零、
+不 retag，也不返回共享 pool。CPU shootdown、domain root 校验或 SMMU CMDQ 同步
+失败属于不可恢复的隔离错误：页表页保持占用并进入 panic，不允许带着不一致的
+CPU/DMA translation 继续运行。
+
+该机制依据 ARM 大页拆分、break-before-make 和硬件 walker 同步后再回收页表页
+的原则，针对 BEAU 的静态 page pool、VMID、SMP call 和 SMMUv3 broker 独立
+实现，新代码使用 BEAU BSD-3-Clause 许可。当前不做碎片化 4 KiB 表恢复一致后的
+自动 2 MiB 合并。
 
 ### 9.3 客体 copy 边界
 
@@ -621,6 +647,37 @@ walker、页分配、拆大页和增删映射。
 - `gva2gpa()` 返回 `-ENOSYS`。
 - `copy_to_gva()`/`copy_from_gva()` 返回 `-ENOSYS`。
 - 因此 Hypercall ABI 应传 GPA，而不是任意 GVA。
+
+### 9.4 EL2 Memory Tagging Extension
+
+`CONFIG_ARM64_MTE` 默认启用编译支持，但运行时只有
+`ID_AA64PFR1_EL1.MTE >= FEAT_MTE2` 才开启 EL2 同步 tag checking。当前覆盖范围是
+链接器隔离的 host Stage-1 和 VM Stage-2 页表池，不覆盖 EL2 栈、普通全局变量、
+guest RAM 或编译器插桩对象。
+
+```text
+page-pool allocate
+    -> select next non-zero 4-bit generation
+    -> set tags and clear all 16-byte granules
+    -> publish tagged pointer
+
+page-pool free
+    -> validate owner, range and current tag
+    -> restore allocation tag 0 and clear data
+    -> release bitmap ownership
+```
+
+页表描述符、`TTBR0_EL2` 和 `VTTBR_EL2` 只保存无 tag 物理地址；软件从 HPA
+恢复页表指针时根据 pool 元数据重新附加当前 tag。Guest 的 MTE、MTE fractional 和
+MTEX ID fields 均隐藏，且 `HCR_EL2.ATA` 保持清零，因此本阶段不提供 Guest MTE。
+
+该实现依据 ARM MTE2 capability gate 和 page-tag synchronization 原则，针对
+BEAU EL2 page-pool 所有权模型独立设计，不引入通用 OS 的 thread、pmap 或
+`vm_page` 模型，新代码使用 BEAU BSD-3-Clause 许可。
+
+QEMU 当前默认 Cortex-A57、rk356x Cortex-A55 以及 Cortex-A72 均不支持 MTE，运行
+时保持原 Normal-WB identity path。MTE runtime 验证需要支持该扩展的 CPU，并在
+QEMU `virt` machine 上同时启用 MTE。
 
 ## 10. 调度模块
 

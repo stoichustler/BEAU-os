@@ -8,6 +8,7 @@
 #include <logmsg.h>
 #include <spinlock.h>
 #include <vconfig.h>
+#include <asm/page.h>
 #include <asm/vtd.h>
 #include "smmu.h"
 
@@ -60,6 +61,44 @@ bool arm_smmu_domain_valid(const struct iommu_domain *domain)
 	spinlock_irqrestore_release(&iommu_lock, flags);
 
 	return valid;
+}
+
+int32_t arm_smmu_sync_vm_stage2(uint16_t vm_id, uint64_t root_table_hpa)
+{
+	struct iommu_domain *domain;
+	uint64_t flags;
+	int32_t ret = 0;
+
+	if ((vm_id >= ARM64_IOMMU_MAX_DOMAINS) || (root_table_hpa == 0UL) ||
+		((root_table_hpa & (PAGE_SIZE - 1UL)) != 0UL)) {
+		return -EINVAL;
+	}
+
+	/* [20260720] CPU and DMA Stage-2 synchronization
+	 *
+	 *   VM page-table update
+	 *       -> validate immutable domain root under iommu_lock
+	 *       -> no bound stream: no DMA translation can be stale
+	 *       -> bound stream: SMMU VMID invalidation + CMD_SYNC
+	 *
+	 * Key rule:
+	 *   - iommu_lock serializes this transaction with attach and detach;
+	 *   - the domain root must still match the CPU Stage-2 root;
+	 *   - a bound domain is synchronized before detached table pages are reused.
+	 */
+	spinlock_irqsave_obtain(&iommu_lock, &flags);
+	domain = &iommu_domains[vm_id];
+	if (!domain->used) {
+		ret = 0;
+	} else if ((domain->s2.owner_vmid != vm_id) ||
+		(domain->s2.root_table_hpa != root_table_hpa)) {
+		ret = -EPERM;
+	} else if (domain->hw_bound) {
+		ret = arm_smmu_hw_sync_s2(&domain->s2);
+	}
+	spinlock_irqrestore_release(&iommu_lock, flags);
+
+	return ret;
 }
 
 struct iommu_domain *create_iommu_domain(uint16_t vm_id, uint64_t root_table_hpa,

@@ -69,6 +69,13 @@ struct page_pool {
         struct page *dummy_page;
 };
 
+struct pgtable_update {
+	uint64_t *retired_bitmap;
+	uint64_t retired_bitmap_words;
+	uint64_t retired_pages;
+	bool changed;
+};
+
 /**
  * @brief Page tables level in paging mode
  *
@@ -86,11 +93,14 @@ enum _page_table_level {
 
 struct pgtable {
 	struct page_pool *pool;
+	void *private_data;
 	uint64_t (*pgentry_present)(uint64_t pte);
 	bool (*large_page_support)(enum _page_table_level level, uint64_t prot);
 	void (*flush_cache_pagewalk)(const void *p);
 	void (*set_pgentry)(uint64_t *pte, uint64_t page, uint64_t prot, enum _page_table_level level,
 			bool is_leaf, const struct pgtable *table);
+	void (*replace_pgentry)(uint64_t *pte, uint64_t new_pte, uint64_t vaddr,
+			uint64_t size, const struct pgtable *table);
 };
 
 /*
@@ -144,10 +154,18 @@ const uint64_t *pgtable_lookup_entry(uint64_t *pgtl3_page, uint64_t addr,
                uint64_t *pg_size, const struct pgtable *table);
 
 void pgtable_add_map(uint64_t *pgtl3_page, uint64_t paddr_base,
-               uint64_t vaddr_base, uint64_t size,
-               uint64_t prot, const struct pgtable *table);
+	               uint64_t vaddr_base, uint64_t size,
+	               uint64_t prot, const struct pgtable *table);
+void pgtable_update_init(struct pgtable_update *update, uint64_t *retired_bitmap,
+		uint64_t retired_bitmap_words, const struct pgtable *table);
+void pgtable_free_retired_pages(struct pgtable_update *update,
+		const struct pgtable *table);
+void pgtable_modify_or_del_map_deferred(uint64_t *pgtl3_page,
+		uint64_t vaddr_base, uint64_t size, uint64_t prot_set,
+		uint64_t prot_clr, const struct pgtable *table, uint32_t type,
+		struct pgtable_update *update);
 void pgtable_modify_or_del_map(uint64_t *pgtl3_page, uint64_t vaddr_base,
-               uint64_t size, uint64_t prot_set, uint64_t prot_clr,
-               const struct pgtable *table, uint32_t type);
+	               uint64_t size, uint64_t prot_set, uint64_t prot_clr,
+	               const struct pgtable *table, uint32_t type);
 
 #endif /* MMU_H */
