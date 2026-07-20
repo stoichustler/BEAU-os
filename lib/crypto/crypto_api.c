@@ -5,8 +5,23 @@
  */
 
 #include <rtl.h>
+#include <crypto/crypto_api.h>
 #include "mbedtls/hkdf.h"
 #include "mbedtls/md.h"
+#include "mbedtls/sha256.h"
+
+int32_t sha256_digest(uint8_t digest[SHA256_DIGEST_SIZE],
+	const uint8_t *data, size_t len)
+{
+	int32_t ret = 0;
+
+	if ((digest != NULL) && (data != NULL) &&
+		(mbedtls_sha256_ret(data, len, digest, 0) == 0)) {
+		ret = 1;
+	}
+
+	return ret;
+}
 
 int32_t hkdf_sha256(uint8_t *out_key, size_t out_len,
 		const uint8_t *secret, size_t secret_len,

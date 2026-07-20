@@ -7,17 +7,6 @@
 
 mainmenu "BEAU HYPERVISOR Configuration"
 
-menu "Build"
-
-config RELEASE
-	bool "Build release image"
-	default n
-	help
-	  Strip release images and mark generated version metadata as a release
-	  build. Debug builds keep profiling symbols and frame pointers enabled.
-
-endmenu
-
 source "arch/Kconfig"
 source "core/Kconfig"
 source "lib/Kconfig"

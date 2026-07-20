@@ -22,6 +22,7 @@
 #include <ticks.h>
 #include <timer.h>
 #include <trace.h>
+#include <crypto/crypto_api.h>
 #include <console.h>
 #include <debug/shell.h>
 #include <acrn_hv_defs.h>
@@ -38,6 +39,7 @@
 #include <asm/aes.h>
 #include <asm/boot/ld_sym.h>
 #include <asm/coredump.h>
+#include <asm/ddb.h>
 #include <asm/irq.h>
 #include <asm/cache.h>
 #include <asm/pmu.h>
@@ -115,6 +117,9 @@
 #define SHELL_CMD_AES			"aes"
 #define SHELL_CMD_AES_PARAM		"<enc|dec> <text|hex>"
 #define SHELL_CMD_AES_HELP		"verify ARMv8 AES text encryption and decryption"
+#define SHELL_CMD_DDB			"ddb"
+#define SHELL_CMD_DDB_PARAM		"<passwd>"
+#define SHELL_CMD_DDB_HELP		"enter the ARM64 kernel debugger"
 #define VMSTAT_CPU_WAIT_WARN_US		20000UL
 #define PCISTAT_MAX_STREAMS		64U
 #define RTTEST_INTERVAL_US		1000U
@@ -133,6 +138,9 @@
 #define SHELL_AES_MAX_HEX_LEN		(SHELL_AES_MAX_CIPHERTEXT_LEN * 2U)
 #define SHELL_AES_CIPHERTEXT_PREFIX	"ciphertext: "
 #define SHELL_AES_PLAINTEXT_PREFIX	"plaintext: "
+#define SHELL_DDB_PASSWORD_MAX_LEN	32U
+#define SHELL_DDB_AUTH_FAILURE_LIMIT	3U
+#define SHELL_DDB_AUTH_LOCKOUT_US	5000000U
 
 static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv);
 static int32_t shell_memstat(int32_t argc, __unused char **argv);
@@ -154,6 +162,7 @@ static int32_t shell_pm(int32_t argc, char **argv);
 static int32_t shell_pmstat(int32_t argc, __unused char **argv);
 static int32_t shell_pmustat(int32_t argc, char **argv);
 static int32_t shell_aes(int32_t argc, char **argv);
+static int32_t shell_ddb(int32_t argc, char **argv);
 static const char *shell_yes_no(bool value);
 static const char *shell_vm_state_to_str(enum vm_state state);
 static struct arm_smmu_stream_config shell_smmu_streams[PCISTAT_MAX_STREAMS];
@@ -162,6 +171,14 @@ static const uint8_t shell_aes_test_key[ARM64_AES_BLOCK_SIZE] = {
 	0x2bU, 0x7eU, 0x15U, 0x16U, 0x28U, 0xaeU, 0xd2U, 0xa6U,
 	0xabU, 0xf7U, 0x15U, 0x88U, 0x09U, 0xcfU, 0x4fU, 0x3cU,
 };
+static const uint8_t shell_ddb_password_digest[SHA256_DIGEST_SIZE] = {
+	0x1aU, 0xeaU, 0x2dU, 0xf6U, 0xa0U, 0x05U, 0xbbU, 0x83U,
+	0xdfU, 0x9bU, 0x1cU, 0x26U, 0x80U, 0xb5U, 0x6cU, 0x47U,
+	0xddU, 0x56U, 0x75U, 0x2cU, 0xdeU, 0x8eU, 0x53U, 0x0bU,
+	0x2aU, 0xc4U, 0xe6U, 0x30U, 0x49U, 0x7bU, 0xe1U, 0xe8U,
+};
+static uint64_t shell_ddb_auth_lockout_deadline;
+static uint32_t shell_ddb_auth_failures;
 
 struct shell_cmd arch_shell_cmds[] = {
 	{
@@ -289,6 +306,13 @@ struct shell_cmd arch_shell_cmds[] = {
 		.cmd_param	= SHELL_CMD_AES_PARAM,
 		.help_str	= SHELL_CMD_AES_HELP,
 		.fcn		= shell_aes,
+	},
+	{
+		.str		= SHELL_CMD_DDB,
+		.cmd_param	= SHELL_CMD_DDB_PARAM,
+		.help_str	= SHELL_CMD_DDB_HELP,
+		.fcn		= shell_ddb,
+		.flags		= SHELL_CMD_FLAG_SENSITIVE_ARGS,
 	},
 };
 uint32_t arch_shell_cmds_sz = ARRAY_SIZE(arch_shell_cmds);
@@ -4154,6 +4178,84 @@ static int32_t shell_aes(int32_t argc, char **argv)
 
 	shell_puts("usage: aes <enc|dec> <text|hex>\r\n");
 	return -EINVAL;
+}
+
+/* [20260720] Privileged DDB shell entry
+ *
+ *   masked candidate -> SHA-256 -> fixed-length digest comparison
+ *                              |
+ *                              +--> fail: bounded attempt state
+ *                              |
+ *                              `--> pass: clear state -> Host BRK
+ *
+ * Key rule:
+ *   - the shell owns authentication state and DDB owns exception-time state;
+ *   - plaintext exists only in the shell's private command buffer;
+ *   - repeated failures are rejected without blocking the shell thread.
+ */
+static bool shell_ddb_digest_equal(const uint8_t *left, const uint8_t *right)
+{
+	uint8_t difference = 0U;
+	uint32_t index;
+
+	for (index = 0U; index < SHA256_DIGEST_SIZE; index++) {
+		difference |= left[index] ^ right[index];
+	}
+
+	return difference == 0U;
+}
+
+static bool shell_ddb_auth_locked(uint64_t now)
+{
+	if ((shell_ddb_auth_lockout_deadline != 0UL) &&
+		((int64_t)(now - shell_ddb_auth_lockout_deadline) >= 0L)) {
+		shell_ddb_auth_lockout_deadline = 0UL;
+		shell_ddb_auth_failures = 0U;
+	}
+
+	return shell_ddb_auth_lockout_deadline != 0UL;
+}
+
+static int32_t shell_ddb(int32_t argc, char **argv)
+{
+	uint8_t digest[SHA256_DIGEST_SIZE] = { 0U };
+	uint64_t now = cpu_ticks();
+	size_t password_len;
+	bool authenticated = false;
+	int32_t status = -EACCES;
+
+	if (argc != 2) {
+		shell_puts("usage: ddb <passwd>\r\n");
+		return -EINVAL;
+	}
+	if (shell_ddb_auth_locked(now)) {
+		shell_puts("DDB authentication temporarily locked\r\n");
+		return status;
+	}
+
+	password_len = strnlen_s(argv[1], SHELL_DDB_PASSWORD_MAX_LEN + 1U);
+	if ((password_len > 0U) && (password_len <= SHELL_DDB_PASSWORD_MAX_LEN) &&
+		(sha256_digest(digest, (const uint8_t *)argv[1], password_len) != 0)) {
+		authenticated = shell_ddb_digest_equal(digest,
+			shell_ddb_password_digest);
+	}
+	(void)memset(argv[1], 0U, password_len);
+	(void)memset(digest, 0U, sizeof(digest));
+
+	if (!authenticated) {
+		shell_ddb_auth_failures++;
+		if (shell_ddb_auth_failures >= SHELL_DDB_AUTH_FAILURE_LIMIT) {
+			shell_ddb_auth_lockout_deadline = now +
+				us_to_ticks(SHELL_DDB_AUTH_LOCKOUT_US);
+		}
+		shell_puts("DDB authentication failed\r\n");
+		return status;
+	}
+
+	shell_ddb_auth_failures = 0U;
+	shell_ddb_auth_lockout_deadline = 0UL;
+	arm64_ddb_break();
+	return 0;
 }
 
 static const char *shell_pm_mode_to_str(uint8_t mode)

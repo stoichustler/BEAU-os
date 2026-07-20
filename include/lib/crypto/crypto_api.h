@@ -15,6 +15,20 @@
 
 #include <types.h>
 
+#define SHA256_DIGEST_SIZE	32U
+
+/**
+ * @brief Calculate a SHA-256 digest.
+ *
+ * @param digest Output buffer of SHA256_DIGEST_SIZE bytes
+ * @param data   Input buffer
+ * @param len    Input length in bytes
+ *
+ * @return int32_t 1 - Success  0 - Failure
+ */
+int32_t sha256_digest(uint8_t digest[SHA256_DIGEST_SIZE],
+	const uint8_t *data, size_t len);
+
 /**
  * @brief HMAC-based Extract-and-Expand Key Derivation Function.
  *

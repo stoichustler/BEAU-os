@@ -18,11 +18,9 @@ OBJS += $(patsubst %.c,$(HV_OBJDIR)/%.o,$(SRCS))
 .PHONY: default
 default: $(LIB_BSP)
 
-ifneq ($(CONFIG_RELEASE),y)
 $(LIB_BSP): $(OBJS)
 	@echo "AR                 $(notdir $@)"
 	@$(AR) $(ARFLAGS) $(LIB_BSP) $(OBJS)
-endif
 
 .PHONY: clean
 clean:

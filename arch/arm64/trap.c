@@ -13,6 +13,7 @@
 #include <debug/dump.h>
 
 #include <asm/trap.h>
+#include <asm/ddb.h>
 
 /* [20260710] EL2 trap routing principle:
  *
@@ -72,9 +73,9 @@ static void unexpected_trap_handler(const struct intr_excp_ctx *ctx, uint64_t tr
 	reset_host(false);
 }
 
-static bool dispatch_wfi_wfe_trap(const struct intr_excp_ctx *ctx)
+static bool dispatch_wfi_wfe_trap(struct intr_excp_ctx *ctx)
 {
-	struct cpu_regs *regs = (struct cpu_regs *)&ctx->regs;
+	struct cpu_regs *regs = &ctx->regs;
 	bool handled = false;
 
 	/*
@@ -92,10 +93,13 @@ static bool dispatch_wfi_wfe_trap(const struct intr_excp_ctx *ctx)
 	return handled;
 }
 
-static void dispatch_exception(const struct intr_excp_ctx *ctx, uint64_t trap_type)
+static void dispatch_exception(struct intr_excp_ctx *ctx, uint64_t trap_type)
 {
 	uint16_t pcpu_id = get_pcpu_id();
 
+	if (arm64_ddb_handle_trap(ctx, trap_type)) {
+		return;
+	}
 	if ((trap_type == ARM64_TRAP_SYNC) && dispatch_wfi_wfe_trap(ctx)) {
 		return;
 	}
@@ -158,7 +162,7 @@ void dispatch_interrupt_no_softirq(const struct intr_excp_ctx *ctx)
 	dispatch_interrupt_common(ctx, false);
 }
 
-void dispatch_trap(const struct intr_excp_ctx *ctx, uint64_t trap_type)
+void dispatch_trap(struct intr_excp_ctx *ctx, uint64_t trap_type)
 {
 	switch (trap_type) {
 	case ARM64_TRAP_IRQ:

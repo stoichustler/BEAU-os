@@ -53,7 +53,7 @@
 extern char arm64_exception_vectors[];
 extern void vcpu_exit_return(void);
 
-void dispatch_trap(const struct intr_excp_ctx *ctx, uint64_t trap_type);
+void dispatch_trap(struct intr_excp_ctx *ctx, uint64_t trap_type);
 void dispatch_interrupt(const struct intr_excp_ctx *ctx);
 void dispatch_interrupt_no_softirq(const struct intr_excp_ctx *ctx);
 void arm64_smp_call_irq_handler(__unused uint32_t irq, __unused void *data);

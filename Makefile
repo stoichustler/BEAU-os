@@ -6,6 +6,13 @@ API_MAJOR_VERSION=1
 API_MINOR_VERSION=0
 BEAU_OS_VERSION ?= 0.0.8
 
+ifneq ($(filter command line,$(origin RELEASE)),)
+$(error RELEASE is no longer supported; BEAU always builds the full image)
+endif
+ifneq ($(filter command line,$(origin CONFIG_RELEASE)),)
+$(error CONFIG_RELEASE is no longer supported; BEAU always builds the full image)
+endif
+
 GCC_MAJOR=$(shell echo __GNUC__ | $(CC) -E -x c - | tail -n 1)
 GCC_MINOR=$(shell echo __GNUC_MINOR__ | $(CC) -E -x c - | tail -n 1)
 
@@ -61,10 +68,6 @@ HV_KCONFIG_FILE_LIST := $(HV_CONFIG_DIR)/Kconfig.files
 HV_KCONFIG_DEPS_DIR := $(HV_CONFIG_DIR)/deps
 HV_KCONFIG_CHECK_STAMP := $(HV_CONFIG_DIR)/.checkconfig.timestamp
 HV_CONFIG_TIMESTAMP := $(HV_CONFIG_DIR)/.configfiles.timestamp
-KCONFIG_RELEASE_VALUE = $(if $(filter 1,$(RELEASE)),y,$(if $(filter 0,$(RELEASE)),n,$(RELEASE)))
-ifneq ($(filter command line,$(origin RELEASE)),)
-override CONFIG_RELEASE := $(KCONFIG_RELEASE_VALUE)
-endif
 define normalize_kconfig_bool
 ifeq ($(origin $(1)),command line)
 ifeq ($($(1)),1)
@@ -93,7 +96,6 @@ KCONFIG_BOOL_VARS := \
 	CONFIG_MULTIBOOT2 \
 	CONFIG_PLATFORM_QEMU \
 	CONFIG_PLATFORM_RK356X \
-	CONFIG_RELEASE \
 	CONFIG_RELOC \
 	CONFIG_SCHED_BVT \
 	CONFIG_SCHED_CBS \
@@ -109,8 +111,7 @@ KCONFIG_BOOL_VARS := \
 	CONFIG_STATIC_RK356X_PLATFORM \
 	CONFIG_STATIC_VFDT
 $(foreach v,$(KCONFIG_BOOL_VARS),$(eval $(call normalize_kconfig_bool,$(v))))
-KCONFIG_RELEASE_ASSIGNMENT = $(if $(filter command line,$(origin RELEASE)),'RELEASE=$(KCONFIG_RELEASE_VALUE)')
-KCONFIG_CLI_ASSIGNMENTS = $(foreach v,$(filter CONFIG_%,$(.VARIABLES)),$(if $(filter command line override,$(origin $(v))),'$(patsubst CONFIG_%,%,$(v))=$($(v))')) $(KCONFIG_RELEASE_ASSIGNMENT)
+KCONFIG_CLI_ASSIGNMENTS = $(foreach v,$(filter CONFIG_%,$(.VARIABLES)),$(if $(filter command line override,$(origin $(v))),'$(patsubst CONFIG_%,%,$(v))=$($(v))'))
 ifneq ($(strip $(KCONFIG_CLI_ASSIGNMENTS)),)
 KCONFIG_CLI_SYNC_TARGET := kconfig-cli-sync
 endif
@@ -121,7 +122,6 @@ include $(HV_CONFIG_MK)
 endif
 BOARD := $(patsubst "%",%,$(CONFIG_BOARD))
 SCENARIO := $(patsubst "%",%,$(CONFIG_SCENARIO))
-RELEASE := $(CONFIG_RELEASE)
 CONFIG_ENABLE_VM1_LK_DTS := $(if $(filter y,$(CONFIG_ENABLE_VM1_LK)),1,0)
 ARM64_PLATFORM_CFG_STAMP := $(HV_CONFIG_DIR)/config-vm1-lk-$(CONFIG_ENABLE_VM1_LK_DTS).stamp
 ARM64_PLATFORM_DTB := $(HV_OBJDIR)/platform.dtb
@@ -197,10 +197,6 @@ LDFLAGS += -Wl,--gc-sections -nostartfiles -nostdlib
 LDFLAGS += -Wl,-n,-z,max-page-size=0x1000
 LDFLAGS += -Wl,--no-dynamic-linker
 
-ifeq (y, $(CONFIG_RELEASE))
-LDFLAGS += -s
-endif
-
 ARCH_CFLAGS  += -gdwarf-2
 ARCH_ASFLAGS += -gdwarf-2 -DASSEMBLER=1
 ARCH_ARFLAGS +=
@@ -242,12 +238,10 @@ LIB_BSP = $(HV_MODDIR)/libbsp.a
 export ARCH
 export CC AS AR LD OBJCOPY
 export CFLAGS ASFLAGS ARFLAGS LDFLAGS ARCH_CFLAGS ARCH_ASFLAGS ARCH_ARFLAGS ARCH_LDFLAGS
-export HV_OBJDIR HV_MODDIR CONFIG_RELEASE INCLUDE_PATH
+export HV_OBJDIR HV_MODDIR INCLUDE_PATH
 export LIB_BSP
 
-ifneq ($(CONFIG_RELEASE),y)
 CFLAGS += -DHV_DEBUG -DPROFILING_ON -fno-omit-frame-pointer
-endif
 
 COMMON_C_SRCS += core/vcpu.c
 COMMON_C_SRCS += core/vm.c
@@ -625,7 +619,7 @@ $(VERSION): $(HV_CONFIG_H) Makefile
 	COMMIT_TIME=$$(git log -1 --date=format:"%Y-%m-%d-%T" --format=%cd); \
 	TIME=$$(date -u -d "@$${SOURCE_DATE_EPOCH:-$$(date +%s)}" "+%F %T"); \
 	USER="$${USER:-$$(id -u -n)}"; \
-	if [ x$(CONFIG_RELEASE) = "xy" ];then BUILD_TYPE="REL";else BUILD_TYPE="DBG";fi;\
+	BUILD_TYPE="FULL";\
 	echo "/*" > $(VERSION); \
 	sed 's/^/ * /' "$(LICENSE_FILE)" >> $(VERSION); \
 	echo " */" >> $(VERSION); \

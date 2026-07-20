@@ -6,11 +6,6 @@
 #
 
 #
-# Build
-#
-# CONFIG_RELEASE is not set
-
-#
 # Architecture
 #
 CONFIG_ARM64=y

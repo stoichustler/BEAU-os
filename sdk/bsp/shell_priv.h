@@ -26,13 +26,15 @@ extern char shell_log_buf[SHELL_LOG_BUF_SIZE];
 /* Shell Command Function */
 typedef int32_t (*shell_cmd_fn_t)(int32_t argc, char **argv);
 
+#define SHELL_CMD_FLAG_SENSITIVE_ARGS	(1U << 0U)
+
 /* Shell Command */
 struct shell_cmd {
 	char *str;		/* Command string */
 	char *cmd_param;	/* Command parameter string */
 	char *help_str;		/* Help text associated with the command */
 	shell_cmd_fn_t fcn;	/* Command call-back function */
-
+	uint32_t flags;		/* Input and history policy */
 };
 
 #define MAX_BUFFERED_CMDS 8
@@ -43,6 +45,8 @@ struct shell {
 	char buffered_line[MAX_BUFFERED_CMDS][SHELL_CMD_MAX_LEN + 1U];
 	uint32_t input_line_len;	/* Length of current input line */
 	int32_t input_line_active;	/* Active input line index */
+	uint32_t sensitive_mask_start;
+	bool input_sensitive;
 
 	int32_t to_select_index; /* used for up/down key to select former cmds */
 	uint32_t cursor_offset; /* cursor offset position from left input line */

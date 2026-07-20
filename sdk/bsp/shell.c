@@ -66,6 +66,7 @@
 #define SHELL_BVT_WARP_LIMIT	1U
 #define SHELL_BVT_UNWARP_PERIOD	4U
 #define SHELL_ITEM_STR_SIZE	(MAX_STR_SIZE * 2U)
+#define SHELL_SENSITIVE_MASK	'*'
 #define SHELL_THREAD_SAMPLE_MAX		((CONFIG_MAX_VM_NUM * MAX_VCPUS_PER_VM) + MAX_PCPU_NUM + 8U)
 #define SHELL_CPU_PERCENT_SCALE		1000UL
 
@@ -315,6 +316,91 @@ static struct shell_cmd *shell_find_cmd(const char *cmd_str)
 		}
 	}
 	return NULL;
+}
+
+/* [20260720] Sensitive shell argument ownership
+ *
+ *   serial bytes -> bounded input buffer -> masked terminal rendering
+ *                         |
+ *                         +--> sensitive command: no history publication
+ *                         |
+ *                         `--> private argv copy -> command -> explicit clear
+ *
+ * Key rule:
+ *   - only the shell thread owns plaintext while dispatching one command;
+ *   - terminal redraw, cursor editing, and asynchronous logs use a masked copy;
+ *   - sensitive input is never published into the command-history ring.
+ */
+static bool shell_line_sensitive(const char *line, uint32_t line_len,
+	uint32_t *mask_start)
+{
+	uint32_t cmd_start = 0U;
+	uint32_t index;
+
+	if (line == NULL) {
+		return false;
+	}
+	while ((cmd_start < line_len) && (line[cmd_start] == ' ')) {
+		cmd_start++;
+	}
+
+	for (index = 0U; index < shell_cmd_total(); index++) {
+		const struct shell_cmd *cmd = shell_cmd_at(index);
+		uint32_t cmd_len;
+		uint32_t delimiter;
+
+		if ((cmd->flags & SHELL_CMD_FLAG_SENSITIVE_ARGS) == 0U) {
+			continue;
+		}
+		cmd_len = (uint32_t)strnlen_s(cmd->str, SHELL_CMD_MAX_LEN);
+		delimiter = cmd_start + cmd_len;
+		if ((delimiter < line_len) &&
+			((line[delimiter] == ' ') || (line[delimiter] == ',')) &&
+			(strncmp(&line[cmd_start], cmd->str, cmd_len) == 0)) {
+			if (mask_start != NULL) {
+				*mask_start = delimiter + 1U;
+			}
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static bool shell_current_input_sensitive(void)
+{
+	const char *line = p_shell->buffered_line[p_shell->input_line_active];
+	uint32_t mask_start;
+
+	if (!p_shell->input_sensitive &&
+		shell_line_sensitive(line, p_shell->input_line_len, &mask_start)) {
+		p_shell->input_sensitive = true;
+		p_shell->sensitive_mask_start = mask_start;
+	}
+
+	return p_shell->input_sensitive;
+}
+
+static void shell_mask_input_line(const char *line, uint32_t line_len,
+	char masked[SHELL_CMD_MAX_LEN + 1U])
+{
+	uint32_t mask_start = line_len;
+	bool sensitive = p_shell->input_sensitive;
+	uint32_t index;
+
+	if (sensitive) {
+		mask_start = min(p_shell->sensitive_mask_start, line_len);
+	} else {
+		sensitive = shell_line_sensitive(line, line_len, &mask_start);
+	}
+
+	for (index = 0U; index < line_len; index++) {
+		bool delimiter = (line[index] == ' ') || (line[index] == ',');
+
+		masked[index] = (sensitive && (index >= mask_start) && !delimiter) ?
+			SHELL_SENSITIVE_MASK : line[index];
+	}
+	masked[line_len] = '\0';
 }
 
 static char shell_getc(void)
@@ -603,10 +689,15 @@ static void shell_clear_current_line_unlocked(void)
 
 static void shell_restore_input_line_unlocked(void)
 {
+	char masked[SHELL_CMD_MAX_LEN + 1U];
+	const char *line = p_shell->buffered_line[p_shell->input_line_active];
+
 	shell_puts_unlocked(SHELL_PROMPT_STR);
 	if (p_shell->input_line_len > 0U) {
-		shell_puts_unlocked(p_shell->buffered_line[p_shell->input_line_active]);
+		shell_mask_input_line(line, p_shell->input_line_len, masked);
+		shell_puts_unlocked(masked);
 		set_cursor_pos_unlocked(p_shell->input_line_len - p_shell->cursor_offset);
+		(void)memset(masked, 0U, sizeof(masked));
 	}
 }
 
@@ -615,6 +706,16 @@ static void shell_restore_input_line(void)
 	uint64_t rflags;
 
 	spinlock_irqsave_obtain(&shell_tx_lock, &rflags);
+	shell_restore_input_line_unlocked();
+	spinlock_irqrestore_release(&shell_tx_lock, rflags);
+}
+
+static void shell_redraw_input_line(void)
+{
+	uint64_t rflags;
+
+	spinlock_irqsave_obtain(&shell_tx_lock, &rflags);
+	shell_clear_current_line_unlocked();
 	shell_restore_input_line_unlocked();
 	spinlock_irqrestore_release(&shell_tx_lock, rflags);
 }
@@ -769,8 +870,22 @@ static void shell_handle_tab_key(void)
 static void handle_delete_key(void)
 {
 	if (p_shell->cursor_offset < p_shell->input_line_len) {
-
+		char *line = p_shell->buffered_line[p_shell->input_line_active];
+		bool sensitive = shell_current_input_sensitive();
 		uint32_t delta = p_shell->input_line_len - p_shell->cursor_offset - 1;
+
+		if (sensitive) {
+			if ((p_shell->cursor_offset < p_shell->sensitive_mask_start) &&
+				(p_shell->sensitive_mask_start > 0U)) {
+				p_shell->sensitive_mask_start--;
+			}
+			memcpy(line + p_shell->cursor_offset,
+				line + p_shell->cursor_offset + 1U, delta);
+			line[p_shell->input_line_len - 1U] = '\0';
+			p_shell->input_line_len--;
+			shell_redraw_input_line();
+			return;
+		}
 
 		/* Send a space + backspace sequence to delete character */
 		shell_puts(" \b");
@@ -795,6 +910,10 @@ static void handle_delete_key(void)
 static void handle_updown_key(enum function_key key_value)
 {
 	int32_t to_select, current_select = p_shell->to_select_index;
+
+	if (shell_current_input_sensitive()) {
+		return;
+	}
 
 	/* update current_select and p_shell->to_select_index as up/down key */
 	if (key_value == KEY_UP) {
@@ -860,9 +979,14 @@ static void shell_handle_special_char(char ch)
 			break;
 		case KEY_RIGHT:
 			if (p_shell->cursor_offset < p_shell->input_line_len) {
-				shell_puts(p_shell->buffered_line[p_shell->input_line_active] + p_shell->cursor_offset);
 				p_shell->cursor_offset++;
-				set_cursor_pos(p_shell->input_line_len - p_shell->cursor_offset);
+				if (shell_current_input_sensitive()) {
+					shell_redraw_input_line();
+				} else {
+					shell_puts(p_shell->buffered_line[p_shell->input_line_active] +
+						p_shell->cursor_offset - 1U);
+					set_cursor_pos(p_shell->input_line_len - p_shell->cursor_offset);
+				}
 			}
 			break;
 		case KEY_LEFT:
@@ -873,8 +997,16 @@ static void shell_handle_special_char(char ch)
 			break;
 		case KEY_END:
 			if (p_shell->cursor_offset < p_shell->input_line_len) {
-				shell_puts(p_shell->buffered_line[p_shell->input_line_active] + p_shell->cursor_offset);
-				p_shell->cursor_offset = p_shell->input_line_len;
+				uint32_t old_offset = p_shell->cursor_offset;
+
+				if (shell_current_input_sensitive()) {
+					p_shell->cursor_offset = p_shell->input_line_len;
+					shell_redraw_input_line();
+				} else {
+					shell_puts(p_shell->buffered_line[p_shell->input_line_active] +
+						old_offset);
+					p_shell->cursor_offset = p_shell->input_line_len;
+				}
 			}
 			break;
 		case KEY_HOME:
@@ -903,6 +1035,29 @@ static void handle_backspace_key(void)
 {
 	/* Ensure length is not 0 */
 	if (p_shell->cursor_offset > 0U) {
+		char *line = p_shell->buffered_line[p_shell->input_line_active];
+		bool sensitive = shell_current_input_sensitive();
+
+		if (sensitive) {
+			uint32_t delta = p_shell->input_line_len - p_shell->cursor_offset;
+			uint32_t removed = p_shell->cursor_offset - 1U;
+
+			if ((removed < p_shell->sensitive_mask_start) &&
+				(p_shell->sensitive_mask_start > 0U)) {
+				p_shell->sensitive_mask_start--;
+			}
+
+			if (delta > 0U) {
+				memcpy(line + p_shell->cursor_offset - 1U,
+					line + p_shell->cursor_offset, delta);
+			}
+			line[p_shell->input_line_len - 1U] = '\0';
+			p_shell->input_line_len--;
+			p_shell->cursor_offset--;
+			shell_redraw_input_line();
+			return;
+		}
+
 		/* Echo backspace */
 		shell_puts("\b");
 		/* Send a space + backspace sequence to delete character */
@@ -931,23 +1086,35 @@ static void handle_backspace_key(void)
 
 static void handle_input_char(char ch)
 {
+	char *line = p_shell->buffered_line[p_shell->input_line_active];
 	uint32_t delta = p_shell->input_line_len - p_shell->cursor_offset;
+	bool sensitive = shell_current_input_sensitive();
+
+	if (sensitive &&
+		(p_shell->cursor_offset < p_shell->sensitive_mask_start)) {
+		p_shell->sensitive_mask_start++;
+	}
 
 	/* move the input from cursor offset back first */
 	if (delta > 0) {
-		memcpy_backwards(p_shell->buffered_line[p_shell->input_line_active] + p_shell->input_line_len,
-			p_shell->buffered_line[p_shell->input_line_active] + p_shell->input_line_len - 1, delta);
+		memcpy_backwards(line + p_shell->input_line_len,
+			line + p_shell->input_line_len - 1U, delta);
 	}
 
-	p_shell->buffered_line[p_shell->input_line_active][p_shell->cursor_offset] = ch;
-
-	/* Echo back the input */
-	shell_puts(p_shell->buffered_line[p_shell->input_line_active] + p_shell->cursor_offset);
-	set_cursor_pos(delta);
+	line[p_shell->cursor_offset] = ch;
 
 	/* Move to next character in string */
 	p_shell->input_line_len++;
 	p_shell->cursor_offset++;
+	line[p_shell->input_line_len] = '\0';
+
+	if (shell_current_input_sensitive()) {
+		shell_redraw_input_line();
+	} else {
+		/* Echo back the input */
+		shell_puts(line + p_shell->cursor_offset - 1U);
+		set_cursor_pos(delta);
+	}
 }
 
 static bool shell_input_line(void)
@@ -1023,7 +1190,7 @@ static void shell_put_error(const char *msg)
 	shell_puts(temp_str);
 }
 
-static int32_t shell_process_cmd(const char *p_input_line)
+static int32_t shell_process_cmd(char *p_input_line)
 {
 	int32_t status = -EINVAL;
 	struct shell_cmd *p_cmd;
@@ -1054,7 +1221,10 @@ static int32_t shell_process_cmd(const char *p_input_line)
 		p_cmd = shell_find_cmd(cmd_argv[0]);
 		if (p_cmd == NULL) {
 			shell_put_error("invalid command.");
-			return -EINVAL;
+			goto out;
+		}
+		if ((p_cmd->flags & SHELL_CMD_FLAG_SENSITIVE_ARGS) != 0U) {
+			(void)memset(p_input_line, 0U, SHELL_CMD_MAX_LEN + 1U);
 		}
 
 		status = p_cmd->fcn(cmd_argc, &cmd_argv[0]);
@@ -1067,6 +1237,9 @@ static int32_t shell_process_cmd(const char *p_input_line)
 		}
 	}
 
+out:
+	(void)memset(cmd_argv_str, 0U, sizeof(cmd_argv_str));
+	(void)memset(cmd_argv_mem, 0U, sizeof(cmd_argv_mem));
 	return status;
 }
 
@@ -1074,14 +1247,19 @@ static int32_t shell_process(void)
 {
 	int32_t status, former_index;
 	char *p_input_line;
+	uint32_t input_len;
+	bool sensitive;
 
 	/* Process current command (using active input line). */
 	p_input_line = p_shell->buffered_line[p_shell->input_line_active];
+	input_len = (uint32_t)strnlen_s(p_input_line, SHELL_CMD_MAX_LEN);
+	sensitive = shell_current_input_sensitive() ||
+		shell_line_sensitive(p_input_line, input_len, NULL);
 
 	former_index = (p_shell->input_line_active + MAX_BUFFERED_CMDS - 1) % MAX_BUFFERED_CMDS;
 
 	/* just buffer current cmd if current is not empty and not same with last buffered one */
-	if ((strnlen_s(p_input_line, SHELL_CMD_MAX_LEN) > 0) &&
+	if (!sensitive && (input_len > 0U) &&
 		(strcmp(p_input_line, p_shell->buffered_line[former_index]) != 0)) {
 		p_shell->input_line_active = (p_shell->input_line_active + 1) % MAX_BUFFERED_CMDS;
 	}
@@ -1090,6 +1268,11 @@ static int32_t shell_process(void)
 
 	/* Process command */
 	status = shell_process_cmd(p_input_line);
+	if (sensitive) {
+		(void)memset(p_input_line, 0U, SHELL_CMD_MAX_LEN + 1U);
+	}
+	p_shell->input_sensitive = false;
+	p_shell->sensitive_mask_start = 0U;
 
 	/* Now that the command is processed, zero fill the input buffer */
 	(void)memset(p_shell->buffered_line[p_shell->input_line_active], 0, SHELL_CMD_MAX_LEN + 1U);
@@ -1238,6 +1421,8 @@ void shell_init(void)
 	p_shell->arch_cmd_count = arch_shell_cmds_sz;
 
 	p_shell->to_select_index = 0;
+	p_shell->input_sensitive = false;
+	p_shell->sensitive_mask_start = 0U;
 
 	/* Zero fill the input buffer */
 	(void)memset(p_shell->buffered_line[p_shell->input_line_active], 0U, SHELL_CMD_MAX_LEN + 1U);
