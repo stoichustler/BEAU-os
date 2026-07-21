@@ -119,6 +119,23 @@
 		reg = <0x0 0x40000000 0x0 0x40000000>;
 	};
 
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		ramlog@7fc7f000 {
+			compatible = "beau,ramlog";
+			reg = <0x0 0x7fc7f000 0x0 0x00381000>;
+			no-map;
+			beau,header-size = <0x1000>;
+			beau,rtos-vm-count = <2>;
+			beau,rtos-log-size = <0x40000>;
+			beau,linux-vm-count = <3>;
+			beau,linux-log-size = <0x100000>;
+		};
+	};
+
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -518,6 +535,7 @@
 			beau,name = "Linux-2";
 			load-order = "pre-std";
 			beau,static-mem = <0x0 0x48000000 0x0 0x08000000>;
+			beau,pstore = <0x0 0x4ff00000 0x0 0x00100000>;
 			direct-map;
 			cpu-affinity = <2 4 6 7>;
 			guest-flags = "static";
@@ -544,7 +562,6 @@
 				size-symbol = "BEAU_LINUX_VM2_IMAGE_SIZE";
 				load-addr = <0x0 0x48200000>;
 				entry-addr = <0x0 0x48200000>;
-				bootargs = "console=hvc0 rdinit=/init loglevel=4";
 			};
 
 			vboot@74000000 {
@@ -597,6 +614,7 @@
 			beau,name = "Linux-3";
 			load-order = "pre-std";
 			beau,static-mem = <0x0 0x58000000 0x0 0x08000000>;
+			beau,pstore = <0x0 0x5ff00000 0x0 0x00100000>;
 			direct-map;
 			cpu-affinity = <3 5 6 7>;
 			guest-flags = "static";
@@ -623,7 +641,6 @@
 				size-symbol = "BEAU_LINUX_VM3_IMAGE_SIZE";
 				load-addr = <0x0 0x58200000>;
 				entry-addr = <0x0 0x58200000>;
-				bootargs = "console=hvc0 rdinit=/init loglevel=4";
 			};
 
 			vboot@74000000 {

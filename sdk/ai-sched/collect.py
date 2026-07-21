@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract AI_SCHED_V1 shell records into a versioned CSV dataset."""
+"""Extract AI_SCHED shell records into a versioned CSV dataset."""
 
 import argparse
 import csv
@@ -8,7 +8,7 @@ from pathlib import Path
 
 from schema import SCHEMA_VERSION
 
-RECORD = re.compile(r"^AI_SCHED_V1 (?P<body>.+)$")
+RECORD = re.compile(r"^AI_SCHED (?P<body>.+)$")
 
 
 def parse_record(line):

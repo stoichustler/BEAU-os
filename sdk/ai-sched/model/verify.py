@@ -16,7 +16,7 @@ def main():
     parser.add_argument("--manifest", required=True, type=Path)
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
-    if manifest.get("schema") != "AI_SCHED_V1":
+    if manifest.get("schema") != "AI_SCHED":
         raise SystemExit("unexpected schema")
     if tuple(manifest.get("features", ())) != FEATURE_COLUMNS:
         raise SystemExit("feature ABI mismatch")

@@ -3142,7 +3142,7 @@ static void shell_health_print_cpu_usage(const struct shell_health_vm *vms)
 		shell_item_line("%s", line);
 		shell_output_checkpoint();
 	}
-	shell_item_line("[Tip] %%:running  NC:not configured  NA:not active  --:baseline pending");
+	shell_item_line("[TIP] %%:running  NC:not configured  NA:not active  --:baseline pending");
 	shell_health_cpu_history.sample_ticks = sample_ticks;
 	shell_health_cpu_history.valid = true;
 }
@@ -3622,10 +3622,9 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 			shell_vmstat_wdt_recovery_to_str(wdt.recovery_state),
 			wdt.recovery_wait_vcpus, wdt.last_token);
 	}
-	shell_item_line("console:selected:%s bound:%s ring:%u/%u drain:%u pending:%s",
+	shell_item_line("vcon:selected:%s bound:%s ramlog-pending:%u drain:%u skipped:%lu",
 		shell_yes_no(console_vmid == vm_id), shell_yes_no(ring.vuart_bound),
-		ring.queued, ring.capacity, ring.drain_budget,
-		shell_yes_no(ring.pending));
+		ring.queued, ring.drain_budget, ring.dropped_bytes);
 
 	if (vu != NULL) {
 		shell_item_line("        vuart:active:%s irq:%u rx:%u tx:%u ier:0x%02x lsr:0x%02x",

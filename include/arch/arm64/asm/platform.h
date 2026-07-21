@@ -18,6 +18,12 @@ struct arm64_mem_region {
 struct beau_config {
 	uint64_t ram_start;
 	uint64_t ram_size;
+	uint64_t ramlog_base;
+	uint64_t ramlog_size;
+	uint32_t ramlog_rtos_size;
+	uint32_t ramlog_linux_size;
+	uint16_t ramlog_rtos_vm_count;
+	uint16_t ramlog_linux_vm_count;
 
 	uint64_t console_mmio_base;
 

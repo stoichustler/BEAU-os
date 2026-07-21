@@ -107,6 +107,10 @@ struct shell {
 #define SHELL_CMD_VM_CONSOLE_PARAM	"<vm id>"
 #define SHELL_CMD_VM_CONSOLE_HELP	"switch to the vm console. type `CTRL-D` switch to BEAU"
 
+#define SHELL_CMD_RAMLOG		"ramlog"
+#define SHELL_CMD_RAMLOG_PARAM		"<vm id>"
+#define SHELL_CMD_RAMLOG_HELP		"dump retained VM boot and watchdog log"
+
 void shell_puts(const char *string_ptr);
 void shell_item_begin(const char *fmt, ...);
 void shell_item_section(const char *fmt, ...);

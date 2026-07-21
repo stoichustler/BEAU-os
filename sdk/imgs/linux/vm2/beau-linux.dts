@@ -98,6 +98,20 @@
 		reg = <0x0 0x48000000 0x0 0x08000000>;
 	};
 
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		ramoops@4ff00000 {
+			compatible = "ramoops";
+			reg = <0x0 0x4ff00000 0x0 0x00100000>;
+			record-size = <0x00080000>;
+			console-size = <0x00080000>;
+			max-reason = <0x7fffffff>;
+		};
+	};
+
 	gic: interrupt-controller@8000000 {
 		compatible = "arm,gic-v3";
 		#interrupt-cells = <3>;

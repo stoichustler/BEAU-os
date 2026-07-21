@@ -56,6 +56,8 @@ struct arch_vm_config {
 	uint64_t guest_ram_start;
 	uint64_t guest_ram_size;
 	uint64_t guest_ram_hpa;
+	uint64_t guest_pstore_base;
+	uint64_t guest_pstore_size;
 
 	uint64_t guest_gicd_base;
 	uint64_t guest_gicd_size;

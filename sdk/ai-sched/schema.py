@@ -1,6 +1,6 @@
 """Stable AI scheduler dataset schema shared by collection and training."""
 
-SCHEMA_VERSION = "AI_SCHED_V1"
+SCHEMA_VERSION = "AI_SCHED"
 FEATURE_COLUMNS = (
     "period_us", "admission_ppm", "runqueue", "active_mask",
     "pool_budget_us", "cs_delta", "resched_delta",

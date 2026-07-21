@@ -7,8 +7,13 @@
 #ifndef ARM64_MACRO_H
 #define ARM64_MACRO_H
 
+#define HEAD(obj)        \
+	.globl obj;          \
+	.type obj, %object;  \
+obj:
+
 #define FUNC(fn)         \
-	.global fn;          \
+	.globl fn;           \
 	.type fn, %function; \
 fn:
 

@@ -9,6 +9,7 @@
 #include <bits.h>
 #include "shell_priv.h"
 #include <console.h>
+#include <debug/ramlog.h>
 #include <per_cpu.h>
 #include <sprintf.h>
 #include <util.h>
@@ -97,6 +98,7 @@ static int32_t shell_spestat(int32_t argc, char **argv);
 #endif
 static int32_t shell_irqstat(int32_t argc, char **argv);
 static int32_t shell_to_vm_console(int32_t argc, char **argv);
+static int32_t shell_ramlog(int32_t argc, char **argv);
 static const char *thread_state_str(enum thread_object_state state);
 static const char *thread_lifecycle_str(const struct thread_object *thread);
 
@@ -174,6 +176,12 @@ static struct shell_cmd shell_cmds[] = {
 		.cmd_param	= SHELL_CMD_VM_CONSOLE_PARAM,
 		.help_str	= SHELL_CMD_VM_CONSOLE_HELP,
 		.fcn		= shell_to_vm_console,
+	},
+	{
+		.str		= SHELL_CMD_RAMLOG,
+		.cmd_param	= SHELL_CMD_RAMLOG_PARAM,
+		.help_str	= SHELL_CMD_RAMLOG_HELP,
+		.fcn		= shell_ramlog,
 	},
 };
 
@@ -2299,7 +2307,7 @@ static int32_t shell_schedai(int32_t argc, char **argv)
 					active_mask |= 1UL << vmid;
 				}
 			}
-			snprintf(line, sizeof(line), "AI_SCHED_V1 ticks=%lu pcpu=%hu period_us=%u admission_ppm=%lu runqueue=%u active_mask=0x%lx pool_budget_us=%u cs=%lu resched=%lu\r\n",
+			snprintf(line, sizeof(line), "AI_SCHED ticks=%lu pcpu=%hu period_us=%u admission_ppm=%lu runqueue=%u active_mask=0x%lx pool_budget_us=%u cs=%lu resched=%lu\r\n",
 				cpu_ticks(), pcpu_id, pool->period_us, cbs.admission_utilization,
 				cbs.runqueue_count, active_mask, pool->budget_us, sched_get_context_switches(pcpu_id),
 				sched_get_reschedule_requests(pcpu_id));
@@ -2719,6 +2727,209 @@ static int32_t shell_to_vm_console(int32_t argc, char **argv)
 	if (vuart_try_putchar(vu, VM_CONSOLE_PROMPT_KEY)) {
 		vuart_notify_rx(vu);
 	}
+
+	return 0;
+}
+
+static bool shell_parse_ramlog_vmid(const char *text, uint16_t *vmid)
+{
+	uint32_t value = 0U;
+
+	if ((text == NULL) || (vmid == NULL) || (text[0] == '\0')) {
+		return false;
+	}
+	for (uint32_t index = 0U; text[index] != '\0'; index++) {
+		uint8_t ch = (uint8_t)text[index];
+
+		if ((ch < (uint8_t)'0') || (ch > (uint8_t)'9') ||
+			(value > ((0xffffU - (uint32_t)(ch - (uint8_t)'0')) / 10U))) {
+			return false;
+		}
+		value = (value * 10U) + (uint32_t)(ch - (uint8_t)'0');
+	}
+	*vmid = (uint16_t)value;
+
+	return true;
+}
+
+#define SHELL_RAMLOG_CPR_QUERY_LEN	4U
+#define SHELL_RAMLOG_DUMP_BUF_SIZE	260U
+
+struct shell_ramlog_dump_state {
+	uint8_t query_len;
+	char query[SHELL_RAMLOG_CPR_QUERY_LEN];
+	bool line_start;
+};
+
+static const char shell_ramlog_cpr_query[] = "\033[6n";
+
+static void shell_ramlog_dump_write_byte(struct shell_ramlog_dump_state *state,
+	char *output, uint32_t *output_len, char ch)
+{
+	if (*output_len == SHELL_RAMLOG_DUMP_BUF_SIZE) {
+		(void)console_write(output, *output_len);
+		*output_len = 0U;
+	}
+	output[*output_len] = ch;
+	(*output_len)++;
+	state->line_start = (ch == '\n');
+}
+
+/* [20260721] RAMLOG terminal-query display filter
+ *
+ * retained guest bytes -> exact CPR query suppression -> physical terminal
+ *
+ * Key rule:
+ *   - the retained record is never rewritten for presentation;
+ *   - only ESC[6n is withheld so a serial terminal cannot inject a cursor
+ *     reply into an unrelated console session;
+ *   - partial escape sequences are emitted at end-of-dump.
+ */
+static void shell_ramlog_dump_write(struct shell_ramlog_dump_state *state,
+	const char *input, uint32_t length, bool finish)
+{
+	char output[SHELL_RAMLOG_DUMP_BUF_SIZE];
+	uint32_t output_len = 0U;
+
+	if ((state == NULL) || (input == NULL)) {
+		return;
+	}
+
+	for (uint32_t index = 0U; index < length; index++) {
+		char ch = input[index];
+
+		if ((state->query_len != 0U) || (ch == shell_ramlog_cpr_query[0U])) {
+			if (state->query_len < SHELL_RAMLOG_CPR_QUERY_LEN) {
+				state->query[state->query_len] = ch;
+				state->query_len++;
+			}
+			if (memcmp(state->query, shell_ramlog_cpr_query, state->query_len) == 0) {
+				if (state->query_len == SHELL_RAMLOG_CPR_QUERY_LEN) {
+					state->query_len = 0U;
+				}
+				continue;
+			}
+			for (uint32_t query_index = 0U; query_index < state->query_len; query_index++) {
+				shell_ramlog_dump_write_byte(state, output, &output_len,
+					state->query[query_index]);
+			}
+			state->query_len = 0U;
+			continue;
+		}
+		shell_ramlog_dump_write_byte(state, output, &output_len, ch);
+	}
+
+	if (finish) {
+		for (uint32_t index = 0U; index < state->query_len; index++) {
+			shell_ramlog_dump_write_byte(state, output, &output_len, state->query[index]);
+		}
+		state->query_len = 0U;
+	}
+	if (output_len != 0U) {
+		(void)console_write(output, output_len);
+	}
+}
+
+static int32_t shell_ramlog(int32_t argc, char **argv)
+{
+	struct ramlog_stats before;
+	struct ramlog_stats after;
+	struct shell_ramlog_dump_state dump_state = {
+		.query_len = 0U,
+		.line_start = true,
+	};
+	char buffer[256U];
+	uint16_t vmid;
+	uint64_t offset = 0UL;
+	uint32_t copied;
+
+	if ((argc != 2) || !shell_parse_ramlog_vmid(argv[1], &vmid) ||
+		!ramlog_get_stats(vmid, &before)) {
+		shell_puts("usage: ramlog <vm id 0-4>\r\n");
+		return -EINVAL;
+	}
+
+	shell_item_begin("RAMLOG VM%hu", vmid);
+	shell_item_line("generation:%lu retained:%s bytes:%lu/%u stored:%lu dropped:%lu overflow:%lu",
+		before.generation, before.retained ? "yes" : "no", before.queued,
+		before.capacity, before.stored_bytes, before.dropped_bytes,
+		before.overflow_events);
+	if (before.snapshot_capacity != 0U) {
+		shell_item_line("pstore:capture:%s generation:%lu dmesg:%u console:%u/%u failures:%lu",
+			before.snapshot_capturing ? "busy" :
+			(before.snapshot_valid ? "yes" : "no"), before.snapshot_generation,
+			before.snapshot_dmesg_bytes, before.snapshot_console_bytes,
+			before.snapshot_capacity, before.snapshot_failures);
+	}
+	shell_item_end();
+
+	if (before.snapshot_valid && (before.snapshot_dmesg_bytes != 0U)) {
+		shell_item_begin("PREV RAMOOPS DMESG");
+		shell_item_line("bytes:%u", before.snapshot_dmesg_bytes);
+		shell_item_end();
+		while (offset < before.snapshot_dmesg_bytes) {
+			copied = ramlog_copy_snapshot(vmid, offset, buffer, sizeof(buffer));
+			if (copied == 0U) {
+				break;
+			}
+			shell_ramlog_dump_write(&dump_state, buffer, copied, false);
+			offset += copied;
+		}
+		shell_ramlog_dump_write(&dump_state, "", 0U, true);
+		if (!dump_state.line_start) {
+			shell_puts("\r\n");
+			dump_state.line_start = true;
+		}
+	}
+	if (before.snapshot_valid && (before.snapshot_console_bytes != 0U)) {
+		shell_item_begin("PREV RAMOOPS CONSOLE");
+		shell_item_line("bytes:%u", before.snapshot_console_bytes);
+		shell_item_end();
+		while (offset < ((uint64_t)before.snapshot_dmesg_bytes +
+			before.snapshot_console_bytes)) {
+			copied = ramlog_copy_snapshot(vmid, offset, buffer, sizeof(buffer));
+			if (copied == 0U) {
+				break;
+			}
+			shell_ramlog_dump_write(&dump_state, buffer, copied, false);
+			offset += copied;
+		}
+		shell_ramlog_dump_write(&dump_state, "", 0U, true);
+		if (!dump_state.line_start) {
+			shell_puts("\r\n");
+			dump_state.line_start = true;
+		}
+	}
+
+	offset = 0UL;
+	shell_item_begin("CURR LIVE CONSOLE");
+	shell_item_line("bytes:%lu/%u stored:%lu dropped:%lu overflow:%lu",
+		before.queued, before.capacity, before.stored_bytes, before.dropped_bytes,
+		before.overflow_events);
+	shell_item_end();
+	while (offset < before.queued) {
+		copied = ramlog_copy(vmid, offset, buffer, sizeof(buffer));
+		if (copied == 0U) {
+			break;
+		}
+		shell_ramlog_dump_write(&dump_state, buffer, copied, false);
+		offset += copied;
+	}
+	shell_ramlog_dump_write(&dump_state, "", 0U, true);
+	if (ramlog_get_stats(vmid, &after) &&
+		((after.dropped_bytes != before.dropped_bytes) ||
+		(after.queued < before.queued))) {
+		if (!dump_state.line_start) {
+			shell_puts("\r\n");
+		}
+		shell_puts("ramlog changed during dump; retry for a newer snapshot\r\n");
+		dump_state.line_start = true;
+	}
+	if (!dump_state.line_start) {
+		shell_puts("\r\n");
+	}
+	shell_item_begin("RAMLOG END");
+	shell_item_end();
 
 	return 0;
 }

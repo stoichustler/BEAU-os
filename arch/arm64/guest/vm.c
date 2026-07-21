@@ -32,6 +32,7 @@
 #include <asm/vtd.h>
 #include <virtio_console.h>
 #include <virtio_proxy.h>
+#include <debug/ramlog.h>
 
 /* [20260630] VM/stage-2 principle:
  *
@@ -889,6 +890,7 @@ int32_t arch_reset_vm(struct acrn_vm *vm)
 	 *          v
 	 *   start_vm() prepares and wakes BSP
 	 */
+	(void)ramlog_capture_vm_pstore(vm);
 	virtio_proxy_release_vm(vm);
 	reset_vm_ioreqs(vm);
 	arm64_vgicv3_init_vm(vm, vm_config->cpu_affinity);

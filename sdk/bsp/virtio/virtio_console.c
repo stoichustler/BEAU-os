@@ -226,9 +226,7 @@ static bool virtio_console_copy_tx_desc(struct virtio_mmio_dev *mmio,
 		if (!virtio_mmio_read_gpa(mmio, desc->addr + copied, buf, chunk)) {
 			return false;
 		}
-		for (uint32_t i = 0U; i < chunk; i++) {
-			(void)console_vm_tx_put(vm->vm_id, buf[i]);
-		}
+		(void)console_vm_tx_write(vm->vm_id, buf, chunk);
 		copied += chunk;
 	}
 	*total += desc->len;

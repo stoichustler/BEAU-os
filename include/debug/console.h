@@ -88,6 +88,7 @@ bool console_is_hv(void);
 bool console_is_vm_active(uint16_t vmid);
 bool console_vm_kick(void);
 bool console_vm_tx_put(uint16_t vmid, char ch);
+bool console_vm_tx_write(uint16_t vmid, const char *buffer, uint32_t length);
 bool console_vm_tx_can_accept(uint16_t vmid);
 void console_vm_tx_space_changed(uint16_t vmid);
 bool console_vm_rx_refill(struct acrn_vuart *vu);

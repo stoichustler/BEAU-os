@@ -35,11 +35,19 @@
 #define ARM64_DTS_GUEST_SMMU_SIZE	0x20000UL
 #define ARM64_DTS_GUEST_SMMU_ALIGN	0x10000UL
 #define ARM64_DTS_GUEST_SMMU_MAX_QUEUE_LOG2	6U
+#define ARM64_DTS_GUEST_PSTORE_ALIGN	MEM_4K
+#define ARM64_DTS_RAMLOG_HEADER_SIZE	0x1000U
+#define ARM64_DTS_RAMLOG_RTOS_VM_COUNT	2U
+#define ARM64_DTS_RAMLOG_LINUX_VM_COUNT	3U
 
 static const struct arm64_platform_dts_vm_storage *dts_storage;
 static uint16_t dts_bare_boot_option_count;
 static struct arm64_mem_region dts_mmio_regions[ARM64_DTS_MMIO_REGION_MAX];
 static uint32_t dts_mmio_region_count;
+
+static bool dts_range_end(uint64_t start, uint64_t size, uint64_t *end);
+static bool dts_ranges_overlap(uint64_t start_a, uint64_t size_a,
+	uint64_t start_b, uint64_t size_b);
 
 /* [20260714] ARM64 platform DTS ingestion
  *
@@ -899,6 +907,76 @@ static void dts_parse_memory(const void *fdt, uint64_t *base, uint64_t *size)
 	arm64_dts_panic("/memory", -FDT_ERR_NOTFOUND);
 }
 
+static void dts_parse_ramlog(const void *fdt)
+{
+	int32_t reserved_memory;
+	int32_t node;
+	uint64_t base = 0UL;
+	uint64_t size = 0UL;
+	uint64_t end;
+	uint64_t host_end;
+	uint64_t expected_size;
+	uint32_t header_size = 0U;
+	uint32_t rtos_vm_count = 0U;
+	uint32_t linux_vm_count = 0U;
+	uint32_t rtos_size = 0U;
+	uint32_t linux_size = 0U;
+	uint32_t count = 0U;
+
+	reserved_memory = fdt_path_offset(fdt, "/reserved-memory");
+	if (reserved_memory < 0) {
+		arm64_dts_panic("/reserved-memory", reserved_memory);
+	}
+
+	fdt_for_each_subnode(node, fdt, reserved_memory) {
+		if (!dts_has_compatible(fdt, node, "beau,ramlog")) {
+			continue;
+		}
+		if (count != 0U) {
+			arm64_dts_panic("beau,ramlog duplicate", -EINVAL);
+		}
+		dts_reg_by_index(fdt, node, 0U, &base, &size);
+		header_size = dts_u32_prop(fdt, node, "beau,header-size", 0U);
+		rtos_vm_count = dts_u32_prop(fdt, node, "beau,rtos-vm-count", 0U);
+		linux_vm_count = dts_u32_prop(fdt, node, "beau,linux-vm-count", 0U);
+		rtos_size = dts_u32_prop(fdt, node, "beau,rtos-log-size", 0U);
+		linux_size = dts_u32_prop(fdt, node, "beau,linux-log-size", 0U);
+		if (fdt_getprop(fdt, node, "no-map", NULL) == NULL) {
+			arm64_dts_panic("beau,ramlog no-map", -EINVAL);
+		}
+		count++;
+	}
+
+	if (count != 1U) {
+		arm64_dts_panic("beau,ramlog", -FDT_ERR_NOTFOUND);
+	}
+	if ((header_size != ARM64_DTS_RAMLOG_HEADER_SIZE) ||
+		(rtos_vm_count != ARM64_DTS_RAMLOG_RTOS_VM_COUNT) ||
+		(linux_vm_count != ARM64_DTS_RAMLOG_LINUX_VM_COUNT) ||
+		(rtos_size != 0x40000U) || (linux_size != 0x100000U) ||
+		!mem_aligned_check(base, PAGE_SIZE) || !mem_aligned_check(size, PAGE_SIZE) ||
+		!dts_range_end(base, size, &end) ||
+		!dts_range_end(beau_config.ram_start, beau_config.ram_size, &host_end) ||
+		(base < beau_config.ram_start) || (end > host_end)) {
+		arm64_dts_panic("beau,ramlog layout", -EINVAL);
+	}
+	expected_size = (uint64_t)header_size + ((uint64_t)rtos_vm_count * rtos_size) +
+		((uint64_t)linux_vm_count * linux_size);
+	if (size != expected_size) {
+		arm64_dts_panic("beau,ramlog size", -EINVAL);
+	}
+	if (dts_ranges_overlap(base, size, CONFIG_HV_RAM_START, CONFIG_HV_RAM_SIZE)) {
+		arm64_dts_panic("beau,ramlog hypervisor overlap", -EINVAL);
+	}
+
+	beau_config.ramlog_base = base;
+	beau_config.ramlog_size = size;
+	beau_config.ramlog_rtos_size = rtos_size;
+	beau_config.ramlog_linux_size = linux_size;
+	beau_config.ramlog_rtos_vm_count = (uint16_t)rtos_vm_count;
+	beau_config.ramlog_linux_vm_count = (uint16_t)linux_vm_count;
+}
+
 static void dts_validate_timer(const void *fdt, int32_t generic)
 {
 	int32_t timer = dts_child_by_name(fdt, generic, "timer");
@@ -944,6 +1022,7 @@ void arm64_platform_dts_parse_board(const void *fdt,
 	}
 
 	dts_parse_memory(fdt, &beau_config.ram_start, &beau_config.ram_size);
+	dts_parse_ramlog(fdt);
 
 	soc = fdt_path_offset(fdt, "/soc");
 	if (soc < 0) {
@@ -1536,7 +1615,8 @@ static void dts_parse_guest_smmu(const void *fdt, int32_t generic,
  * The parser creates policy only. vsmmu.c creates synthetic state later, and
  * platform.c deliberately omits iommu-map until the S1+S2 broker is complete.
  */
-static void dts_parse_arch(const void *fdt, int32_t generic, uint16_t vm_id,
+static void dts_parse_arch(const void *fdt, int32_t generic, int32_t vm_node,
+	uint16_t vm_id,
 	struct acrn_vm_config *vm_config)
 {
 	int32_t gic = dts_child_compatible(fdt, generic, "arm,vgic-v3");
@@ -1559,6 +1639,48 @@ static void dts_parse_arch(const void *fdt, int32_t generic, uint16_t vm_id,
 	vm_config->arch.guest_ram_start = vm_config->memory.host_regions[0].start_hpa;
 	vm_config->arch.guest_ram_size = vm_config->memory.host_regions[0].size_hpa;
 	vm_config->arch.guest_ram_hpa = vm_config->memory.host_regions[0].start_hpa;
+	{
+		const fdt32_t *pstore;
+		int32_t pstore_len;
+		uint64_t pstore_end;
+		uint64_t guest_ram_end;
+
+		/* [20260722] Guest ramoops reservation policy
+		 *
+		 * platform VM RAM -> in-RAM page-aligned pstore range -> guest DT reservation
+		 *
+		 * Key rule:
+		 *   - the static platform owns the reservation policy before a VM exists;
+		 *   - reject a malformed or non-Linux reservation before it can overlap
+		 *     the guest image loader or expose host RAM outside the VM window.
+		 */
+		pstore = fdt_getprop(fdt, vm_node, "beau,pstore", &pstore_len);
+		if (pstore != NULL) {
+			if ((pstore_len != (int32_t)(4U * sizeof(fdt32_t))) ||
+				(vm_config->os_config.os_family != VM_OS_LINUX)) {
+				arm64_dts_panic("beau,pstore", -EINVAL);
+			}
+			vm_config->arch.guest_pstore_base =
+				((uint64_t)fdt32_to_cpu(pstore[0]) << 32U) |
+				(uint64_t)fdt32_to_cpu(pstore[1]);
+			vm_config->arch.guest_pstore_size =
+				((uint64_t)fdt32_to_cpu(pstore[2]) << 32U) |
+				(uint64_t)fdt32_to_cpu(pstore[3]);
+			if (!mem_aligned_check(vm_config->arch.guest_pstore_base,
+				ARM64_DTS_GUEST_PSTORE_ALIGN) ||
+				!mem_aligned_check(vm_config->arch.guest_pstore_size,
+				ARM64_DTS_GUEST_PSTORE_ALIGN) ||
+				!dts_range_end(vm_config->arch.guest_pstore_base,
+					vm_config->arch.guest_pstore_size, &pstore_end) ||
+				!dts_range_end(vm_config->arch.guest_ram_start,
+					vm_config->arch.guest_ram_size, &guest_ram_end) ||
+				(vm_config->arch.guest_pstore_base <
+					vm_config->arch.guest_ram_start) ||
+				(pstore_end > guest_ram_end)) {
+				arm64_dts_panic("beau,pstore range", -EINVAL);
+			}
+		}
+	}
 
 	dts_reg_by_index(fdt, gic, 0U, &vm_config->arch.guest_gicd_base,
 		&vm_config->arch.guest_gicd_size);
@@ -1590,6 +1712,9 @@ static void dts_parse_arch(const void *fdt, int32_t generic, uint16_t vm_id,
 			arm64_dts_panic("virtio-console interrupts", -EINVAL);
 		}
 		vm_config->arch.guest_virtio_console_irq = fdt32_to_cpu(irq_prop[1]) + 32U;
+	}
+	if ((vm_config->os_config.os_family == VM_OS_LINUX) && (virtio_console < 0)) {
+		arm64_dts_panic("linux virtio-console", -EINVAL);
 	}
 
 	for (int32_t virtio_proxy = fdt_first_subnode(fdt, generic);
@@ -1721,6 +1846,11 @@ static void dts_parse_static_mem(const void *fdt, int32_t node,
 		panic("arm64 dts static memory outside host RAM start=0x%lx size=0x%lx host=0x%lx+0x%lx",
 			*ram_start, *ram_size, beau_config.ram_start, beau_config.ram_size);
 	}
+	if (dts_ranges_overlap(*ram_start, *ram_size,
+		beau_config.ramlog_base, beau_config.ramlog_size)) {
+		panic("arm64 dts static memory overlaps ramlog start=0x%lx size=0x%lx",
+			*ram_start, *ram_size);
+	}
 }
 
 static void dts_validate_static_mem_regions(void)
@@ -1777,7 +1907,7 @@ static void dts_parse_vm_node(const void *fdt, int32_t generic, int32_t vm_node,
 	dts_parse_sched(fdt, vm_node, vm_config);
 	dts_parse_os(fdt, vm_node, vm_config, ops);
 	dts_parse_vm_mpu(fdt, vm_node, vm_config);
-	dts_parse_arch(fdt, generic, vm_id, vm_config);
+	dts_parse_arch(fdt, generic, vm_node, vm_id, vm_config);
 }
 
 static void dts_add_boot_option(const void *fdt, int32_t module,

@@ -1387,7 +1387,7 @@ QEMU 只能验证控制流、SMP ring ownership 和回溯边界，不能作为�
 
 `sdk/ai-sched` retains emlearn and a host-side training/export flow for an
 experimental scheduler advisor. It is not part of the EL2 image. The
-BEAU shell command `schedai snapshot` emits `AI_SCHED_V1` telemetry records;
+BEAU shell command `schedai snapshot` emits `AI_SCHED` telemetry records;
 the VM0 advisor registers through `HC_AI_SCHED`, then uses a boot-bound
 capability for bounded snapshot and proposal requests. A proposal contains a
 variable-length `{vmid, budget_us}` entry list and is validated against the

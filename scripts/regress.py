@@ -969,7 +969,7 @@ def expect_health_vcpu_usage(qemu):
         "vcpu2",
         "vcpu3",
         "total",
-        "[Tip] %:running  NC:not configured  NA:not active  --:baseline pending",
+        "[TIP] %:running  NC:not configured  NA:not active  --:baseline pending",
         "Findings",
         "vm0",
         "vm1",

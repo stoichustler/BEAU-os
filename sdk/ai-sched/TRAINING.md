@@ -1,6 +1,6 @@
 # AI Scheduler Training Flow
 
-The BEAU shell emits `AI_SCHED_V1` records through `schedai snapshot`. Capture
+The BEAU shell emits `AI_SCHED` records through `schedai snapshot`. Capture
 those records from the platform under evaluation, then create a base dataset:
 
 ```sh

@@ -115,7 +115,10 @@ static uint64_t arm64_rawimage_fdt_load_gpa(struct acrn_vm *vm, uint64_t kernel_
 	const struct arch_vm_config *arch_config = &get_vm_config(vm->vm_id)->arch;
 	uint64_t ram_start = arch_config->guest_ram_start;
 	uint64_t ram_size = arch_config->guest_ram_size;
+	uint64_t pstore_base = arch_config->guest_pstore_base;
+	uint64_t pstore_size = arch_config->guest_pstore_size;
 	uint64_t fdt_size = roundup((uint64_t)vm->sw.fdt_info.size, MEM_4K);
+	uint64_t fdt_limit;
 	uint64_t fdt_load_gpa;
 
 	if (fdt_size == 0UL) {
@@ -124,7 +127,15 @@ static uint64_t arm64_rawimage_fdt_load_gpa(struct acrn_vm *vm, uint64_t kernel_
 	if ((ram_size <= fdt_size) || ((ram_start + ram_size) <= ram_start)) {
 		return 0UL;
 	}
-	fdt_load_gpa = (ram_start + ram_size - fdt_size) & ~(uint64_t)(MEM_4K - 1U);
+	fdt_limit = ram_start + ram_size;
+	if (pstore_size != 0UL) {
+		if (!range_fits(pstore_base, pstore_size, ram_start, ram_size) ||
+			(pstore_base < (ram_start + fdt_size))) {
+			return 0UL;
+		}
+		fdt_limit = pstore_base;
+	}
+	fdt_load_gpa = (fdt_limit - fdt_size) & ~(uint64_t)(MEM_4K - 1U);
 
 	/*
 	 * Static RTOS images do not have a Linux bootloader to choose safe module
@@ -135,7 +146,8 @@ static uint64_t arm64_rawimage_fdt_load_gpa(struct acrn_vm *vm, uint64_t kernel_
 	 */
 	if (!range_fits(fdt_load_gpa, fdt_size, ram_start, ram_size) ||
 		range_overlaps(fdt_load_gpa, fdt_size, kernel_load_gpa, kernel_size) ||
-		range_overlaps(fdt_load_gpa, fdt_size, ramdisk_load_gpa, ramdisk_size)) {
+		range_overlaps(fdt_load_gpa, fdt_size, ramdisk_load_gpa, ramdisk_size) ||
+		range_overlaps(fdt_load_gpa, fdt_size, pstore_base, pstore_size)) {
 		return 0UL;
 	}
 
@@ -189,6 +201,13 @@ static int32_t load_rawimage(struct acrn_vm *vm)
 			(uint64_t)sw_kernel->kernel_size);
 		return -EFAULT;
 	}
+	if ((vm_config->arch.guest_pstore_size != 0UL) &&
+		range_overlaps(kernel_load_gpa, sw_kernel->kernel_size,
+			vm_config->arch.guest_pstore_base, vm_config->arch.guest_pstore_size)) {
+		LOG_ERR("vm-%u:%-9s overlaps guest pstore", vm->vm_id,
+			vm_config->os_config.kernel_mod_tag);
+		return -EFAULT;
+	}
 
 #if defined(CONFIG_ARM64)
 	ret = arm64_rawimage_check_linux_alignment(vm, vm_config, kernel_load_gpa);
@@ -206,7 +225,11 @@ static int32_t load_rawimage(struct acrn_vm *vm)
 		}
 		if (!range_fits(ramdisk_load_gpa, ramdisk_size, ram_start, ram_size) ||
 			range_overlaps(ramdisk_load_gpa, ramdisk_size, kernel_load_gpa,
-				sw_kernel->kernel_size)) {
+				sw_kernel->kernel_size) ||
+			((vm_config->arch.guest_pstore_size != 0UL) &&
+			range_overlaps(ramdisk_load_gpa, ramdisk_size,
+				vm_config->arch.guest_pstore_base,
+				vm_config->arch.guest_pstore_size))) {
 			LOG_ERR("vm-%u:%-9s does not fit ram gpa [0x%016lx-0x%016lx] (0x%08lx)",
 				vm->vm_id, vm_config->os_config.ramdisk_mod_tag, ramdisk_load_gpa,
 				rawimage_range_end(ramdisk_load_gpa, ramdisk_size),

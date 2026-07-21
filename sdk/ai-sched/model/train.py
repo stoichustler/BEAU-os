@@ -46,7 +46,7 @@ def main():
     cmodel = emlearn.convert(model, method="inline")
     cmodel.save(file=str(args.output), name="ai_sched_model")
     manifest = {
-        "schema": "AI_SCHED_V1",
+        "schema": "AI_SCHED",
         "features": FEATURE_COLUMNS,
         "rows": len(rows),
         "max_depth": args.max_depth,

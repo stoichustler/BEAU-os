@@ -368,6 +368,30 @@ static void init_hv_mapping(void)
 			rsvd_regions[i].size, 0UL, 0UL, &ppt_pgtable, MR_DEL);
 	}
 
+	/* [20260721] Reserved ramlog EL2 mapping
+	 *
+	 * host RAM block map
+	 *     |
+	 *     v
+	 * remove reserved ramlog range
+	 *     |
+	 *     v
+	 * remap EL2-only Normal RW-, NX pages
+	 *
+	 * Key rule:
+	 *   - platform DTS owns the physical reservation;
+	 *   - EL2 publishes the only executable-disabled mapping;
+	 *   - guest stage-2 validation rejects the same physical range.
+	 */
+	if ((beau_config.ramlog_base != 0UL) && (beau_config.ramlog_size != 0UL)) {
+		pgtable_modify_or_del_map((uint64_t *)ppt_mmu_top_addr,
+			beau_config.ramlog_base, beau_config.ramlog_size, 0UL, 0UL,
+			&ppt_pgtable, MR_DEL);
+		pgtable_add_map((uint64_t *)ppt_mmu_top_addr, beau_config.ramlog_base,
+			beau_config.ramlog_base, beau_config.ramlog_size,
+			PAGE_ATTR_NORMAL | PAGE_PXN | PAGE_UXN | PAGE_PAGE_DESC, &ppt_pgtable);
+	}
+
 	arm64_map_mte_page_pools();
 	arm64_protect_hv_sections();
 

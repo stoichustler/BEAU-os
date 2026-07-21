@@ -21,14 +21,15 @@
  *   - a zero PE offset deliberately avoids claiming full UEFI PE/COFF support.
  */
 
+#include <asm/boot/macro.h>
+
 #define ARM64_IMAGE_HEADER_SIZE	64
 #define ARM64_IMAGE_FLAGS_4K	(1 << 1)
 
 	.section .image_header, "ax", %progbits
 	.balign 8
-	.globl _image_header
-	.type _image_header, %object
-_image_header:
+
+HEAD(_image_header)
 	b	_start
 	.long	0
 	.quad	0
@@ -39,7 +40,7 @@ _image_header:
 	.quad	0
 	.ascii	"ARM\x64"
 	.long	0
-	.size _image_header, . - _image_header
+END(_image_header)
 
 	.if (. - _image_header) != ARM64_IMAGE_HEADER_SIZE
 	.error "AArch64 Image header must be exactly 64 bytes"

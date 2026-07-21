@@ -20,6 +20,7 @@
 #include <asm/vtd.h>
 #include <asm/guest/vsmmu.h>
 #include <arm64_platform_dts.h>
+#include <debug/ramlog.h>
 
 #define ARM64_FDT_PHANDLE_GIC		1U
 #define ARM64_FDT_PHANDLE_RAM		2U
@@ -63,6 +64,17 @@ void arm64_platform_init_post_console(void)
 	int32_t ret;
 
 	arm64_parse_vm_config_from_dts(get_host_fdt());
+	/* [20260722] Ramlog layout initialization ordering
+	 *
+	 * platform VM DTS -> guest_pstore_* policy -> ramlog persistent layout
+	 *
+	 * Key rule:
+	 *   - platform DTS owns the VM RAM and pstore reservation before ramlog
+	 *     derives per-VM snapshot and live subregions;
+	 *   - console setup must not publish a default full-size live slot before
+	 *     the VM policy exists, or a later panic capture has no safe storage.
+	 */
+	ramlog_init();
 
 	for (vmid = 0U; vmid < CONFIG_MAX_VM_NUM; vmid++) {
 		if (((platform_info.pm.required_vm_mask & (1UL << vmid)) != 0UL) &&
