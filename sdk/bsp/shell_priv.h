@@ -95,6 +95,10 @@ struct shell {
 #define SHELL_CMD_SCHED_AI_PARAM	"snapshot"
 #define SHELL_CMD_SCHED_AI_HELP	"emit configured AI scheduler telemetry"
 
+#define SHELL_CMD_SPE			"spestat"
+#define SHELL_CMD_SPE_PARAM		"[start|stop|reset|dump <pcpu>]"
+#define SHELL_CMD_SPE_HELP		"show or control EL2-owned Arm SPE capture"
+
 #define SHELL_CMD_IRQ_STATS		"irqstat"
 #define SHELL_CMD_IRQ_STATS_PARAM	NULL
 #define SHELL_CMD_IRQ_STATS_HELP	"list host IRQ counts and ARM64 guest vIRQ latency"

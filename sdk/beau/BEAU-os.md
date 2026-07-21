@@ -1400,6 +1400,15 @@ minimum update interval. No proposal changes a reservation in this revision.
 All future apply paths must reuse the same validation before touching scheduler
 state.
 
+### 19.6 Arm SPE
+
+`CONFIG_ARM64_SPE` builds an EL2-owned Arm Statistical Profiling Extension
+collector. The feature is disabled by default and requires a platform
+`/vm/generic/spe-ppi` property plus a CPU with `PMSVer`. BEAU owns the SPE
+registers and static buffers; guest SPE identification and sysreg accesses are
+hidden. `spestat` reports state and provides bounded capture control. The
+current QEMU configuration has no SPE PPI and reports the unavailable path.
+
 ### 20.1 自动回归
 
 ```sh

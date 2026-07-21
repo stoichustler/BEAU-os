@@ -26,6 +26,9 @@
 #include <asm/irq.h>
 #include <asm/page.h>
 #include <asm/pmu.h>
+#if CONFIG_ARM64_SPE
+#include <asm/spe.h>
+#endif
 #include <asm/sysreg.h>
 #include <asm/trap.h>
 #include <asm/guest/vcpu_priv.h>
@@ -852,11 +855,20 @@ static int32_t handle_sysreg(struct acrn_vcpu *vcpu)
 		if (ret == 0) {
 			advance_vcpu_elr(vcpu);
 		}
-	} else if (arm64_core_pmu_guest_sysreg(sysreg)) {
+	} else if (arm64_core_pmu_guest_sysreg(sysreg)
+#if CONFIG_ARM64_SPE
+		|| arm64_spe_guest_sysreg(sysreg)
+#endif
+		) {
 		if (read && (reg != NULL)) {
 			*reg = 0UL;
 		}
 		arm64_core_pmu_record_guest_access(vcpu);
+#if CONFIG_ARM64_SPE
+		if (arm64_spe_guest_sysreg(sysreg)) {
+			arm64_spe_record_guest_access();
+		}
+#endif
 		advance_vcpu_elr(vcpu);
 		ret = 0;
 	} else if (arm64_vtimer_sysreg(sysreg)) {

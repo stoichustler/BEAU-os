@@ -31,6 +31,7 @@ struct beau_config {
 	uint64_t smmu_base;
 	uint64_t smmu_size;
 	uint32_t gic_iidr;
+	uint32_t spe_ppi;
 };
 
 extern struct beau_config beau_config;

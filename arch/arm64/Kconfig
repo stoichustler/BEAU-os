@@ -83,6 +83,20 @@ config PERF
 	  profiler is stopped at boot, records raw Host text addresses in fixed
 	  per-pCPU rings, and never unwinds a guest stack.
 
+config ARM64_SPE
+	bool "ARM64 Statistical Profiling Extension"
+	default n
+	help
+	  Build EL2-owned Arm SPE collection. The feature is unavailable unless the
+	  platform supplies an SPE PPI and the CPU advertises PMSVer.
+
+config ARM64_SPE_BUFFER_SIZE
+	int "ARM64 SPE buffer size per pCPU"
+	default 65536
+	range 8192 1048576
+	help
+	  Static per-pCPU buffer split into two 4 KiB-aligned halves.
+
 source "arch/arm64/platform/Kconfig"
 source "arch/arm64/gic/Kconfig"
 source "arch/arm64/guest/Kconfig"

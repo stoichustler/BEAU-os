@@ -24,6 +24,9 @@
 #include <debug/symbol.h>
 #include <bits.h>
 #include <banner.h>
+#if CONFIG_ARM64_SPE
+#include <asm/spe.h>
+#endif
 #ifdef CONFIG_ARM64
 #include <asm/guest/vgicv3.h>
 #endif
@@ -89,6 +92,9 @@ static int32_t shell_list_vcpu(__unused int32_t argc, __unused char **argv);
 static int32_t shell_list_threads(__unused int32_t argc, __unused char **argv);
 static int32_t shell_schedstat(__unused int32_t argc, __unused char **argv);
 static int32_t shell_schedai(int32_t argc, char **argv);
+#if CONFIG_ARM64_SPE
+static int32_t shell_spestat(int32_t argc, char **argv);
+#endif
 static int32_t shell_irqstat(int32_t argc, char **argv);
 static int32_t shell_to_vm_console(int32_t argc, char **argv);
 static const char *thread_state_str(enum thread_object_state state);
@@ -149,6 +155,14 @@ static struct shell_cmd shell_cmds[] = {
 		.help_str	= SHELL_CMD_SCHED_AI_HELP,
 		.fcn		= shell_schedai,
 	},
+#if CONFIG_ARM64_SPE
+	{
+		.str		= SHELL_CMD_SPE,
+		.cmd_param	= SHELL_CMD_SPE_PARAM,
+		.help_str	= SHELL_CMD_SPE_HELP,
+		.fcn		= shell_spestat,
+	},
+#endif
 	{
 		.str		= SHELL_CMD_IRQ_STATS,
 		.cmd_param	= SHELL_CMD_IRQ_STATS_PARAM,
@@ -2296,6 +2310,77 @@ static int32_t shell_schedai(int32_t argc, char **argv)
 	}
 	return -EINVAL;
 }
+
+#if CONFIG_ARM64_SPE
+static const char *shell_spe_reason(enum arm64_spe_reason reason)
+{
+	static const char * const names[] = {
+		"none", "config", "no-pmsver", "higher-el", "no-ppi", "buffer",
+		"hardware", "buffer-full",
+	};
+
+	return reason < ARRAY_SIZE(names) ? names[reason] : "unknown";
+}
+
+static int32_t shell_spestat(int32_t argc, char **argv)
+{
+	struct arm64_spe_snapshot snapshot;
+	int32_t status;
+	uint16_t pcpu_id;
+
+	if (argc == 2) {
+		if (strcmp(argv[1], "start") == 0) {
+			return arm64_spe_start();
+		}
+		if (strcmp(argv[1], "stop") == 0) {
+			return arm64_spe_stop();
+		}
+		if (strcmp(argv[1], "reset") == 0) {
+			return arm64_spe_reset();
+		}
+	}
+	if ((argc == 3) && (strcmp(argv[1], "dump") == 0)) {
+		uint8_t bytes[ARM64_SPE_SHELL_DUMP_MAX];
+		uint32_t length;
+		uint32_t offset;
+
+		pcpu_id = (uint16_t)strtol_deci(argv[2]);
+		status = arm64_spe_dump(pcpu_id, bytes, &length);
+		if (status != 0) {
+			return status;
+		}
+		for (offset = 0U; offset < length; offset += 16U) {
+			char line[MAX_STR_SIZE];
+			uint32_t index;
+			uint32_t pos = (uint32_t)snprintf(line, sizeof(line), "SPE cpu%hu +0x%04x:",
+				pcpu_id, offset);
+
+			for (index = offset; (index < length) && (index < (offset + 16U)); index++) {
+				pos += (uint32_t)snprintf(&line[pos], sizeof(line) - pos,
+					" %02x", bytes[index]);
+			}
+			shell_puts(line);
+			shell_puts("\r\n");
+		}
+		return 0;
+	}
+	if (argc != 1) {
+		return -EINVAL;
+	}
+	status = arm64_spe_take_snapshot(&snapshot);
+	for (pcpu_id = 0U; pcpu_id < snapshot.pcpu_num; pcpu_id++) {
+		char line[MAX_STR_SIZE];
+		const struct arm64_spe_pcpu_snapshot *spe = &snapshot.pcpu[pcpu_id];
+
+		snprintf(line, sizeof(line), "SPE cpu%hu avail=%u running=%u pmsver=%u ready=0x%x full=%lu loss=%lu error=%lu h0=%u h1=%u reason=%s\r\n",
+			pcpu_id, spe->available, spe->running, spe->pmsver, spe->ready_mask,
+			spe->buffer_full_count, spe->data_loss_count, spe->error_count,
+			spe->half_bytes[0], spe->half_bytes[1], shell_spe_reason(spe->reason));
+		shell_puts(line);
+	}
+	return status;
+}
+#endif
 
 struct irqstat_total {
 	uint64_t count;

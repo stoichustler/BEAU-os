@@ -24,6 +24,9 @@
 #include <asm/irq.h>
 #include <asm/cache.h>
 #include <asm/pmu.h>
+#if CONFIG_ARM64_SPE
+#include <asm/spe.h>
+#endif
 #ifdef STACK_PROTECTOR
 #include <asm/security.h>
 #endif
@@ -211,6 +214,9 @@ static void init_pcpu_comm_post(void)
 	init_smp_call();
 	timer_init();
 	arm64_core_pmu_init_pcpu();
+#if CONFIG_ARM64_SPE
+	arm64_spe_init_pcpu();
+#endif
 	ptdev_init();
 
 	init_sched(pcpu_id);

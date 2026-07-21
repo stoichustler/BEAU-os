@@ -17,6 +17,9 @@
 #include <asm/hv_pm.h>
 #include <asm/irq.h>
 #include <asm/pmu.h>
+#if CONFIG_ARM64_SPE
+#include <asm/spe.h>
+#endif
 #include <asm/psci.h>
 #include <asm/sysreg.h>
 #include <asm/vtd.h>
@@ -186,6 +189,9 @@ void arch_pm_process_secondary_from_idle(uint16_t pcpu_id)
 	}
 
 	arm64_core_pmu_suspend_cpu(epoch);
+#if CONFIG_ARM64_SPE
+	arm64_spe_suspend_cpu(epoch);
+#endif
 	status = arch_pm_suspend_timer(epoch);
 	if (status == 0) {
 		timer_suspended = true;
@@ -218,6 +224,9 @@ void arch_pm_process_secondary_from_idle(uint16_t pcpu_id)
 		arm64_pm_record_first_error(status, &first_error);
 	}
 	arm64_core_pmu_resume_cpu(epoch);
+#if CONFIG_ARM64_SPE
+	arm64_spe_resume_cpu(epoch);
+#endif
 	arm64_pm_secondary.resume_status[pcpu_id] = first_error;
 	bitmap_set(pcpu_id, &arm64_pm_secondary.resumed_mask);
 }

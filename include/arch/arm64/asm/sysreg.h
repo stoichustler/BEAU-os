@@ -101,6 +101,23 @@
 
 #define ID_AA64DFR0_PMUVER_SHIFT	8U
 #define ID_AA64DFR0_PMUVER_MASK		(0xfUL << ID_AA64DFR0_PMUVER_SHIFT)
+#define ID_AA64DFR0_PMSVER_SHIFT	32U
+#define ID_AA64DFR0_PMSVER_MASK		(0xfUL << ID_AA64DFR0_PMSVER_SHIFT)
+
+#define ARM64_PMBIDR_ALIGN_MASK		0xfUL
+#define ARM64_PMBIDR_P			(1UL << 4U)
+#define ARM64_PMBLIMITR_ENABLE		(1UL << 0U)
+#define ARM64_PMBLIMITR_LIMIT_MASK	(~0xfffUL)
+#define ARM64_PMBSR_MSS_BUFFER_FULL	1UL
+#define ARM64_PMBSR_STATUS			(1UL << 17U)
+#define ARM64_PMBSR_DATA_LOSS		(1UL << 19U)
+#define ARM64_PMBSR_EC_SHIFT		26U
+#define ARM64_PMBSR_EC_MASK			(0x3fUL << ARM64_PMBSR_EC_SHIFT)
+#define ARM64_PMSCR_E0SPE			(1UL << 0U)
+#define ARM64_PMSCR_E1SPE			(1UL << 1U)
+#define ARM64_PMSCR_PA			(1UL << 4U)
+#define ARM64_PMSCR_TS			(1UL << 5U)
+#define ARM64_PMSIRR_INTERVAL_SHIFT	8U
 
 #define MDCR_EL2_HPMN_MASK	0x1fUL
 #define MDCR_EL2_TPMCR		(1UL << 5U)
@@ -692,6 +709,76 @@ static inline void write_pmccfiltr_el0(uint64_t val)
 static inline void write_pmuserenr_el0(uint64_t val)
 {
 	arm64_sysreg_write(pmuserenr_el0, val);
+}
+
+static inline uint64_t read_pmbidr_el1(void)
+{
+	return arm64_sysreg_read(s3_0_c9_c10_7);
+}
+
+static inline uint64_t read_pmsidr_el1(void)
+{
+	return arm64_sysreg_read(s3_0_c9_c9_7);
+}
+
+static inline uint64_t read_pmbptr_el1(void)
+{
+	return arm64_sysreg_read(s3_0_c9_c10_1);
+}
+
+static inline uint64_t read_pmbsr_el1(void)
+{
+	return arm64_sysreg_read(s3_0_c9_c10_3);
+}
+
+static inline void write_pmbptr_el1(uint64_t val)
+{
+	arm64_sysreg_write(s3_0_c9_c10_1, val);
+}
+
+static inline void write_pmblimitr_el1(uint64_t val)
+{
+	arm64_sysreg_write(s3_0_c9_c10_0, val);
+}
+
+static inline void write_pmbsr_el1(uint64_t val)
+{
+	arm64_sysreg_write(s3_0_c9_c10_3, val);
+}
+
+static inline void write_pmscr_el1(uint64_t val)
+{
+	arm64_sysreg_write(s3_0_c9_c9_0, val);
+}
+
+static inline void write_pmsfcr_el1(uint64_t val)
+{
+	arm64_sysreg_write(s3_0_c9_c9_4, val);
+}
+
+static inline void write_pmsevfr_el1(uint64_t val)
+{
+	arm64_sysreg_write(s3_0_c9_c9_5, val);
+}
+
+static inline void write_pmslatfr_el1(uint64_t val)
+{
+	arm64_sysreg_write(s3_0_c9_c9_6, val);
+}
+
+static inline void write_pmsirr_el1(uint64_t val)
+{
+	arm64_sysreg_write(s3_0_c9_c9_3, val);
+}
+
+static inline void write_pmsicr_el1(uint64_t val)
+{
+	arm64_sysreg_write(s3_0_c9_c9_2, val);
+}
+
+static inline void arm64_psb_csync(void)
+{
+	asm volatile ("hint #17" ::: "memory");
 }
 
 #define ARM64_PMU_COUNTER_HELPERS(n) \

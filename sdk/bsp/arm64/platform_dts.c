@@ -1000,6 +1000,10 @@ void arm64_platform_dts_parse_board(const void *fdt,
 	}
 	generic = dts_vm_generic_node(fdt, vm);
 	dts_validate_timer(fdt, generic);
+	beau_config.spe_ppi = dts_u32_prop(fdt, generic, "spe-ppi", UINT32_MAX);
+	if ((beau_config.spe_ppi != UINT32_MAX) && (beau_config.spe_ppi >= 32U)) {
+		panic("invalid arm64 SPE PPI %u", beau_config.spe_ppi);
+	}
 	beau_config.gic_iidr = info->gic_iidr;
 }
 

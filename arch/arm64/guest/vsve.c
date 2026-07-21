@@ -245,7 +245,8 @@ static bool arm64_vsve_read_id_value(const struct acrn_vcpu *vcpu,
 		*value = arm64_vcpu_mpu_sve_enabled(vcpu) ? read_id_aa64zfr0_el1() : 0UL;
 		break;
 	case SYSREG_ID_AA64DFR0_EL1:
-		*value = read_id_aa64dfr0_el1() & ~ID_AA64DFR0_PMUVER_MASK;
+		*value = read_id_aa64dfr0_el1() &
+			~(ID_AA64DFR0_PMUVER_MASK | ID_AA64DFR0_PMSVER_MASK);
 		break;
 	case SYSREG_ID_AA64DFR1_EL1:
 		*value = read_id_aa64dfr1_el1();
