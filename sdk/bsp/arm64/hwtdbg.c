@@ -170,9 +170,29 @@ static bool hwtdbg_text_address(uint64_t address)
 		(address < (uint64_t)&_text_end);
 }
 
-/* [20260721] HWTDBG
+/* [20260721] HWTDBG stack unwind stop contract
  *
- * TODO: add more comments on each HWTDBG stack stop cases.
+ * captured frame -> validate alignment and readable range -> read next frame
+ *       |                         |                         |
+ *       |                         +--> stop with evidence    +--> continue
+ *       v
+ * preserve every frame accepted before the stop reason
+ *
+ * Stop labels identify the first boundary that prevented a further read:
+ *   - complete: the initial frame, next FP, or stack-bottom marker ends the
+ *     chain normally;
+ *   - empty: neither an initial FP nor LR was available;
+ *   - misaligned: FP cannot name an AArch64 frame record;
+ *   - gva-unavailable/copy-failed: guest translation or frame copy failed;
+ *   - outside: SP or FP is outside the recorded host stack bounds;
+ *   - nonmonotonic: the next FP would revisit or move below a prior frame;
+ *   - lr-outside: a nonzero host LR is not in BEAU text;
+ *   - depth-limit: the bounded snapshot reached HWTDBG_STACK_DEPTH.
+ *
+ * Key rule:
+ *   - the snapshot owns only copies of validated frame records;
+ *   - a failed validation keeps earlier evidence but never dereferences the
+ *     failing frame, preventing an invalid guest or host stack read.
  */
 static const char *hwtdbg_stack_stop_str(enum hwtdbg_stack_stop stop)
 {
@@ -749,9 +769,24 @@ static const char *hwtdbg_timeout_kind_str(enum hwtdbg_timeout_kind kind)
 	return (kind == HWTDBG_TIMEOUT_FIRST_KICK) ? "1st-kick" : "runtime";
 }
 
-/* [20260721] HWTDBG
+/* [20260721] HWTDBG watchdog cause contract
  *
- * TODO: add more comments on each HWTDBG causes.
+ * watchdog samples -> classify the timeout transition -> freeze HWTDBG event
+ *       |                       |
+ *       |                       +--> cause is diagnostic evidence only
+ *       v
+ * core/vm_wdt.c retains recovery ownership
+ *
+ * Cause labels describe the evidence selected by the watchdog: heartbeat is
+ * a received kick, timeout is an expired heartbeat age, vcpustall is a
+ * runnable vCPU delayed beyond the watchdog threshold, irqstorm is excessive
+ * IRQ progress, console is a persistently undrained console queue, and virtio
+ * is persistently stalled proxy work. N/A represents no classified cause.
+ *
+ * Key rule:
+ *   - core/vm_wdt.c owns sampling and recovery decisions;
+ *   - HWTDBG records the selected cause without deriving a new policy, so
+ *     shell diagnostics cannot alter timeout or VM recovery behavior.
  */
 static const char *hwtdbg_cause_str(enum vm_wdt_cause cause)
 {
@@ -785,9 +820,23 @@ static const char *hwtdbg_cause_str(enum vm_wdt_cause cause)
 	return str;
 }
 
-/* [20260721] HWTDBG
+/* [20260721] HWTDBG recovery result contract
  *
- * TODO: add more comments on each HWTDBG recovery result.
+ * timeout event -> quiescing -> resetting -> launched -> verified
+ *                    |             |           |           |
+ *                    +--> timeout  +--> failed +--> late kick or timeout
+ *                    +--> invalid state or attempt budget exhausted
+ *
+ * not-requested means recovery was disabled; quiescing waits for vCPU
+ * acknowledgement; resetting records the reset request; launched records a
+ * successful reset launch; verified records the post-reset heartbeat. A late
+ * kick, exhausted attempt budget, invalid VM state, reset failure, quiesce
+ * timeout, or verification timeout is a terminal diagnostic outcome.
+ *
+ * Key rule:
+ *   - core/vm_wdt.c owns recovery state and updates this event by sequence;
+ *   - HWTDBG publishes each result only after its durable event exists, so a
+ *     delayed recovery update cannot create or modify unrelated timeout data.
  */
 static const char *hwtdbg_recovery_str(enum hwtdbg_recovery_result result)
 {
