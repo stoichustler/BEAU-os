@@ -522,7 +522,7 @@ static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv)
 {
 	uint16_t vm_id;
 
-	shell_item_begin("arm64 memory mappings:");
+	shell_item_begin("memory mappings:");
 	shell_print_mem_header();
 	shell_print_host_maps();
 
@@ -938,7 +938,7 @@ static int32_t shell_pmustat_dump(void)
 		}
 	}
 
-	shell_item_begin("pmustat");
+	shell_item_begin("PMUSTAT");
 	shell_item_line("state:%s epoch:%lu poll.us:%u snapshot:%s",
 		shell_pmu_snapshot.requested_running ? "running" : "stopped",
 		shell_pmu_snapshot.epoch, ARM64_CORE_PMU_POLL_US,
@@ -1241,7 +1241,7 @@ static void rttest_print_results(void)
 	size_t remaining;
 	uint16_t pcpu_id;
 
-	(void)snprintf(rttest_output, sizeof(rttest_output), "┌─  rttest\r\n");
+	(void)snprintf(rttest_output, sizeof(rttest_output), "┌─  RTTEST\r\n");
 	offset = strnlen_s(rttest_output, sizeof(rttest_output));
 	for (pcpu_id = 0U; pcpu_id < rttest_run.pcpu_num; pcpu_id++) {
 		rttest_append_result(&rttest_cpus[pcpu_id], &offset);
@@ -1559,7 +1559,7 @@ static void shell_trace_status(void)
 	uint16_t pcpu_id;
 
 	shell_trace_format_mask(trace_get_mask(), mask, sizeof(mask));
-	shell_item_begin("trace");
+	shell_item_begin("TRACE");
 	shell_item_line("state:%s mask:%s capacity:%u/pCPU record-size:%uB",
 		trace_is_running() ? "running" : "stopped", mask,
 		trace_get_capacity(), (uint32_t)sizeof(struct trace_record));
@@ -1640,7 +1640,7 @@ static int32_t shell_trace_dump(int32_t argc, char **argv)
 	}
 	skipped = total - requested;
 
-	shell_item_begin("trace dump");
+	shell_item_begin("TRACE DUMP");
 	shell_item_line("records:%u shown:%u", total, requested);
 	while (consumed < total) {
 		uint16_t best = INVALID_CPU_ID;
@@ -1732,7 +1732,7 @@ static void shell_perf_status(void)
 	uint16_t pcpu_id;
 
 	arm64_perf_get_status(&perf);
-	shell_item_begin("perf");
+	shell_item_begin("PERF");
 	shell_item_line("state:%s readable:%s controller:%hu session:%lu generation:%lu",
 		perf.running ? "running" : "stopped", perf.readable ? "Y" : "N",
 		perf.controller_pcpu, perf.epoch, perf.generation);
@@ -1837,7 +1837,7 @@ static int32_t shell_perf_dump(int32_t argc, char **argv)
 	}
 	skipped = total - requested;
 
-	shell_item_begin("perf dump");
+	shell_item_begin("PERF DUMP");
 	shell_item_line("samples:%u shown:%u", total, requested);
 	while (consumed < total) {
 		uint16_t best = INVALID_CPU_ID;
@@ -2333,7 +2333,7 @@ static void shell_pcistat_host(void)
 	uint32_t pdev_count = get_pci_pdev_num();
 	uint32_t idx;
 
-	shell_item_begin("host-pci");
+	shell_item_begin("host PCI");
 	shell_item_line("ecam:0x%016lx bus:%u-%u pdevs:%u",
 		mmcfg->address, mmcfg->start_bus, mmcfg->end_bus, pdev_count);
 	for (idx = 0U; idx < pdev_count; idx++) {
@@ -2360,13 +2360,13 @@ static void shell_pcistat_vm(uint16_t vm_id,
 	uint16_t idx;
 
 	if ((vm_config->pci_devs == NULL) || (vm_config->pci_dev_num == 0U)) {
-		shell_item_begin("vm%hu PCI", vm_id);
+		shell_item_begin("vm-%hu PCI", vm_id);
 		shell_item_line("devices:none");
 		shell_item_end();
 		return;
 	}
 
-	shell_item_begin("vm%hu PCI:%s", vm_id, vm_config->name);
+	shell_item_begin("vm-%hu PCI:%s", vm_id, vm_config->name);
 	shell_item_line("state:%s configured:%hu vpci:%s",
 		is_poweroff_vm(vm) ? "poweroff" : "created",
 		vm_config->pci_dev_num,

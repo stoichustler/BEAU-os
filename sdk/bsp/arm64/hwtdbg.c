@@ -170,6 +170,10 @@ static bool hwtdbg_text_address(uint64_t address)
 		(address < (uint64_t)&_text_end);
 }
 
+/* [20260721] HWTDBG
+ *
+ * TODO: add more comments on each HWTDBG stack stop cases.
+ */
 static const char *hwtdbg_stack_stop_str(enum hwtdbg_stack_stop stop)
 {
 	const char *str;
@@ -745,6 +749,10 @@ static const char *hwtdbg_timeout_kind_str(enum hwtdbg_timeout_kind kind)
 	return (kind == HWTDBG_TIMEOUT_FIRST_KICK) ? "1st-kick" : "runtime";
 }
 
+/* [20260721] HWTDBG
+ *
+ * TODO: add more comments on each HWTDBG causes.
+ */
 static const char *hwtdbg_cause_str(enum vm_wdt_cause cause)
 {
 	const char *str;
@@ -777,6 +785,10 @@ static const char *hwtdbg_cause_str(enum vm_wdt_cause cause)
 	return str;
 }
 
+/* [20260721] HWTDBG
+ *
+ * TODO: add more comments on each HWTDBG recovery result.
+ */
 static const char *hwtdbg_recovery_str(enum hwtdbg_recovery_result result)
 {
 	const char *str;

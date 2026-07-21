@@ -1470,7 +1470,7 @@ static void shell_print_registered_commands(void)
 	/* Proceed based on the number of registered commands. */
 	if (cmd_cnt == 0U) {
 		/* No registered commands */
-		shell_puts("none\r\n");
+		shell_puts("NONE\r\n");
 	} else {
 		uint32_t j;
 
@@ -1514,7 +1514,7 @@ static int32_t shell_version(__unused int32_t argc, __unused char **argv)
 {
 	char temp_str[MAX_STR_SIZE];
 
-	snprintf(temp_str, MAX_STR_SIZE, "BEAU OS-%s %s-%s %s%s%s%s %s@%s build by %s %s\r\n",
+	snprintf(temp_str, MAX_STR_SIZE, "BEAU OS v%s %s-%s %s%s%s%s %s@%s build by %s %s\r\n",
 		BEAU_OS_VERSION, HV_COMMIT_TIME, HV_COMMIT_DIRTY, HV_BUILD_TYPE,
 		(sizeof(HV_COMMIT_TAGS) > 1) ? "(tag: " : "", HV_COMMIT_TAGS, 
 		(sizeof(HV_COMMIT_TAGS) > 1) ? ")" : "",
@@ -2046,7 +2046,7 @@ static void shell_schedstat_print_cbs_latency_hist(const struct list_head *head)
 		if (!printed_header) {
 			shell_item_section("CBS latency histogram %s (runnable -> running):",
 				has_previous ? "delta" : "cumulative");
-			shell_item_line("name             pcpu  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  max.us(total)",
+			shell_item_line("name             pcpu  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  max.us (TTL)",
 				sched_latency_hist_bucket_name(0U),
 				sched_latency_hist_bucket_name(1U),
 				sched_latency_hist_bucket_name(2U),

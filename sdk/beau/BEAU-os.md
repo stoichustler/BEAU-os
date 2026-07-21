@@ -939,6 +939,9 @@ BEAU
 BEAU 不解析 FUSE、block、I2C 或 Ethernet 协议。协议语义位于 VM2 KBE，这减少了
 Hypervisor 可信计算基中的设备协议代码。
 
+更多virtio前后端驱动信息，参考[virtio.md](virtio.md).
+
+
 ## 13. Hypercall 与 IPC
 
 ### 13.1 HVC 分流
@@ -1644,7 +1647,13 @@ sdk/bsp/arm64/shell.c
 | `beau_pm_snapshot` | PM core | epoch、scope、phase、hook/vCPU mask、错误 |
 | `vm_wdt_entry` | WDT core | heartbeat、QUIESCING/RESETTING/VERIFYING 状态与恢复次数 |
 
-## 26. 总结
+
+## 26. 计划
+
+BEAU OS后续开发计划参照[porting.md](porting.md).
+
+
+## 27. 总结
 
 BEAU OS 的核心不是单个虚拟设备，而是四个一致的所有权边界：
 
