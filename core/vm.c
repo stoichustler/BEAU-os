@@ -19,6 +19,7 @@
 #include <vm_wdt.h>
 #include <asm/notify.h>
 #include <hv_pm.h>
+#include <ai_sched.h>
 
 #ifndef CONFIG_AUTOSTART_VM
 #define CONFIG_AUTOSTART_VM		1
@@ -614,6 +615,9 @@ int32_t reset_vm(struct acrn_vm *vm)
 {
 	int32_t ret = -1;
 
+	if (vm != NULL) {
+		ai_sched_invalidate_vm(vm->vm_id);
+	}
 	ret = arch_reset_vm(vm);
 	if (ret == 0) {
 		vm->state = VM_CREATED;

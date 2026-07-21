@@ -11,6 +11,7 @@
 #include <guest_memory.h>
 #include <hcall.h>
 #include <acrn_hv_defs.h>
+#include <ai_sched.h>
 #include <vm_wdt.h>
 #include <version.h>
 #include <logmsg.h>
@@ -173,6 +174,10 @@ static const struct hcall_dispatch_entry arm64_hc_dispatch_table[] = {
 	},
 	[HC_IDX(HC_IPC)] = {
 		.handler = hcall_arm64_ipc,
+		.permission_flags = GUEST_FLAG_STATIC_VM,
+	},
+	[HC_IDX(HC_AI_SCHED)] = {
+		.handler = hcall_ai_sched,
 		.permission_flags = GUEST_FLAG_STATIC_VM,
 	},
 };

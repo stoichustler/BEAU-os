@@ -60,6 +60,11 @@ struct sched_cpupool_config {
 	enum sched_policy_id policy;
 	uint32_t period_us;	/* pool default period for budget schedulers */
 	uint32_t budget_us;	/* pool default execution budget */
+	bool ai_assist;	/* An authorized guest advisor may submit observe-only proposals. */
+	uint32_t ai_min_budget_us;
+	uint32_t ai_max_budget_us;
+	uint32_t ai_max_step_us;
+	uint32_t ai_min_update_ms;
 };
 
 struct sched_platform_config {

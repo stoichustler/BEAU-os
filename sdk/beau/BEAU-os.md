@@ -1367,9 +1367,11 @@ QEMU 只能验证控制流、SMP ring ownership 和回溯边界，不能作为�
 
 ### 19.3 `sdk/zsh`
 
-- `hcall.*`：Zephyr HVC 与 IPC ABI。
+- `hcall.*`：Zephyr HVC、IPC 与 AI scheduler advisor ABI。
 - `beau_wdt.c`：heartbeat thread。
 - `beau_ipc.c`：`beau ipc query/ping` 风格的共享 ring 验证命令。
+- `beau_ai_sched.*`：VM0 advisor service，启动注册后通过 `HC_AI_SCHED`
+  获取快照；未训练模型不生成 proposal。
 
 移植到 Zephyr shell sample 时，把三个 C 文件加入 application `target_sources()`。
 
@@ -1380,6 +1382,23 @@ QEMU 只能验证控制流、SMP ring ownership 和回溯边界，不能作为�
 编译它。学习当前 BEAU 数据面时应先忽略，只有设计 future userspace backend 时再读。
 
 ## 20. 回归与验证
+
+### 19.5 AI-assisted scheduling SDK
+
+`sdk/ai-sched` retains emlearn and a host-side training/export flow for an
+experimental scheduler advisor. It is not part of the EL2 image. The
+BEAU shell command `schedai snapshot` emits `AI_SCHED_V1` telemetry records;
+the VM0 advisor registers through `HC_AI_SCHED`, then uses a boot-bound
+capability for bounded snapshot and proposal requests. A proposal contains a
+variable-length `{vmid, budget_us}` entry list and is validated against the
+DTS envelope before it is recorded as observe-only.
+
+The scheduler and HVC ABI are platform-neutral. The current QEMU DTS is the
+test configuration: it permits only shared CBS pCPUs, budgets from 500 to 1500
+microseconds, steps no larger than 100 microseconds, and a 100 millisecond
+minimum update interval. No proposal changes a reservation in this revision.
+All future apply paths must reuse the same validation before touching scheduler
+state.
 
 ### 20.1 自动回归
 

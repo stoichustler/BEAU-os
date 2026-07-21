@@ -83,6 +83,48 @@
 #define HC_VM_WDT_KICK              BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x04UL)
 #define HC_VIRTIO_PROXY_BACKEND     BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x05UL)
 #define HC_IPC                      BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x06UL)
+#define HC_AI_SCHED                 BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x07UL)
+
+/* BEAU AI scheduler advisor: registration, snapshots, and observe-only proposals. */
+#define ACRN_AI_SCHED_ABI_VERSION   1U
+#define ACRN_AI_SCHED_MAX_ENTRIES   16U
+#define ACRN_AI_SCHED_OP_REGISTER   0U
+#define ACRN_AI_SCHED_OP_SNAPSHOT   1U
+#define ACRN_AI_SCHED_OP_PROPOSE    2U
+#define ACRN_AI_SCHED_STATUS_OK     0U
+#define ACRN_AI_SCHED_STATUS_DENIED 1U
+#define ACRN_AI_SCHED_STATUS_BAD_PARAM 2U
+#define ACRN_AI_SCHED_STATUS_UNSUPPORTED 3U
+
+struct acrn_ai_sched_entry {
+	uint16_t vmid;
+	uint16_t reserved;
+	uint32_t budget_us;
+} __aligned(8);
+
+/* One bounded guest-memory payload. entry_count is input for PROPOSE and output for SNAPSHOT. */
+struct acrn_ai_sched_ioc {
+	uint32_t op;
+	uint32_t status;
+	uint32_t abi_version;
+	uint32_t ioc_size;
+	uint64_t capability;
+	uint64_t sequence;
+	uint16_t pcpu_id;
+	uint16_t entry_count;
+	uint32_t reserved0;
+	uint64_t sample_ticks;
+	uint32_t policy;
+	uint32_t period_us;
+	uint32_t pool_budget_us;
+	uint32_t min_budget_us;
+	uint32_t max_budget_us;
+	uint32_t max_step_us;
+	uint32_t min_update_ms;
+	uint64_t active_vm_mask;
+	uint64_t utilization_ppm;
+	struct acrn_ai_sched_entry entries[ACRN_AI_SCHED_MAX_ENTRIES];
+} __aligned(8);
 
 /* BEAU static VM IPC */
 #define ACRN_IPC_ABI_VERSION        1U

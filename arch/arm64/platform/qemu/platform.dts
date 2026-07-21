@@ -288,6 +288,11 @@
 				policy = "cbs";
 				period = <2000>;
 				budget = <1000>;
+				ai-assist;
+				ai-min-budget-us = <500>;
+				ai-max-budget-us = <1500>;
+				ai-max-step-us = <100>;
+				ai-min-update-ms = <100>;
 			};
 		};
 	};

@@ -16,6 +16,7 @@
 #include <trace.h>
 #include <ticks.h>
 #include <logmsg.h>
+#include <errno.h>
 #include <hv_pm.h>
 #include <asm/guest/vm_reset.h>
 

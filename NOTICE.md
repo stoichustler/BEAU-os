@@ -18,6 +18,8 @@ Third-party and inherited components keep their original notices:
   `LICENSES/BSD-2-Clause.txt`.
 - Mbed TLS subset under `lib/crypto/mbedtls`: Apache License 2.0. See
   `LICENSES/Apache-2.0.txt`.
+- emlearn under `sdk/ai-sched/emlearn`: MIT License. See
+  `sdk/ai-sched/emlearn/LICENSE.md` and `sdk/ai-sched/UPSTREAM.md`.
 
 License-risk summary: no GPL-only source was found in the current tree. The
 main compliance risk was missing top-level license/notice documentation after

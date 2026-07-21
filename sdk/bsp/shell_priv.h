@@ -91,6 +91,10 @@ struct shell {
 #define SHELL_CMD_SCHED_PARAM		NULL
 #define SHELL_CMD_SCHED_HELP		"list per-pcpu scheduler statistics"
 
+#define SHELL_CMD_SCHED_AI		"schedai"
+#define SHELL_CMD_SCHED_AI_PARAM	"snapshot"
+#define SHELL_CMD_SCHED_AI_HELP	"emit configured AI scheduler telemetry"
+
 #define SHELL_CMD_IRQ_STATS		"irqstat"
 #define SHELL_CMD_IRQ_STATS_PARAM	NULL
 #define SHELL_CMD_IRQ_STATS_HELP	"list host IRQ counts and ARM64 guest vIRQ latency"

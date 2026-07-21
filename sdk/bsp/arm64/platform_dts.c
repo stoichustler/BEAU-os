@@ -1902,6 +1902,19 @@ static void dts_parse_sched_cpupool(const void *fdt, int32_t sched,
 		dts_u32_prop(fdt, node, "cbs-budget-us",
 		dts_u32_prop(fdt, node, "rtds-budget-us", 0U)));
 	dts_validate_budget_pair(node_name, pool->period_us, pool->budget_us);
+	pool->ai_assist = fdt_getprop(fdt, node, "ai-assist", NULL) != NULL;
+	if (pool->ai_assist) {
+		pool->ai_min_budget_us = dts_u32_prop(fdt, node, "ai-min-budget-us", 0U);
+		pool->ai_max_budget_us = dts_u32_prop(fdt, node, "ai-max-budget-us", 0U);
+		pool->ai_max_step_us = dts_u32_prop(fdt, node, "ai-max-step-us", 0U);
+		pool->ai_min_update_ms = dts_u32_prop(fdt, node, "ai-min-update-ms", 0U);
+		if ((pool->policy != SCHED_POLICY_CBS) || (pool->ai_min_budget_us == 0U) ||
+			(pool->ai_max_budget_us < pool->ai_min_budget_us) ||
+			(pool->ai_max_budget_us > pool->period_us) || (pool->ai_max_step_us == 0U) ||
+			(pool->ai_min_update_ms == 0U)) {
+			panic("invalid AI scheduler envelope in %s", node_name);
+		}
+	}
 	if ((fdt_getprop(fdt, node, "gang", NULL) != NULL) ||
 		(fdt_getprop(fdt, node, "gang-skew-us", NULL) != NULL)) {
 		panic("arm64 dts scheduler CBS gang properties are not supported");

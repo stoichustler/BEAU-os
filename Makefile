@@ -259,6 +259,7 @@ COMMON_C_SRCS += core/timer.c
 COMMON_C_SRCS += core/softirq.c
 COMMON_C_SRCS += core/trace.c
 COMMON_C_SRCS += core/schedule.c
+COMMON_C_SRCS += core/ai_sched.c
 COMMON_C_SRCS += core/mmu.c
 ifeq ($(CONFIG_SCHED_NOOP),y)
 COMMON_C_SRCS += core/sched/sched_noop.c
@@ -514,7 +515,7 @@ endif
 # Escape the banner character-by-character; awk gsub backslash handling varies.
 # BANNER-02
 # BANNER-05
-$(BANNER_H): sdk/tag/BANNER-03 Makefile | $(HV_OBJDIR)/include
+$(BANNER_H): sdk/tag/BANNER-05 Makefile | $(HV_OBJDIR)/include
 	@echo "BANNER             $(notdir $@)"
 	@{ \
 		echo "/* Auto-generated from sdk/BANNER. */"; \
