@@ -20,6 +20,7 @@
 #include <ticks.h>
 #include <trace.h>
 #include <vconfig.h>
+#include <hwtdbg.h>
 #include <asm/platform.h>
 #include <asm/cpu.h>
 #include <asm/irq.h>
@@ -597,12 +598,16 @@ static int32_t handle_instruction_abort(struct acrn_vcpu *vcpu)
 static int32_t handle_serror(struct acrn_vcpu *vcpu)
 {
 	const struct cpu_regs *regs = &vcpu->arch.regs;
+	struct arm64_ras_snapshot ras;
 
 	/*
 	 * Guest SError is asynchronous and may be reported after the instruction
 	 * that caused it. The ELR/SP/FP snapshot still identifies where the VM was
 	 * interrupted, which is usually the best handoff point for manual triage.
 	 */
+	if (arm64_ras_capture(&ras)) {
+		hwtdbg_capture_ras(vcpu, regs, &ras);
+	}
 	LOG_ERR("arm64 serror vm%u:vcpu%u esr=0x%lx elr=0x%lx far=0x%lx hpfar=0x%lx",
 		vcpu->vm->vm_id, vcpu->vcpu_id, regs->esr, regs->elr, regs->far,
 		regs->hpfar);

@@ -9,6 +9,10 @@
 
 #include <types.h>
 #include <vm_wdt.h>
+#include <asm/ras.h>
+
+struct acrn_vcpu;
+struct cpu_regs;
 
 enum hwtdbg_timeout_kind {
 	HWTDBG_TIMEOUT_FIRST_KICK = 0U,
@@ -48,6 +52,8 @@ struct hwtdbg_timeout_context {
 
 uint64_t hwtdbg_capture_timeout(uint16_t vm_id,
 	const struct hwtdbg_timeout_context *timeout);
+void hwtdbg_capture_ras(struct acrn_vcpu *vcpu, const struct cpu_regs *regs,
+	const struct arm64_ras_snapshot *snapshot);
 void hwtdbg_update_recovery(uint16_t vm_id, uint64_t sequence,
 	enum hwtdbg_recovery_result result, uint64_t attempt,
 	uint64_t wait_vcpus, int32_t reset_ret);

@@ -26,12 +26,17 @@
 #include <debug/symbol.h>
 #include <asm/boot/ld_sym.h>
 #include <asm/guest/vcpu.h>
+#include <asm/guest/stage2.h>
 #include <asm/sysreg.h>
 #include "../shell_priv.h"
 
 #define HWTDBG_MAGIC			0x48575444U
 #define HWTDBG_VERSION			1U
 #define HWTDBG_EVENT_SLOTS		4U
+#define HWTDBG_RAS_MAGIC		0x48575241U
+#define HWTDBG_RAS_EVENT_SLOTS		4U
+#define HWTDBG_INVALID_ID		0xffffU
+#define HWTDBG_RAS_RECORD_GPA_VALID	(1U << 2U)
 #define HWTDBG_STACK_DEPTH		16U
 #define HWTDBG_LIVE_TIMEOUT_US		1000U
 #define HWTDBG_REGS_PER_LINE_MAX	4U
@@ -125,6 +130,38 @@ struct hwtdbg_event {
 	struct hwtdbg_vcpu_snapshot vcpu[MAX_VCPUS_PER_VM];
 };
 
+struct hwtdbg_ras_record {
+	uint64_t status;
+	uint64_t pa;
+	uint64_t gpa;
+	uint64_t misc0;
+	uint16_t index;
+	uint16_t flags;
+};
+
+struct hwtdbg_ras_event {
+	uint32_t magic;
+	uint16_t version;
+	uint16_t pcpu_id;
+	uint32_t checksum;
+	bool valid;
+	bool guest_context;
+	uint16_t vm_id;
+	uint16_t vcpu_id;
+	uint16_t hw_vmid;
+	uint64_t sequence;
+	uint64_t captured_tsc;
+	uint64_t vttbr;
+	struct cpu_regs regs;
+	uint64_t erridr;
+	uint64_t disr;
+	uint32_t ras_flags;
+	uint32_t record_count;
+	uint16_t valid_count;
+	struct hwtdbg_ras_record record[ARM64_RAS_MAX_RECORDS];
+	struct hwtdbg_vcpu_snapshot vcpu;
+};
+
 struct hwtdbg_live_mailbox {
 	uint64_t publish_version;
 	struct hwtdbg_vcpu_snapshot result;
@@ -157,6 +194,11 @@ static spinlock_t hwtdbg_lock = { .head = 0U, .tail = 0U, };
 static struct hwtdbg_live_mailbox hwtdbg_mailbox[MAX_PCPU_NUM];
 static struct hwtdbg_live_request hwtdbg_live_request;
 static struct hwtdbg_event hwtdbg_readback;
+static struct hwtdbg_ras_event
+	hwtdbg_ras_events[MAX_PCPU_NUM][HWTDBG_RAS_EVENT_SLOTS];
+static uint8_t hwtdbg_ras_next_slot[MAX_PCPU_NUM];
+static uint64_t hwtdbg_ras_next_sequence;
+static struct hwtdbg_ras_event hwtdbg_ras_readback;
 
 static bool hwtdbg_range_contains(uint64_t start, uint64_t end,
 	uint64_t address, uint64_t bytes)
@@ -534,6 +576,62 @@ static uint32_t hwtdbg_checksum(const struct hwtdbg_event *event)
 	return checksum;
 }
 
+static uint32_t hwtdbg_ras_checksum(const struct hwtdbg_ras_event *event)
+{
+	const uint8_t *bytes = (const uint8_t *)event;
+	uint32_t checksum = 2166136261U;
+	uint32_t index;
+
+	for (index = 0U; index < sizeof(*event); index++) {
+		bool checksum_byte = (index >= offsetof(struct hwtdbg_ras_event, checksum)) &&
+			(index < (offsetof(struct hwtdbg_ras_event, checksum) +
+			 sizeof(event->checksum)));
+		bool valid_byte = (index >= offsetof(struct hwtdbg_ras_event, valid)) &&
+			(index < (offsetof(struct hwtdbg_ras_event, valid) +
+			 sizeof(event->valid)));
+
+		if (!checksum_byte && !valid_byte) {
+			checksum ^= bytes[index];
+			checksum *= 16777619U;
+		}
+	}
+
+	return checksum;
+}
+
+static struct hwtdbg_ras_event *hwtdbg_reserve_ras_event(uint16_t pcpu_id,
+	uint64_t *sequence)
+{
+	struct hwtdbg_ras_event *event;
+	uint8_t slot;
+
+	if ((pcpu_id >= MAX_PCPU_NUM) || (sequence == NULL)) {
+		return NULL;
+	}
+	slot = hwtdbg_ras_next_slot[pcpu_id];
+	hwtdbg_ras_next_slot[pcpu_id] = (uint8_t)((slot + 1U) %
+		HWTDBG_RAS_EVENT_SLOTS);
+	*sequence = __atomic_add_fetch(&hwtdbg_ras_next_sequence, 1UL,
+		__ATOMIC_RELAXED);
+	if (*sequence == 0UL) {
+		*sequence = __atomic_add_fetch(&hwtdbg_ras_next_sequence, 1UL,
+			__ATOMIC_RELAXED);
+	}
+	event = &hwtdbg_ras_events[pcpu_id][slot];
+	__atomic_store_n(&event->valid, false, __ATOMIC_RELEASE);
+	cpu_write_memory_barrier();
+	(void)memset(event, 0U, sizeof(*event));
+	return event;
+}
+
+static void hwtdbg_publish_ras_event(struct hwtdbg_ras_event *event)
+{
+	event->checksum = 0U;
+	event->checksum = hwtdbg_ras_checksum(event);
+	cpu_write_memory_barrier();
+	__atomic_store_n(&event->valid, true, __ATOMIC_RELEASE);
+}
+
 static struct hwtdbg_event *hwtdbg_reserve_event(uint16_t vm_id,
 	uint64_t *sequence)
 {
@@ -658,6 +756,84 @@ static void hwtdbg_publish_event(struct hwtdbg_event *event)
 	cpu_write_memory_barrier();
 	event->valid = true;
 	spinlock_irqrestore_release(&hwtdbg_lock, rflags);
+}
+
+/* [20260721] RAS evidence publication
+ *
+ * SError frame + PE-local RAS state -> validate active guest VTTBR
+ *                                      |
+ *                                      +--> optional static PA-to-GPA proof
+ *       |
+ *       v
+ * per-pCPU invalid slot -> checksum -> release-publish valid slot
+ *
+ * Key rule:
+ *   - the interrupted pCPU owns its RAS ring slot and never waits on the WDT
+ *     lock, so SError capture cannot deadlock behind normal diagnostics;
+ *   - VMID and GPA are published only after current-vCPU and reversible RAM
+ *     mapping validation, preventing host addresses from being blamed on a VM.
+ */
+void hwtdbg_capture_ras(struct acrn_vcpu *vcpu, const struct cpu_regs *regs,
+	const struct arm64_ras_snapshot *snapshot)
+{
+	struct hwtdbg_ras_event *event;
+	uint16_t pcpu_id = get_pcpu_id();
+	uint64_t sequence;
+	uint32_t index;
+
+	if ((regs == NULL) || (snapshot == NULL) ||
+		((snapshot->flags & ARM64_RAS_SNAPSHOT_SUPPORTED) == 0U)) {
+		return;
+	}
+	event = hwtdbg_reserve_ras_event(pcpu_id, &sequence);
+	if (event == NULL) {
+		return;
+	}
+	event->magic = HWTDBG_RAS_MAGIC;
+	event->version = HWTDBG_VERSION;
+	event->pcpu_id = pcpu_id;
+	event->vm_id = HWTDBG_INVALID_ID;
+	event->vcpu_id = HWTDBG_INVALID_ID;
+	event->hw_vmid = HWTDBG_INVALID_ID;
+	event->sequence = sequence;
+	event->captured_tsc = cpu_ticks();
+	event->erridr = snapshot->erridr;
+	event->disr = snapshot->disr;
+	event->ras_flags = snapshot->flags;
+	event->record_count = snapshot->record_count;
+	event->valid_count = snapshot->valid_count;
+	(void)memcpy_s(&event->regs, sizeof(event->regs), regs, sizeof(*regs));
+
+	if ((vcpu != NULL) && (vcpu->vm != NULL) &&
+		(vcpu->vm->root_stg2ptp != NULL) &&
+		(get_running_vcpu(pcpu_id) == vcpu)) {
+		event->vttbr = read_vttbr_el2();
+		if (event->vttbr == arm64_stage2_vttbr(vcpu->vm)) {
+			event->guest_context = true;
+			event->vm_id = vcpu->vm->vm_id;
+			event->vcpu_id = vcpu->vcpu_id;
+			event->hw_vmid = (uint16_t)((event->vttbr >>
+				ARM64_STAGE2_VMID_SHIFT) & ARM64_STAGE2_VMID_MASK);
+			hwtdbg_capture_vcpu_live(vcpu, &event->vcpu);
+		}
+	}
+
+	for (index = 0U; index < snapshot->valid_count; index++) {
+		const struct arm64_ras_record *record = &snapshot->record[index];
+		struct hwtdbg_ras_record *saved = &event->record[index];
+
+		saved->status = record->status;
+		saved->pa = record->address;
+		saved->misc0 = record->misc0;
+		saved->index = record->index;
+		saved->flags = record->flags;
+		if (event->guest_context &&
+			((record->flags & ARM64_RAS_RECORD_ADDRESS_VALID) != 0U) &&
+			arm64_guest_hpa_to_gpa(vcpu->vm, record->address, &saved->gpa)) {
+			saved->flags |= HWTDBG_RAS_RECORD_GPA_VALID;
+		}
+	}
+	hwtdbg_publish_ras_event(event);
 }
 
 uint64_t hwtdbg_capture_timeout(uint16_t vm_id,
@@ -1136,11 +1312,71 @@ static void hwtdbg_print_event(const struct hwtdbg_event *event)
 	shell_item_end();
 }
 
+static bool hwtdbg_copy_ras_event(uint16_t pcpu_id, uint32_t slot,
+	struct hwtdbg_ras_event *event)
+{
+	const struct hwtdbg_ras_event *source;
+
+	if ((pcpu_id >= MAX_PCPU_NUM) || (slot >= HWTDBG_RAS_EVENT_SLOTS) ||
+		(event == NULL)) {
+		return false;
+	}
+	source = &hwtdbg_ras_events[pcpu_id][slot];
+	if (!__atomic_load_n(&source->valid, __ATOMIC_ACQUIRE)) {
+		return false;
+	}
+	(void)memcpy_s(event, sizeof(*event), source, sizeof(*source));
+	cpu_read_memory_barrier();
+	return __atomic_load_n(&source->valid, __ATOMIC_ACQUIRE) &&
+		(event->magic == HWTDBG_RAS_MAGIC) &&
+		(event->version == HWTDBG_VERSION) &&
+		(event->checksum == hwtdbg_ras_checksum(event));
+}
+
+static void hwtdbg_print_ras_event(const struct hwtdbg_ras_event *event)
+{
+	uint16_t index;
+
+	shell_item_begin("HWTDBG RAS (pcpu%hu seq:%lu)", event->pcpu_id,
+		event->sequence);
+	shell_item_line("ras:erridr:0x%016lx disr:0x%016lx flags:0x%08x records:%u valid:%hu",
+		event->erridr, event->disr, event->ras_flags, event->record_count,
+		event->valid_count);
+	if (event->guest_context) {
+		shell_item_line("guest:vm:%hu vcpu:%hu vmid:%hu vttbr:0x%016lx",
+			event->vm_id, event->vcpu_id, event->hw_vmid, event->vttbr);
+		shell_item_section("vm/vcpu");
+		hwtdbg_print_vcpu(&event->vcpu);
+	} else {
+		shell_item_line("guest:unavailable vm:N/A vcpu:N/A vmid:N/A");
+		shell_item_line("exception regs:");
+		hwtdbg_print_regs(&event->regs);
+	}
+	shell_item_section("ras records");
+	for (index = 0U; index < event->valid_count; index++) {
+		const struct hwtdbg_ras_record *record = &event->record[index];
+
+		if ((record->flags & ARM64_RAS_RECORD_ADDRESS_VALID) == 0U) {
+			shell_item_line("err%hu:status:0x%016lx pa:N/A gpa:N/A misc0:0x%016lx",
+				record->index, record->status, record->misc0);
+		} else if ((record->flags & HWTDBG_RAS_RECORD_GPA_VALID) == 0U) {
+			shell_item_line("err%hu:status:0x%016lx pa:0x%016lx gpa:N/A misc0:0x%016lx",
+				record->index, record->status, record->pa, record->misc0);
+		} else {
+			shell_item_line("err%hu:status:0x%016lx pa:0x%016lx gpa:0x%016lx misc0:0x%016lx",
+				record->index, record->status, record->pa, record->gpa,
+				record->misc0);
+		}
+	}
+	shell_item_end();
+}
+
 int32_t shell_hwtdbg(int32_t argc, __unused char **argv)
 {
 	uint16_t vm_id;
 	uint32_t printed = 0U;
 	uint32_t corrupt_count = 0U;
+	uint32_t ras_printed = 0U;
 
 	if (argc != 1) {
 		shell_puts("usage: hwtdbg\r\n");
@@ -1167,8 +1403,19 @@ int32_t shell_hwtdbg(int32_t argc, __unused char **argv)
 			printed++;
 		}
 	}
-	if (printed == 0U) {
-		shell_puts("hwtdbg: no watchdog timeout events\r\n");
+	for (vm_id = 0U; vm_id < MAX_PCPU_NUM; vm_id++) {
+		uint32_t slot;
+
+		for (slot = 0U; slot < HWTDBG_RAS_EVENT_SLOTS; slot++) {
+			if (hwtdbg_copy_ras_event(vm_id, slot,
+				&hwtdbg_ras_readback)) {
+				hwtdbg_print_ras_event(&hwtdbg_ras_readback);
+				ras_printed++;
+			}
+		}
+	}
+	if ((printed == 0U) && (ras_printed == 0U)) {
+		shell_puts("hwtdbg: no retained watchdog timeout or RAS events\r\n");
 	}
 	if (corrupt_count != 0U) {
 		char line[MAX_STR_SIZE];

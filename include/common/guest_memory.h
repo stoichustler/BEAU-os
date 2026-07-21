@@ -37,6 +37,8 @@ enum vm_paging_mode get_vcpu_paging_mode(struct acrn_vcpu *vcpu);
 /* gpa --> hpa -->hva */
 uint64_t gpa2hpa(struct acrn_vm *vm, uint64_t gpa);
 void *gpa2hva(struct acrn_vm *vm, uint64_t x);
+bool arm64_guest_hpa_to_gpa(const struct acrn_vm *vm, uint64_t hpa,
+	uint64_t *gpa);
 bool arm64_guest_gpa_range_valid(const struct acrn_vm *vm, uint64_t gpa,
 	uint64_t size);
 

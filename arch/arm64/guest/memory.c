@@ -56,6 +56,49 @@ bool arm64_guest_gpa_range_valid(const struct acrn_vm *vm, uint64_t gpa,
 	return (gpa >= ram_start) && (gpa_end <= ram_end);
 }
 
+/* [20260721] Static guest PA-to-GPA attribution
+ *
+ * RAS PA -> configured guest RAM HPA window -> configured guest GPA window
+ *    |                       |
+ *    +--> outside/overflow ---+--> leave GPA unavailable
+ *
+ * Key rule:
+ *   - platform VM configuration owns this immutable RAM correspondence;
+ *   - only an exactly reversible byte mapping is reported, preventing a host
+ *     PA or dynamic device mapping from being misattributed to a guest GPA.
+ */
+bool arm64_guest_hpa_to_gpa(const struct acrn_vm *vm, uint64_t hpa,
+	uint64_t *gpa)
+{
+	const struct arch_vm_config *arch_config;
+	uint64_t hpa_start;
+	uint64_t ram_size;
+	uint64_t offset;
+	uint64_t candidate;
+
+	if ((vm == NULL) || (gpa == NULL) || (vm->vm_id >= CONFIG_MAX_VM_NUM)) {
+		return false;
+	}
+	arch_config = &get_vm_config(vm->vm_id)->arch;
+	hpa_start = arch_config->guest_ram_hpa;
+	ram_size = arch_config->guest_ram_size;
+	if ((ram_size == 0UL) || (hpa_start > (UINT64_MAX - ram_size)) ||
+		(hpa < hpa_start) || (hpa >= (hpa_start + ram_size))) {
+		return false;
+	}
+	offset = hpa - hpa_start;
+	if (arch_config->guest_ram_start > (UINT64_MAX - offset)) {
+		return false;
+	}
+	candidate = arch_config->guest_ram_start + offset;
+	if (!arm64_guest_gpa_range_valid(vm, candidate, 1UL) ||
+		(gpa2hpa((struct acrn_vm *)vm, candidate) != hpa)) {
+		return false;
+	}
+	*gpa = candidate;
+	return true;
+}
+
 int32_t gva2gpa(struct acrn_vcpu *vcpu, uint64_t gva, uint64_t *gpa, uint32_t *err_code)
 {
 	(void)vcpu;

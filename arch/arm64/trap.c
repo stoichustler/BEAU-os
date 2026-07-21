@@ -11,6 +11,7 @@
 #include <notify.h>
 #include <hv_pm.h>
 #include <debug/dump.h>
+#include <hwtdbg.h>
 
 #include <asm/trap.h>
 #include <asm/ddb.h>
@@ -100,6 +101,7 @@ static bool dispatch_wfi_wfe_trap(struct intr_excp_ctx *ctx)
 static void dispatch_exception(struct intr_excp_ctx *ctx, uint64_t trap_type)
 {
 	uint16_t pcpu_id = get_pcpu_id();
+	struct arm64_ras_snapshot ras;
 
 	if (arm64_ddb_handle_trap(ctx, trap_type)) {
 		return;
@@ -111,6 +113,9 @@ static void dispatch_exception(struct intr_excp_ctx *ctx, uint64_t trap_type)
 		arm64_mte_is_sync_fault(ctx->regs.esr)) {
 		arm64_mte_report_sync_fault(ctx->regs.esr, ctx->regs.far,
 			ctx->regs.elr, pcpu_id);
+	}
+	if ((trap_type == ARM64_TRAP_SERROR) && arm64_ras_capture(&ras)) {
+		hwtdbg_capture_ras(NULL, &ctx->regs, &ras);
 	}
 
 	dump_exception(ctx, pcpu_id);
