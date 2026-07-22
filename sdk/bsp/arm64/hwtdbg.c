@@ -31,7 +31,7 @@
 #include "../shell_priv.h"
 
 #define HWTDBG_MAGIC			0x48575444U
-#define HWTDBG_VERSION			1U
+#define HWTDBG_VERSION			2U
 #define HWTDBG_EVENT_SLOTS		4U
 #define HWTDBG_RAS_MAGIC		0x48575241U
 #define HWTDBG_RAS_EVENT_SLOTS		4U
@@ -72,6 +72,7 @@ struct hwtdbg_stack_snapshot {
 
 struct hwtdbg_vcpu_snapshot {
 	struct cpu_regs regs;
+	struct arm64_vcpu_guest_ctx gctx;
 	struct sched_latency_stats latency;
 	struct hwtdbg_stack_snapshot guest_stack;
 	struct hwtdbg_stack_snapshot host_stack;
@@ -492,6 +493,8 @@ static void hwtdbg_capture_vcpu_durable(struct acrn_vcpu *vcpu,
 	sched_get_latency(&vcpu->thread_obj, &snapshot->latency);
 	(void)memcpy_s(&snapshot->regs, sizeof(snapshot->regs),
 		&vcpu->arch.regs, sizeof(vcpu->arch.regs));
+	(void)memcpy_s(&snapshot->gctx, sizeof(snapshot->gctx),
+		&vcpu->arch.gctx, sizeof(vcpu->arch.gctx));
 	snapshot->pending_req = vcpu->pending_req;
 	snapshot->irqs_pending = vcpu->arch.irqs_pending;
 	snapshot->irqs_pending_mask = vcpu->arch.irqs_pending_mask;
@@ -1167,6 +1170,69 @@ static void hwtdbg_print_regs(const struct cpu_regs *regs)
 		"lr", regs->lr, "sp", regs->sp);
 }
 
+/* [20260722] HWT minidump guest-context boundary
+ *
+ * vCPU durable register image + saved EL1/EL2 context
+ *     |
+ *     v
+ * checksum-published WDT event -> shell readback
+ *
+ * Key rule:
+ *   - the WDT event owns a copied gctx, never a pointer to mutable vCPU state;
+ *   - gctx is the saved vCPU image and is labelled as such, preventing a
+ *     running guest's live EL1 hardware state from being misrepresented as a
+ *     globally frozen dump;
+ *   - bounded register-only capture avoids guest-memory reads in the timeout
+ *     path, so diagnostics cannot delay or compromise WDT recovery.
+ */
+static void hwtdbg_print_minidump_text(const char *label, const char *value)
+{
+	shell_item_line("%-18s : %s", label, value);
+}
+
+static void hwtdbg_print_minidump_u64(const char *label, uint64_t value)
+{
+	shell_item_line("%-18s : 0x%016lx", label, value);
+}
+
+static void hwtdbg_print_minidump_u32(const char *label, uint32_t value)
+{
+	shell_item_line("%-18s : 0x%08x", label, value);
+}
+
+static void hwtdbg_print_gctx(const struct arm64_vcpu_guest_ctx *gctx)
+{
+	hwtdbg_print_minidump_text("SOURCE", "saved-vcpu-context");
+	hwtdbg_print_minidump_u64("EL2.VTTBR", gctx->vttbr_el2);
+	hwtdbg_print_minidump_u64("EL2.VTCR", gctx->vtcr_el2);
+	hwtdbg_print_minidump_u64("EL2.HCR", gctx->hcr_el2);
+	hwtdbg_print_minidump_u64("EL2.CNTVOFF", gctx->cntvoff_el2);
+	hwtdbg_print_minidump_u64("TIMER.CNTP_CVAL", gctx->cntp_cval_el0);
+	hwtdbg_print_minidump_u32("TIMER.CNTP_CTL", gctx->cntp_ctl_el0);
+	hwtdbg_print_minidump_u64("TIMER.CNTV_CVAL", gctx->cntv_cval_el0);
+	hwtdbg_print_minidump_u32("TIMER.CNTV_CTL", gctx->cntv_ctl_el0);
+	hwtdbg_print_minidump_u32("TIMER.VIRQ", gctx->timer_virq);
+	hwtdbg_print_minidump_text("TIMER.CNTV_MASKED",
+		hwtdbg_yes_no(gctx->cntv_el2_masked));
+	hwtdbg_print_minidump_u64("EL1.SCTLR", gctx->sctlr_el1);
+	hwtdbg_print_minidump_u64("EL1.TTBR0", gctx->ttbr0_el1);
+	hwtdbg_print_minidump_u64("EL1.TTBR1", gctx->ttbr1_el1);
+	hwtdbg_print_minidump_u64("EL1.TCR", gctx->tcr_el1);
+	hwtdbg_print_minidump_u64("EL1.MAIR", gctx->mair_el1);
+	hwtdbg_print_minidump_u64("EL1.AMAIR", gctx->amair_el1);
+	hwtdbg_print_minidump_u64("EL1.VBAR", gctx->vbar_el1);
+	hwtdbg_print_minidump_u64("EL1.CONTEXTIDR", gctx->contextidr_el1);
+	hwtdbg_print_minidump_u64("EL1.CPACR", gctx->cpacr_el1);
+	hwtdbg_print_minidump_u64("EL1.TPIDR_EL0", gctx->tpidr_el0);
+	hwtdbg_print_minidump_u64("EL1.TPIDRRO_EL0", gctx->tpidrro_el0);
+	hwtdbg_print_minidump_u64("EL1.TPIDR_EL1", gctx->tpidr_el1);
+	hwtdbg_print_minidump_u64("EL1.SP_EL0", gctx->sp_el0);
+	hwtdbg_print_minidump_u64("EL1.ELR", gctx->elr_el1);
+	hwtdbg_print_minidump_u64("EL1.SPSR", gctx->spsr_el1);
+	hwtdbg_print_minidump_u64("EL1.ESR", gctx->esr_el1);
+	hwtdbg_print_minidump_u64("EL1.FAR", gctx->far_el1);
+}
+
 static void hwtdbg_print_stack(const struct hwtdbg_stack_snapshot *stack,
 	bool symbolize)
 {
@@ -1194,7 +1260,7 @@ static void hwtdbg_print_stack(const struct hwtdbg_stack_snapshot *stack,
 
 static void hwtdbg_print_vcpu(const struct hwtdbg_vcpu_snapshot *snapshot)
 {
-	shell_item_section("vCPU %hu", snapshot->vcpu_id);
+	shell_item_section("✔  [vcpu %hu]", snapshot->vcpu_id);
 	shell_item_line("pcpu:%hu lifecycle:%8s thread:%s current:%s live:%s",
 		snapshot->pcpu_id,
 		vcpu_state_to_str(snapshot->vcpu_state),
@@ -1226,29 +1292,34 @@ static void hwtdbg_print_vcpu(const struct hwtdbg_vcpu_snapshot *snapshot)
 	shell_item_line("requests:pending:0x%016lx arch-irqs:0x%016lx mask:0x%016lx",
 		snapshot->pending_req, snapshot->irqs_pending,
 		snapshot->irqs_pending_mask);
-	shell_item_line("guest regs:");
+	shell_item_section("minidump EL1/EL2 context");
+	hwtdbg_print_gctx(&snapshot->gctx);
+	shell_item_section("minidump guest regs");
 	hwtdbg_print_regs(&snapshot->regs);
-	shell_item_line("guest stack:");
+	shell_item_section("minidump guest stack");
 	hwtdbg_print_stack(&snapshot->guest_stack, false);
-	shell_item_line("host stack:");
+	shell_item_section("minidump host stack");
 	hwtdbg_print_stack(&snapshot->host_stack, true);
 }
 
-static bool hwtdbg_copy_next(uint16_t vm_id, uint64_t after_sequence,
+static bool hwtdbg_copy_latest(uint16_t vm_id,
 	struct hwtdbg_event *event, bool *corrupt)
 {
 	const struct hwtdbg_event *selected = NULL;
 	uint64_t rflags;
 	uint32_t slot;
 
+	if ((event == NULL) || (corrupt == NULL) || (vm_id >= HWTDBG_VM_NUM)) {
+		return false;
+	}
 	*corrupt = false;
 	spinlock_irqsave_obtain(&hwtdbg_lock, &rflags);
 	for (slot = 0U; slot < HWTDBG_EVENT_SLOTS; slot++) {
 		const struct hwtdbg_event *candidate = &hwtdbg_events[vm_id][slot];
 
-		if (candidate->valid && (candidate->sequence > after_sequence) &&
+		if (candidate->valid &&
 			((selected == NULL) ||
-			 (candidate->sequence < selected->sequence))) {
+			 (candidate->sequence > selected->sequence))) {
 			selected = candidate;
 		}
 	}
@@ -1293,6 +1364,9 @@ static void hwtdbg_print_event(const struct hwtdbg_event *event)
 		event->recovery_attempt, CONFIG_VM_WDT_RESTART_MAX,
 		event->recovery_wait_vcpus, event->reset_ret,
 		event->recovery_updated_tsc);
+	shell_item_section("MINIDUMP");
+	shell_item_line("format:%u scope:bounded-regs-context-stacks-sched-irq-virtio guest-memory:not-captured",
+		event->version);
 	shell_item_section("vm/vcpu");
 	shell_item_line("vm:%s state:%s vcpus:%hu",
 		event->vm_name, hwtdbg_vm_state_str(event->vm_state),
@@ -1371,60 +1445,69 @@ static void hwtdbg_print_ras_event(const struct hwtdbg_ras_event *event)
 	shell_item_end();
 }
 
-int32_t shell_hwtdbg(int32_t argc, __unused char **argv)
+static bool hwtdbg_parse_vmid(const char *text, uint16_t *vm_id)
+{
+	uint32_t value = 0U;
+	uint32_t index;
+
+	if ((text == NULL) || (vm_id == NULL) || (text[0] == '\0')) {
+		return false;
+	}
+	for (index = 0U; text[index] != '\0'; index++) {
+		uint8_t ch = (uint8_t)text[index];
+
+		if ((ch < (uint8_t)'0') || (ch > (uint8_t)'9') ||
+			(value > ((0xffffU - (uint32_t)(ch - (uint8_t)'0')) / 10U))) {
+			return false;
+		}
+		value = (value * 10U) + (uint32_t)(ch - (uint8_t)'0');
+	}
+	if (value >= HWTDBG_VM_NUM) {
+		return false;
+	}
+	*vm_id = (uint16_t)value;
+
+	return true;
+}
+
+int32_t shell_hwtdbg(int32_t argc, char **argv)
 {
 	uint16_t vm_id;
-	uint32_t printed = 0U;
-	uint32_t corrupt_count = 0U;
-	uint32_t ras_printed = 0U;
+	uint16_t pcpu_id;
+	bool corrupt;
 
-	if (argc != 1) {
-		shell_puts("usage: hwtdbg\r\n");
+	if ((argc != 2) || !hwtdbg_parse_vmid(argv[1], &vm_id)) {
+		shell_puts("usage: hwtdbg <vmid>\r\n");
 		return -EINVAL;
 	}
-
-	for (vm_id = 0U; vm_id < HWTDBG_VM_NUM; vm_id++) {
-		uint64_t sequence = 0UL;
-		uint32_t slot;
-
-		for (slot = 0U; slot < HWTDBG_EVENT_SLOTS; slot++) {
-			bool corrupt;
-
-			if (!hwtdbg_copy_next(vm_id, sequence, &hwtdbg_readback,
-				&corrupt)) {
-				break;
-			}
-			sequence = hwtdbg_readback.sequence;
-			if (corrupt) {
-				corrupt_count++;
-				continue;
-			}
-			hwtdbg_print_event(&hwtdbg_readback);
-			printed++;
-		}
-	}
-	for (vm_id = 0U; vm_id < MAX_PCPU_NUM; vm_id++) {
-		uint32_t slot;
-
-		for (slot = 0U; slot < HWTDBG_RAS_EVENT_SLOTS; slot++) {
-			if (hwtdbg_copy_ras_event(vm_id, slot,
-				&hwtdbg_ras_readback)) {
-				hwtdbg_print_ras_event(&hwtdbg_ras_readback);
-				ras_printed++;
-			}
-		}
-	}
-	if ((printed == 0U) && (ras_printed == 0U)) {
-		shell_puts("hwtdbg: no retained watchdog timeout or RAS events\r\n");
-	}
-	if (corrupt_count != 0U) {
+	if (!hwtdbg_copy_latest(vm_id, &hwtdbg_readback, &corrupt)) {
 		char line[MAX_STR_SIZE];
 
 		(void)snprintf(line, sizeof(line),
-			"hwtdbg: ignored %u checksum-invalid event(s)\r\n",
-			corrupt_count);
+			"hwtdbg: vm%hu has no retained watchdog timeout event\r\n", vm_id);
 		shell_puts(line);
+		return 0;
 	}
+	if (corrupt) {
+		char line[MAX_STR_SIZE];
 
+		(void)snprintf(line, sizeof(line),
+			"hwtdbg: vm%hu latest event is checksum-invalid\r\n", vm_id);
+		shell_puts(line);
+		return -EIO;
+	}
+	hwtdbg_print_event(&hwtdbg_readback);
+
+	for (pcpu_id = 0U; pcpu_id < MAX_PCPU_NUM; pcpu_id++) {
+		uint32_t slot;
+
+		for (slot = 0U; slot < HWTDBG_RAS_EVENT_SLOTS; slot++) {
+			if (hwtdbg_copy_ras_event(pcpu_id, slot,
+				&hwtdbg_ras_readback) && hwtdbg_ras_readback.guest_context &&
+				(hwtdbg_ras_readback.vm_id == vm_id)) {
+				hwtdbg_print_ras_event(&hwtdbg_ras_readback);
+			}
+		}
+	}
 	return 0;
 }

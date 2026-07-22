@@ -1334,7 +1334,7 @@ def run_qemu(args, cmd):
             qemu.expect(PROMPT, "BEAU shell prompt", keepalive=ENTER)
             expect_smmu_contract(qemu, True)
             expect_coredump_shell(qemu)
-            qemu.command_retry("vsmmustat", ["vsmmustat:", "instances:none"])
+            qemu.command_retry("smmustat", ["smmustat:", "vSMMU", "instances:none"])
         finish_qemu_regression(args)
         return
 

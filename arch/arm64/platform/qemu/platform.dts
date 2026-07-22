@@ -124,15 +124,15 @@
 		#size-cells = <2>;
 		ranges;
 
-		ramlog@7fc7f000 {
+		ramlog@7f2bf000 {
 			compatible = "beau,ramlog";
-			reg = <0x0 0x7fc7f000 0x0 0x00381000>;
+			reg = <0x0 0x7f2bf000 0x0 0x00d41000>;
 			no-map;
 			beau,header-size = <0x1000>;
 			beau,rtos-vm-count = <2>;
 			beau,rtos-log-size = <0x40000>;
 			beau,linux-vm-count = <3>;
-			beau,linux-log-size = <0x100000>;
+			beau,linux-log-size = <0x440000>;
 		};
 	};
 
@@ -535,7 +535,7 @@
 			beau,name = "Linux-2";
 			load-order = "pre-std";
 			beau,static-mem = <0x0 0x48000000 0x0 0x08000000>;
-			beau,pstore = <0x0 0x4ff00000 0x0 0x00100000>;
+			beau,pstore = <0x0 0x4fc00000 0x0 0x00400000>;
 			direct-map;
 			cpu-affinity = <2 4 6 7>;
 			guest-flags = "static";
@@ -614,7 +614,7 @@
 			beau,name = "Linux-3";
 			load-order = "pre-std";
 			beau,static-mem = <0x0 0x58000000 0x0 0x08000000>;
-			beau,pstore = <0x0 0x5ff00000 0x0 0x00100000>;
+			beau,pstore = <0x0 0x5fc00000 0x0 0x00400000>;
 			direct-map;
 			cpu-affinity = <3 5 6 7>;
 			guest-flags = "static";

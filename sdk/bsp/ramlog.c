@@ -19,10 +19,10 @@
 #define RAMLOG_VERSION          3U
 #define RAMLOG_VALID             0x56414c49U
 #define RAMLOG_HEADER_SIZE       0x1000U
-#define RAMLOG_PSTORE_SIZE       0x00100000U
-#define RAMLOG_PSTORE_DMESG_SIZE 0x00080000U
-#define RAMLOG_PSTORE_CONSOLE_SIZE 0x00080000U
-#define RAMLOG_PSTORE_SNAPSHOT_SIZE 0x000c0000U
+#define RAMLOG_PSTORE_SIZE       0x00400000U
+#define RAMLOG_PSTORE_DMESG_SIZE 0x00200000U
+#define RAMLOG_PSTORE_CONSOLE_SIZE 0x00200000U
+#define RAMLOG_PSTORE_SNAPSHOT_SIZE RAMLOG_PSTORE_SIZE
 #define RAMLOG_PSTORE_HEADER_SIZE 12U
 #define RAMLOG_PSTORE_COPY_SIZE  0x1000U
 #define RAMLOG_PSTORE_SIGNATURE  0x43474244U
@@ -54,6 +54,15 @@ struct ramlog_pstore_buffer_header {
 	uint32_t size;
 };
 
+enum ramlog_pstore_header_status {
+	RAMLOG_PSTORE_HEADER_VALID,
+	RAMLOG_PSTORE_HEADER_INVALID_ARGUMENT,
+	RAMLOG_PSTORE_HEADER_COPY_FAILED,
+	RAMLOG_PSTORE_HEADER_SIGNATURE_INVALID,
+	RAMLOG_PSTORE_HEADER_SIZE_INVALID,
+	RAMLOG_PSTORE_HEADER_START_INVALID,
+};
+
 struct ramlog_header {
 	uint32_t magic;
 	uint16_t version;
@@ -69,6 +78,8 @@ _Static_assert(sizeof(struct ramlog_header) <= RAMLOG_HEADER_SIZE,
 	"ramlog header exceeds reserved header page");
 _Static_assert(sizeof(struct ramlog_pstore_buffer_header) == RAMLOG_PSTORE_HEADER_SIZE,
 	"ramoops header size changed");
+_Static_assert((RAMLOG_PSTORE_DMESG_SIZE + RAMLOG_PSTORE_CONSOLE_SIZE) ==
+	RAMLOG_PSTORE_SIZE, "ramoops zone layout changed");
 
 static struct ramlog_header *ramlog_header;
 static spinlock_t ramlog_lock;
@@ -439,20 +450,52 @@ uint32_t ramlog_copy_snapshot(uint16_t vmid, uint64_t offset, char *buffer,
 	return count;
 }
 
-static bool ramlog_pstore_header_read(struct acrn_vm *vm, uint64_t gpa,
+static enum ramlog_pstore_header_status ramlog_pstore_header_read(struct acrn_vm *vm,
+	uint64_t gpa,
 	uint32_t zone_size, uint32_t expected_signature,
 	struct ramlog_pstore_buffer_header *header)
 {
-	uint32_t capacity = zone_size - RAMLOG_PSTORE_HEADER_SIZE;
+	uint32_t capacity;
 
-	if ((header == NULL) || (zone_size <= RAMLOG_PSTORE_HEADER_SIZE) ||
-		(copy_from_gpa(vm, header, gpa, sizeof(*header)) != 0) ||
-		(header->sig != expected_signature) || (header->size > capacity) ||
-		(header->start > header->size)) {
-		return false;
+	if ((header == NULL) || (zone_size <= RAMLOG_PSTORE_HEADER_SIZE)) {
+		return RAMLOG_PSTORE_HEADER_INVALID_ARGUMENT;
+	}
+	if (copy_from_gpa(vm, header, gpa, sizeof(*header)) != 0) {
+		return RAMLOG_PSTORE_HEADER_COPY_FAILED;
+	}
+	if (header->sig != expected_signature) {
+		return RAMLOG_PSTORE_HEADER_SIGNATURE_INVALID;
+	}
+	capacity = zone_size - RAMLOG_PSTORE_HEADER_SIZE;
+	if (header->size > capacity) {
+		return RAMLOG_PSTORE_HEADER_SIZE_INVALID;
+	}
+	if (header->start > header->size) {
+		return RAMLOG_PSTORE_HEADER_START_INVALID;
 	}
 
-	return true;
+	return RAMLOG_PSTORE_HEADER_VALID;
+}
+
+static const char *ramlog_pstore_header_status_name(
+	enum ramlog_pstore_header_status status)
+{
+	switch (status) {
+	case RAMLOG_PSTORE_HEADER_VALID:
+		return "valid";
+	case RAMLOG_PSTORE_HEADER_INVALID_ARGUMENT:
+		return "argument";
+	case RAMLOG_PSTORE_HEADER_COPY_FAILED:
+		return "copy";
+	case RAMLOG_PSTORE_HEADER_SIGNATURE_INVALID:
+		return "signature";
+	case RAMLOG_PSTORE_HEADER_SIZE_INVALID:
+		return "size";
+	case RAMLOG_PSTORE_HEADER_START_INVALID:
+		return "start";
+	default:
+		return "unknown";
+	}
 }
 
 static bool ramlog_pstore_copy(struct acrn_vm *vm, uint64_t zone_gpa,
@@ -525,16 +568,18 @@ static bool ramlog_pstore_dmesg_valid(struct acrn_vm *vm, uint64_t zone_gpa,
  *
  * Key rule:
  *   - the paused guest owns the ramoops bytes until this reset boundary;
- *   - only a signature, bounds, and uncompressed DMESG header validated record
- *     may become a retained ramlog snapshot;
+ *   - console and dmesg headers share the ramoops DBGC signature, while only
+ *     dmesg requires a valid uncompressed record header;
+ *   - a WDT reset may have no dmesg record, but a bounded valid console record
+ *     may still become a retained ramlog snapshot;
  *   - live console bytes use a disjoint subregion, preventing the next boot
  *     from overwriting the crash record before shell inspection.
  */
 bool ramlog_capture_vm_pstore(struct acrn_vm *vm)
 {
 	const struct arch_vm_config *arch_config;
-	struct ramlog_pstore_buffer_header dmesg_header;
-	struct ramlog_pstore_buffer_header console_header;
+	struct ramlog_pstore_buffer_header dmesg_header = { 0U };
+	struct ramlog_pstore_buffer_header console_header = { 0U };
 	struct ramlog_slot_header *slot;
 	char *snapshot;
 	uint64_t pstore_base;
@@ -542,6 +587,10 @@ bool ramlog_capture_vm_pstore(struct acrn_vm *vm)
 	uint32_t dmesg_size = 0U;
 	uint32_t console_size = 0U;
 	uint32_t console_offset = 0U;
+	enum ramlog_pstore_header_status dmesg_status;
+	enum ramlog_pstore_header_status console_status;
+	const char *dmesg_result;
+	const char *console_result;
 	bool dmesg_valid;
 	bool console_valid;
 	bool captured = false;
@@ -555,16 +604,30 @@ bool ramlog_capture_vm_pstore(struct acrn_vm *vm)
 		return false;
 	}
 	pstore_base = arch_config->guest_pstore_base;
-	dmesg_valid = ramlog_pstore_header_read(vm, pstore_base,
+	dmesg_status = ramlog_pstore_header_read(vm, pstore_base,
 		RAMLOG_PSTORE_DMESG_SIZE, RAMLOG_PSTORE_SIGNATURE, &dmesg_header);
+	dmesg_valid = dmesg_status == RAMLOG_PSTORE_HEADER_VALID;
 	if (dmesg_valid) {
 		dmesg_valid = ramlog_pstore_dmesg_valid(vm, pstore_base, &dmesg_header);
 	}
-	console_valid = ramlog_pstore_header_read(vm,
+	dmesg_result = dmesg_valid ? "valid" :
+		((dmesg_status == RAMLOG_PSTORE_HEADER_VALID) ? "payload" :
+		 ramlog_pstore_header_status_name(dmesg_status));
+	console_status = ramlog_pstore_header_read(vm,
 		pstore_base + RAMLOG_PSTORE_DMESG_SIZE, RAMLOG_PSTORE_CONSOLE_SIZE,
-		RAMLOG_PSTORE_SIGNATURE, &console_header) &&
+		RAMLOG_PSTORE_SIGNATURE, &console_header);
+	console_valid = (console_status == RAMLOG_PSTORE_HEADER_VALID) &&
 		(console_header.size != 0U);
+	console_result = console_valid ? "valid" :
+		((console_status == RAMLOG_PSTORE_HEADER_VALID) ? "empty" :
+		 ramlog_pstore_header_status_name(console_status));
 	if (!dmesg_valid && !console_valid) {
+		if ((dmesg_header.sig != 0U) || (console_header.sig != 0U) ||
+			(dmesg_status == RAMLOG_PSTORE_HEADER_COPY_FAILED) ||
+			(console_status == RAMLOG_PSTORE_HEADER_COPY_FAILED)) {
+			LOG_WRN("BUG: vm%u pstore rejected dmesg:%s console:%s",
+				vm->vm_id, dmesg_result, console_result);
+		}
 		spinlock_irqsave_obtain(&ramlog_lock, &rflags);
 		ramlog_header->slots[vm->vm_id].snapshot_failures++;
 		ramlog_publish();

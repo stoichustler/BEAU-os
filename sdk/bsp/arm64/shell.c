@@ -70,8 +70,8 @@
 #define SHELL_CMD_HEALTH_PARAM		NULL
 #define SHELL_CMD_HEALTH_HELP		"summarize current host and VM operational health"
 #define SHELL_CMD_HWTDBG		"hwtdbg"
-#define SHELL_CMD_HWTDBG_PARAM		NULL
-#define SHELL_CMD_HWTDBG_HELP		"show retained VM watchdog timeout evidence"
+#define SHELL_CMD_HWTDBG_PARAM		"<vmid>"
+#define SHELL_CMD_HWTDBG_HELP		"show retained VM watchdog minidump"
 #define SHELL_CMD_COREDUMP		"coredump"
 #define SHELL_CMD_COREDUMP_PARAM	"<print|erase>"
 #define SHELL_CMD_COREDUMP_HELP		"print or erase the latest ARM64 coredump"
@@ -89,10 +89,7 @@
 #define SHELL_CMD_VIRTIOSTAT_HELP	"list active virtio-proxy devices"
 #define SHELL_CMD_SMMUSTAT		"smmustat"
 #define SHELL_CMD_SMMUSTAT_PARAM	NULL
-#define SHELL_CMD_SMMUSTAT_HELP		"list ARM SMMUv3 and ITS passthrough state"
-#define SHELL_CMD_VSMMUSTAT		"vsmmustat"
-#define SHELL_CMD_VSMMUSTAT_PARAM	NULL
-#define SHELL_CMD_VSMMUSTAT_HELP	"list guest-visible synthetic SMMUv3 state"
+#define SHELL_CMD_SMMUSTAT_HELP		"list ARM and guest-visible synthetic SMMUv3 state"
 #define SHELL_CMD_PCISTAT		"pcistat"
 #define SHELL_CMD_PCISTAT_PARAM		NULL
 #define SHELL_CMD_PCISTAT_HELP		"list PCI passthrough and SMMU stream state"
@@ -148,7 +145,7 @@
 #define SHELL_AES_MAX_CIPHERTEXT_LEN	32U
 #define SHELL_AES_MAX_HEX_LEN		(SHELL_AES_MAX_CIPHERTEXT_LEN * 2U)
 #define SHELL_AES_CIPHERTEXT_PREFIX	"ciphertext: "
-#define SHELL_AES_PLAINTEXT_PREFIX	"plaintext:  "
+#define SHELL_AES_PLAINTEXT_PREFIX	"plaintext : "
 #define SHELL_DDB_PASSWORD_MAX_LEN	32U
 #define SHELL_DDB_AUTH_FAILURE_LIMIT	3U
 #define SHELL_DDB_AUTH_LOCKOUT_US	5000000U
@@ -163,7 +160,7 @@ static int32_t shell_cachestat(int32_t argc, __unused char **argv);
 static int32_t shell_ipcstat(int32_t argc, __unused char **argv);
 static int32_t shell_virtiostat(int32_t argc, char **argv);
 static int32_t shell_smmustat(int32_t argc, __unused char **argv);
-static int32_t shell_vsmmustat(int32_t argc, __unused char **argv);
+static void shell_smmustat_vsmmu(void);
 static int32_t shell_pcistat(int32_t argc, char **argv);
 static int32_t shell_cpufreq(int32_t argc, __unused char **argv);
 static int32_t shell_rttest(int32_t argc, __unused char **argv);
@@ -260,12 +257,6 @@ struct shell_cmd arch_shell_cmds[] = {
 		.cmd_param	= SHELL_CMD_SMMUSTAT_PARAM,
 		.help_str	= SHELL_CMD_SMMUSTAT_HELP,
 		.fcn		= shell_smmustat,
-	},
-	{
-		.str		= SHELL_CMD_VSMMUSTAT,
-		.cmd_param	= SHELL_CMD_VSMMUSTAT_PARAM,
-		.help_str	= SHELL_CMD_VSMMUSTAT_HELP,
-		.fcn		= shell_vsmmustat,
 	},
 	{
 		.str		= SHELL_CMD_PCISTAT,
@@ -1938,7 +1929,7 @@ static int32_t shell_perf(int32_t argc, char **argv)
  *                    stream assignment -> VM stage-2 STE
  *                               |
  *                               v
- *                    shell snapshot: SMMU + ITS + streams
+ *                    shell snapshot: SMMU + ITS + streams + vSMMU instances
  *
  * Stream output principle:
  *
@@ -2042,6 +2033,7 @@ static int32_t shell_smmustat(int32_t argc, __unused char **argv)
 	if (!info.discovered) {
 		shell_item_line("hardware:none");
 		shell_item_end();
+		shell_smmustat_vsmmu();
 		return 0;
 	}
 
@@ -2129,11 +2121,12 @@ static int32_t shell_smmustat(int32_t argc, __unused char **argv)
 		shell_output_checkpoint();
 	}
 	shell_item_end();
+	shell_smmustat_vsmmu();
 
 	return 0;
 }
 
-static void shell_vsmmustat_one(uint16_t vm_id,
+static void shell_smmustat_vsmmu_one(uint16_t vm_id,
 	const struct arm64_vsmmu_debug *debug)
 {
 	shell_item_begin("vm%hu vSMMU", vm_id);
@@ -2162,21 +2155,15 @@ static void shell_vsmmustat_one(uint16_t vm_id,
 	shell_item_end();
 }
 
-static int32_t shell_vsmmustat(int32_t argc, __unused char **argv)
+static void shell_smmustat_vsmmu(void)
 {
 	struct arm64_vsmmu_debug debug;
 	uint16_t vm_id;
 	bool found = false;
 
-	if (argc != 1) {
-		shell_puts("usage: vsmmustat\r\n");
-		return -EINVAL;
-	}
-
-	shell_puts("\r\nvsmmustat:\r\n");
 	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
 		if (arm64_vsmmu_get_debug(vm_id, &debug)) {
-			shell_vsmmustat_one(vm_id, &debug);
+			shell_smmustat_vsmmu_one(vm_id, &debug);
 			found = true;
 			shell_output_checkpoint();
 		}
@@ -2186,8 +2173,6 @@ static int32_t shell_vsmmustat(int32_t argc, __unused char **argv)
 		shell_item_line("instances:none");
 		shell_item_end();
 	}
-
-	return 0;
 }
 
 static void shell_format_bdf(char *buf, size_t size, union pci_bdf bdf)

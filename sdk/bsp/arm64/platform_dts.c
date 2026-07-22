@@ -953,7 +953,7 @@ static void dts_parse_ramlog(const void *fdt)
 	if ((header_size != ARM64_DTS_RAMLOG_HEADER_SIZE) ||
 		(rtos_vm_count != ARM64_DTS_RAMLOG_RTOS_VM_COUNT) ||
 		(linux_vm_count != ARM64_DTS_RAMLOG_LINUX_VM_COUNT) ||
-		(rtos_size != 0x40000U) || (linux_size != 0x100000U) ||
+		(rtos_size != 0x40000U) || (linux_size != 0x440000U) ||
 		!mem_aligned_check(base, PAGE_SIZE) || !mem_aligned_check(size, PAGE_SIZE) ||
 		!dts_range_end(base, size, &end) ||
 		!dts_range_end(beau_config.ram_start, beau_config.ram_size, &host_end) ||

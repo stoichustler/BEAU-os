@@ -58,15 +58,15 @@
 		#size-cells = <2>;
 		ranges;
 
-		ramlog@7fe7f000 {
+		ramlog@7f4bf000 {
 			compatible = "beau,ramlog";
-			reg = <0x0 0x7fe7f000 0x0 0x00381000>;
+			reg = <0x0 0x7f4bf000 0x0 0x00d41000>;
 			no-map;
 			beau,header-size = <0x1000>;
 			beau,rtos-vm-count = <2>;
 			beau,rtos-log-size = <0x40000>;
 			beau,linux-vm-count = <3>;
-			beau,linux-log-size = <0x100000>;
+			beau,linux-log-size = <0x440000>;
 		};
 	};
 

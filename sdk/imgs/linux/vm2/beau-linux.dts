@@ -103,11 +103,12 @@
 		#size-cells = <2>;
 		ranges;
 
-		ramoops@4ff00000 {
+		ramoops@4fc00000 {
 			compatible = "ramoops";
-			reg = <0x0 0x4ff00000 0x0 0x00100000>;
-			record-size = <0x00080000>;
-			console-size = <0x00080000>;
+			reg = <0x0 0x4fc00000 0x0 0x00400000>;
+			record-size = <0x00200000>;
+			console-size = <0x00200000>;
+			mem-type = <2>;
 			max-reason = <0x7fffffff>;
 		};
 	};
