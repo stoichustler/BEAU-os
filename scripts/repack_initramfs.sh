@@ -6,6 +6,7 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 ARCHIVE=${1:-"$ROOT/sdk/imgs/linux/Initramfs.cpio.gz"}
 EDU_TEST_SRC="$ROOT/sdk/imgs/linux/tools/beau-edu-test.c"
+RPMSG_TEST_SRC="$ROOT/sdk/imgs/linux/tools/beau-rpmsg-test.c"
 EDU_TEST_CC=${EDU_TEST_CC:-aarch64-linux-gnu-gcc}
 case "$ARCHIVE" in
 /*) ;;
@@ -124,6 +125,12 @@ mount -t devpts devpts /dev/pts 2>/dev/null || true
 mkdir -p /var/beau
 chmod 0755 /var /var/beau 2>/dev/null || true
 
+# BEAU static remoteproc/RPMsg smoke test (VM3 only):
+#   beau-rpmsg-test hello-rpmsg
+# The command attaches remoteproc0 when it is detached, then keeps one
+# /dev/rpmsg0 fd open for write and read because rpmsg_char clears pending
+# receives when a userspace fd is closed.
+
 # uos terminal
 #
 # BEAU Linux guests use virtio-console as the boot console (`console=hvc0`).
@@ -170,10 +177,11 @@ install_alpine_apk pciutils-libs main
 install_alpine_apk pciutils main
 mkdir -p "$WORKDIR/usr/local/bin"
 if ! command -v "$EDU_TEST_CC" >/dev/null 2>&1; then
-	echo "$EDU_TEST_CC is required to build beau-edu-test" >&2
+	echo "$EDU_TEST_CC is required to build initramfs test tools" >&2
 	exit 1
 fi
 "$EDU_TEST_CC" -Os -static -s -Wall -Wextra -o "$WORKDIR/usr/local/bin/beau-edu-test" "$EDU_TEST_SRC"
+"$EDU_TEST_CC" -Os -static -s -Wall -Wextra -o "$WORKDIR/usr/local/bin/beau-rpmsg-test" "$RPMSG_TEST_SRC"
 rm -rf "$WORKDIR/tmp"
 (cd "$WORKDIR" && find . -print0 | cpio --null -o --quiet -H newc -R 0:0 | gzip -9 > "$ARCHIVE.tmp")
 mv "$ARCHIVE.tmp" "$ARCHIVE"
