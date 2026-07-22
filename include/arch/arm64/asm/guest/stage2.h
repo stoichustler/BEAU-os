@@ -23,6 +23,34 @@ struct arm64_stage2_vm_stats {
 	uint64_t malformed_entries;
 };
 
+#define ARM64_STAGE2_WALK_MAX_LEVELS	4U
+
+enum arm64_stage2_walk_result {
+	ARM64_STAGE2_WALK_MAPPED = 0U,
+	ARM64_STAGE2_WALK_UNMAPPED,
+	ARM64_STAGE2_WALK_MALFORMED,
+};
+
+struct arm64_stage2_walk_step {
+	uint64_t table_hpa;
+	uint64_t descriptor;
+	uint16_t index;
+	uint8_t level;
+};
+
+/* A copied, point-in-time Stage-2 translation result for one guest IPA. */
+struct arm64_stage2_walk {
+	struct arm64_stage2_walk_step step[ARM64_STAGE2_WALK_MAX_LEVELS];
+	uint64_t vttbr;
+	uint64_t ipa;
+	uint64_t hpa;
+	uint64_t range_start;
+	uint64_t range_size;
+	uint8_t step_count;
+	uint8_t leaf_level;
+	enum arm64_stage2_walk_result result;
+};
+
 #define ARM64_STAGE2_VMID_SHIFT		48U
 #define ARM64_STAGE2_VMID_MASK		0xffUL
 
@@ -37,6 +65,8 @@ bool arm64_get_stage2_vm_stats(struct acrn_vm *vm,
 	struct arm64_stage2_vm_stats *stats);
 bool arm64_get_stage2_memory_attr(struct acrn_vm *vm, uint64_t ipa,
 	struct arm64_memory_attr *attr);
+int32_t arm64_stage2_walk(struct acrn_vm *vm, uint64_t ipa,
+	struct arm64_stage2_walk *walk);
 void arm64_stage2_map(struct acrn_vm *vm, uint64_t hpa, uint64_t ipa,
 	uint64_t size, uint32_t flags);
 void arm64_stage2_unmap(struct acrn_vm *vm, uint64_t ipa, uint64_t size);

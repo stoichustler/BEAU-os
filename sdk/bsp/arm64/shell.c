@@ -52,6 +52,7 @@
 #include <asm/guest/vmpu.h>
 #include <asm/guest/vgicv3.h>
 #include <asm/guest/vipc.h>
+#include <asm/guest/vrproc.h>
 #include <asm/guest/vsmmu.h>
 #include <asm/sysreg.h>
 #include <asm/vtd.h>
@@ -63,6 +64,9 @@
 #define SHELL_CMD_MEM_STAT		"memstat"
 #define SHELL_CMD_MEM_STAT_PARAM	NULL
 #define SHELL_CMD_MEM_STAT_HELP		"list ARM64 page-table pool and stage-2 ownership statistics"
+#define SHELL_CMD_S2WALK		"s2walk"
+#define SHELL_CMD_S2WALK_PARAM		"<vmid> <ipa>"
+#define SHELL_CMD_S2WALK_HELP		"walk one VM stage-2 translation without modifying it"
 #define SHELL_CMD_KUSG			"kusg"
 #define SHELL_CMD_KUSG_PARAM		NULL
 #define SHELL_CMD_KUSG_HELP		"list BEAU static memory usage in KB"
@@ -84,6 +88,9 @@
 #define SHELL_CMD_IPCSTAT		"ipcstat"
 #define SHELL_CMD_IPCSTAT_PARAM		NULL
 #define SHELL_CMD_IPCSTAT_HELP		"list static VM IPC channels"
+#define SHELL_CMD_RPROCSTAT		"rprocstat"
+#define SHELL_CMD_RPROCSTAT_PARAM	NULL
+#define SHELL_CMD_RPROCSTAT_HELP	"list static remoteproc/rpmsg channels"
 #define SHELL_CMD_VIRTIOSTAT		"virtiostat"
 #define SHELL_CMD_VIRTIOSTAT_PARAM	NULL
 #define SHELL_CMD_VIRTIOSTAT_HELP	"list active virtio-proxy devices"
@@ -152,12 +159,14 @@
 
 static int32_t shell_list_mem(__unused int32_t argc, __unused char **argv);
 static int32_t shell_memstat(int32_t argc, __unused char **argv);
+static int32_t shell_s2walk(int32_t argc, char **argv);
 static int32_t shell_kusg(int32_t argc, __unused char **argv);
 static int32_t shell_health(int32_t argc, __unused char **argv);
 static int32_t shell_coredump(int32_t argc, char **argv);
 static int32_t shell_vmstat(int32_t argc, __unused char **argv);
 static int32_t shell_cachestat(int32_t argc, __unused char **argv);
 static int32_t shell_ipcstat(int32_t argc, __unused char **argv);
+static int32_t shell_rprocstat(int32_t argc, __unused char **argv);
 static int32_t shell_virtiostat(int32_t argc, char **argv);
 static int32_t shell_smmustat(int32_t argc, __unused char **argv);
 static void shell_smmustat_vsmmu(void);
@@ -205,6 +214,12 @@ struct shell_cmd arch_shell_cmds[] = {
 		.fcn		= shell_memstat,
 	},
 	{
+		.str		= SHELL_CMD_S2WALK,
+		.cmd_param	= SHELL_CMD_S2WALK_PARAM,
+		.help_str	= SHELL_CMD_S2WALK_HELP,
+		.fcn		= shell_s2walk,
+	},
+	{
 		.str		= SHELL_CMD_KUSG,
 		.cmd_param	= SHELL_CMD_KUSG_PARAM,
 		.help_str	= SHELL_CMD_KUSG_HELP,
@@ -245,6 +260,12 @@ struct shell_cmd arch_shell_cmds[] = {
 		.cmd_param	= SHELL_CMD_IPCSTAT_PARAM,
 		.help_str	= SHELL_CMD_IPCSTAT_HELP,
 		.fcn		= shell_ipcstat,
+	},
+	{
+		.str		= SHELL_CMD_RPROCSTAT,
+		.cmd_param	= SHELL_CMD_RPROCSTAT_PARAM,
+		.help_str	= SHELL_CMD_RPROCSTAT_HELP,
+		.fcn		= shell_rprocstat,
 	},
 	{
 		.str		= SHELL_CMD_VIRTIOSTAT,
@@ -623,6 +644,212 @@ static int32_t shell_memstat(int32_t argc, __unused char **argv)
 
 	shell_item_line("accounted:%lu unowned:%lu overaccounted:%lu malformed:%lu",
 		accounted, unowned, overaccounted, malformed);
+	shell_item_end();
+
+	return 0;
+}
+
+static bool shell_s2walk_parse_vmid(const char *text, uint16_t *vmid)
+{
+	uint32_t value = 0U;
+	uint32_t index;
+
+	if ((text == NULL) || (text[0] == '\0') || (vmid == NULL)) {
+		return false;
+	}
+	for (index = 0U; text[index] != '\0'; index++) {
+		uint32_t digit;
+
+		if ((text[index] < '0') || (text[index] > '9')) {
+			return false;
+		}
+		digit = (uint32_t)(text[index] - '0');
+		if (value > ((UINT32_MAX - digit) / 10U)) {
+			return false;
+		}
+		value = (value * 10U) + digit;
+		if (value >= CONFIG_MAX_VM_NUM) {
+			return false;
+		}
+	}
+	*vmid = (uint16_t)value;
+
+	return true;
+}
+
+static bool shell_s2walk_parse_ipa(const char *text, uint64_t *ipa)
+{
+	uint64_t value = 0UL;
+	uint32_t index = 0U;
+
+	if ((text == NULL) || (ipa == NULL)) {
+		return false;
+	}
+	if ((text[0] == '0') && ((text[1] == 'x') || (text[1] == 'X'))) {
+		index = 2U;
+	}
+	if (text[index] == '\0') {
+		return false;
+	}
+	for (; text[index] != '\0'; index++) {
+		uint64_t digit;
+
+		if ((text[index] >= '0') && (text[index] <= '9')) {
+			digit = (uint64_t)(text[index] - '0');
+		} else if ((text[index] >= 'a') && (text[index] <= 'f')) {
+			digit = (uint64_t)(text[index] - 'a') + 10UL;
+		} else if ((text[index] >= 'A') && (text[index] <= 'F')) {
+			digit = (uint64_t)(text[index] - 'A') + 10UL;
+		} else {
+			return false;
+		}
+		if (value > ((UINT64_MAX - digit) / 16UL)) {
+			return false;
+		}
+		value = (value * 16UL) + digit;
+	}
+	*ipa = value;
+
+	return true;
+}
+
+static const char *shell_s2walk_result_name(enum arm64_stage2_walk_result result)
+{
+	const char *name;
+
+	switch (result) {
+	case ARM64_STAGE2_WALK_MAPPED:
+		name = "mapped";
+		break;
+	case ARM64_STAGE2_WALK_UNMAPPED:
+		name = "unmapped";
+		break;
+	case ARM64_STAGE2_WALK_MALFORMED:
+	default:
+		name = "malformed";
+		break;
+	}
+
+	return name;
+}
+
+static const char *shell_s2walk_shareability(uint64_t descriptor)
+{
+	const char *name;
+
+	switch ((descriptor >> 8U) & 0x3UL) {
+	case 0U:
+		name = "nonshareable";
+		break;
+	case 2U:
+		name = "outer";
+		break;
+	case 3U:
+		name = "inner";
+		break;
+	case 1U:
+	default:
+		name = "reserved";
+		break;
+	}
+
+	return name;
+}
+
+static enum arm64_memory_type shell_s2walk_memory_type(uint64_t descriptor)
+{
+	enum arm64_memory_type type;
+
+	switch (descriptor & PAGE_S2_MEMATTR_MASK) {
+	case PAGE_S2_MEMATTR_DEVICE_nGnRnE:
+		type = ARM64_MEMORY_DEVICE_nGnRnE;
+		break;
+	case PAGE_S2_MEMATTR_DEVICE_nGnRE:
+		type = ARM64_MEMORY_DEVICE_nGnRE;
+		break;
+	case PAGE_S2_MEMATTR_DEVICE_nGRE:
+		type = ARM64_MEMORY_DEVICE_nGRE;
+		break;
+	case PAGE_S2_MEMATTR_DEVICE_GRE:
+		type = ARM64_MEMORY_DEVICE_GRE;
+		break;
+	default:
+		type = ARM64_MEMORY_NORMAL;
+		break;
+	}
+
+	return type;
+}
+
+static void shell_s2walk_print_permissions(const struct arm64_stage2_walk *walk)
+{
+	const uint64_t descriptor = walk->step[walk->step_count - 1U].descriptor;
+	struct arm64_memory_attr attr = {
+		.type = ARM64_MEMORY_UNKNOWN,
+		.encoding = (uint8_t)((descriptor & PAGE_S2_MEMATTR_MASK) >> 2U),
+	};
+	char attr_text[32U];
+
+	attr.type = shell_s2walk_memory_type(descriptor);
+	shell_format_memory_attr(attr_text, sizeof(attr_text), &attr, true);
+	shell_item_line("attr:%s perm:%c%c%c sh:%s af:%c",
+		attr_text,
+		((descriptor & PAGE_S2_S2AP_READ) != 0UL) ? 'R' : '-',
+		((descriptor & PAGE_S2_S2AP_WRITE) != 0UL) ? 'W' : '-',
+		((descriptor & PAGE_S2_XN) == 0UL) ? 'X' : '-',
+		shell_s2walk_shareability(descriptor),
+		((descriptor & PAGE_S2_AF) != 0UL) ? 'Y' : 'N');
+}
+
+static int32_t shell_s2walk(int32_t argc, char **argv)
+{
+	struct arm64_stage2_walk walk;
+	struct acrn_vm *vm;
+	uint16_t vmid;
+	uint32_t index;
+	uint64_t ipa;
+	int32_t ret;
+
+	if ((argc != 3) || !shell_s2walk_parse_vmid(argv[1], &vmid) ||
+		!shell_s2walk_parse_ipa(argv[2], &ipa)) {
+		shell_puts("usage: s2walk <vmid> <ipa>\r\n");
+		return -EINVAL;
+	}
+	vm = get_vm_from_vmid(vmid);
+	ret = arm64_stage2_walk(vm, ipa, &walk);
+	if (ret == -EBUSY) {
+		shell_puts("s2walk: stage-2 update in progress; retry\r\n");
+		return ret;
+	}
+	if (ret == -EFAULT) {
+		shell_puts("s2walk: invalid stage-2 root\r\n");
+		return ret;
+	}
+	if (ret == -ENODEV) {
+		shell_puts("s2walk: VM has no stage-2 root\r\n");
+		return ret;
+	}
+	if (ret != 0) {
+		shell_puts("s2walk: invalid VM or IPA\r\n");
+		return ret;
+	}
+
+	shell_item_begin("S2 walk vm%hu", vmid);
+	shell_item_line("ipa:0x%016lx vttbr:0x%016lx", walk.ipa, walk.vttbr);
+	for (index = 0U; index < walk.step_count; index++) {
+		const struct arm64_stage2_walk_step *step = &walk.step[index];
+
+		shell_item_line("L%u table:0x%016lx index:0x%03x desc:0x%016lx",
+			step->level, step->table_hpa, step->index, step->descriptor);
+	}
+	shell_item_line("result:%s stop:L%u", shell_s2walk_result_name(walk.result),
+		walk.leaf_level);
+	if (walk.result == ARM64_STAGE2_WALK_MAPPED) {
+		shell_item_line("leaf:L%u ipa:[0x%016lx-0x%016lx] hpa:0x%016lx",
+			walk.leaf_level, walk.range_start,
+			walk.range_start + walk.range_size - 1UL, walk.hpa);
+		shell_s2walk_print_permissions(&walk);
+	}
 	shell_item_end();
 
 	return 0;
@@ -2688,6 +2915,65 @@ static int32_t shell_ipcstat(int32_t argc, __unused char **argv)
 			stats[idx].bad_hcall_count);
 		shell_ipcstat_print_dir(&stats[idx], ACRN_IPC_DIR_EP0_TO_EP1, now);
 		shell_ipcstat_print_dir(&stats[idx], ACRN_IPC_DIR_EP1_TO_EP0, now);
+		shell_output_checkpoint();
+	}
+	shell_item_end();
+
+	return 0;
+}
+
+static int32_t shell_rprocstat(int32_t argc, __unused char **argv)
+{
+	struct arm64_vrproc_channel_stats stats[ARM64_VRPROC_MAX_STATIC_CHANNELS];
+	uint32_t count;
+	uint32_t idx;
+	uint64_t now;
+
+	if (argc != 1) {
+		return -EINVAL;
+	}
+
+	count = arm64_vrproc_get_stats(stats, ARRAY_SIZE(stats));
+	now = cpu_ticks();
+	shell_item_begin("rprocstat");
+	if (count == 0U) {
+		shell_item_line("channels:none");
+		shell_item_end();
+		return 0;
+	}
+
+	for (idx = 0U; idx < count; idx++) {
+		uint64_t age0 = shell_ipcstat_age_ms(now, stats[idx].last_kick_tick[0]);
+		uint64_t age1 = shell_ipcstat_age_ms(now, stats[idx].last_kick_tick[1]);
+
+		shell_item_line("ch%u ep0:vm%hu ep1:vm%hu shared:0x%016lx size:0x%x mapped:0x%08x",
+			stats[idx].channel_id, stats[idx].endpoint_vmid[0],
+			stats[idx].endpoint_vmid[1], stats[idx].shared_gpa,
+			stats[idx].shared_size, stats[idx].mapped_mask);
+		if (age0 == UINT64_MAX) {
+			shell_item_line("ep0 bell:0x%016lx virq:%u kick:%lu irq:%lu/%lu last:-",
+				stats[idx].doorbell_gpa[0], stats[idx].notify_virq[0],
+				stats[idx].kick_count[0], stats[idx].irq_count[0],
+				stats[idx].irq_fail_count[0]);
+		} else {
+			shell_item_line("ep0 bell:0x%016lx virq:%u kick:%lu irq:%lu/%lu last:%lums",
+				stats[idx].doorbell_gpa[0], stats[idx].notify_virq[0],
+				stats[idx].kick_count[0], stats[idx].irq_count[0],
+				stats[idx].irq_fail_count[0], age0);
+		}
+		if (age1 == UINT64_MAX) {
+			shell_item_line("ep1 bell:0x%016lx virq:%u kick:%lu irq:%lu/%lu last:- bad:%lu vring:%u/%u",
+				stats[idx].doorbell_gpa[1], stats[idx].notify_virq[1],
+				stats[idx].kick_count[1], stats[idx].irq_count[1],
+				stats[idx].irq_fail_count[1], stats[idx].bad_mmio_count,
+				stats[idx].vring_num, stats[idx].vring_align);
+		} else {
+			shell_item_line("ep1 bell:0x%016lx virq:%u kick:%lu irq:%lu/%lu last:%lums bad:%lu vring:%u/%u",
+				stats[idx].doorbell_gpa[1], stats[idx].notify_virq[1],
+				stats[idx].kick_count[1], stats[idx].irq_count[1],
+				stats[idx].irq_fail_count[1], age1, stats[idx].bad_mmio_count,
+				stats[idx].vring_num, stats[idx].vring_align);
+		}
 		shell_output_checkpoint();
 	}
 	shell_item_end();

@@ -60,7 +60,7 @@ Expected BEAU-side signals:
 VM1 backend check:
 
 ```sh
-vcon 1
+vsh 1
 dmesg | grep -i 'BEAU virtio-'
 ```
 
@@ -76,7 +76,7 @@ BEAU virtio-i2c backend started, EEPROM at 0x50
 VM2 virtio-rng frontend check:
 
 ```sh
-vcon 2
+vsh 2
 dmesg | grep -i virtio_rng
 cat /sys/class/misc/hw_random/rng_current
 dd if=/dev/hwrng of=/tmp/beau-rng.bin bs=32 count=1
@@ -93,7 +93,7 @@ Expected VM2 signals:
 VM2 virtio-i2c frontend check:
 
 ```sh
-vcon 2
+vsh 2
 dmesg | grep -i 'i2c_virtio\|virtio.*i2c'
 ls /dev/i2c-*
 i2cdetect -y 0
@@ -111,7 +111,7 @@ Expected VM2 signals:
 VM2 virtio-blk frontend check:
 
 ```sh
-vcon 2
+vsh 2
 dmesg | grep -i virtio_blk
 ls -l /dev/vd*
 cat /sys/block/vda/size
@@ -135,7 +135,7 @@ Expected blk signals:
 VM2 virtio-fs frontend check:
 
 ```sh
-vcon 2
+vsh 2
 mkdir -p /mnt/beau
 mount -t virtiofs beau /mnt/beau
 echo beau-fs-rng > /mnt/beau/proxy-check.txt
@@ -145,7 +145,7 @@ cat /mnt/beau/proxy-check.txt
 VM1 export check:
 
 ```sh
-vcon 1
+vsh 1
 cat /var/beau/proxy-check.txt
 ```
 

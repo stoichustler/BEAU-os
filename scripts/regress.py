@@ -585,7 +585,7 @@ class QemuSession:
 
 
 def vcon_enter(qemu, vmid, prompt, name, timeout=30.0):
-    qemu.send(f"vcon {vmid}" + ENTER)
+    qemu.send(f"vsh {vmid}" + ENTER)
     try:
         qemu.expect(prompt, name, timeout=timeout, keepalive=ENTER)
     except Exception:
@@ -709,7 +709,7 @@ def run_smmu_passthrough_smoke(qemu):
         "owner:vm2 ipa:44",
     ])
     net_watchdog = False
-    qemu.send("vcon 2" + ENTER)
+    qemu.send("vsh 2" + ENTER)
     try:
         qemu.expect(LINUX_PROMPT, "VM2 passthrough Linux shell", timeout=60.0,
                     keepalive=ENTER)
@@ -1456,20 +1456,20 @@ def run_qemu(args, cmd):
             ["checksum:invalid", "capture:corrupt"],
         )
 
-        qemu.send("vcon 0" + ENTER)
+        qemu.send("vsh 0" + ENTER)
         qemu.expect(ZEPHYR_PROMPT, "VM0 Zephyr shell", keepalive=ENTER)
         run_guest_help(qemu, 0, ZEPHYR_PROMPT, "VM0 Zephyr", 15.0)
         check_zephyr_thread_list(qemu, "VM0 Zephyr SMP runtime stats")
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM0 shell")
 
-        qemu.send("vcon 1" + ENTER)
+        qemu.send("vsh 1" + ENTER)
         qemu.expect(RTTHREAD_PROMPT, "VM1 RT-Thread shell", timeout=60.0, keepalive=ENTER)
         run_guest_help(qemu, 1, RTTHREAD_PROMPT, "VM1 RT-Thread", 15.0)
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM1 shell")
 
-        qemu.send("vcon 2" + ENTER)
+        qemu.send("vsh 2" + ENTER)
         try:
             qemu.expect(LINUX_PROMPT, "VM2 Linux initramfs shell", timeout=60.0, keepalive=ENTER)
         except Exception:
@@ -1481,7 +1481,7 @@ def run_qemu(args, cmd):
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM2 shell")
 
-        qemu.send("vcon 3" + ENTER)
+        qemu.send("vsh 3" + ENTER)
         try:
             qemu.expect(LINUX_PROMPT, "VM3 Linux initramfs shell", timeout=60.0, keepalive=ENTER)
         except Exception:
@@ -1510,7 +1510,7 @@ def main():
         if not args.no_build:
             print(render(build, args.toolchains))
         print(quote(qemu))
-        checks = "prompt, vcpus, ps, schedstat, vmstat, health, hwtdbg empty, devmap, irqstat, virtiostat, vcon 0, ctrl-d, vcon 1, RT-Thread shell, ctrl-d, vcon 2, Linux-2 backend shell, ctrl-d, vcon 3, Linux-3 frontend shell"
+        checks = "prompt, vcpus, ps, schedstat, vmstat, health, hwtdbg empty, devmap, irqstat, virtiostat, vsh 0, ctrl-d, vsh 1, RT-Thread shell, ctrl-d, vsh 2, Linux-2 backend shell, ctrl-d, vsh 3, Linux-3 frontend shell"
         if args.stress_vsh_switch:
             checks += ", VM console switch/Enter stress"
         if args.stress_vsh_help:

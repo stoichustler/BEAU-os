@@ -1,0 +1,10 @@
+/ {
+	beau_rpmsg: rpmsg@b100000 {
+		interrupt-parent = <&gic>;
+		reg = <0x0 0x0b100000 0x0 0x00100000>,
+		      <0x0 0x0b210000 0x0 0x00001000>;
+		reg-names = "shared", "doorbell";
+		interrupts = <GIC_SPI 48 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+		status = "okay";
+	};
+};

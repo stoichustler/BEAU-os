@@ -977,8 +977,18 @@ ARM64 dispatcher 自身也是权限表：
 
 **定位**：`arch/arm64/guest/vipc.c`。
 
-QEMU DTS 当前定义 VM0 与 VM2 的 channel 0，GPA `0x0b000000`，每方向 ring
-`0x10000` 字节。每个 channel 有两条单生产者/单消费者 ring：
+### 13.4 静态 remoteproc/RPMsg
+
+`arch/arm64/guest/vrproc.c` 提供与 HVC IPC 分离的静态 transport。平台 DTS 定义
+两端 VM、共享 GPA、两个 doorbell GPA、vIRQ 和 vring 参数；EL2 仅将共享页映射给
+两个 endpoint，并对 doorbell 宽度、地址与 vqid 做失败关闭校验。当前 QEMU 配置为
+VM0 Zephyr OpenAMP remote 与 VM3 Linux `RPROC_DETACHED` attach-only remoteproc；
+guest DTS 的 `GIC_SPI 48/49` 对应 EL2 注入的 GIC INTID `80/81`。
+Linux attach 会创建标准 virtio-rpmsg bus；它不能加载 firmware、启动、停止或复位
+VM0。`rprocstat` 用于查看映射、kick、IRQ 与拒绝访问统计。
+
+QEMU DTS 当前定义 VM0 与 VM3 的 channel 0，GPA `0x0b100000`，共享区为
+`0x100000` 字节，vring 参数为 `256/0x1000`。每个 channel 有两条单生产者/单消费者 ring：
 
 ```text
 endpoint0 -> endpoint1
@@ -1271,15 +1281,17 @@ host shell 无输入时保持 blocked。首次输入发现延迟由 2 ms timer �
 | `ps` | scheduler thread 状态、current owner 和相邻命令间 CPU% |
 | `schedstat` | pCPU policy、busy%、runqueue、BVT/CBS 统计 |
 | `irqstat` | host IRQ 和 guest vIRQ latency |
-| `vcon <vmid>` | 切到客体 console，`Ctrl-D` 返回 |
+| `vsh <vmid>` | 切到客体 console，`Ctrl-D` 返回 |
 | `devmap` | host Stage-1 与每 VM Stage-2 map |
 | `memstat` | 页表池和 Stage-2 ownership |
+| `s2walk <vmid> <ipa>` | 只读输出指定 IPA 的逐级 Stage-2 descriptor、映射与属性 |
 | `health` | host/VM 运行健康摘要与 findings |
 | `hwtdbg` | 打印所有已保留 WDT 超时现场，读取不清除 |
 | `coredump <print\|erase>` | 查看或清除最近一次 ARM64 panic/异常快照 |
 | `vmstat` | VM 配置、状态、affinity、boot、timer、WDT |
 | `cachestat` | cache topology 和 LLC domain |
 | `ipcstat` | IPC channel、ring、notify/ack/drop |
+| `rprocstat` | static remoteproc/rpmsg channel、doorbell、vIRQ 和拒绝计数 |
 | `virtiostat` | proxy device、queue、backend、吞吐和延迟 |
 | `smmustat` | SMMU/ITS queue、STE、event fault |
 | `pcistat` | host/vPCI/BAR/MSI-X/StreamID ownership |
@@ -1445,10 +1457,10 @@ console:\> vmstat
 console:\> schedstat
 console:\> irqstat
 console:\> virtiostat
-console:\> vcon 2
+console:\> vsh 2
 uos ~ dmesg | grep -i 'BEAU virtio-'
 <Ctrl-D>
-console:\> vcon 3
+console:\> vsh 3
 uos ~ dmesg | grep -i virtio
 ```
 
@@ -1533,8 +1545,8 @@ IRQ 是否持续推进。Linux 有 arch_timer IRQ 不代表 softirq 一定推进
 
 ```text
 virtiostat
-vcon 2 -> dmesg | grep -i 'BEAU virtio-'
-vcon 3 -> dmesg | grep -i virtio
+vsh 2 -> dmesg | grep -i 'BEAU virtio-'
+vsh 3 -> dmesg | grep -i virtio
 ```
 
 区分：frontend queue 未 ready、backend 未 register、heartbeat stale、pending full、

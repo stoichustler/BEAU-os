@@ -113,6 +113,17 @@
 		};
 	};
 
+	beau_rproc: remoteproc@b211000 {
+		compatible = "beau,static-rproc";
+		reg = <0x0 0x0b100000 0x0 0x00100000>,
+		      <0x0 0x0b211000 0x0 0x00001000>;
+		reg-names = "shared", "doorbell";
+		interrupts = <0 49 4>;
+		beau,vring-num = <256>;
+		beau,vring-align = <0x1000>;
+		status = "okay";
+	};
+
 	gic: interrupt-controller@8000000 {
 		compatible = "arm,gic-v3";
 		#interrupt-cells = <3>;

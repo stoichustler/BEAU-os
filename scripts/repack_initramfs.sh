@@ -107,14 +107,14 @@ mount -t devpts devpts /dev/pts 2>/dev/null || true
 # VM2 exports it through the backend, while VM3 mounts the frontend there.
 #
 # Manual virtio-fs smoke test from the BEAU shell:
-#   1. vcon 2
+#   1. vsh 2
 #      ls -l /var/beau
 #      <Ctrl-D>
-#   2. vcon 3
+#   2. vsh 3
 #      mount -t virtiofs -o rw proxy-fs /var/beau
 #      echo "hello from vm3" > /var/beau/README
 #      <Ctrl-D>
-#   3. vcon 2
+#   3. vsh 2
 #      cat /var/beau/README
 #
 # Current baseline: VM3 is the writable frontend, while VM2 reads the backend

@@ -20,6 +20,10 @@ Linux kernel tree so they can be ported to multiple Linux versions.
 - `virtio-net-backend.c`: VM2 virtio-net uplink backend for VM3 frontend
   Ethernet validation through BEAU virtio-proxy.
 - `vwdt.c`: BEAU VM watchdog heartbeat driver.
+- `beau_static_rproc.c`: attach-only Linux remoteproc transport for a BEAU
+  Zephyr service VM, using standard virtio-rpmsg and `rpmsg_char`.
+- `beau-static-rproc.Kconfig`, `beau-static-rproc.Makefile`: integration
+  fragments for `drivers/remoteproc`.
 - `Kconfig`, `Makefile`: Kbuild integration snippets for `drivers/virt/beau`.
 
 ## Porting To A Linux Tree
@@ -38,6 +42,20 @@ Linux kernel tree so they can be ported to multiple Linux versions.
      `CONFIG_BEAU_VIRTIONET_BACKEND`
 6. Build the target kernel image and install it into the BEAU Linux image slot
    used by the VM that should run the driver.
+
+## Static Remoteproc/RPMsg
+
+To integrate the VM3 attach-only transport, copy `beau_static_rproc.c` into
+`drivers/remoteproc`, append `beau-static-rproc.Kconfig` to that directory's
+`Kconfig`, and append `beau-static-rproc.Makefile` to its `Makefile`. Enable
+`CONFIG_REMOTEPROC`, `CONFIG_RPMSG_VIRTIO`, `CONFIG_RPMSG_CHAR`, and
+`CONFIG_BEAU_STATIC_RPROC`; `RPMSG_CHAR` also requires `CONFIG_NET`.
+
+The guest DT node has compatible `beau,static-rproc`, a `shared` memory
+resource followed by a `doorbell` resource, and one GIC SPI interrupt. The
+driver starts in `RPROC_DETACHED`; userspace explicitly attaches it through
+the standard remoteproc `state` sysfs file. It does not load firmware or
+control the service VM lifecycle.
 
 ## Notes
 

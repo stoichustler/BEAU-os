@@ -1260,7 +1260,7 @@ static void hwtdbg_print_stack(const struct hwtdbg_stack_snapshot *stack,
 
 static void hwtdbg_print_vcpu(const struct hwtdbg_vcpu_snapshot *snapshot)
 {
-	shell_item_section("✔  [vcpu %hu]", snapshot->vcpu_id);
+	shell_item_section("✔  DUMP vcpu %hu", snapshot->vcpu_id);
 	shell_item_line("pcpu:%hu lifecycle:%8s thread:%s current:%s live:%s",
 		snapshot->pcpu_id,
 		vcpu_state_to_str(snapshot->vcpu_state),

@@ -112,6 +112,24 @@
 				ring-size = <0x00010000>;
 			};
 		};
+
+		rproc-channels {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			channel@0 {
+				compatible = "beau,static-rpmsg-channel";
+				reg = <0>;
+				endpoint-vms = <0 3>;
+				shared-gpa = <0x0 0x0b100000>;
+				shared-size = <0x00100000>;
+				doorbell-gpas = <0x0 0x0b210000 0x0 0x0b211000>;
+				/* GIC_SPI 48/49 in guest DTs map to architectural INTID 80/81. */
+				notify-virqs = <80 81>;
+				vring-num = <256>;
+				vring-align = <0x1000>;
+			};
+		};
 	};
 
 	memory@40000000 {

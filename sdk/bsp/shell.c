@@ -2710,7 +2710,7 @@ static int32_t shell_to_vm_console(int32_t argc, char **argv)
 	 *
 	 * Binding must succeed before BEAU input is disabled. The prompt key mirrors
 	 * a physical serial attach: it reveals a quiet guest prompt immediately, but
-	 * a full guest RX FIFO must never stall or fail the vcon command.
+	 * a full guest RX FIFO must never stall or fail the vsh command.
 	 */
 	if (!console_vm_vuart_bind(vm_id)) {
 		return -ENODEV;

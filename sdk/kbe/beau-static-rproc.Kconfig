@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config BEAU_STATIC_RPROC
+	tristate "BEAU static remoteproc RPMsg transport"
+	depends on OF && RPMSG_VIRTIO
+	help
+	  Attach Linux remoteproc to an already-running BEAU Zephyr service VM.
+	  The transport exposes a static shared-memory resource table and a
+	  hypervisor-routed doorbell. It never loads firmware or controls the
+	  remote VM lifecycle.

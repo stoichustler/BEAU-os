@@ -22,6 +22,7 @@
 #include <asm/platform.h>
 #include <asm/sve.h>
 #include <asm/guest/vipc.h>
+#include <asm/guest/vrproc.h>
 #include <asm/vtd.h>
 #include <arm64_platform_dts.h>
 #include <virtio_proxy.h>
@@ -39,6 +40,7 @@
 #define ARM64_DTS_RAMLOG_HEADER_SIZE	0x1000U
 #define ARM64_DTS_RAMLOG_RTOS_VM_COUNT	2U
 #define ARM64_DTS_RAMLOG_LINUX_VM_COUNT	3U
+#define ARM64_DTS_UINT16_MAX		0xffffU
 
 static const struct arm64_platform_dts_vm_storage *dts_storage;
 static uint16_t dts_bare_boot_option_count;
@@ -48,6 +50,8 @@ static uint32_t dts_mmio_region_count;
 static bool dts_range_end(uint64_t start, uint64_t size, uint64_t *end);
 static bool dts_ranges_overlap(uint64_t start_a, uint64_t size_a,
 	uint64_t start_b, uint64_t size_b);
+static uint32_t dts_required_u32_prop(const void *fdt, int32_t node,
+	const char *name);
 
 /* [20260714] ARM64 platform DTS ingestion
  *
@@ -698,6 +702,78 @@ static void dts_parse_ipc_channels(const void *fdt, int32_t platform)
 	}
 }
 
+static void dts_parse_rproc_channel(const void *fdt, int32_t node)
+{
+	struct arm64_vrproc_channel_config config;
+	const fdt32_t *endpoints;
+	const fdt32_t *doorbells;
+	const fdt32_t *virqs;
+	uint64_t channel_id;
+	uint64_t ignored_size;
+	int32_t len;
+	int32_t ret;
+
+	(void)memset(&config, 0U, sizeof(config));
+	dts_reg_by_index(fdt, node, 0U, &channel_id, &ignored_size);
+	if (channel_id > UINT32_MAX) {
+		arm64_dts_panic("rproc channel id", -EINVAL);
+	}
+	config.channel_id = (uint32_t)channel_id;
+
+	endpoints = fdt_getprop(fdt, node, "endpoint-vms", &len);
+	if ((endpoints == NULL) || (len != (int32_t)(2U * sizeof(fdt32_t)))) {
+		arm64_dts_panic("rproc endpoint-vms", -EINVAL);
+	}
+	if ((fdt32_to_cpu(endpoints[0]) > ARM64_DTS_UINT16_MAX) ||
+		(fdt32_to_cpu(endpoints[1]) > ARM64_DTS_UINT16_MAX)) {
+		arm64_dts_panic("rproc endpoint-vmid", -EINVAL);
+	}
+	config.endpoint_vmid[0] = (uint16_t)fdt32_to_cpu(endpoints[0]);
+	config.endpoint_vmid[1] = (uint16_t)fdt32_to_cpu(endpoints[1]);
+	config.shared_gpa = dts_u64_prop(fdt, node, "shared-gpa", 0UL);
+	config.shared_size = dts_required_u32_prop(fdt, node, "shared-size");
+	config.vring_num = dts_required_u32_prop(fdt, node, "vring-num");
+	config.vring_align = dts_required_u32_prop(fdt, node, "vring-align");
+
+	doorbells = fdt_getprop(fdt, node, "doorbell-gpas", &len);
+	if ((doorbells == NULL) || (len != (int32_t)(4U * sizeof(fdt32_t)))) {
+		arm64_dts_panic("rproc doorbell-gpas", -EINVAL);
+	}
+	config.doorbell_gpa[0] = ((uint64_t)fdt32_to_cpu(doorbells[0]) << 32U) |
+		fdt32_to_cpu(doorbells[1]);
+	config.doorbell_gpa[1] = ((uint64_t)fdt32_to_cpu(doorbells[2]) << 32U) |
+		fdt32_to_cpu(doorbells[3]);
+
+	virqs = fdt_getprop(fdt, node, "notify-virqs", &len);
+	if ((virqs == NULL) || (len != (int32_t)(2U * sizeof(fdt32_t)))) {
+		arm64_dts_panic("rproc notify-virqs", -EINVAL);
+	}
+	config.notify_virq[0] = fdt32_to_cpu(virqs[0]);
+	config.notify_virq[1] = fdt32_to_cpu(virqs[1]);
+
+	ret = arm64_vrproc_register_channel(&config);
+	if (ret != 0) {
+		arm64_dts_panic("rproc channel", ret);
+	}
+}
+
+static void dts_parse_rproc_channels(const void *fdt, int32_t platform)
+{
+	int32_t channels;
+	int32_t node;
+
+	channels = dts_child_by_unit_name(fdt, platform, "rproc-channels");
+	if (channels < 0) {
+		return;
+	}
+
+	fdt_for_each_subnode(node, fdt, channels) {
+		if (dts_has_compatible(fdt, node, "beau,static-rpmsg-channel")) {
+			dts_parse_rproc_channel(fdt, node);
+		}
+	}
+}
+
 static uint32_t dts_required_u32_prop(const void *fdt, int32_t node,
 	const char *name)
 {
@@ -861,6 +937,7 @@ void arm64_platform_dts_parse_info(const void *fdt, struct arm64_platform_dts_in
 	dts_parse_mmio_ranges(fdt, platform);
 	dts_parse_passthrough_policy(fdt, platform);
 	dts_parse_ipc_channels(fdt, platform);
+	dts_parse_rproc_channels(fdt, platform);
 }
 
 const struct arm64_mem_region *arm64_platform_dts_mmio_regions(uint32_t *count)

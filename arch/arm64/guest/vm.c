@@ -28,6 +28,7 @@
 #include <asm/guest/stage2.h>
 #include <asm/guest/vpl011.h>
 #include <asm/guest/vipc.h>
+#include <asm/guest/vrproc.h>
 #include <asm/guest/vsmmu.h>
 #include <asm/vtd.h>
 #include <virtio_console.h>
@@ -505,6 +506,164 @@ bool arm64_get_stage2_memory_attr(struct acrn_vm *vm, uint64_t ipa,
 	return true;
 }
 
+static uint64_t arm64_stage2_walk_index(enum _page_table_level level,
+	uint64_t ipa)
+{
+	uint64_t index;
+
+	switch (level) {
+	case PGT_LVL3:
+		index = pgtl3e_index(ipa);
+		break;
+	case PGT_LVL2:
+		index = pgtl2e_index(ipa);
+		break;
+	case PGT_LVL1:
+		index = pgtl1e_index(ipa);
+		break;
+	case PGT_LVL0:
+		index = pgtl0e_index(ipa);
+		break;
+	default:
+		index = 0UL;
+		break;
+	}
+
+	return index;
+}
+
+static bool arm64_stage2_walk_child_table(uint64_t descriptor,
+	uint64_t **table)
+{
+	uint64_t page_index;
+	uint64_t hpa = arch_pgtl_page_paddr(descriptor);
+	uint64_t *next = hpa2hva(hpa);
+
+	if ((next == NULL) || !arm64_stage2_page_index(next, &page_index)) {
+		return false;
+	}
+	*table = next;
+
+	return true;
+}
+
+static bool arm64_stage2_walk_set_leaf(struct arm64_stage2_walk *walk,
+	enum _page_table_level level, uint64_t descriptor)
+{
+	uint64_t range_size = get_level_size(level);
+	uint64_t hpa_base = arch_pgtl_page_paddr(descriptor);
+	uint64_t offset;
+
+	if ((range_size == 0UL) || (hpa_base >= ARM64_STAGE2_ADDRESS_LIMIT) ||
+		(range_size > (ARM64_STAGE2_ADDRESS_LIMIT - hpa_base))) {
+		return false;
+	}
+	offset = walk->ipa & (range_size - 1UL);
+	if (offset > (UINT64_MAX - hpa_base)) {
+		return false;
+	}
+	walk->leaf_level = (uint8_t)level;
+	walk->range_size = range_size;
+	walk->range_start = walk->ipa & ~(range_size - 1UL);
+	walk->hpa = hpa_base + offset;
+	walk->result = ARM64_STAGE2_WALK_MAPPED;
+
+	return true;
+}
+
+/* [20260722] Read-only Stage-2 walk snapshot
+ *
+ * shell IPA request -> stg2pt_lock -> copy validated L3..L0 descriptors
+ *                                      |
+ *                                      +--> invalid/unallocated child: malformed
+ *                                      |
+ *                                      v
+ *                              unlock -> format private snapshot
+ *
+ * Key rule:
+ *   - the VM owns root_stg2ptp and stg2pt_lock serializes the descriptor view;
+ *   - a dynamic map/unmap owner prevents a shell walk from sampling a
+ *     break-before-make invalidation window;
+ *   - every child HPA must resolve to an allocated Stage-2 pool page before it
+ *     is dereferenced, so a corrupt descriptor cannot redirect EL2 reads.
+ */
+int32_t arm64_stage2_walk(struct acrn_vm *vm, uint64_t ipa,
+	struct arm64_stage2_walk *walk)
+{
+	uint64_t page_index;
+	uint64_t *table;
+	enum _page_table_level level;
+	int32_t ret = 0;
+
+	if ((vm == NULL) || (walk == NULL) || (ipa >= ARM64_STAGE2_ADDRESS_LIMIT)) {
+		return -EINVAL;
+	}
+	if (vm->root_stg2ptp == NULL) {
+		return -ENODEV;
+	}
+	(void)memset(walk, 0U, sizeof(*walk));
+	walk->ipa = ipa;
+	walk->result = ARM64_STAGE2_WALK_MALFORMED;
+
+	spinlock_obtain(&vm->stg2pt_lock);
+	if (arm64_stage2_update_owner(vm) != 0UL) {
+		ret = -EBUSY;
+		goto out;
+	}
+	table = (uint64_t *)vm->root_stg2ptp;
+	if (!arm64_stage2_page_index(table, &page_index)) {
+		ret = -EFAULT;
+		goto out;
+	}
+	walk->vttbr = arm64_stage2_vttbr(vm);
+
+	for (level = PGT_LVL3; level <= PGT_LVL0;
+		level = (enum _page_table_level)((uint32_t)level + 1U)) {
+		struct arm64_stage2_walk_step *step =
+			&walk->step[walk->step_count];
+		uint64_t descriptor;
+		uint64_t type;
+
+		step->table_hpa = hva2hpa(table);
+		step->index = (uint16_t)arm64_stage2_walk_index(level, ipa);
+		step->level = (uint8_t)level;
+		descriptor = table[step->index];
+		step->descriptor = descriptor;
+		walk->step_count++;
+		walk->leaf_level = (uint8_t)level;
+
+		if (!stage2_pgentry_present(descriptor)) {
+			walk->leaf_level = (uint8_t)level;
+			walk->result = ARM64_STAGE2_WALK_UNMAPPED;
+			break;
+		}
+		type = descriptor & PAGE_DESC_TYPE_MASK;
+		if (level == PGT_LVL0) {
+			if ((type != PAGE_PAGE_DESC) ||
+				!arm64_stage2_walk_set_leaf(walk, level, descriptor)) {
+				walk->result = ARM64_STAGE2_WALK_MALFORMED;
+			}
+			break;
+		}
+		if (type == PAGE_BLOCK_DESC) {
+			if ((level == PGT_LVL3) ||
+				!arm64_stage2_walk_set_leaf(walk, level, descriptor)) {
+				walk->result = ARM64_STAGE2_WALK_MALFORMED;
+			}
+			break;
+		}
+		if ((type != PAGE_TABLE_DESC) ||
+			!arm64_stage2_walk_child_table(descriptor, &table)) {
+			walk->result = ARM64_STAGE2_WALK_MALFORMED;
+			break;
+		}
+	}
+
+out:
+	spinlock_release(&vm->stg2pt_lock);
+	return ret;
+}
+
 static bool arm64_vm_uses_virtio_console(const struct acrn_vm_config *vm_config)
 {
 	/*
@@ -514,7 +673,7 @@ static bool arm64_vm_uses_virtio_console(const struct acrn_vm_config *vm_config)
 	 *   Linux -> virtio-console frontend when the platform provides it
 	 *
 	 * The guest-facing frontend is strict, while both paths share the BEAU
-	 * console ring and vcon backend after bytes leave the device model.
+	 * console ring and vsh backend after bytes leave the device model.
 	 */
 	return (vm_config->os_config.os_family == VM_OS_LINUX) &&
 		(vm_config->arch.guest_virtio_console_size != 0UL);
@@ -834,6 +993,7 @@ int32_t arch_init_vm(struct acrn_vm *vm, struct acrn_vm_config *vm_config)
 			vm->vm_id);
 	}
 	arm64_vipc_init_vm(vm);
+	arm64_vrproc_init_vm(vm);
 	if (arm64_vm_uses_virtio_console(vm_config)) {
 		virtio_console_init_vm(vm);
 	} else {
@@ -846,6 +1006,7 @@ int32_t arch_init_vm(struct acrn_vm *vm, struct acrn_vm_config *vm_config)
 		panic("failed to initialize arm64 vPCI for vm%u", vm->vm_id);
 	}
 	register_arm64_vio_mmio(vm);
+	arm64_vrproc_register_mmio(vm);
 	arm64_vm_log_boot_vdevs(vm, vm_config);
 
 	if (is_static_configured_vm(vm) && (vm_config->fdt_config.fdt_mod_tag[0] == '\0')) {
