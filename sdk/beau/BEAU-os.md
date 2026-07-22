@@ -985,7 +985,7 @@ ARM64 dispatcher 自身也是权限表：
 VM0 Zephyr OpenAMP remote 与 VM3 Linux `RPROC_DETACHED` attach-only remoteproc；
 guest DTS 的 `GIC_SPI 48/49` 对应 EL2 注入的 GIC INTID `80/81`。
 Linux attach 会创建标准 virtio-rpmsg bus；它不能加载 firmware、启动、停止或复位
-VM0。`rprocstat` 用于查看映射、kick、IRQ 与拒绝访问统计。
+VM0。`ipcstat` 用于查看 HVC IPC 与 remoteproc 的映射、kick、IRQ 和拒绝访问统计。
 
 QEMU DTS 当前定义 VM0 与 VM3 的 channel 0，GPA `0x0b100000`，共享区为
 `0x100000` 字节，vring 参数为 `256/0x1000`。每个 channel 有两条单生产者/单消费者 ring：
@@ -1265,8 +1265,8 @@ performance policy，并选最大 P-state。QEMU 和 rk356x platform backend 目
 host shell 无输入时保持 blocked。首次输入发现延迟由 2 ms timer 周期限定；唤醒后
 最多连续处理 64 字节，再重新经过 scheduler，以限制单次 console service 时间。
 
-`sdk/bsp/shell.c` 提供行编辑、历史、Tab completion、异步输出保护和 common command；
-`sdk/bsp/arm64/shell.c` 提供架构诊断命令。
+`sdk/bsp/shell.c` 提供行编辑、历史、Tab completion、异步输出保护和命令分发；
+`sdk/bsp/cmds/` 按功能提供 common 和架构诊断命令。
 
 ### 18.2 命令参考
 
@@ -1276,7 +1276,6 @@ host shell 无输入时保持 blocked。首次输入发现延迟由 2 ms timer �
 | `clear` | 清屏 |
 | `symtab` | 查看运行时符号表 |
 | `loglevel [console [mem [npk]]]` | 修改 0..6 日志级别 |
-| `hmm <addr> <len>` | dump host memory |
 | `vcpus` | 列出 vCPU、pCPU、状态和 switch 信息 |
 | `ps` | scheduler thread 状态、current owner 和相邻命令间 CPU% |
 | `schedstat` | pCPU policy、busy%、runqueue、BVT/CBS 统计 |
@@ -1290,8 +1289,7 @@ host shell 无输入时保持 blocked。首次输入发现延迟由 2 ms timer �
 | `coredump <print\|erase>` | 查看或清除最近一次 ARM64 panic/异常快照 |
 | `vmstat` | VM 配置、状态、affinity、boot、timer、WDT |
 | `cachestat` | cache topology 和 LLC domain |
-| `ipcstat` | IPC channel、ring、notify/ack/drop |
-| `rprocstat` | static remoteproc/rpmsg channel、doorbell、vIRQ 和拒绝计数 |
+| `ipcstat` | HVC IPC channel、ring、notify/ack/drop，以及 static remoteproc/rpmsg channel、doorbell、vIRQ 和拒绝计数 |
 | `virtiostat` | proxy device、queue、backend、吞吐和延迟 |
 | `smmustat` | SMMU/ITS queue、STE、event fault |
 | `pcistat` | host/vPCI/BAR/MSI-X/StreamID ownership |
@@ -1573,9 +1571,10 @@ virtiostat
 smmustat
 ```
 
-检查当前 epoch、phase、completed hook mask、gated/active/frozen/wake-owned vCPU mask、
-I/O gate、last error 和 phase duration。`PM_FAILED` 表示恢复隔离无法证明，不应强行
-解冻客体。
+检查当前 epoch、phase、completed hook mask、I/O gate、last error 和 phase duration。
+`pmstat` 使用 box-drawing 框架按列输出 VM 基本状态；全部 vCPU mask 为零时显示
+`vCPU masks: none`，否则以两张对齐表完整显示 gated/active 和 frozen/wake-owned mask。
+`PM_FAILED` 表示恢复隔离无法证明，不应强行解冻客体。
 
 ## 23. 当前实现边界
 
@@ -1665,7 +1664,7 @@ core/vm_wdt.c
 core/pm.c
 arch/arm64/pm.c
 sdk/bsp/pm.c
-sdk/bsp/arm64/shell.c
+sdk/bsp/cmds/shell_pm.c
 ```
 
 目标：能用 `schedstat/hwtdbg/health/pmstat` 给出有代码证据的故障判断。

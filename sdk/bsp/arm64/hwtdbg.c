@@ -1484,7 +1484,7 @@ int32_t shell_hwtdbg(int32_t argc, char **argv)
 		char line[MAX_STR_SIZE];
 
 		(void)snprintf(line, sizeof(line),
-			"hwtdbg: vm%hu has no retained watchdog timeout event\r\n", vm_id);
+			"HWTDBG: vm%hu has no retained watchdog timeout event\r\n", vm_id);
 		shell_puts(line);
 		return 0;
 	}
@@ -1492,7 +1492,7 @@ int32_t shell_hwtdbg(int32_t argc, char **argv)
 		char line[MAX_STR_SIZE];
 
 		(void)snprintf(line, sizeof(line),
-			"hwtdbg: vm%hu latest event is checksum-invalid\r\n", vm_id);
+			"HWTDBG: vm%hu latest event is checksum-invalid\r\n", vm_id);
 		shell_puts(line);
 		return -EIO;
 	}

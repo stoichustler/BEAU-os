@@ -6,6 +6,7 @@ FILE_PATH := $(dir $(MKFL_NAME))
 SRCS += $(filter-out $(FILE_PATH)/ns16550.c $(FILE_PATH)/pl011.c,$(wildcard $(FILE_PATH)/*.c))
 SRCS += $(FILE_PATH)/pl011.c
 SRCS += $(wildcard $(FILE_PATH)/arm64/*.c)
+SRCS += $(wildcard $(FILE_PATH)/cmds/*.c)
 SRCS += $(wildcard $(FILE_PATH)/virtio/*.c)
 SRCS += $(wildcard $(FILE_PATH)/pci/*.c)
 SRCS += $(FILE_PATH)/vpci/vpci_core.c
