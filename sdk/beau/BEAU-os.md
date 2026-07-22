@@ -175,7 +175,10 @@ Kconfig + platform Bconfig
         |
         +--> out/<platform>_out/configs/.config
         +--> generated/autoconf.h
-        +--> arm64_platform_config.h
+        +--> bconfig.h
+sdk/imgs
+        |
+        +--> bimage.h
         |
 platform.dts --cpp/dtc--> platform.dtb --incbin--+
 guest images / guest DTBs -----------------------+--> platform.o

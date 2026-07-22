@@ -51,7 +51,7 @@ STATIC_ARM64_PLATFORM := $(if $(filter arm64,$(ARCH)),$(if $(filter qemu rk356x,
 ifeq ($(STATIC_ARM64_PLATFORM),y)
 CROSS_COMPILE := aarch64-none-elf-
 HV_CONFIG_DIR := $(HV_OBJDIR)/configs
-HV_CONFIG_H := $(HV_OBJDIR)/include/arm64_platform_config.h
+HV_CONFIG_H := $(HV_OBJDIR)/include/bconfig.h
 HV_AUTOCONF_H := $(HV_OBJDIR)/include/generated/autoconf.h
 HV_CONFIG_MK := $(HV_CONFIG_DIR)/config.mk
 HV_DOTCONFIG := $(HV_CONFIG_DIR)/.config
@@ -375,18 +375,18 @@ LIB_MK = sdk/bsp/Makefile
 DISTCLEAN_OBJS := $(shell find $(BASEDIR) -name '*.o')
 VERSION := $(HV_OBJDIR)/include/version.h
 BANNER_H := $(HV_OBJDIR)/include/banner.h
-LINUX_IMAGE_SIZE_H :=
+BIMAGE_H :=
 ifeq ($(STATIC_ARM64_PLATFORM),y)
-LINUX_IMAGE_SIZE_H := $(HV_OBJDIR)/include/linux_image_sizes.h
+BIMAGE_H := $(HV_OBJDIR)/include/bimage.h
 endif
-HEADERS := $(VERSION) $(BANNER_H) $(HV_CONFIG_H) $(HV_CONFIG_TIMESTAMP) $(LINUX_IMAGE_SIZE_H) $(KCONFIG_CLI_SYNC_TARGET)
+HEADERS := $(VERSION) $(BANNER_H) $(HV_CONFIG_H) $(HV_CONFIG_TIMESTAMP) $(BIMAGE_H) $(KCONFIG_CLI_SYNC_TARGET)
 
 ifeq ($(STATIC_ARM64_PLATFORM),y)
 define WRITE_CONFIG_HEADER
 	$(Q){ \
 		echo "/* Auto-generated wrapper around Kconfiglib autoconf.h. */"; \
-		echo "#ifndef ARM64_PLATFORM_CONFIG_H"; \
-		echo "#define ARM64_PLATFORM_CONFIG_H"; \
+		echo "#ifndef BCONFIG_H"; \
+		echo "#define BCONFIG_H"; \
 		echo ""; \
 		echo "#include <generated/autoconf.h>"; \
 		echo ""; \
@@ -411,7 +411,7 @@ define WRITE_CONFIG_HEADER
 		echo "#define MAX_VUART_NUM_PER_VM CONFIG_MAX_VUART_NUM_PER_VM"; \
 		echo "#define RTVM_SEVERITY_LEVEL CONFIG_RTVM_SEVERITY_LEVEL"; \
 		echo ""; \
-		echo "#endif /* ARM64_PLATFORM_CONFIG_H */"; \
+		echo "#endif /* BCONFIG_H */"; \
 	} > $(HV_CONFIG_H)
 endef
 
@@ -492,20 +492,20 @@ menuconfig: | $(HV_CONFIG_DIR) $(HV_KCONFIG_DEPS_DIR) $(HV_OBJDIR)/include/gener
 	$(Q)KCONFIG_CONFIG=$(HV_DOTCONFIG) python3 $(HV_KCONFIG_MENUCONFIG) $(HV_KCONFIG)
 	$(Q)$(MAKE) syncconfig ARCH=$(ARCH) PLATFORM=$(PLATFORM) HV_OBJDIR=$(HV_OBJDIR)
 
-ifneq ($(LINUX_IMAGE_SIZE_H),)
-$(LINUX_IMAGE_SIZE_H): Makefile $(LINUX_VM2_IMAGE) $(LINUX_VM3_IMAGE) $(LINUX_INITRAMFS) | $(HV_OBJDIR)/include
+ifneq ($(BIMAGE_H),)
+$(BIMAGE_H): Makefile $(LINUX_VM2_IMAGE) $(LINUX_VM3_IMAGE) $(LINUX_INITRAMFS) | $(HV_OBJDIR)/include
 	@echo "IMGS               $(notdir $@)"
 	@{ \
 		vm2_image_size=$$(stat -c %s $(LINUX_VM2_IMAGE)); \
 		vm3_image_size=$$(stat -c %s $(LINUX_VM3_IMAGE)); \
 		initramfs_size=$$(stat -c %s $(LINUX_INITRAMFS)); \
 		echo "/* Auto-generated from sdk/imgs. */"; \
-		echo "#ifndef LINUX_IMAGE_SIZES_H"; \
-		echo "#define LINUX_IMAGE_SIZES_H"; \
+		echo "#ifndef BIMAGE_H"; \
+		echo "#define BIMAGE_H"; \
 		echo "#define BEAU_LINUX_VM2_IMAGE_SIZE $${vm2_image_size}U"; \
 		echo "#define BEAU_LINUX_VM3_IMAGE_SIZE $${vm3_image_size}U"; \
 		echo "#define BEAU_LINUX_INITRAMFS_SIZE $${initramfs_size}U"; \
-		echo "#endif /* LINUX_IMAGE_SIZES_H */"; \
+		echo "#endif /* BIMAGE_H */"; \
 	} > $@
 
 $(HV_OBJDIR)/include $(HV_OBJDIR)/include/generated:

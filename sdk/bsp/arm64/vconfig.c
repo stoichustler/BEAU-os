@@ -11,7 +11,7 @@
 #include <rtl.h>
 #include <arm64_platform_dts.h>
 
-#include "linux_image_sizes.h"
+#include "bimage.h"
 
 extern const uint8_t arm64_lk_image_start[];
 extern const uint8_t arm64_lk_image_size[];
