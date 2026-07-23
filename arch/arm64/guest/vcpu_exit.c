@@ -956,6 +956,17 @@ static int32_t handle_wfx(struct acrn_vcpu *vcpu)
 	return 0;
 }
 
+static enum hwtdbg_guest_fault_reason vcpu_exit_fault_reason(uint64_t ec)
+{
+	if (ec == ESR_EL2_EC_IABT_LOW) {
+		return HWTDBG_GUEST_FAULT_IABT;
+	}
+	if (ec == ESR_EL2_EC_SERROR) {
+		return HWTDBG_GUEST_FAULT_SERROR;
+	}
+	return HWTDBG_GUEST_FAULT_UNHANDLED_EXIT;
+}
+
 int32_t vcpu_exit_handler(struct acrn_vcpu *vcpu)
 {
 	uint64_t ec = ESR_EL2_EC(vcpu->arch.regs.esr);
@@ -1006,6 +1017,7 @@ int32_t vcpu_exit_handler(struct acrn_vcpu *vcpu)
 	LOG_ERR("unhandled arm64 vcpu exit vm%u:vcpu%u ec=0x%lx esr=0x%lx elr=0x%lx far=0x%lx hpfar=0x%lx",
 		vcpu->vm->vm_id, vcpu->vcpu_id, ec, vcpu->arch.regs.esr,
 		vcpu->arch.regs.elr, vcpu->arch.regs.far, vcpu->arch.regs.hpfar);
+	hwtdbg_capture_guest_fault(vcpu, vcpu_exit_fault_reason(ec), ret);
 	return -EINVAL;
 }
 

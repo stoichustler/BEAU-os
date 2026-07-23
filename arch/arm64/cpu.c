@@ -13,8 +13,7 @@
 #include <logmsg.h>
 #include <asm/sysreg.h>
 #include <asm/psci.h>
-
-static uint64_t dt_mpidrs[MAX_PCPU_NUM];
+#include <asm/platform.h>
 
 extern void _start_secondary_psci(uint64_t phy_stack_addr);
 
@@ -33,27 +32,27 @@ uint16_t arch_get_pcpu_num(void)
 void init_percpu_mpidr(uint64_t bsp_mpidr)
 {
 	uint16_t i;
-	uint16_t idx = 0U;
 	uint64_t bsp_aff = bsp_mpidr & MPIDR_AFFINITY_MASK;
 
-	for (i = 0U; i < MAX_PCPU_NUM; i++) {
-		dt_mpidrs[i] = i;
+	/* [20260724] Topology-owned MPIDR mapping
+	 *
+	 * embedded DTS CPU reg -> immutable topology snapshot -> PSCI CPU_ON target
+	 *
+	 * Key rule:
+	 *   - platform DTS owns pCPU order and MPIDR identity before per-CPU state;
+	 *   - BSP must be CPU0 in the authored static platform topology;
+	 *   - reject a mismatch instead of renumbering APs, which would start a
+	 *     wrong cluster on heterogeneous systems.
+	 */
+	if (!beau_config.cpu_topology_valid ||
+		(beau_config.cpu_topology_count != MAX_PCPU_NUM) ||
+		((beau_config.cpu_topology[BSP_CPU_ID].mpidr & MPIDR_AFFINITY_MASK) != bsp_aff)) {
+		panic("invalid arm64 dts BSP MPIDR topology");
 	}
 
-	i = 0U;
-	while (i < MAX_PCPU_NUM) {
-		if (i == BSP_CPU_ID) {
-			per_cpu(arch.mpidr, i) = bsp_aff;
-			i++;
-		} else if (idx < MAX_PCPU_NUM) {
-			if ((dt_mpidrs[idx] & MPIDR_AFFINITY_MASK) != bsp_aff) {
-				per_cpu(arch.mpidr, i) = dt_mpidrs[idx] & MPIDR_AFFINITY_MASK;
-				i++;
-			}
-			idx++;
-		} else {
-			panic("bsp mpidr is not unique!");
-		}
+	for (i = 0U; i < MAX_PCPU_NUM; i++) {
+		per_cpu(arch.mpidr, i) = beau_config.cpu_topology[i].mpidr &
+			MPIDR_AFFINITY_MASK;
 	}
 }
 

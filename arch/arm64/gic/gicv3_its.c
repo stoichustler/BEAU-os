@@ -304,7 +304,7 @@ static int32_t beau_gicv3_its_issue_cmd(const uint64_t cmd[4])
 	beau_gicv3_its_cmdq[idx][1] = cmd[1];
 	beau_gicv3_its_cmdq[idx][2] = cmd[2];
 	beau_gicv3_its_cmdq[idx][3] = cmd[3];
-	flush_cache_range(beau_gicv3_its_cmdq[idx], sizeof(beau_gicv3_its_cmdq[idx]));
+	clean_cache_range(beau_gicv3_its_cmdq[idx], sizeof(beau_gicv3_its_cmdq[idx]));
 
 	beau_gits_write_8(GITS_CWRITER, next);
 	beau_gicv3_its_cmd_issued++;
@@ -409,7 +409,7 @@ static void beau_gicv3_its_set_lpi_enabled(uint32_t lpi, bool enabled)
 			conf |= LPI_CONF_ENABLE;
 		}
 		beau_gicv3_its_lpi_cfg[idx] = conf;
-		flush_cache_range(&beau_gicv3_its_lpi_cfg[idx],
+		clean_cache_range(&beau_gicv3_its_lpi_cfg[idx],
 			sizeof(beau_gicv3_its_lpi_cfg[idx]));
 	}
 }
@@ -427,7 +427,7 @@ static int32_t beau_gicv3_its_program_baser(uint32_t type, void *table,
 	}
 
 	(void)memset(table, 0U, (size_t)size);
-	flush_cache_range(table, size);
+	clean_cache_range(table, size);
 
 	val = old & (GITS_BASER_TYPE_MASK | GITS_BASER_ESIZE_MASK);
 	val |= GITS_BASER_VALID;
@@ -451,7 +451,7 @@ static int32_t beau_gicv3_its_program_cmdq(void)
 	uint64_t cbaser;
 
 	(void)memset(beau_gicv3_its_cmdq, 0U, sizeof(beau_gicv3_its_cmdq));
-	flush_cache_range(beau_gicv3_its_cmdq, sizeof(beau_gicv3_its_cmdq));
+	clean_cache_range(beau_gicv3_its_cmdq, sizeof(beau_gicv3_its_cmdq));
 	beau_gicv3_its_cmdq_writer = 0U;
 
 	cbaser = GITS_CBASER_VALID;
@@ -493,8 +493,8 @@ static int32_t beau_gicv3_its_enable_lpis(void)
 		sizeof(beau_gicv3_its_lpi_cfg));
 	(void)memset(beau_gicv3_its_lpi_pending, 0U,
 		sizeof(beau_gicv3_its_lpi_pending));
-	flush_cache_range(beau_gicv3_its_lpi_cfg, sizeof(beau_gicv3_its_lpi_cfg));
-	flush_cache_range(beau_gicv3_its_lpi_pending, sizeof(beau_gicv3_its_lpi_pending));
+	clean_cache_range(beau_gicv3_its_lpi_cfg, sizeof(beau_gicv3_its_lpi_cfg));
+	clean_cache_range(beau_gicv3_its_lpi_pending, sizeof(beau_gicv3_its_lpi_pending));
 
 	propbaser = hva2hpa(beau_gicv3_its_lpi_cfg) & GICR_PROPBASER_PA_MASK;
 	propbaser |= (BEAU_GICV3_ITS_LPI_IDBITS - 1UL) & GICR_PROPBASER_IDBITS_MASK;
@@ -591,7 +591,7 @@ static struct beau_gicv3_its_device *beau_gicv3_its_alloc_dev(uint32_t dev_id)
 			beau_gicv3_its_devs[idx].event_count = 0U;
 			(void)memset(beau_gicv3_its_itt[idx], 0U,
 				sizeof(beau_gicv3_its_itt[idx]));
-			flush_cache_range(beau_gicv3_its_itt[idx],
+			clean_cache_range(beau_gicv3_its_itt[idx],
 				sizeof(beau_gicv3_its_itt[idx]));
 			return &beau_gicv3_its_devs[idx];
 		}

@@ -110,12 +110,34 @@ enum vm_state {
 	VM_PAUSED,	/* VM paused */
 };
 
+enum vm_lifecycle_phase {
+	VM_LIFECYCLE_OFF = 0U,
+	VM_LIFECYCLE_CREATING,
+	VM_LIFECYCLE_CREATED,
+	VM_LIFECYCLE_PREPARING,
+	VM_LIFECYCLE_STARTING,
+	VM_LIFECYCLE_RUNNING,
+	VM_LIFECYCLE_QUIESCING,
+	VM_LIFECYCLE_RESETTING,
+	VM_LIFECYCLE_FAILED,
+	VM_LIFECYCLE_DESTROYING,
+};
+
+struct vm_lifecycle {
+	uint64_t generation;
+	uint64_t reset_generation;
+	int32_t last_error;
+	uint16_t phase;
+	uint16_t failed_phase;
+};
+
 struct acrn_vm {
 	struct vm_arch arch_vm; /* Reference to this VM's arch information */
 	struct vm_hw_info hw;	/* Reference to this VM's HW information */
 	struct vm_sw_info sw;	/* Reference to SW associated with this VM */
 	uint16_t vm_id;		    /* Virtual machine identifier */
 	enum vm_state state;	/* VM state */
+	struct vm_lifecycle lifecycle;
 	struct acrn_vuart vuart[MAX_VUART_NUM_PER_VM];		/* Virtual UART */
 	struct asyncio_desc	aio_desc[ACRN_ASYNCIO_MAX];
 	struct list_head aiodesc_queue;
@@ -183,6 +205,7 @@ static inline struct acrn_vcpu *vcpu_from_pid(struct acrn_vm *vm, uint16_t pcpu_
 struct acrn_vm *get_vm_from_vmid(__unused uint16_t vm_id);
 
 bool is_paused_vm(__unused const struct acrn_vm *vm);
+const char *vm_lifecycle_phase_name(uint16_t phase);
 
 bool is_poweroff_vm(__unused const struct acrn_vm *vm);
 

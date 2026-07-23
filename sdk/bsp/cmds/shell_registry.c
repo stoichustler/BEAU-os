@@ -43,6 +43,7 @@ struct shell_cmd shell_arch_cmds[] = {
 	CMD("kusg", NULL, "list BEAU static memory usage in KB", shell_kusg),
 	CMD("health", NULL, "summarize current host and VM operational health", shell_health),
 	CMD("hwtdbg", "<vmid>", "show retained VM watchdog minidump", shell_hwtdbg),
+	CMD("crash", "<vmid> [erase]", "show or erase the latest retained VM crash", shell_crash),
 	CMD("coredump", "<print|erase>", "print or erase the latest ARM64 coredump", shell_coredump),
 	CMD("vmstat", NULL, "list arm64 vm state", shell_vmstat),
 	CMD("cachestat", NULL, "list arm64 host cache and LLC domains", shell_cachestat),

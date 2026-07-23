@@ -57,6 +57,7 @@ struct arm64_platform_dts_info {
 
 void arm64_platform_dts_parse_info(const void *fdt,
 	struct arm64_platform_dts_info *info);
+void arm64_platform_dts_parse_cpu_topology(const void *fdt);
 const struct arm64_mem_region *arm64_platform_dts_mmio_regions(uint32_t *count);
 void arm64_platform_dts_parse_board(const void *fdt,
 	const struct arm64_platform_dts_info *info);

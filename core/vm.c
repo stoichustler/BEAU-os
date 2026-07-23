@@ -190,6 +190,41 @@ void put_vm_lock(struct acrn_vm *vm)
 {
 	spinlock_release(&vm->vm_state_lock);
 }
+
+const char *vm_lifecycle_phase_name(uint16_t phase)
+{
+	static const char *const names[] = {
+		"off", "creating", "created", "preparing", "starting", "running",
+		"quiescing", "resetting", "failed", "destroying",
+	};
+
+	return (phase < ARRAY_SIZE(names)) ? names[phase] : "invalid";
+}
+
+static uint64_t vm_lifecycle_begin_locked(struct acrn_vm *vm, uint16_t phase)
+{
+	vm->lifecycle.generation++;
+	if (vm->lifecycle.generation == 0UL) {
+		vm->lifecycle.generation = 1UL;
+	}
+	vm->lifecycle.phase = phase;
+	vm->lifecycle.last_error = 0;
+	return vm->lifecycle.generation;
+}
+
+static void vm_lifecycle_commit_locked(struct acrn_vm *vm, uint16_t phase,
+	enum vm_state state)
+{
+	vm->lifecycle.phase = phase;
+	vm->state = state;
+}
+
+static void vm_lifecycle_fail_locked(struct acrn_vm *vm, int32_t error)
+{
+	vm->lifecycle.failed_phase = vm->lifecycle.phase;
+	vm->lifecycle.last_error = error;
+	vm->lifecycle.phase = VM_LIFECYCLE_FAILED;
+}
 bool is_paused_vm(const struct acrn_vm *vm)
 {
 	return (vm->state == VM_PAUSED);
@@ -480,11 +515,16 @@ void start_vm(struct acrn_vm *vm)
 {
 	struct acrn_vcpu *vcpu = vcpu_from_vid(vm, BSP_CPU_ID);
 
+	if (vm->lifecycle.phase != VM_LIFECYCLE_CREATED) {
+		return;
+	}
+	vm->lifecycle.phase = VM_LIFECYCLE_STARTING;
 	vm_wdt_reset(vm);
 	arch_vm_prepare_bsp(vcpu);
 	if (launch_vcpu(vcpu)) {
-		vm->state = VM_RUNNING;
+		vm_lifecycle_commit_locked(vm, VM_LIFECYCLE_RUNNING, VM_RUNNING);
 	} else {
+		vm_lifecycle_fail_locked(vm, -EBUSY);
 		LOG_ERR("VM%u: BSP launch from %s denied", vm->vm_id,
 			vcpu_state_to_str(vcpu_get_state(vcpu)));
 	}
@@ -501,7 +541,7 @@ void pause_vm(struct acrn_vm *vm)
 		foreach_vcpu(i, vm, vcpu) {
 			pause_vcpu_sync(vcpu);
 		}
-		vm->state = VM_PAUSED;
+		vm_lifecycle_commit_locked(vm, VM_LIFECYCLE_QUIESCING, VM_PAUSED);
 	}
 }
 
@@ -521,6 +561,9 @@ uint64_t pause_vm_async(struct acrn_vm *vm, uint64_t generation)
 		(vm->state == VM_READY_TO_POWEROFF) || (vm->state == VM_CREATED))) {
 		return ~0UL;
 	}
+	if (vm->lifecycle.phase == VM_LIFECYCLE_RUNNING) {
+		(void)vm_lifecycle_begin_locked(vm, VM_LIFECYCLE_QUIESCING);
+	}
 
 	foreach_vcpu(i, vm, vcpu) {
 		(void)request_vcpu_quiesce(vcpu, generation);
@@ -531,7 +574,7 @@ uint64_t pause_vm_async(struct acrn_vm *vm, uint64_t generation)
 		}
 	}
 	if (pending_vcpus == 0UL) {
-		vm->state = VM_PAUSED;
+		vm_lifecycle_commit_locked(vm, VM_LIFECYCLE_QUIESCING, VM_PAUSED);
 	}
 
 	return pending_vcpus;
@@ -544,7 +587,7 @@ int32_t destroy_vm(struct acrn_vm *vm)
 	struct acrn_vm_config *vm_config = NULL;
 	struct acrn_vcpu *vcpu = NULL;
 
-	vm->state = VM_POWERED_OFF;
+	vm->lifecycle.phase = VM_LIFECYCLE_DESTROYING;
 	vm_wdt_reset(vm);
 
 	if (is_service_vm(vm)) {
@@ -562,6 +605,7 @@ int32_t destroy_vm(struct acrn_vm *vm)
 	if (!is_static_configured_vm(vm)) {
 		memset(vm_config->name, 0U, MAX_VM_NAME_LEN);
 	}
+	vm_lifecycle_commit_locked(vm, VM_LIFECYCLE_OFF, VM_POWERED_OFF);
 
 	return ret;
 }
@@ -592,6 +636,8 @@ int32_t create_vm(uint16_t vm_id, uint64_t pcpu_bitmap, struct acrn_vm_config *v
 
 	spinlock_init(&vm->stg2pt_lock);
 	spinlock_init(&vm->emul_mmio_lock);
+	(void)memset(&vm->lifecycle, 0U, sizeof(vm->lifecycle));
+	(void)vm_lifecycle_begin_locked(vm, VM_LIFECYCLE_CREATING);
 	vm->nr_emul_mmio_regions = 0U;
 
 	status = arch_init_vm(vm, vm_config);
@@ -602,10 +648,12 @@ int32_t create_vm(uint16_t vm_id, uint64_t pcpu_bitmap, struct acrn_vm_config *v
 	}
 
 	if (status == 0) {
-		vm->state = VM_CREATED;
+		vm_lifecycle_commit_locked(vm, VM_LIFECYCLE_CREATED, VM_CREATED);
 
 		/* Populate return VM handle */
 		*rtn_vm = vm;
+	} else {
+		vm_lifecycle_fail_locked(vm, status);
 	}
 
 	return status;
@@ -615,12 +663,16 @@ int32_t reset_vm(struct acrn_vm *vm)
 {
 	int32_t ret = -1;
 
-	if (vm != NULL) {
-		ai_sched_invalidate_vm(vm->vm_id);
+	if (vm == NULL) {
+		return ret;
 	}
+	ai_sched_invalidate_vm(vm->vm_id);
+	(void)vm_lifecycle_begin_locked(vm, VM_LIFECYCLE_RESETTING);
 	ret = arch_reset_vm(vm);
 	if (ret == 0) {
-		vm->state = VM_CREATED;
+		vm_lifecycle_commit_locked(vm, VM_LIFECYCLE_CREATED, VM_CREATED);
+	} else {
+		vm_lifecycle_fail_locked(vm, ret);
 	}
 
 	return ret;
@@ -729,6 +781,19 @@ static int32_t make_reset_vm_request_internal(uint16_t pcpu_id,
 
 	vm = get_vm_from_vmid(vm_id);
 	if ((vm != NULL) && !is_poweroff_vm(vm) && !is_service_vm(vm)) {
+		get_vm_lock(vm);
+		if ((vm->lifecycle.phase == VM_LIFECYCLE_RUNNING) ||
+			(vm->lifecycle.phase == VM_LIFECYCLE_CREATED)) {
+			(void)vm_lifecycle_begin_locked(vm, VM_LIFECYCLE_QUIESCING);
+		}
+		if (vm->lifecycle.phase == VM_LIFECYCLE_QUIESCING) {
+			vm->lifecycle.reset_generation = vm->lifecycle.generation;
+		} else {
+			put_vm_lock(vm);
+			hv_pm_end_vm_topology_change(vm_id);
+			return -EBUSY;
+		}
+		put_vm_lock(vm);
 		if (wdt_owned) {
 			bitmap_set(vm_id, &per_cpu(wdt_reset_vm_bitmap, pcpu_id));
 			cpu_write_memory_barrier();
@@ -803,7 +868,12 @@ void reset_vm_from_idle(uint16_t pcpu_id)
 		wdt_owned = bitmap_test_and_clear(vm_id, wdt_vms);
 		vm = get_vm_from_vmid(vm_id);
 		get_vm_lock(vm);
-		reset_ret = restart_vm_locked(vm, true);
+		if ((vm->lifecycle.phase != VM_LIFECYCLE_QUIESCING) ||
+			(vm->lifecycle.reset_generation != vm->lifecycle.generation)) {
+			reset_ret = -EBUSY;
+		} else {
+			reset_ret = restart_vm_locked(vm, true);
+		}
 		put_vm_lock(vm);
 		bitmap_clear(vm_id, vms);
 		hv_pm_end_vm_topology_change(vm_id);

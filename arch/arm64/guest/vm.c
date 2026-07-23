@@ -120,7 +120,7 @@ static bool stage2_large_page_support(enum _page_table_level level, __unused uin
 
 static void stage2_flush_cache_pagewalk(const void *entry)
 {
-	flush_cacheline(entry);
+	clean_cacheline(entry);
 }
 
 static uint64_t stage2_pgentry_present(uint64_t pte)

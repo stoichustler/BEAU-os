@@ -28,6 +28,7 @@
 #include <asm/guest/vcpu.h>
 #include <asm/guest/stage2.h>
 #include <asm/sysreg.h>
+#include <asm/trap.h>
 #include "../shell_priv.h"
 
 #define HWTDBG_MAGIC			0x48575444U
@@ -35,6 +36,9 @@
 #define HWTDBG_EVENT_SLOTS		4U
 #define HWTDBG_RAS_MAGIC		0x48575241U
 #define HWTDBG_RAS_EVENT_SLOTS		4U
+#define HWTDBG_FAULT_MAGIC		0x48574654U
+#define HWTDBG_FAULT_VERSION		1U
+#define HWTDBG_FAULT_EVENT_SLOTS	2U
 #define HWTDBG_INVALID_ID		0xffffU
 #define HWTDBG_RAS_RECORD_GPA_VALID	(1U << 2U)
 #define HWTDBG_STACK_DEPTH		16U
@@ -163,6 +167,27 @@ struct hwtdbg_ras_event {
 	struct hwtdbg_vcpu_snapshot vcpu;
 };
 
+struct hwtdbg_fault_event {
+	uint32_t magic;
+	uint16_t version;
+	uint16_t vm_id;
+	uint32_t checksum;
+	bool valid;
+	uint16_t vcpu_id;
+	uint16_t pcpu_id;
+	enum hwtdbg_guest_fault_reason reason;
+	int32_t exit_ret;
+	uint64_t sequence;
+	uint64_t captured_tsc;
+	enum vm_state vm_state;
+	enum vcpu_state vcpu_state;
+	enum thread_object_state thread_state;
+	bool wdt_valid;
+	struct vm_wdt_snapshot wdt;
+	struct cpu_regs regs;
+	struct arm64_vcpu_guest_ctx gctx;
+};
+
 struct hwtdbg_live_mailbox {
 	uint64_t publish_version;
 	struct hwtdbg_vcpu_snapshot result;
@@ -200,6 +225,12 @@ static struct hwtdbg_ras_event
 static uint8_t hwtdbg_ras_next_slot[MAX_PCPU_NUM];
 static uint64_t hwtdbg_ras_next_sequence;
 static struct hwtdbg_ras_event hwtdbg_ras_readback;
+static struct hwtdbg_fault_event
+	hwtdbg_fault_events[CONFIG_MAX_VM_NUM][HWTDBG_FAULT_EVENT_SLOTS];
+static uint8_t hwtdbg_fault_next_slot[CONFIG_MAX_VM_NUM];
+static spinlock_t hwtdbg_fault_locks[CONFIG_MAX_VM_NUM];
+static uint64_t hwtdbg_fault_next_sequence;
+static struct hwtdbg_fault_event hwtdbg_fault_readback;
 
 static bool hwtdbg_range_contains(uint64_t start, uint64_t end,
 	uint64_t address, uint64_t bytes)
@@ -602,6 +633,29 @@ static uint32_t hwtdbg_ras_checksum(const struct hwtdbg_ras_event *event)
 	return checksum;
 }
 
+static uint32_t hwtdbg_fault_checksum(const struct hwtdbg_fault_event *event)
+{
+	const uint8_t *bytes = (const uint8_t *)event;
+	uint32_t checksum = 2166136261U;
+	uint32_t index;
+
+	for (index = 0U; index < sizeof(*event); index++) {
+		bool checksum_byte = (index >= offsetof(struct hwtdbg_fault_event, checksum)) &&
+			(index < (offsetof(struct hwtdbg_fault_event, checksum) +
+			 sizeof(event->checksum)));
+		bool valid_byte = (index >= offsetof(struct hwtdbg_fault_event, valid)) &&
+			(index < (offsetof(struct hwtdbg_fault_event, valid) +
+			 sizeof(event->valid)));
+
+		if (!checksum_byte && !valid_byte) {
+			checksum ^= bytes[index];
+			checksum *= 16777619U;
+		}
+	}
+
+	return checksum;
+}
+
 static struct hwtdbg_ras_event *hwtdbg_reserve_ras_event(uint16_t pcpu_id,
 	uint64_t *sequence)
 {
@@ -657,6 +711,98 @@ static struct hwtdbg_event *hwtdbg_reserve_event(uint16_t vm_id,
 
 	(void)memset(event, 0U, sizeof(*event));
 	return event;
+}
+
+static struct hwtdbg_fault_event *hwtdbg_reserve_fault_event(uint16_t vm_id,
+	uint64_t *sequence)
+{
+	struct hwtdbg_fault_event *event;
+	uint8_t slot;
+
+	if ((vm_id >= CONFIG_MAX_VM_NUM) || (sequence == NULL)) {
+		return NULL;
+	}
+
+	slot = hwtdbg_fault_next_slot[vm_id];
+	hwtdbg_fault_next_slot[vm_id] = (uint8_t)((slot + 1U) %
+		HWTDBG_FAULT_EVENT_SLOTS);
+	*sequence = __atomic_add_fetch(&hwtdbg_fault_next_sequence, 1UL,
+		__ATOMIC_RELAXED);
+	if (*sequence == 0UL) {
+		*sequence = __atomic_add_fetch(&hwtdbg_fault_next_sequence, 1UL,
+			__ATOMIC_RELAXED);
+	}
+	event = &hwtdbg_fault_events[vm_id][slot];
+	__atomic_store_n(&event->valid, false, __ATOMIC_RELEASE);
+	cpu_write_memory_barrier();
+
+	(void)memset(event, 0U, sizeof(*event));
+	return event;
+}
+
+/* [20260723] Guest fault evidence publication
+ *
+ * synchronous guest exit
+ *     |
+ *     v
+ * copy only durable EL2-owned vCPU state
+ *     |
+ *     +--> no guest-memory read, no remote sampling, no recovery action
+ *     |
+ *     v
+ * checksum -> release-publish valid fault slot -> pause failing vCPU
+ *
+ * Key rule:
+ *   - the exit CPU records the frame before pausing its vCPU, so the shell
+ *     observes the failing EL1 context rather than a later reset context;
+ *   - the fault ring is diagnostic-only and never changes watchdog ownership
+ *     or VM restart policy.
+ */
+void hwtdbg_capture_guest_fault(struct acrn_vcpu *vcpu,
+	enum hwtdbg_guest_fault_reason reason, int32_t exit_ret)
+{
+	struct hwtdbg_fault_event *event;
+	uint64_t sequence;
+	uint64_t rflags;
+	uint16_t vm_id;
+
+	if ((vcpu == NULL) || (vcpu->vm == NULL)) {
+		return;
+	}
+
+	vm_id = vcpu->vm->vm_id;
+	if (vm_id >= CONFIG_MAX_VM_NUM) {
+		return;
+	}
+	spinlock_irqsave_obtain(&hwtdbg_fault_locks[vm_id], &rflags);
+	event = hwtdbg_reserve_fault_event(vm_id, &sequence);
+	if (event == NULL) {
+		spinlock_irqrestore_release(&hwtdbg_fault_locks[vm_id], rflags);
+		return;
+	}
+
+	event->magic = HWTDBG_FAULT_MAGIC;
+	event->version = HWTDBG_FAULT_VERSION;
+	event->vm_id = vcpu->vm->vm_id;
+	event->vcpu_id = vcpu->vcpu_id;
+	event->pcpu_id = get_pcpu_id();
+	event->reason = reason;
+	event->exit_ret = exit_ret;
+	event->sequence = sequence;
+	event->captured_tsc = cpu_ticks();
+	event->vm_state = vcpu->vm->state;
+	event->vcpu_state = vcpu_get_state(vcpu);
+	event->thread_state = vcpu->thread_obj.status;
+	event->wdt_valid = vm_wdt_get_snapshot(event->vm_id, &event->wdt) == 0;
+	(void)memcpy_s(&event->regs, sizeof(event->regs),
+		&vcpu->arch.regs, sizeof(vcpu->arch.regs));
+	(void)memcpy_s(&event->gctx, sizeof(event->gctx),
+		&vcpu->arch.gctx, sizeof(vcpu->arch.gctx));
+
+	event->checksum = hwtdbg_fault_checksum(event);
+	cpu_write_memory_barrier();
+	__atomic_store_n(&event->valid, true, __ATOMIC_RELEASE);
+	spinlock_irqrestore_release(&hwtdbg_fault_locks[vm_id], rflags);
 }
 
 static void hwtdbg_capture_virtio(uint16_t vm_id,
@@ -1386,6 +1532,97 @@ static void hwtdbg_print_event(const struct hwtdbg_event *event)
 	shell_item_end();
 }
 
+static const char *hwtdbg_fault_reason_str(enum hwtdbg_guest_fault_reason reason)
+{
+	switch (reason) {
+	case HWTDBG_GUEST_FAULT_IABT:
+		return "instruction-abort";
+	case HWTDBG_GUEST_FAULT_SERROR:
+		return "serror";
+	default:
+		return "unhandled-exit";
+	}
+}
+
+static bool hwtdbg_copy_latest_fault(uint16_t vm_id,
+	struct hwtdbg_fault_event *event, bool *corrupt)
+{
+	const struct hwtdbg_fault_event *selected = NULL;
+	uint64_t rflags;
+	uint32_t slot;
+
+	if ((vm_id >= CONFIG_MAX_VM_NUM) || (event == NULL) || (corrupt == NULL)) {
+		return false;
+	}
+	*corrupt = false;
+	spinlock_irqsave_obtain(&hwtdbg_fault_locks[vm_id], &rflags);
+	for (slot = 0U; slot < HWTDBG_FAULT_EVENT_SLOTS; slot++) {
+		const struct hwtdbg_fault_event *candidate =
+			&hwtdbg_fault_events[vm_id][slot];
+
+		if (__atomic_load_n(&candidate->valid, __ATOMIC_ACQUIRE) &&
+			((selected == NULL) || (candidate->sequence > selected->sequence))) {
+			selected = candidate;
+		}
+	}
+	if (selected != NULL) {
+		(void)memcpy_s(event, sizeof(*event), selected, sizeof(*selected));
+	}
+	spinlock_irqrestore_release(&hwtdbg_fault_locks[vm_id], rflags);
+	if (selected == NULL) {
+		return false;
+	}
+	if ((event->magic != HWTDBG_FAULT_MAGIC) ||
+		(event->version != HWTDBG_FAULT_VERSION) || (event->vm_id != vm_id) ||
+		(event->checksum != hwtdbg_fault_checksum(event))) {
+		*corrupt = true;
+	}
+	return true;
+}
+
+static void hwtdbg_erase_fault(uint16_t vm_id)
+{
+	uint64_t rflags;
+	uint32_t slot;
+
+	if (vm_id >= CONFIG_MAX_VM_NUM) {
+		return;
+	}
+	spinlock_irqsave_obtain(&hwtdbg_fault_locks[vm_id], &rflags);
+	for (slot = 0U; slot < HWTDBG_FAULT_EVENT_SLOTS; slot++) {
+		__atomic_store_n(&hwtdbg_fault_events[vm_id][slot].valid, false,
+			__ATOMIC_RELEASE);
+	}
+	spinlock_irqrestore_release(&hwtdbg_fault_locks[vm_id], rflags);
+}
+
+static void hwtdbg_print_fault_event(const struct hwtdbg_fault_event *event)
+{
+	shell_item_begin("CRASH (vm%hu seq:%lu)", event->vm_id, event->sequence);
+	shell_item_line("reason:%s exit-ret:%d captured:0x%016lx pcpu:%hu",
+		hwtdbg_fault_reason_str(event->reason), event->exit_ret,
+		event->captured_tsc, event->pcpu_id);
+	shell_item_line("state:vm:%s vcpu%hu:%s thread:%s",
+		hwtdbg_vm_state_str(event->vm_state), event->vcpu_id,
+		vcpu_state_to_str(event->vcpu_state),
+		hwtdbg_thread_state_str(event->thread_state));
+	shell_item_line("exit:ec:0x%02lx esr:0x%016lx elr:0x%016lx far:0x%016lx hpfar:0x%016lx",
+		ESR_EL2_EC(event->regs.esr), event->regs.esr, event->regs.elr,
+		event->regs.far, event->regs.hpfar);
+	if (event->wdt_valid) {
+		shell_item_line("wdt:status:%u cause:%u kick:%lu timeout:%lu restart:%lu pending:%s",
+			event->wdt.status, event->wdt.cause, event->wdt.kick_count,
+			event->wdt.timeout_count, event->wdt.restart_count,
+			hwtdbg_yes_no(event->wdt.restart_pending));
+	} else {
+		shell_item_line("wdt:unavailable");
+	}
+	shell_item_section("GUEST CONTEXT");
+	hwtdbg_print_gctx(&event->gctx);
+	hwtdbg_print_regs(&event->regs);
+	shell_item_end();
+}
+
 static bool hwtdbg_copy_ras_event(uint16_t pcpu_id, uint32_t slot,
 	struct hwtdbg_ras_event *event)
 {
@@ -1445,7 +1682,7 @@ static void hwtdbg_print_ras_event(const struct hwtdbg_ras_event *event)
 	shell_item_end();
 }
 
-static bool hwtdbg_parse_vmid(const char *text, uint16_t *vm_id)
+static bool hwtdbg_parse_vmid(const char *text, uint16_t limit, uint16_t *vm_id)
 {
 	uint32_t value = 0U;
 	uint32_t index;
@@ -1462,7 +1699,7 @@ static bool hwtdbg_parse_vmid(const char *text, uint16_t *vm_id)
 		}
 		value = (value * 10U) + (uint32_t)(ch - (uint8_t)'0');
 	}
-	if (value >= HWTDBG_VM_NUM) {
+	if (value >= limit) {
 		return false;
 	}
 	*vm_id = (uint16_t)value;
@@ -1476,7 +1713,7 @@ int32_t shell_hwtdbg(int32_t argc, char **argv)
 	uint16_t pcpu_id;
 	bool corrupt;
 
-	if ((argc != 2) || !hwtdbg_parse_vmid(argv[1], &vm_id)) {
+	if ((argc != 2) || !hwtdbg_parse_vmid(argv[1], HWTDBG_VM_NUM, &vm_id)) {
 		shell_puts("usage: hwtdbg <vmid>\r\n");
 		return -EINVAL;
 	}
@@ -1509,5 +1746,37 @@ int32_t shell_hwtdbg(int32_t argc, char **argv)
 			}
 		}
 	}
+	return 0;
+}
+
+int32_t shell_crash(int32_t argc, char **argv)
+{
+	uint16_t vm_id;
+	bool corrupt;
+
+	if (((argc != 2) && (argc != 3)) ||
+		!hwtdbg_parse_vmid(argv[1], CONFIG_MAX_VM_NUM, &vm_id) ||
+		((argc == 3) && (strcmp(argv[2], "erase") != 0))) {
+		shell_puts("usage: crash <vmid> [erase]\r\n");
+		return -EINVAL;
+	}
+	if (argc == 3) {
+		hwtdbg_erase_fault(vm_id);
+		shell_puts("CRASH: erased\r\n");
+		return 0;
+	}
+	if (!hwtdbg_copy_latest_fault(vm_id, &hwtdbg_fault_readback, &corrupt)) {
+		char line[MAX_STR_SIZE];
+
+		(void)snprintf(line, sizeof(line),
+			"CRASH: vm%hu has no retained guest fault event\r\n", vm_id);
+		shell_puts(line);
+		return 0;
+	}
+	if (corrupt) {
+		shell_puts("CRASH: latest event is checksum-invalid\r\n");
+		return -EIO;
+	}
+	hwtdbg_print_fault_event(&hwtdbg_fault_readback);
 	return 0;
 }

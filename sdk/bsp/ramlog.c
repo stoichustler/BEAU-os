@@ -199,10 +199,10 @@ static bool ramlog_layout_valid(const struct ramlog_header *header)
 	return offset == beau_config.ramlog_size;
 }
 
-static void ramlog_flush(const volatile void *address, uint64_t size)
+static void ramlog_clean(const volatile void *address, uint64_t size)
 {
 	if (arm64_mmu_is_enabled()) {
-		flush_cache_range(address, size);
+		clean_cache_range(address, size);
 	}
 }
 
@@ -392,9 +392,9 @@ static void ramlog_publish(void)
 	(void)memset(target, 0U, RAMLOG_HEADER_COPY_SIZE);
 	(void)memcpy(target, ramlog_header, sizeof(*target));
 	target->valid = 0U;
-	ramlog_flush(target, RAMLOG_HEADER_COPY_SIZE);
+	ramlog_clean(target, RAMLOG_HEADER_COPY_SIZE);
 	target->valid = RAMLOG_VALID;
-	ramlog_flush(target, sizeof(*target));
+	ramlog_clean(target, sizeof(*target));
 	ramlog_active_header_copy = target_copy;
 }
 
@@ -512,9 +512,9 @@ bool ramlog_append_vm_console(uint16_t vmid, const char *buffer, uint32_t length
 	if (first < length) {
 		(void)memcpy(data, buffer + first, length - first);
 	}
-	ramlog_flush(data + (slot->prod % slot->live_size), first);
+	ramlog_clean(data + (slot->prod % slot->live_size), first);
 	if (first < length) {
-		ramlog_flush(data, length - first);
+		ramlog_clean(data, length - first);
 	}
 	slot->prod += length;
 	if ((slot->prod - slot->cons) > slot->live_size) {
@@ -807,7 +807,7 @@ static bool ramlog_pstore_copy(struct acrn_vm *vm, uint64_t zone_gpa,
 			zone_gpa + RAMLOG_PSTORE_HEADER_SIZE + cursor, chunk) != 0) {
 			return false;
 		}
-		ramlog_flush(destination, chunk);
+		ramlog_clean(destination, chunk);
 		destination += chunk;
 		length -= chunk;
 		cursor = 0U;
@@ -979,7 +979,7 @@ bool ramlog_capture_vm_pstore(struct acrn_vm *vm)
 			 snapshot, console_size);
 	}
 	if (captured) {
-		ramlog_flush(snapshot, (uint64_t)dmesg_size + console_size);
+		ramlog_clean(snapshot, (uint64_t)dmesg_size + console_size);
 		checksum = ramlog_payload_checksum(snapshot,
 			(uint64_t)dmesg_size + console_size);
 	}

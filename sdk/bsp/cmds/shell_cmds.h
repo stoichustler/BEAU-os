@@ -44,6 +44,7 @@ int32_t shell_s2walk(int32_t argc, char **argv);
 int32_t shell_kusg(int32_t argc, char **argv);
 int32_t shell_health(int32_t argc, char **argv);
 int32_t shell_coredump(int32_t argc, char **argv);
+int32_t shell_crash(int32_t argc, char **argv);
 int32_t shell_vmstat(int32_t argc, char **argv);
 int32_t shell_cachestat(int32_t argc, char **argv);
 int32_t shell_ipcstat(int32_t argc, char **argv);

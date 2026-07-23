@@ -42,6 +42,22 @@ struct beau_config beau_config;
 
 static struct arm64_platform_dts_info platform_info;
 
+void arm64_platform_init_early(void)
+{
+	/* [20260724] Early CPU identity publication
+	 *
+	 * embedded DTB -> CPU topology validation -> init_percpu_mpidr() -> PSCI
+	 *
+	 * Key rule:
+	 *   - the platform layer owns the embedded DTB lifetime;
+	 *   - parse before any AP target is derived from MPIDR;
+	 *   - invalid CPU topology stops boot before a PSCI request can target an
+	 *     unintended core or cluster.
+	 */
+	init_devtree(hva2hpa_early((void *)arm64_platform_dtb_start));
+	arm64_platform_dts_parse_cpu_topology(get_host_fdt());
+}
+
 void arm64_platform_init(uint64_t fdt_paddr)
 {
 	(void)fdt_paddr;
@@ -52,7 +68,6 @@ void arm64_platform_init(uint64_t fdt_paddr)
 	 * platform.S, then copied into the common host FDT buffer before consumers
 	 * read it.
 	 */
-	init_devtree(hva2hpa_early((void *)arm64_platform_dtb_start));
 	arm64_platform_dts_parse_info(get_host_fdt(), &platform_info);
 	arm64_platform_dts_parse_board(get_host_fdt(), &platform_info);
 }

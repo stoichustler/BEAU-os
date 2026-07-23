@@ -26,6 +26,7 @@
 #include <asm/guest/stage2.h>
 #include <asm/mmu.h>
 #include <asm/pmu.h>
+#include <asm/platform.h>
 #include <asm/sysreg.h>
 
 #include "shell_cmds.h"
@@ -135,6 +136,11 @@ static void shell_cachestat_print_vm_affinity(uint16_t vm_id,
 	}
 }
 
+static const char *shell_cachestat_domain_source(uint8_t source)
+{
+	return (source == ARM64_PLATFORM_LLC_SOURCE_DTS) ? "dts" : "mpidr";
+}
+
 int32_t shell_cachestat(int32_t argc, __unused char **argv)
 {
 	struct arm64_cache_info info;
@@ -147,22 +153,31 @@ int32_t shell_cachestat(int32_t argc, __unused char **argv)
 
 	arm64_cache_get_info(&info);
 	shell_item_begin("cachestat");
-	/* CTR/CLIDR are architectural cache registers; line is bytes. LLC describes
-	 * the shared last-level cache, and placement maps configured vCPUs to pCPU/LLC.
-	 */
-	shell_item_line("valid:%s ctr:0x%016lx clidr:0x%016lx line:d:%u i:%u",
+	/* Cache leaves are BSP-local register samples; LLC rows are DTS topology. */
+	shell_item_line("valid:%s ctr:0x%016lx clidr:0x%016lx line:D:%u I:%u",
 		shell_yes_no(info.valid), info.ctr_el0, info.clidr_el1,
 		info.dcache_line_size, info.icache_line_size);
-	shell_item_line("LLC:domains:%u level:%u type:%s size:%luKB mask:0x%016lx",
-		info.llc_domain_count, info.llc_level, arm64_cache_type_str(info.llc_type),
+	shell_item_line("BSP cache: level:%u type:%s size:%luKB mask:0x%016lx",
+		info.llc_level, arm64_cache_type_str(info.llc_type),
 		info.llc_size / 1024UL, info.llc_pcpu_mask);
+	shell_item_line("LLC domains:");
+	for (idx = 0U; idx < info.llc_domain_count; idx++) {
+		const struct arm64_cache_domain *domain = &info.domains[idx];
+
+		shell_item_line("llc%u source:%s pcpus:0x%016lx", domain->id,
+			shell_cachestat_domain_source(domain->source), domain->pcpu_mask);
+	}
+	shell_item_line("pCPU LLC map:");
+	for (idx = 0U; idx < MAX_PCPU_NUM; idx++) {
+		shell_item_line("pcpu%u llc:%u", idx, arm64_cache_llc_id_for_pcpu((uint16_t)idx));
+	}
 
 	if (info.leaf_count == 0U) {
 		shell_item_line("cache:none");
 	} else {
 		shell_item_line("cache leaves:");
 		shell_item_line("level  type     line  sets   ways   size    shared-pcpu-mask");
-		shell_item_line("─────  ───────  ────  ─────  ─────  ──────  ────────────────");
+		shell_item_line("─────  ───────  ────  ─────  ─────  ──────  ──────────────────");
 		for (idx = 0U; idx < info.leaf_count; idx++) {
 			const struct arm64_cache_leaf *leaf = &info.leaves[idx];
 
@@ -370,6 +385,7 @@ struct shell_health_vm {
 	uint64_t reasons;
 	const char *name;
 	enum vm_state state;
+	uint16_t lifecycle_phase;
 	uint16_t vm_id;
 	uint16_t configured_vcpus;
 	uint16_t created_vcpus;
@@ -738,6 +754,7 @@ static void shell_health_collect_vm(uint16_t vm_id, struct shell_health_vm *heal
 
 	health->name = (vm->name[0] != '\0') ? vm->name : vm_config->name;
 	health->state = vm->state;
+	health->lifecycle_phase = vm->lifecycle.phase;
 	health->configured_vcpus = (uint16_t)shell_cpu_bitmap_weight(vm_config->cpu_affinity);
 	health->created_vcpus = vm->hw.created_vcpus;
 	/* A created post-launched VM is valid until its device model starts it. */
@@ -826,11 +843,11 @@ static void shell_health_print_vm(const struct shell_health_vm *health)
 		(void)snprintf(virtio, sizeof(virtio), "-");
 	}
 
-	shell_item_line("vm%-2hu %-10s %-9s %2hu/%-2hu %-7s %-10s %-20s %-6s result:%s",
+	shell_item_line("vm%-2hu %-10s %-9s %2hu/%-2hu %-7s %-10s %-20s %-6s %s",
 		health->vm_id, health->name, shell_vm_state_to_str(health->state),
 		health->created_vcpus, health->configured_vcpus,
 		wdt_status, wdt_age, console, virtio,
-		shell_health_level_to_str(health->level));
+		vm_lifecycle_phase_name(health->lifecycle_phase));
 	shell_output_checkpoint();
 }
 
@@ -954,8 +971,8 @@ int32_t shell_health(int32_t argc, __unused char **argv)
 
 	shell_item_begin("HEALTH");
 	/* Host page values are used/total pools plus ownership anomalies. VM rows
-	 * combine lifecycle, vCPU count, watchdog age, console backlog, virtio state,
-	 * and the derived result; findings name failed diagnostic rules.
+	 * combine lifecycle, vCPU count, watchdog age, console backlog, and virtio
+	 * state; Findings retains the derived PASS/WARN/FAIL diagnostic rules.
 	 */
 	shell_item_line("overall:%s uptime:%lums",
 		shell_health_level_to_str(overall), ticks_to_ms(cpu_ticks()));
@@ -969,7 +986,7 @@ int32_t shell_health(int32_t argc, __unused char **argv)
 		host.stage2_accounted, host.stage2_unowned,
 		host.stage2_overaccounted, host.stage2_malformed);
 	shell_item_section("Virtual machines");
-	shell_item_line("vm   name       state     vcpus wdt     age        console              virtio result");
+	shell_item_line("vm   name       state     vcpus wdt     age        console              virtio lifecycle");
 	shell_item_line("──── ────────── ───────── ───── ─────── ────────── ──────────────────── ────── ───────────");
 	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
 		if (vms[vm_id].present) {

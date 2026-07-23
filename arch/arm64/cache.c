@@ -8,6 +8,7 @@
 #include <cpu.h>
 #include <memory.h>
 #include <asm/cache.h>
+#include <asm/platform.h>
 #include <asm/sysreg.h>
 
 /* [20260712] ARM64 cache discovery and placement framework
@@ -29,14 +30,13 @@
  *     +--> VM placement diagnostics: vCPU -> pCPU -> LLC domain
  *     +--> future LLC policy / cache-partition hooks
  *
- * The current QEMU and BEAU reference platform expose one shared LLC domain.
- * This file keeps the topology query explicit so platform-specific isolation
- * can be added without changing VM or shell code.
+ * The platform DTS publishes LLC domains independently of the BSP cache
+ * registers, so heterogeneous CPU clusters do not inherit BSP geometry.
  *
  * Key rule:
  *   - collect once after paging has enabled architected cache state;
  *   - consumers read arm64_cache_info instead of touching CSSELR/CCSIDR;
- *   - default to one shared LLC domain until platform code publishes masks;
+ *   - use only the early DTS snapshot for system LLC sharing;
  *   - page-table and device-owned cache maintenance stays with MMU/SMMU/ITS
  *     owners so discovery never changes hardware-visible memory ordering.
  */
@@ -60,14 +60,6 @@
 
 static struct arm64_cache_info arm64_cache_state;
 static bool arm64_cache_initialized;
-
-static uint64_t arm64_cache_all_pcpu_mask(void)
-{
-	if (MAX_PCPU_NUM >= 64U) {
-		return UINT64_MAX;
-	}
-	return (1UL << MAX_PCPU_NUM) - 1UL;
-}
 
 static uint32_t arm64_cache_line_from_ctr(uint64_t ctr_el0, uint32_t shift)
 {
@@ -110,20 +102,56 @@ static bool arm64_cache_add_leaf(uint8_t level, uint8_t type, bool instruction)
 	leaf->sets = (uint32_t)((ccsidr >> ARM64_CCSIDR_NUMSETS_SHIFT) &
 		ARM64_CCSIDR_NUMSETS_MASK) + 1U;
 	leaf->size = (uint64_t)leaf->line_size * leaf->ways * leaf->sets;
-	leaf->shared_pcpu_mask = arm64_cache_all_pcpu_mask();
+	/* CCSIDR is read on the BSP; do not project its geometry onto other cores. */
+	leaf->shared_pcpu_mask = 1UL << BSP_CPU_ID;
 	arm64_cache_state.leaf_count++;
 
-	/*
-	 * The last cache leaf discovered by CLIDR order is the closest LLC model
-	 * BEAU can infer without MPIDR/firmware topology. Platform code can later
-	 * replace this single-domain policy with per-cluster masks.
-	 */
+	/* This is BSP-local geometry. DTS topology supplies system LLC sharing. */
 	arm64_cache_state.llc_level = level;
 	arm64_cache_state.llc_type = type;
 	arm64_cache_state.llc_size = leaf->size;
 	arm64_cache_state.llc_pcpu_mask = leaf->shared_pcpu_mask;
 	arm64_cache_state.llc_domain_count = 1U;
 	return true;
+}
+
+static void arm64_cache_publish_domains(void)
+{
+	uint16_t pcpu_id;
+
+	/* [20260724] Heterogeneous cache reporting boundary
+	 *
+	 * BSP CTR/CLIDR/CCSIDR -> BSP cache leaves
+	 * platform DTS          -> pCPU LLC domains
+	 *
+	 * Key rule:
+	 *   - architected cache registers are local to the executing CPU;
+	 *   - the immutable DTS snapshot owns cross-CPU sharing information;
+	 *   - never turn one big or little core's cache geometry into a system-wide
+	 *     LLC claim.
+	 */
+	if (!beau_config.cpu_topology_valid ||
+		(beau_config.cpu_topology_count != MAX_PCPU_NUM) ||
+		(beau_config.llc_domain_count == 0U) ||
+		(beau_config.llc_domain_count > ARM64_CACHE_MAX_LLC_DOMAINS)) {
+		panic("invalid arm64 cache topology");
+	}
+
+	arm64_cache_state.llc_domain_count = beau_config.llc_domain_count;
+	for (pcpu_id = 0U; pcpu_id < MAX_PCPU_NUM; pcpu_id++) {
+		const struct arm64_platform_cpu_topology *cpu =
+			&beau_config.cpu_topology[pcpu_id];
+		struct arm64_cache_domain *domain;
+
+		if (cpu->llc_id >= arm64_cache_state.llc_domain_count) {
+			panic("invalid arm64 cache LLC id for pCPU%hu", pcpu_id);
+		}
+		domain = &arm64_cache_state.domains[cpu->llc_id];
+		domain->id = cpu->llc_id;
+		domain->source = cpu->llc_source;
+		domain->pcpu_mask = cpu->llc_pcpu_mask;
+	}
+	arm64_cache_state.llc_pcpu_mask = arm64_cache_state.domains[0U].pcpu_mask;
 }
 
 static void arm64_cache_collect(void)
@@ -169,6 +197,7 @@ static void arm64_cache_collect(void)
 			break;
 		}
 	}
+	arm64_cache_publish_domains();
 	arm64_cache_state.valid = true;
 }
 
@@ -210,5 +239,6 @@ uint32_t arm64_cache_llc_id_for_pcpu(uint16_t pcpu_id)
 		return UINT32_MAX;
 	}
 
-	return 0U;
+	arm64_cache_init();
+	return beau_config.cpu_topology[pcpu_id].llc_id;
 }

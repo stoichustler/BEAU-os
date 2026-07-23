@@ -502,7 +502,7 @@ static int32_t arm_smmu_cmdq_issue_locked(uint64_t cmd0, uint64_t cmd1)
 	 * entry before ringing PROD so the SMMU command fetch observes the final
 	 * command words rather than a stale cache line.
 	 */
-	flush_cache_range(arm_smmu_cmdq[idx], sizeof(arm_smmu_cmdq[idx]));
+	clean_cache_range(arm_smmu_cmdq[idx], sizeof(arm_smmu_cmdq[idx]));
 
 	arm_smmu_cmdq_prod = next;
 	arm_smmu_hw.cmdq_prod = next;
@@ -636,7 +636,7 @@ static void arm_smmu_write_abort_ste_locked(uint32_t stream_id)
 	ste[5] = 0UL;
 	ste[6] = 0UL;
 	ste[7] = 0UL;
-	flush_cache_range(ste, ARM_SMMU_STE_SIZE);
+	clean_cache_range(ste, ARM_SMMU_STE_SIZE);
 }
 
 static int32_t arm_smmu_write_s2_ste_locked(const struct arm_smmu_s2_config *config,
@@ -664,7 +664,7 @@ static int32_t arm_smmu_write_s2_ste_locked(const struct arm_smmu_s2_config *con
 	ste[5] = 0UL;
 	ste[6] = 0UL;
 	ste[7] = 0UL;
-	flush_cache_range(&ste[1], ARM_SMMU_STE_SIZE - sizeof(uint64_t));
+	clean_cache_range(&ste[1], ARM_SMMU_STE_SIZE - sizeof(uint64_t));
 
 	ret = arm_smmu_sync_ste_locked(stream_id);
 	if (ret != 0) {
@@ -673,7 +673,7 @@ static int32_t arm_smmu_write_s2_ste_locked(const struct arm_smmu_s2_config *con
 
 	ste[0] = ARM_SMMU_STE_0_V |
 		(ARM_SMMU_STE_0_CFG_S2_TRANS << ARM_SMMU_STE_0_CFG_SHIFT);
-	flush_cache_range(&ste[0], sizeof(ste[0]));
+	clean_cache_range(&ste[0], sizeof(ste[0]));
 
 	ret = arm_smmu_sync_ste_locked(stream_id);
 	if (ret == 0) {
@@ -1205,9 +1205,9 @@ static void arm_smmu_zero_abort_tables(uint32_t strtab_log2)
 	 * intentional: a described StreamID faults until assignment replaces only
 	 * that STE with stage-2 translation data.
 	 */
-	flush_cache_range(arm_smmu_strtab, strtab_entries * ARM_SMMU_STE_SIZE);
-	flush_cache_range(arm_smmu_cmdq, sizeof(arm_smmu_cmdq));
-	flush_cache_range(arm_smmu_evtq, sizeof(arm_smmu_evtq));
+	clean_cache_range(arm_smmu_strtab, strtab_entries * ARM_SMMU_STE_SIZE);
+	clean_cache_range(arm_smmu_cmdq, sizeof(arm_smmu_cmdq));
+	clean_cache_range(arm_smmu_evtq, sizeof(arm_smmu_evtq));
 }
 
 static int32_t arm_smmu_hw_enable_abort_locked(void)
@@ -1635,11 +1635,11 @@ static void arm_smmu_poll_events_locked(void)
 
 		/*
 		 * EVTQ entries are written by the SMMU and consumed by EL2. The
-		 * available cache helper cleans+invalidates; after initialization
-		 * EL2 does not dirty EVTQ entries, so this is used here as the
-		 * local stale-line eviction point before reading the event words.
+		 * EL2 does not dirty EVTQ entries after initialization. Invalidate
+		 * instead of clean+invalidate so the consumer evicts only stale local
+		 * data before reading the SMMU-owned event words.
 		 */
-		flush_cache_range(arm_smmu_evtq[idx], sizeof(arm_smmu_evtq[idx]));
+		invalidate_cache_range(arm_smmu_evtq[idx], sizeof(arm_smmu_evtq[idx]));
 		for (i = 0U; i < ARM_SMMU_EVT_DWORDS; i++) {
 			evt[i] = arm_smmu_evtq[idx][i];
 		}

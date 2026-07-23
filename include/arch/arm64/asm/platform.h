@@ -8,6 +8,18 @@
 #define ARM64_PLATFORM_H
 
 #include <types.h>
+#include <cpu.h>
+
+#define ARM64_PLATFORM_LLC_SOURCE_DTS		0U
+#define ARM64_PLATFORM_LLC_SOURCE_MPIDR	1U
+
+struct arm64_platform_cpu_topology {
+	uint64_t mpidr;
+	uint64_t llc_pcpu_mask;
+	uint32_t llc_id;
+	uint8_t llc_source;
+	uint8_t reserved[3U];
+};
 
 #ifndef ASSEMBLER
 struct arm64_mem_region {
@@ -40,11 +52,16 @@ struct beau_config {
 	uint32_t spe_ppi;
 	uint16_t dma_passthrough_count;
 	bool dma_isolation_required;
+	bool cpu_topology_valid;
+	uint16_t cpu_topology_count;
+	uint16_t llc_domain_count;
+	struct arm64_platform_cpu_topology cpu_topology[MAX_PCPU_NUM];
 };
 
 extern struct beau_config beau_config;
 
 const struct arm64_mem_region *arm64_get_platform_mmio_regions(uint32_t *count);
+void arm64_platform_init_early(void);
 void arm64_platform_init(uint64_t fdt_paddr);
 void arm64_platform_init_post_console(void);
 void arm64_platform_init_smmu(void);

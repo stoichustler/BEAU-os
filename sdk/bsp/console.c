@@ -520,19 +520,20 @@ bool console_vm_ring_get_stats(uint16_t vmid, struct console_vm_ring_stats *stat
 {
 	struct vm_console_presentation *presentation;
 	struct ramlog_window window;
+	struct ramlog_stats ramlog_stats;
 	uint64_t rflags;
 	uint64_t queued = 0UL;
 	uint64_t cursor;
 	bool valid = false;
 
 	if ((stats != NULL) && (vmid < CONFIG_VM_CONSOLE_RINGBUF_VM_NUM) &&
-		ramlog_get_window(vmid, &window)) {
+		ramlog_get_window(vmid, &window) && ramlog_get_stats(vmid, &ramlog_stats)) {
 		presentation = &vm_console_presentations[vmid];
 		spinlock_irqsave_obtain(&presentation->lock, &rflags);
 		cursor = presentation->cursor;
 		stats->vmid = vmid;
 		stats->size = 0U;
-		stats->capacity = 0U;
+		stats->capacity = ramlog_stats.capacity;
 		stats->drain_budget = presentation->vuart_bound ?
 			console_vm_presentation_drain_budget((console_vmid == vmid) &&
 			console_vm_input_pending_for_drain()) : 0U;

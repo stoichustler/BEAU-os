@@ -114,6 +114,9 @@ static void arm64_wait_vm_launch(uint16_t pcpu_id)
 static void init_debug_pre(void)
 {
 	console_init();
+
+	/* [20260723] BEAU OS BANNER */
+	print_hv_banner();
 }
 
 static void init_debug_post(uint16_t pcpu_id)
@@ -139,7 +142,7 @@ void init_primary_pcpu(uint64_t mpidr, uint64_t fdt_paddr)
 	uint32_t boot_regs[2] = { 0U };
 	uint64_t pcpu_sp;
 
-	(void)fdt_paddr;
+	arm64_platform_init_early();
 	init_percpu_mpidr(mpidr);
 	set_pcpu_active(pcpu_id);
 	arm64_security_early_init();
@@ -204,7 +207,6 @@ static void init_pcpu_comm_post(void)
 	uint16_t pcpu_id = get_pcpu_id();
 
 	if (pcpu_id == BSP_CPU_ID) {
-		print_hv_banner();
 		arm64_gicv3_log_boot_info();
 		arm64_gicv3_init_its();
 		arm64_platform_init_smmu();

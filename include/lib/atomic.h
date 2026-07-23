@@ -26,6 +26,16 @@ static inline int64_t arch_atomic_add64_return(int64_t *p, int64_t v);
 static inline int64_t arch_atomic_sub64_return(int64_t *p, int64_t v);
 static inline int64_t arch_atomic_inc64_return(int64_t *v);
 static inline int64_t arch_atomic_dec64_return(int64_t *v);
+static inline uint32_t arch_atomic_load_acquire32(const volatile uint32_t *ptr);
+static inline uint64_t arch_atomic_load_acquire64(const volatile uint64_t *ptr);
+static inline void arch_atomic_store_release32(volatile uint32_t *ptr, uint32_t value);
+static inline void arch_atomic_store_release64(volatile uint64_t *ptr, uint64_t value);
+static inline uint32_t arch_atomic_fetch_add_relaxed32(volatile uint32_t *ptr, uint32_t value);
+static inline uint64_t arch_atomic_fetch_add_relaxed64(volatile uint64_t *ptr, uint64_t value);
+static inline uint32_t arch_atomic_cmpxchg_acqrel32(volatile uint32_t *ptr,
+	uint32_t old, uint32_t new);
+static inline uint64_t arch_atomic_cmpxchg_acqrel64(volatile uint64_t *ptr,
+	uint64_t old, uint64_t new);
 
 /* The common functions map to arch implementation */
 static inline void atomic_inc32(uint32_t * ptr)
@@ -46,6 +56,50 @@ static inline void atomic_dec32(uint32_t * ptr)
 static inline void atomic_dec64(uint64_t * ptr)
 {
 	return arch_atomic_dec64(ptr);
+}
+
+static inline uint32_t atomic_load_acquire32(const volatile uint32_t *ptr)
+{
+	return arch_atomic_load_acquire32(ptr);
+}
+
+static inline uint64_t atomic_load_acquire64(const volatile uint64_t *ptr)
+{
+	return arch_atomic_load_acquire64(ptr);
+}
+
+static inline void atomic_store_release32(volatile uint32_t *ptr, uint32_t value)
+{
+	arch_atomic_store_release32(ptr, value);
+}
+
+static inline void atomic_store_release64(volatile uint64_t *ptr, uint64_t value)
+{
+	arch_atomic_store_release64(ptr, value);
+}
+
+static inline uint32_t atomic_fetch_add_relaxed32(volatile uint32_t *ptr,
+	uint32_t value)
+{
+	return arch_atomic_fetch_add_relaxed32(ptr, value);
+}
+
+static inline uint64_t atomic_fetch_add_relaxed64(volatile uint64_t *ptr,
+	uint64_t value)
+{
+	return arch_atomic_fetch_add_relaxed64(ptr, value);
+}
+
+static inline uint32_t atomic_cmpxchg_acqrel32(volatile uint32_t *ptr,
+	uint32_t old, uint32_t new)
+{
+	return arch_atomic_cmpxchg_acqrel32(ptr, old, new);
+}
+
+static inline uint64_t atomic_cmpxchg_acqrel64(volatile uint64_t *ptr,
+	uint64_t old, uint64_t new)
+{
+	return arch_atomic_cmpxchg_acqrel64(ptr, old, new);
 }
 
 static inline uint32_t atomic_cmpxchg32(volatile uint32_t * ptr, uint32_t old, uint32_t new)

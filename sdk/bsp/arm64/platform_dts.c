@@ -20,6 +20,7 @@
 #include <passthrough.h>
 #include <asm/irq.h>
 #include <asm/platform.h>
+#include <asm/sysreg.h>
 #include <asm/sve.h>
 #include <asm/guest/vipc.h>
 #include <asm/guest/vrproc.h>
@@ -43,6 +44,7 @@
 #define ARM64_DTS_UINT16_MAX		0xffffU
 #define ARM64_DTS_DMA_ISOLATION_REQUIRED	"required"
 #define ARM64_DTS_DMA_ISOLATION_BRINGUP	"bringup"
+#define ARM64_DTS_CACHE_LINK_MAX		8U
 
 static const struct arm64_platform_dts_vm_storage *dts_storage;
 static uint16_t dts_bare_boot_option_count;
@@ -959,26 +961,170 @@ const struct arm64_mem_region *arm64_platform_dts_mmio_regions(uint32_t *count)
 	return dts_mmio_regions;
 }
 
-static uint32_t dts_count_cpus(const void *fdt)
+static uint64_t dts_cpu_cluster_key(uint64_t mpidr)
 {
+	return (mpidr & MPIDR_AFFINITY_MASK) >> 8U;
+}
+
+static uint64_t dts_cpu_llc_key(const void *fdt, int32_t cpu, uint64_t mpidr,
+	uint8_t *source)
+{
+	int32_t node = cpu;
+	int32_t seen[ARM64_DTS_CACHE_LINK_MAX];
+	uint32_t depth;
+
+	/* A cache phandle is authoritative. Cluster fallback remains explicit so
+	 * cache diagnostics cannot silently report a fabricated shared LLC. */
+	for (depth = 0U; depth < ARM64_DTS_CACHE_LINK_MAX; depth++) {
+		const fdt32_t *link;
+		int32_t len;
+		uint32_t phandle;
+		uint32_t idx;
+
+		link = fdt_getprop(fdt, node, "next-level-cache", &len);
+		if (link == NULL) {
+			if (node == cpu) {
+				*source = ARM64_PLATFORM_LLC_SOURCE_MPIDR;
+				return dts_cpu_cluster_key(mpidr);
+			}
+			*source = ARM64_PLATFORM_LLC_SOURCE_DTS;
+			return (uint64_t)(uint32_t)node;
+		}
+		if (len != (int32_t)sizeof(fdt32_t)) {
+			arm64_dts_panic("next-level-cache", -EINVAL);
+		}
+		phandle = fdt32_to_cpu(link[0]);
+		if (phandle == 0U) {
+			arm64_dts_panic("next-level-cache phandle", -EINVAL);
+		}
+		node = fdt_node_offset_by_phandle(fdt, phandle);
+		if (node < 0) {
+			arm64_dts_panic("next-level-cache target", node);
+		}
+		for (idx = 0U; idx < depth; idx++) {
+			if (seen[idx] == node) {
+				arm64_dts_panic("next-level-cache loop", -EINVAL);
+			}
+		}
+		seen[depth] = node;
+	}
+
+	arm64_dts_panic("next-level-cache depth", -EINVAL);
+	return 0UL;
+}
+
+/* [20260724] CPU and LLC topology publication
+ *
+ * embedded platform DTB
+ *     |
+ *     v
+ * validate CPU reg and cache phandle chain
+ *     |
+ *     +--> invalid or ambiguous topology: stop before PSCI CPU_ON
+ *     |
+ *     v
+ * publish immutable pCPU -> MPIDR / LLC-domain snapshot
+ *
+ * Key rule:
+ *   - the early platform parser owns this snapshot until all CPU identities
+ *     are validated;
+ *   - CPU bring-up and cache diagnostics only consume the published snapshot;
+ *   - a missing cache graph is a marked MPIDR-cluster fallback, never a claim
+ *     that heterogeneous CPUs share one cache.
+ */
+void arm64_platform_dts_parse_cpu_topology(const void *fdt)
+{
+	uint64_t llc_keys[MAX_PCPU_NUM];
+	uint16_t cpu_count = 0U;
 	int32_t cpus;
 	int32_t cpu;
-	uint32_t count = 0U;
+	int32_t addr_cells;
 
+	if (fdt == NULL) {
+		arm64_dts_panic("cpu topology fdt", -EINVAL);
+	}
 	cpus = fdt_path_offset(fdt, "/cpus");
 	if (cpus < 0) {
 		arm64_dts_panic("/cpus", cpus);
 	}
+	addr_cells = fdt_address_cells(fdt, cpus);
+	if ((addr_cells <= 0) || (addr_cells > 2)) {
+		arm64_dts_panic("/cpus address-cells", -EINVAL);
+	}
+
+	(void)memset(beau_config.cpu_topology, 0U, sizeof(beau_config.cpu_topology));
+	beau_config.cpu_topology_valid = false;
+	beau_config.cpu_topology_count = 0U;
+	beau_config.llc_domain_count = 0U;
 
 	fdt_for_each_subnode(cpu, fdt, cpus) {
 		const char *device_type = fdt_getprop(fdt, cpu, "device_type", NULL);
+		const fdt32_t *reg;
+		int32_t len;
+		uint16_t prior;
+		uint16_t domain;
+		uint64_t mpidr;
+		uint64_t llc_key;
+		uint8_t source;
 
-		if ((device_type != NULL) && (strcmp(device_type, "cpu") == 0)) {
-			count++;
+		if ((device_type == NULL) || (strcmp(device_type, "cpu") != 0)) {
+			continue;
 		}
+		if (cpu_count >= MAX_PCPU_NUM) {
+			arm64_dts_panic("/cpus count", -EINVAL);
+		}
+		reg = fdt_getprop(fdt, cpu, "reg", &len);
+		if ((reg == NULL) || (len != (addr_cells * (int32_t)sizeof(fdt32_t)))) {
+			arm64_dts_panic("cpu reg", -EINVAL);
+		}
+		mpidr = dts_read_cells(reg, addr_cells) & MPIDR_AFFINITY_MASK;
+		for (prior = 0U; prior < cpu_count; prior++) {
+			if (beau_config.cpu_topology[prior].mpidr == mpidr) {
+				arm64_dts_panic("duplicate cpu MPIDR", -EINVAL);
+			}
+		}
+		llc_key = dts_cpu_llc_key(fdt, cpu, mpidr, &source);
+		for (domain = 0U; domain < beau_config.llc_domain_count; domain++) {
+			uint16_t representative;
+
+			for (representative = 0U; representative < cpu_count; representative++) {
+				if (beau_config.cpu_topology[representative].llc_id == domain) {
+					break;
+				}
+			}
+			if ((representative < cpu_count) &&
+				(beau_config.cpu_topology[representative].llc_source == source) &&
+				(llc_keys[representative] == llc_key)) {
+				break;
+			}
+		}
+		if (domain == beau_config.llc_domain_count) {
+			beau_config.llc_domain_count++;
+		}
+		beau_config.cpu_topology[cpu_count].mpidr = mpidr;
+		beau_config.cpu_topology[cpu_count].llc_id = domain;
+		beau_config.cpu_topology[cpu_count].llc_source = source;
+		llc_keys[cpu_count] = llc_key;
+		cpu_count++;
 	}
 
-	return count;
+	if (cpu_count != MAX_PCPU_NUM) {
+		arm64_dts_panic("/cpus configured count", -EINVAL);
+	}
+	for (cpu_count = 0U; cpu_count < MAX_PCPU_NUM; cpu_count++) {
+		uint16_t member;
+		uint64_t mask = 0UL;
+
+		for (member = 0U; member < MAX_PCPU_NUM; member++) {
+			if (beau_config.cpu_topology[member].llc_id ==
+				beau_config.cpu_topology[cpu_count].llc_id) {
+				mask |= 1UL << member;
+			}
+		}
+		beau_config.cpu_topology[cpu_count].llc_pcpu_mask = mask;
+	}
+	beau_config.cpu_topology_count = MAX_PCPU_NUM;
+	beau_config.cpu_topology_valid = true;
 }
 
 static void dts_parse_memory(const void *fdt, uint64_t *base, uint64_t *size)
@@ -1130,9 +1276,12 @@ void arm64_platform_dts_parse_board(const void *fdt,
 		&beau_config.gicd_size);
 	dts_reg_by_index(fdt, gic, 1U, &gicr_base, &gicr_total_size);
 
-	cpu_count = dts_count_cpus(fdt);
-	if ((cpu_count == 0U) || (cpu_count > MAX_PCPU_NUM)) {
-		panic("invalid arm64 dts cpu count %u", cpu_count);
+	/* NOTE: CPU count was validated once before PSCI setup; reuse that snapshot
+	 * so GICR sizing cannot diverge from the pCPU identity map.
+	 */
+	cpu_count = beau_config.cpu_topology_count;
+	if (!beau_config.cpu_topology_valid || (cpu_count != MAX_PCPU_NUM)) {
+		panic("invalid arm64 published cpu topology count %u", cpu_count);
 	}
 	beau_config.gicr_base = gicr_base;
 	beau_config.gicr_size = gicr_total_size;

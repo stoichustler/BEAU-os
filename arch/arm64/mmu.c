@@ -475,20 +475,42 @@ void flush_invalidate_all_cache(void)
 	arm64_isb();
 }
 
-void flush_cacheline(const volatile void *p)
+/* [20260723] ARM64 cache ownership transfer
+ *
+ * EL2 producer writes normal cacheable memory
+ *     |
+ *     v
+ * clean to PoC + DSB ISH
+ *     |
+ *     v
+ * device or table walker may consume the published data
+ *
+ * device producer writes an EL2 read-only buffer
+ *     |
+ *     v
+ * invalidate local cache line + DSB ISH
+ *     |
+ *     v
+ * EL2 consumes the device-owned data
+ *
+ * Key rule:
+ *   - clean is the producer publication operation and retains local cache;
+ *   - invalidate is valid only after the caller has stopped writing the range;
+ *   - callers publish hardware ownership only after the matching operation
+ *     completes, preventing stale or partially initialized descriptors.
+ */
+void clean_cacheline(const volatile void *p)
 {
-	arm64_dc(civac, p);
+	arm64_dc(cvac, p);
 	arm64_dsb_ish();
 }
 
-void flush_cache_range(const volatile void *p, uint64_t size)
+void clean_cache_range(const volatile void *p, uint64_t size)
 {
-	uint64_t addr = (uint64_t)p;
-	uint64_t end = addr + size;
+	arm64_dcache_wb_range(p, size);
+}
 
-	addr &= ~(CACHE_LINE_SIZE - 1UL);
-	while (addr < end) {
-		flush_cacheline((const volatile void *)addr);
-		addr += CACHE_LINE_SIZE;
-	}
+void invalidate_cache_range(const volatile void *p, uint64_t size)
+{
+	arm64_dcache_inv_range(p, size);
 }

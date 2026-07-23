@@ -11,6 +11,7 @@
 #include <cpu.h>
 
 #define ARM64_CACHE_MAX_LEAVES		16U
+#define ARM64_CACHE_MAX_LLC_DOMAINS	MAX_PCPU_NUM
 #define ARM64_CACHE_TYPE_NONE		0U
 #define ARM64_CACHE_TYPE_INST		1U
 #define ARM64_CACHE_TYPE_DATA		2U
@@ -27,6 +28,13 @@ struct arm64_cache_leaf {
 	uint64_t shared_pcpu_mask;
 };
 
+struct arm64_cache_domain {
+	uint64_t pcpu_mask;
+	uint32_t id;
+	uint8_t source;
+	uint8_t reserved[3U];
+};
+
 struct arm64_cache_info {
 	bool valid;
 	uint32_t dcache_line_size;
@@ -41,6 +49,7 @@ struct arm64_cache_info {
 	uint64_t llc_size;
 	uint64_t llc_pcpu_mask;
 	struct arm64_cache_leaf leaves[ARM64_CACHE_MAX_LEAVES];
+	struct arm64_cache_domain domains[ARM64_CACHE_MAX_LLC_DOMAINS];
 };
 
 void arm64_cache_init(void);
