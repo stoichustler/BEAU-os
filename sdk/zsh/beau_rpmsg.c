@@ -8,8 +8,10 @@
 #include <zephyr/cache.h>
 #include <zephyr/irq.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/shell/shell.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/barrier.h>
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/device_mmio.h>
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/util.h>
@@ -37,6 +39,14 @@ LOG_MODULE_REGISTER(beau_rpmsg, LOG_LEVEL_INF);
 #define BEAU_RPMSG_VIRTIO_ID	7U
 #define BEAU_RPMSG_F_NS		0U
 #define BEAU_RPMSG_STATUS_DRIVER_OK	4U
+#define BEAU_RPMSG_PEER_NAME		"beau-rpmsg-peer"
+#define BEAU_RPMSG_PEER_MAGIC		0x4252504dU
+#define BEAU_RPMSG_PEER_VERSION	1U
+#define BEAU_RPMSG_PEER_READY		1U
+#define BEAU_RPMSG_PEER_DATA		2U
+#define BEAU_RPMSG_PEER_ACK		3U
+#define BEAU_RPMSG_PEER_PAYLOAD_MAX	240U
+#define BEAU_RPMSG_PEER_ACK_TIMEOUT_MS	1000U
 
 struct beau_rsc_vring {
 	uint32_t da;
@@ -67,6 +77,27 @@ struct beau_rsc_table {
 	struct beau_rsc_vdev vdev;
 } __packed;
 
+struct beau_rpmsg_peer_msg {
+	uint32_t magic;
+	uint16_t version;
+	uint16_t type;
+	uint32_t sequence;
+	uint16_t payload_len;
+	uint16_t reserved;
+	uint8_t payload[BEAU_RPMSG_PEER_PAYLOAD_MAX];
+} __packed;
+
+struct beau_rpmsg_peer_state {
+	uint32_t address;
+	uint32_t pending_sequence;
+	uint16_t pending_len;
+	uint32_t ack_sequence;
+	uint16_t ack_len;
+	uint8_t ack_payload[BEAU_RPMSG_PEER_PAYLOAD_MAX];
+	bool peer_ready;
+	bool ack_valid;
+};
+
 static mm_reg_t beau_rpmsg_map;
 static mm_reg_t beau_rpmsg_doorbell_map;
 static metal_phys_addr_t beau_rpmsg_physmap[] = { BEAU_RPMSG_SHARED };
@@ -75,11 +106,17 @@ static struct virtio_vring_info beau_rpmsg_rvrings[BEAU_RPMSG_VRING_COUNT];
 static struct virtqueue *beau_rpmsg_vq[BEAU_RPMSG_VRING_COUNT];
 static struct virtio_device beau_rpmsg_vdev;
 static struct rpmsg_virtio_device beau_rpmsg_rvdev;
-static struct rpmsg_endpoint beau_rpmsg_ept;
+static struct rpmsg_endpoint beau_rpmsg_raw_ept;
+static struct rpmsg_endpoint beau_rpmsg_peer_ept;
 static atomic_t beau_rpmsg_ready;
 static atomic_t beau_rpmsg_wait_loops;
 static atomic_t beau_rpmsg_notify_count;
 static atomic_t beau_rpmsg_echo_count;
+static atomic_t beau_rpmsg_peer_sequence;
+static struct beau_rpmsg_peer_state beau_rpmsg_peer_state;
+static struct k_spinlock beau_rpmsg_peer_lock;
+K_SEM_DEFINE(beau_rpmsg_peer_ack, 0, 1);
+K_MUTEX_DEFINE(beau_rpmsg_peer_command_lock);
 
 static struct beau_rsc_table *beau_rpmsg_table(void)
 {
@@ -141,10 +178,203 @@ static int beau_rpmsg_echo(struct rpmsg_endpoint *ept, void *data,
 	return ret;
 }
 
+static size_t beau_rpmsg_peer_header_size(void)
+{
+	return offsetof(struct beau_rpmsg_peer_msg, payload);
+}
+
+static bool beau_rpmsg_peer_decode(const void *data, size_t len,
+	struct beau_rpmsg_peer_msg *msg)
+{
+	const struct beau_rpmsg_peer_msg *wire = data;
+	size_t header_size = beau_rpmsg_peer_header_size();
+	uint16_t payload_len;
+
+	if ((data == NULL) || (len < header_size)) {
+		return false;
+	}
+	payload_len = sys_le16_to_cpu(wire->payload_len);
+	if ((sys_le32_to_cpu(wire->magic) != BEAU_RPMSG_PEER_MAGIC) ||
+		(sys_le16_to_cpu(wire->version) != BEAU_RPMSG_PEER_VERSION) ||
+		(sys_le16_to_cpu(wire->reserved) != 0U) ||
+		(payload_len > BEAU_RPMSG_PEER_PAYLOAD_MAX) ||
+		(len != (header_size + payload_len))) {
+		return false;
+	}
+
+	(void)memset(msg, 0, sizeof(*msg));
+	msg->magic = sys_le32_to_cpu(wire->magic);
+	msg->version = sys_le16_to_cpu(wire->version);
+	msg->type = sys_le16_to_cpu(wire->type);
+	msg->sequence = sys_le32_to_cpu(wire->sequence);
+	msg->payload_len = payload_len;
+	if (payload_len != 0U) {
+		(void)memcpy(msg->payload, wire->payload, payload_len);
+	}
+	return true;
+}
+
+/* [20260723] VM0 initiated RPMsg request completion
+ *
+ * VM3 READY -> peer address published -> shell sends DATA -> VM3 ACK
+ *                                      |                  |
+ *                                      +---- bounded wait-+
+ *
+ * Key rule:
+ *   - the IRQ callback owns peer and ACK publication under the spinlock;
+ *   - the shell resets completion state before sending and waits without a lock;
+ *   - an unsolicited or malformed packet cannot make a command succeed.
+ */
+static int beau_rpmsg_peer_callback(struct rpmsg_endpoint *ept, void *data,
+				    size_t len, uint32_t src, void *priv)
+{
+	struct beau_rpmsg_peer_msg msg;
+	k_spinlock_key_t key;
+
+	ARG_UNUSED(ept);
+	ARG_UNUSED(priv);
+	if (!beau_rpmsg_peer_decode(data, len, &msg)) {
+		LOG_WRN("peer invalid packet: src=0x%08x len=%u", src, (uint32_t)len);
+		return -EINVAL;
+	}
+
+	key = k_spin_lock(&beau_rpmsg_peer_lock);
+	if ((msg.type == BEAU_RPMSG_PEER_READY) && (msg.sequence == 0U) &&
+		(msg.payload_len == 0U)) {
+		beau_rpmsg_peer_state.address = src;
+		beau_rpmsg_peer_state.peer_ready = true;
+		k_spin_unlock(&beau_rpmsg_peer_lock, key);
+		LOG_INF("peer ready: addr=0x%08x", src);
+		return RPMSG_SUCCESS;
+	}
+	if ((msg.type == BEAU_RPMSG_PEER_ACK) &&
+		(beau_rpmsg_peer_state.peer_ready) &&
+		(msg.sequence == beau_rpmsg_peer_state.pending_sequence) &&
+		(msg.payload_len == beau_rpmsg_peer_state.pending_len)) {
+		beau_rpmsg_peer_state.ack_sequence = msg.sequence;
+		beau_rpmsg_peer_state.ack_len = msg.payload_len;
+		if (msg.payload_len != 0U) {
+			(void)memcpy(beau_rpmsg_peer_state.ack_payload, msg.payload,
+				msg.payload_len);
+		}
+		beau_rpmsg_peer_state.ack_valid = true;
+		k_spin_unlock(&beau_rpmsg_peer_lock, key);
+		k_sem_give(&beau_rpmsg_peer_ack);
+		return RPMSG_SUCCESS;
+	}
+	k_spin_unlock(&beau_rpmsg_peer_lock, key);
+	LOG_WRN("peer unexpected packet: type=%u seq=%u src=0x%08x",
+		msg.type, msg.sequence, src);
+	return -EINVAL;
+}
+
 static void beau_rpmsg_unbind(struct rpmsg_endpoint *ept)
 {
 	rpmsg_destroy_ept(ept);
 }
+
+static int cmd_rpmsg_status(const struct shell *sh, size_t argc, char **argv)
+{
+	k_spinlock_key_t key;
+	bool peer_ready;
+	uint32_t peer_address;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	key = k_spin_lock(&beau_rpmsg_peer_lock);
+	peer_ready = beau_rpmsg_peer_state.peer_ready;
+	peer_address = beau_rpmsg_peer_state.address;
+	k_spin_unlock(&beau_rpmsg_peer_lock, key);
+	shell_print(sh, "transport:%s peer:%s addr:0x%08x",
+		atomic_get(&beau_rpmsg_ready) != 0 ? "ready" : "offline",
+		peer_ready ? "ready" : "waiting", peer_address);
+	return 0;
+}
+
+static int cmd_rpmsg_send(const struct shell *sh, size_t argc, char **argv)
+{
+	struct beau_rpmsg_peer_msg msg;
+	k_spinlock_key_t key;
+	const char *payload;
+	size_t payload_len;
+	size_t message_len;
+	uint32_t sequence;
+	uint32_t peer_address;
+	bool ack_valid;
+	int ret;
+
+	if (argc != 2U) {
+		shell_error(sh, "usage: rpmsg send <payload>");
+		return -EINVAL;
+	}
+	payload = argv[1];
+	payload_len = strnlen(payload, BEAU_RPMSG_PEER_PAYLOAD_MAX + 1U);
+	if ((payload_len == 0U) || (payload_len > BEAU_RPMSG_PEER_PAYLOAD_MAX)) {
+		shell_error(sh, "payload must be 1..%u bytes", BEAU_RPMSG_PEER_PAYLOAD_MAX);
+		return -EMSGSIZE;
+	}
+	if (atomic_get(&beau_rpmsg_ready) == 0) {
+		shell_error(sh, "transport offline");
+		return -ENODEV;
+	}
+
+	k_mutex_lock(&beau_rpmsg_peer_command_lock, K_FOREVER);
+	key = k_spin_lock(&beau_rpmsg_peer_lock);
+	if (!beau_rpmsg_peer_state.peer_ready) {
+		k_spin_unlock(&beau_rpmsg_peer_lock, key);
+		k_mutex_unlock(&beau_rpmsg_peer_command_lock);
+		shell_error(sh, "peer not ready");
+		return -ENOTCONN;
+	}
+	sequence = (uint32_t)atomic_inc(&beau_rpmsg_peer_sequence) + 1U;
+	peer_address = beau_rpmsg_peer_state.address;
+	beau_rpmsg_peer_state.pending_sequence = sequence;
+	beau_rpmsg_peer_state.pending_len = (uint16_t)payload_len;
+	beau_rpmsg_peer_state.ack_valid = false;
+	k_spin_unlock(&beau_rpmsg_peer_lock, key);
+	k_sem_reset(&beau_rpmsg_peer_ack);
+
+	(void)memset(&msg, 0, sizeof(msg));
+	msg.magic = sys_cpu_to_le32(BEAU_RPMSG_PEER_MAGIC);
+	msg.version = sys_cpu_to_le16(BEAU_RPMSG_PEER_VERSION);
+	msg.type = sys_cpu_to_le16(BEAU_RPMSG_PEER_DATA);
+	msg.sequence = sys_cpu_to_le32(sequence);
+	msg.payload_len = sys_cpu_to_le16((uint16_t)payload_len);
+	(void)memcpy(msg.payload, payload, payload_len);
+	message_len = beau_rpmsg_peer_header_size() + payload_len;
+	ret = rpmsg_send_offchannel(&beau_rpmsg_peer_ept, beau_rpmsg_peer_ept.addr,
+		peer_address, &msg, (int)message_len);
+	if (ret < RPMSG_SUCCESS) {
+		k_mutex_unlock(&beau_rpmsg_peer_command_lock);
+		shell_error(sh, "send failed: %d", ret);
+		return ret;
+	}
+	ret = k_sem_take(&beau_rpmsg_peer_ack, K_MSEC(BEAU_RPMSG_PEER_ACK_TIMEOUT_MS));
+	if (ret != 0) {
+		k_mutex_unlock(&beau_rpmsg_peer_command_lock);
+		shell_error(sh, "ack timeout: seq=%u", sequence);
+		return -ETIMEDOUT;
+	}
+	key = k_spin_lock(&beau_rpmsg_peer_lock);
+	ack_valid = beau_rpmsg_peer_state.ack_valid &&
+		(beau_rpmsg_peer_state.ack_sequence == sequence) &&
+		(beau_rpmsg_peer_state.ack_len == payload_len) &&
+		(memcmp(beau_rpmsg_peer_state.ack_payload, payload, payload_len) == 0);
+	k_spin_unlock(&beau_rpmsg_peer_lock, key);
+	k_mutex_unlock(&beau_rpmsg_peer_command_lock);
+	if (!ack_valid) {
+		shell_error(sh, "ack mismatch: seq=%u", sequence);
+		return -EPROTO;
+	}
+	shell_print(sh, "ack:seq=%u payload:%s", sequence, payload);
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_rpmsg,
+	SHELL_CMD_ARG(status, NULL, "Show BEAU RPMsg peer status", cmd_rpmsg_status, 1, 0),
+	SHELL_CMD_ARG(send, NULL, "Send payload to the VM3 RPMsg peer", cmd_rpmsg_send, 2, 0),
+	SHELL_SUBCMD_SET_END);
+SHELL_CMD_REGISTER(rpmsg, &sub_rpmsg, "BEAU RPMsg full-duplex validation", NULL);
 
 static void beau_rpmsg_publish_table(void)
 {
@@ -220,13 +450,20 @@ static int beau_rpmsg_start(void)
 		return ret;
 	}
 	rdev = rpmsg_virtio_get_rpmsg_device(&beau_rpmsg_rvdev);
-	ret = rpmsg_create_ept(&beau_rpmsg_ept, rdev, "rpmsg-raw", RPMSG_ADDR_ANY,
+	ret = rpmsg_create_ept(&beau_rpmsg_raw_ept, rdev, "rpmsg-raw", RPMSG_ADDR_ANY,
 		RPMSG_ADDR_ANY, beau_rpmsg_echo, beau_rpmsg_unbind);
-	if (ret == 0) {
-		atomic_set(&beau_rpmsg_ready, 1);
-		LOG_INF("rpmsg service rpmsg-raw announced");
+	if (ret != RPMSG_SUCCESS) {
+		return ret;
 	}
-	return ret;
+	ret = rpmsg_create_ept(&beau_rpmsg_peer_ept, rdev, BEAU_RPMSG_PEER_NAME,
+		RPMSG_ADDR_ANY, RPMSG_ADDR_ANY, beau_rpmsg_peer_callback, beau_rpmsg_unbind);
+	if (ret != RPMSG_SUCCESS) {
+		rpmsg_destroy_ept(&beau_rpmsg_raw_ept);
+		return ret;
+	}
+	atomic_set(&beau_rpmsg_ready, 1);
+	LOG_INF("rpmsg services announced: rpmsg-raw, %s", BEAU_RPMSG_PEER_NAME);
+	return RPMSG_SUCCESS;
 }
 
 static void beau_rpmsg_thread(void *a, void *b, void *c)

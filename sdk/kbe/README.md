@@ -24,6 +24,10 @@ Linux kernel tree so they can be ported to multiple Linux versions.
   Zephyr service VM, using standard virtio-rpmsg and `rpmsg_char`.
 - `beau-static-rproc.Kconfig`, `beau-static-rproc.Makefile`: integration
   fragments for `drivers/remoteproc`.
+- `beau_rpmsg_peer.c`: VM3 RPMsg peer for the dedicated VM0 full-duplex
+  validation endpoint.
+- `beau-rpmsg-peer.Kconfig`, `beau-rpmsg-peer.Makefile`: integration
+  fragments for `drivers/rpmsg`.
 - `Kconfig`, `Makefile`: Kbuild integration snippets for `drivers/virt/beau`.
 
 ## Porting To A Linux Tree
@@ -50,6 +54,13 @@ To integrate the VM3 attach-only transport, copy `beau_static_rproc.c` into
 `Kconfig`, and append `beau-static-rproc.Makefile` to its `Makefile`. Enable
 `CONFIG_REMOTEPROC`, `CONFIG_RPMSG_VIRTIO`, `CONFIG_RPMSG_CHAR`, and
 `CONFIG_BEAU_STATIC_RPROC`; `RPMSG_CHAR` also requires `CONFIG_NET`.
+
+For VM0-initiated full-duplex validation, copy `beau_rpmsg_peer.c` into
+`drivers/rpmsg`, append `beau-rpmsg-peer.Kconfig` and
+`beau-rpmsg-peer.Makefile` to that directory's Kconfig and Makefile, then
+enable `CONFIG_BEAU_RPMSG_PEER`. The driver binds only `beau-rpmsg-peer`:
+it publishes READY and returns an ACK with the validated sequence and payload.
+The existing `rpmsg-raw` endpoint remains available to `rpmsg_char`.
 
 The guest DT node has compatible `beau,static-rproc`, a `shared` memory
 resource followed by a `doorbell` resource, and one GIC SPI interrupt. The

@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config BEAU_RPMSG_PEER
+	tristate "BEAU VM0 VM3 full-duplex RPMsg peer"
+	depends on RPMSG
+	help
+	  Bind the dedicated beau-rpmsg-peer service announced by the BEAU VM0
+	  Zephyr guest. The peer publishes READY and acknowledges validated VM0
+	  requests without consuming the existing rpmsg-raw character endpoint.
