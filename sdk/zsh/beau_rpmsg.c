@@ -109,7 +109,6 @@ static struct rpmsg_virtio_device beau_rpmsg_rvdev;
 static struct rpmsg_endpoint beau_rpmsg_raw_ept;
 static struct rpmsg_endpoint beau_rpmsg_peer_ept;
 static atomic_t beau_rpmsg_ready;
-static atomic_t beau_rpmsg_wait_loops;
 static atomic_t beau_rpmsg_notify_count;
 static atomic_t beau_rpmsg_echo_count;
 static atomic_t beau_rpmsg_peer_sequence;
@@ -484,11 +483,6 @@ static void beau_rpmsg_thread(void *a, void *b, void *c)
 	table = beau_rpmsg_table();
 	beau_rpmsg_publish_table();
 	while (!beau_rpmsg_attached()) {
-		if (atomic_inc(&beau_rpmsg_wait_loops) % 100 == 0) {
-			LOG_INF("waiting host: status=0x%02x vring0=0x%08x vring1=0x%08x",
-				table->vdev.status, table->vdev.vring[0].da,
-				table->vdev.vring[1].da);
-		}
 		k_sleep(K_MSEC(20));
 	}
 	LOG_INF("host attached: status=0x%02x", table->vdev.status);

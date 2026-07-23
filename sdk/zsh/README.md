@@ -10,8 +10,10 @@ zephyr/samples/subsys/shell/shell_module/src
 The current source set is:
 
 - `hcall.h` / `hcall.c`: common BEAU HVC IDs, IPC ABI structs, and HVC helpers.
-- `beau_wdt.c`: BEAU VM watchdog heartbeat validation thread.
-- `beau_ipc.c`: BEAU static IPC query, notify, ack, and ping shell commands.
+- `beau_wdt.c`: BEAU VM watchdog heartbeat thread; successful kicks are silent
+  while failed kicks are logged.
+- `beau_ipc.c`: BEAU HVC IPC shell commands: `hipc status` and
+  `hipc send <payload>`.
 - `beau_rpmsg.c`: OpenAMP `RPMSG_REMOTE` endpoint for the static VM0 <-> VM3
   remoteproc transport. It retains `rpmsg-raw` payload echo and publishes the
   dedicated `beau-rpmsg-peer` endpoint for `rpmsg status` and
@@ -33,3 +35,7 @@ The Linux peer must attach remoteproc and publish READY before `rpmsg send` is
 available. A successful command validates the ACK sequence and payload; an
 unready peer, invalid payload, send error, ACK mismatch, or timeout fails the
 command without changing the existing `rpmsg-raw` behavior.
+
+`hipc send` requires a 1..192-byte payload. It uses the independent static
+VM0 <-> VM2 HVC IPC ring, drains stale replies, sends a notify, and waits up to
+1500 ms for the VM2 reply.

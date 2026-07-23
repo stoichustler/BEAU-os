@@ -268,7 +268,7 @@ static int beau_ipc_drain_rx(void)
 	return 0;
 }
 
-static int cmd_beau_ipc_query(const struct shell *sh, size_t argc, char **argv)
+static int cmd_hipc_status(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
@@ -287,12 +287,27 @@ static int cmd_beau_ipc_query(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
-static int cmd_beau_ipc_ping(const struct shell *sh, size_t argc, char **argv)
+static int cmd_hipc_send(const struct shell *sh, size_t argc, char **argv)
 {
-	const char *payload = argc > 1U ? argv[1] : "zephyr-ipc-ping";
+	const char *payload;
+	size_t payload_len;
 	uint8_t reply[BEAU_IPC_MSG_MAX + 1U];
-	int ret = beau_ipc_query_and_map();
+	int ret;
 	int64_t deadline;
+
+	if (argc != 2U) {
+		shell_error(sh, "usage: hipc send <payload>");
+		return -EINVAL;
+	}
+
+	payload = argv[1];
+	payload_len = strnlen(payload, BEAU_IPC_MSG_MAX + 1U);
+	if (payload_len == 0U || payload_len > BEAU_IPC_MSG_MAX) {
+		shell_error(sh, "payload must be 1..%u bytes", BEAU_IPC_MSG_MAX);
+		return -EMSGSIZE;
+	}
+
+	ret = beau_ipc_query_and_map();
 
 	if (ret != 0) {
 		shell_error(sh, "query failed: %d", ret);
@@ -306,7 +321,7 @@ static int cmd_beau_ipc_ping(const struct shell *sh, size_t argc, char **argv)
 	}
 
 	ret = beau_ipc_ring_write_msg(beau_ipc.tx, (const uint8_t *)payload,
-				      (uint16_t)strnlen(payload, BEAU_IPC_MSG_MAX));
+				      (uint16_t)payload_len);
 	if (ret != 0) {
 		shell_error(sh, "tx failed: %d", ret);
 		return ret;
@@ -337,9 +352,9 @@ static int cmd_beau_ipc_ping(const struct shell *sh, size_t argc, char **argv)
 	return -ETIMEDOUT;
 }
 
-SHELL_STATIC_SUBCMD_SET_CREATE(sub_beau_ipc,
-	SHELL_CMD_ARG(query, NULL, "Query BEAU IPC channel", cmd_beau_ipc_query, 1, 0),
-	SHELL_CMD_ARG(ping, NULL, "Send BEAU IPC ping", cmd_beau_ipc_ping, 1, 1),
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_hipc,
+	SHELL_CMD_ARG(status, NULL, "Show BEAU HVC IPC channel", cmd_hipc_status, 1, 0),
+	SHELL_CMD_ARG(send, NULL, "Send BEAU HVC IPC payload", cmd_hipc_send, 2, 0),
 	SHELL_SUBCMD_SET_END);
 
-SHELL_CMD_REGISTER(beau_ipc, &sub_beau_ipc, "BEAU IPC validation", NULL);
+SHELL_CMD_REGISTER(hipc, &sub_hipc, "BEAU HVC IPC validation", NULL);

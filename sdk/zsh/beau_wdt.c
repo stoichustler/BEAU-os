@@ -37,8 +37,6 @@ static void beau_wdt_thread(void *arg1, void *arg2, void *arg3)
 
 		if (ret != 0) {
 			LOG_WRN("[κ] beau wdt kick failed:%ld count:%lu", ret, beau_wdt_kicks);
-		} else {
-			LOG_INF("[κ] beau wdt kick count:%lu", beau_wdt_kicks);
 		}
 		k_sleep(K_MSEC(BEAU_WDT_PERIOD_MS));
 	}
