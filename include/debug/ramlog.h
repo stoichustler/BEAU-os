@@ -10,11 +10,44 @@
 #include <types.h>
 
 #define RAMLOG_VM_SLOT_COUNT 5U
+#define RAMLOG_SNAPSHOT_BANK_COUNT 2U
+#define RAMLOG_SNAPSHOT_BANK_INVALID 0xffU
 
 struct acrn_vm;
 
+enum ramlog_snapshot_state {
+	RAMLOG_SNAPSHOT_EMPTY = 0U,
+	RAMLOG_SNAPSHOT_CAPTURING,
+	RAMLOG_SNAPSHOT_VALID,
+	RAMLOG_SNAPSHOT_CORRUPT,
+	RAMLOG_SNAPSHOT_CAPTURE_FAILED,
+};
+
+enum ramlog_snapshot_failure {
+	RAMLOG_SNAPSHOT_FAILURE_NONE = 0U,
+	RAMLOG_SNAPSHOT_FAILURE_CONFIG,
+	RAMLOG_SNAPSHOT_FAILURE_SOURCE,
+	RAMLOG_SNAPSHOT_FAILURE_COPY,
+	RAMLOG_SNAPSHOT_FAILURE_CHECKSUM,
+	RAMLOG_SNAPSHOT_FAILURE_INTERRUPTED,
+	RAMLOG_SNAPSHOT_FAILURE_BUSY,
+};
+
+struct ramlog_snapshot_bank_stats {
+	uint32_t dmesg_bytes;
+	uint32_t console_bytes;
+	uint32_t payload_bytes;
+	uint32_t checksum;
+	uint64_t generation;
+	enum ramlog_snapshot_state state;
+	enum ramlog_snapshot_failure failure;
+	bool active;
+};
+
 struct ramlog_stats {
 	uint16_t vmid;
+	uint8_t snapshot_active_bank;
+	uint8_t snapshot_capturing_bank;
 	uint32_t capacity;
 	uint32_t snapshot_capacity;
 	uint32_t snapshot_dmesg_bytes;
@@ -26,10 +59,15 @@ struct ramlog_stats {
 	uint64_t stored_bytes;
 	uint64_t dropped_bytes;
 	uint64_t overflow_events;
+	enum ramlog_snapshot_failure snapshot_last_failure;
+	struct ramlog_snapshot_bank_stats snapshot_banks[RAMLOG_SNAPSHOT_BANK_COUNT];
 	bool retained;
 	bool snapshot_valid;
 	bool snapshot_capturing;
 };
+
+const char *ramlog_snapshot_state_name(enum ramlog_snapshot_state state);
+const char *ramlog_snapshot_failure_name(enum ramlog_snapshot_failure failure);
 
 struct ramlog_window {
 	uint64_t oldest;

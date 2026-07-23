@@ -9,11 +9,17 @@ zephyr/samples/subsys/shell/shell_module/src
 
 The current source set is:
 
-- `hcall.h` / `hcall.c`: common BEAU HVC IDs, IPC ABI structs, and HVC helpers.
+- `hcall.h` / `hcall.c`: common BEAU HVC IDs and wrappers for WDT, HVC IPC,
+  and the AI scheduler advisor ABI.
 - `beau_wdt.c`: BEAU VM watchdog heartbeat thread; successful kicks are silent
   while failed kicks are logged.
 - `beau_ipc.c`: BEAU HVC IPC shell commands: `hipc status` and
   `hipc send <payload>`.
+- `beau_ai_sched.c` / `beau_ai_sched.h`: VM0 AI scheduler advisor. It registers
+  through `HC_AI_SCHED`, retains the boot-bound capability, then requests a
+  snapshot every 100 ms.
+- `beau_ai_model.h`: reviewed model configuration consumed by the advisor. The
+  retained default is untrained and does not issue proposals.
 - `beau_rpmsg.c`: OpenAMP `RPMSG_REMOTE` endpoint for the static VM0 <-> VM3
   remoteproc transport. It retains `rpmsg-raw` payload echo and publishes the
   dedicated `beau-rpmsg-peer` endpoint for `rpmsg status` and
@@ -22,7 +28,9 @@ The current source set is:
   DT, configuration, and upstream OpenAMP/libmetal CMake integration.
 
 When porting into a Zephyr shell sample, add `src/hcall.c`, `src/beau_wdt.c`,
-and `src/beau_ipc.c` to the application `target_sources()` list.
+`src/beau_ipc.c`, and `src/beau_ai_sched.c` to the application
+`target_sources()` list. Keep `beau_ai_sched.h` and `beau_ai_model.h` beside
+the source files.
 
 For static remoteproc/RPMsg, apply `beau_rpmsg.overlay` and
 `beau_rpmsg.conf`, then include `beau_rpmsg.cmake` after the application's

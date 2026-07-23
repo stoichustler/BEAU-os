@@ -38,9 +38,11 @@
 #include <logmsg.h>
 #include <pgtable.h>
 #include <asm/pci_dev.h>
+#include <asm/platform.h>
 #include <hash.h>
 #include <board_info.h>
 #include <atomic.h>
+#include <passthrough.h>
 #include "vpci_internal.h"
 
 struct vpci_pm_vdev_state {
@@ -99,7 +101,7 @@ static void vpci_cleanup_vm_resources(struct acrn_vm *vm, bool restore_parent);
 
 static uint32_t vpci_pt_stream_id(const struct pci_vdev *vdev)
 {
-	return (uint32_t)vdev->pdev->bdf.value;
+	return vdev->pci_dev_config->stream_id;
 }
 
 #if !CONFIG_STATIC_ARM64_PLATFORM
@@ -527,8 +529,10 @@ static int32_t assign_vdev_pt_iommu_domain(struct pci_vdev *vdev)
 	 * BDF. Moving the stream into vm->iommu makes device DMA observe the
 	 * VM's Stage-2 translation instead of host ownership.
 	 */
-	ret = move_pt_device(NULL, vm->iommu, (uint8_t)vdev->pdev->bdf.bits.b,
-		(uint8_t)(vdev->pdev->bdf.value & 0xFFU));
+	ret = arm64_platform_dma_isolation_required() ?
+		passthrough_assign_device(vm, stream_id, true) :
+		move_pt_device(NULL, vm->iommu, (uint8_t)vdev->pdev->bdf.bits.b,
+			(uint8_t)(vdev->pdev->bdf.value & 0xFFU));
 	if (ret != 0) {
 		LOG_ERR("vm%u ptdev %02x:%02x.%x failed to assign iommu stream 0x%x: %d",
 			vm->vm_id, vdev->pdev->bdf.bits.b, vdev->pdev->bdf.bits.d,
@@ -537,6 +541,13 @@ static int32_t assign_vdev_pt_iommu_domain(struct pci_vdev *vdev)
 		LOG_ERR("vm%u ptdev %02x:%02x.%x iommu stream 0x%x not assigned",
 			vm->vm_id, vdev->pdev->bdf.bits.b, vdev->pdev->bdf.bits.d,
 			vdev->pdev->bdf.bits.f, stream_id);
+		if (arm64_platform_dma_isolation_required()) {
+			(void)passthrough_deassign_device(vm, stream_id);
+		} else {
+			(void)move_pt_device(vm->iommu, NULL,
+				(uint8_t)vdev->pdev->bdf.bits.b,
+				(uint8_t)(vdev->pdev->bdf.value & 0xFFU));
+		}
 		ret = -ENODEV;
 	}
 
@@ -551,7 +562,7 @@ static int32_t assign_vdev_pt_iommu_domain(struct pci_vdev *vdev)
 static int32_t remove_vdev_pt_iommu_domain(const struct pci_vdev *vdev)
 {
 	int32_t ret;
-	const struct acrn_vm *vm = vpci2vm(vdev->vpci);
+	struct acrn_vm *vm = vpci2vm(vdev->vpci);
 
 	if (vm->iommu == NULL) {
 		LOG_ERR("vm%u ptdev %02x:%02x.%x missing iommu domain on unassign",
@@ -560,8 +571,10 @@ static int32_t remove_vdev_pt_iommu_domain(const struct pci_vdev *vdev)
 		return -ENODEV;
 	}
 
-	ret = move_pt_device(vm->iommu, NULL, (uint8_t)vdev->pdev->bdf.bits.b,
-		(uint8_t)(vdev->pdev->bdf.value & 0xFFU));
+	ret = arm64_platform_dma_isolation_required() ?
+		passthrough_deassign_device(vm, vpci_pt_stream_id(vdev)) :
+		move_pt_device(vm->iommu, NULL, (uint8_t)vdev->pdev->bdf.bits.b,
+			(uint8_t)(vdev->pdev->bdf.value & 0xFFU));
 	if (ret != 0) {
 		LOG_ERR("vm%u ptdev %02x:%02x.%x failed to unassign iommu stream 0x%x: %d",
 			vm->vm_id, vdev->pdev->bdf.bits.b, vdev->pdev->bdf.bits.d,
@@ -649,12 +662,41 @@ static void vpci_init_pt_dev(struct pci_vdev *vdev)
 	init_vmsix_pt(vdev);
 	init_vsriov(vdev);
 	init_vdev_pt(vdev, false);
-
-	(void)assign_vdev_pt_iommu_domain(vdev);
 }
 
 static void vpci_deinit_pt_dev(struct pci_vdev *vdev)
 {
+	uint16_t command;
+	uint16_t readback;
+
+	if (has_msi_cap(vdev)) {
+		uint16_t control = (uint16_t)pci_pdev_read_cfg(vdev->pdev->bdf,
+			vdev->msi.capoff + PCIR_MSI_CTRL, 2U);
+
+		pci_pdev_write_cfg(vdev->pdev->bdf, vdev->msi.capoff + PCIR_MSI_CTRL,
+			2U, control & ~PCIM_MSICTRL_MSI_ENABLE);
+	}
+	if (has_msix_cap(vdev)) {
+		uint16_t control = (uint16_t)pci_pdev_read_cfg(vdev->pdev->bdf,
+			vdev->msix.capoff + PCIR_MSIX_CTRL, 2U);
+
+		pci_pdev_write_cfg(vdev->pdev->bdf, vdev->msix.capoff + PCIR_MSIX_CTRL,
+			2U, control | PCIM_MSIXCTRL_FUNCTION_MASK);
+	}
+	command = (uint16_t)pci_pdev_read_cfg(vdev->pdev->bdf, PCIR_COMMAND, 2U);
+	pci_pdev_write_cfg(vdev->pdev->bdf, PCIR_COMMAND, 2U,
+		(command | PCIM_CMD_INTxDIS) & ~PCIM_CMD_BUSEN);
+	readback = (uint16_t)pci_pdev_read_cfg(vdev->pdev->bdf, PCIR_COMMAND, 2U);
+	if ((readback & PCIM_CMD_BUSEN) != 0U) {
+		if (arm64_platform_dma_isolation_required()) {
+			panic("vm%u ptdev %02x:%02x.%x cannot clear bus master",
+				vpci2vm(vdev->vpci)->vm_id, vdev->pdev->bdf.bits.b,
+				vdev->pdev->bdf.bits.d, vdev->pdev->bdf.bits.f);
+		}
+		LOG_ERR("vm%u ptdev %02x:%02x.%x cannot clear bus master",
+			vpci2vm(vdev->vpci)->vm_id, vdev->pdev->bdf.bits.b,
+			vdev->pdev->bdf.bits.d, vdev->pdev->bdf.bits.f);
+	}
 	deinit_vdev_pt(vdev);
 	(void)remove_vdev_pt_iommu_domain(vdev);
 	deinit_vmsix_pt(vdev);
@@ -1004,6 +1046,24 @@ struct pci_vdev *vpci_init_vdev(struct acrn_vpci *vpci, struct acrn_vm_pci_dev_c
 				return NULL;
 			}
 		}
+		/* [20260723] vPCI DMA publication gate
+		 *
+		 * static BDF/StreamID policy -> SMMU S2 STE + CMD_SYNC -> vdev init
+		 *                                                     |
+		 *                                                     +--> config/BAR visible
+		 *
+		 * Key rule:
+		 *   - SMMU hardware owns the StreamID before vPCI publishes the function;
+		 *   - a failed attach removes the private vdev slot without calling its init;
+		 *   - no guest can enable bus mastering against an unbound DMA requester.
+		 */
+		if ((dev_config->emu_type == PCI_DEV_TYPE_PTDEV) &&
+			(assign_vdev_pt_iommu_domain(vdev) != 0)) {
+			hlist_del(&vdev->link);
+			bitmap_clear_non_atomic((id & 0x3FU), &vpci->vdev_bitmaps[id >> 6U]);
+			(void)memset(vdev, 0U, sizeof(*vdev));
+			return NULL;
+		}
 		vdev->vdev_ops->init_vdev(vdev);
 		/*
 		 * init_vdev() may populate config and BAR state before the DMA
@@ -1101,6 +1161,9 @@ static int32_t vpci_init_vdevs(struct acrn_vm *vm)
 			if ((vm_config->pci_devs[idx].emu_type == PCI_DEV_TYPE_PTDEV) &&
 				!arm_smmu_assignment_ready()) {
 				vpci_hide_ptdev_without_iommu(vm, &vm_config->pci_devs[idx], idx);
+				if (arm64_platform_dma_isolation_required()) {
+					return -EACCES;
+				}
 				continue;
 			}
 			vdev = vpci_init_vdev(vpci, &vm_config->pci_devs[idx], NULL);

@@ -197,11 +197,24 @@ int32_t shell_ramlog(int32_t argc, char **argv)
 		before.capacity, before.stored_bytes, before.dropped_bytes,
 		before.overflow_events);
 	if (before.snapshot_capacity != 0U) {
-		shell_item_line("pstore:capture:%s generation:%lu dmesg:%u console:%u/%u failures:%lu",
-			before.snapshot_capturing ? "busy" :
-			(before.snapshot_valid ? "yes" : "no"), before.snapshot_generation,
+		shell_item_line("pstore:active:%s bank:%u capture:%c bank:%u generation:%lu dmesg:%u console:%u/%u failures:%lu last:%s",
+			before.snapshot_valid ? "valid" : "none", before.snapshot_active_bank,
+			before.snapshot_capturing ? 'Y' : 'N',
+			before.snapshot_capturing_bank, before.snapshot_generation,
 			before.snapshot_dmesg_bytes, before.snapshot_console_bytes,
-			before.snapshot_capacity, before.snapshot_failures);
+			before.snapshot_capacity, before.snapshot_failures,
+			ramlog_snapshot_failure_name(before.snapshot_last_failure));
+		for (uint8_t bank = 0U; bank < RAMLOG_SNAPSHOT_BANK_COUNT; bank++) {
+			const struct ramlog_snapshot_bank_stats *bank_stats =
+				&before.snapshot_banks[bank];
+
+			shell_item_line("pstore:bank%u state:%-5s active:%c generation:%1lu bytes:%5u dmesg:%1u console:%5u checksum:%08x failure:%-4s",
+				bank, ramlog_snapshot_state_name(bank_stats->state),
+				bank_stats->active ? 'Y' : 'N', bank_stats->generation,
+				bank_stats->payload_bytes, bank_stats->dmesg_bytes,
+				bank_stats->console_bytes, bank_stats->checksum,
+				ramlog_snapshot_failure_name(bank_stats->failure));
+		}
 	}
 	shell_item_end();
 

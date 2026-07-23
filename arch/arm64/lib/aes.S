@@ -61,6 +61,8 @@
  *     at least one block and treats its IV as read-only.
  */
 
+#include <asm/boot/macro.h>
+
 .arch	armv8-a+crypto
 
 .section .rodata
@@ -77,9 +79,6 @@
 
 .text
 
-.globl	aes_v8_set_encrypt_key
-.type	aes_v8_set_encrypt_key,%function
-.align	5
 /* Expand a user key into struct arm64_aes_key.
  *
  *   x0 = user key, w1 = key bits, x2 = output schedule
@@ -90,7 +89,7 @@
  * Nr is 10, 12, or 14. The AES-256 path also applies SubWord halfway through
  * each eight-word expansion group.
  */
-aes_v8_set_encrypt_key:
+FUNC_ALIGN(aes_v8_set_encrypt_key, 5)
 	bti	c
 .Lenc_key:
 	stp	x29,x30,[sp,#-16]!
@@ -269,11 +268,8 @@ aes_v8_set_encrypt_key:
 	mov	x0,x3			// return value
 	ldr	x29,[sp],#16
 	ret
-.size	aes_v8_set_encrypt_key,.-aes_v8_set_encrypt_key
+END(aes_v8_set_encrypt_key)
 
-.globl	aes_v8_set_decrypt_key
-.type	aes_v8_set_decrypt_key,%function
-.align	5
 /* Build a decryption schedule from the encryption expansion.
  *
  * Decryption consumes round keys in reverse order. The first and last keys
@@ -281,7 +277,7 @@ aes_v8_set_encrypt_key:
  * AESIMC because AESD is paired with AESIMC in the block-decrypt loop.
  * Key-expansion errors are returned unchanged.
  */
-aes_v8_set_decrypt_key:
+FUNC_ALIGN(aes_v8_set_decrypt_key, 5)
 	bti	c
 .inst	0xd503233f		// paciasp
 	stp	x29,x30,[sp,#-16]!
@@ -319,10 +315,7 @@ aes_v8_set_decrypt_key:
 	ldp	x29,x30,[sp],#16
 .inst	0xd50323bf		// autiasp
 	ret
-.size	aes_v8_set_decrypt_key,.-aes_v8_set_decrypt_key
-.globl	aes_v8_encrypt
-.type	aes_v8_encrypt,%function
-.align	5
+END(aes_v8_set_decrypt_key)
 /* Encrypt one 16-byte block.
  *
  *   x0 = input, x1 = output, x2 = encryption schedule
@@ -332,7 +325,7 @@ aes_v8_set_decrypt_key:
  * final EOR applies the last round key. Loading the input before storing the
  * output permits in-place operation.
  */
-aes_v8_encrypt:
+FUNC_ALIGN(aes_v8_encrypt, 5)
 	bti	c
 	ldr	w3,[x2,#240]
 	ld1	{v0.4s},[x2],#16
@@ -358,17 +351,14 @@ aes_v8_encrypt:
 
 	st1	{v2.16b},[x1]
 	ret
-.size	aes_v8_encrypt,.-aes_v8_encrypt
-.globl	aes_v8_decrypt
-.type	aes_v8_decrypt,%function
-.align	5
+END(aes_v8_encrypt)
 /* Decrypt one 16-byte block with the transformed reverse schedule.
  *
  * AESD performs AddRoundKey, inverse ShiftRows, and inverse SubBytes;
  * AESIMC supplies inverse MixColumns for every non-final round. The final
  * round omits AESIMC and applies the last key with EOR.
  */
-aes_v8_decrypt:
+FUNC_ALIGN(aes_v8_decrypt, 5)
 	bti	c
 	ldr	w3,[x2,#240]
 	ld1	{v0.4s},[x2],#16
@@ -394,10 +384,7 @@ aes_v8_decrypt:
 
 	st1	{v2.16b},[x1]
 	ret
-.size	aes_v8_decrypt,.-aes_v8_decrypt
-.globl	aes_v8_cbc_encrypt
-.type	aes_v8_cbc_encrypt,%function
-.align	5
+END(aes_v8_decrypt)
 /* Encrypt or decrypt complete blocks in Cipher Block Chaining mode.
  *
  *   x0 = input, x1 = output, x2 = byte length
@@ -417,7 +404,7 @@ aes_v8_decrypt:
  *     is loaded before the corresponding plaintext store;
  *   - the IV is replaced with the last ciphertext block on either path.
  */
-aes_v8_cbc_encrypt:
+FUNC_ALIGN(aes_v8_cbc_encrypt, 5)
 	bti	c
 	stp	x29,x30,[sp,#-16]!
 	add	x29,sp,#0
@@ -915,10 +902,7 @@ aes_v8_cbc_encrypt:
 .Lcbc_abort:
 	ldr	x29,[sp],#16
 	ret
-.size	aes_v8_cbc_encrypt,.-aes_v8_cbc_encrypt
-.globl	aes_v8_ctr32_encrypt_blocks
-.type	aes_v8_ctr32_encrypt_blocks,%function
-.align	5
+END(aes_v8_cbc_encrypt)
 /* Encrypt or decrypt blocks with a 32-bit counter-mode keystream.
  *
  *   x0 = input, x1 = output, x2 = block count
@@ -935,7 +919,7 @@ aes_v8_cbc_encrypt:
  * caller must pass at least one block. Input and output may alias because each
  * input batch is loaded before its output is stored.
  */
-aes_v8_ctr32_encrypt_blocks:
+FUNC_ALIGN(aes_v8_ctr32_encrypt_blocks, 5)
 	bti	c
 	stp	x29,x30,[sp,#-16]!
 	add	x29,sp,#0
@@ -1292,4 +1276,4 @@ aes_v8_ctr32_encrypt_blocks:
 .Lctr32_done:
 	ldr	x29,[sp],#16
 	ret
-.size	aes_v8_ctr32_encrypt_blocks,.-aes_v8_ctr32_encrypt_blocks
+END(aes_v8_ctr32_encrypt_blocks)

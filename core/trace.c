@@ -30,6 +30,9 @@ struct trace_cpu_ring {
 static struct trace_cpu_ring trace_rings[MAX_PCPU_NUM];
 static volatile bool trace_running;
 static uint64_t trace_event_mask;
+static uint64_t trace_session;
+static int32_t trace_last_stop_status;
+static volatile enum trace_capture_state trace_state = TRACE_CAPTURE_IDLE;
 
 _Static_assert(sizeof(struct trace_record) == 32U, "trace record ABI must stay 32 bytes");
 
@@ -48,12 +51,13 @@ _Static_assert(sizeof(struct trace_record) == 32U, "trace record ABI must stay 3
  *   current pCPU fixed ring
  *        |
  *        v
- *   trace stop -> shell chronological merge
+ *   trace stop -> writer drain -> ready snapshot -> shell chronological merge
  *
  * A ring has one physical producer. Local IRQ masking prevents a timer or HVC
- * trace from nesting another write on the same pCPU. The shell reads only after
- * capture stops, so the hot path needs no global lock or shared Service VM
- * buffer. Full rings retain the newest records and account overwritten history.
+ * trace from nesting another write on the same pCPU. The control plane owns
+ * the capture state; producers only observe trace_running. A snapshot becomes
+ * readable only after every producer has exited its local publish window.
+ * Full rings retain the newest records and account overwritten history.
  */
 static uint64_t trace_event_category(uint32_t evid)
 {
@@ -117,6 +121,7 @@ static void trace_put(uint32_t evid, uint32_t n_data, struct trace_record *recor
 	cpu_write_memory_barrier();
 	if (!trace_event_enabled(evid)) {
 		ring->writer_active = false;
+		cpu_write_memory_barrier();
 		local_irq_restore(rflags);
 		return;
 	}
@@ -183,17 +188,38 @@ uint32_t trace_get_capacity(void)
 	return CONFIG_TRACE_RECORDS_PER_CPU;
 }
 
+void trace_get_status(struct trace_status *status)
+{
+	if (status == NULL) {
+		return;
+	}
+
+	(void)memset(status, 0U, sizeof(*status));
+	status->state = trace_state;
+	cpu_read_memory_barrier();
+	status->event_mask = trace_event_mask;
+	status->session = trace_session;
+	status->capacity = CONFIG_TRACE_RECORDS_PER_CPU;
+	status->last_stop_status = trace_last_stop_status;
+	status->readable = status->state == TRACE_CAPTURE_READY;
+}
+
 int32_t trace_clear(void)
 {
 	int32_t ret;
 
-	if (trace_running) {
+	if ((trace_state == TRACE_CAPTURE_CAPTURING) ||
+		(trace_state == TRACE_CAPTURE_DRAINING)) {
 		return -EBUSY;
 	}
 
 	ret = trace_wait_writers();
 	if (ret == 0) {
 		(void)memset(trace_rings, 0U, sizeof(trace_rings));
+		trace_event_mask = 0UL;
+		trace_last_stop_status = 0;
+		cpu_write_memory_barrier();
+		trace_state = TRACE_CAPTURE_IDLE;
 	}
 
 	return ret;
@@ -206,14 +232,18 @@ int32_t trace_start(uint64_t event_mask)
 	if ((event_mask == 0UL) || ((event_mask & ~TRACE_MASK_ALL) != 0UL)) {
 		return -EINVAL;
 	}
-	if (trace_running) {
+	if ((trace_state == TRACE_CAPTURE_CAPTURING) ||
+		(trace_state == TRACE_CAPTURE_DRAINING)) {
 		return -EBUSY;
 	}
 
 	ret = trace_clear();
 	if (ret == 0) {
 		trace_event_mask = event_mask;
+		trace_session++;
+		trace_last_stop_status = 0;
 		cpu_write_memory_barrier();
+		trace_state = TRACE_CAPTURE_CAPTURING;
 		trace_running = true;
 	}
 
@@ -222,10 +252,28 @@ int32_t trace_start(uint64_t event_mask)
 
 int32_t trace_stop(void)
 {
-	trace_running = false;
-	cpu_memory_barrier();
+	int32_t ret;
 
-	return trace_wait_writers();
+	if (trace_state == TRACE_CAPTURE_CAPTURING) {
+		trace_running = false;
+		cpu_write_memory_barrier();
+		trace_state = TRACE_CAPTURE_DRAINING;
+	} else if (trace_state == TRACE_CAPTURE_IDLE) {
+		return -EINVAL;
+	}
+
+	if (trace_state == TRACE_CAPTURE_READY) {
+		return 0;
+	}
+
+	ret = trace_wait_writers();
+	trace_last_stop_status = ret;
+	if (ret == 0) {
+		cpu_write_memory_barrier();
+		trace_state = TRACE_CAPTURE_READY;
+	}
+
+	return ret;
 }
 
 void trace_get_cpu_status(uint16_t pcpu_id, struct trace_cpu_status *status)
@@ -248,7 +296,8 @@ bool trace_get_record(uint16_t pcpu_id, uint32_t index, struct trace_record *rec
 	uint32_t oldest;
 	uint32_t slot;
 
-	if (trace_running || (record == NULL) || (pcpu_id >= get_pcpu_nums())) {
+	if ((trace_state != TRACE_CAPTURE_READY) || (record == NULL) ||
+		(pcpu_id >= get_pcpu_nums())) {
 		return false;
 	}
 
@@ -326,6 +375,13 @@ uint64_t trace_get_mask(void)
 uint32_t trace_get_capacity(void)
 {
 	return 0U;
+}
+
+void trace_get_status(struct trace_status *status)
+{
+	if (status != NULL) {
+		(void)memset(status, 0U, sizeof(*status));
+	}
 }
 
 int32_t trace_start(__unused uint64_t event_mask)

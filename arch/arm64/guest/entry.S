@@ -5,6 +5,7 @@
  */
 
 #include <asm/cpu.h>
+#include <asm/boot/macro.h>
 #include <asm/trap.h>
 #include <generated/offsets.h>
 
@@ -55,9 +56,7 @@
  */
 
 	.text
-	.align 4
-	.globl arm64_run_vcpu
-arm64_run_vcpu:
+FUNC_ALIGN(arm64_run_vcpu, 4)
 	/*
 	 * Build the same cpu_regs layout that guest_vector_entry builds on an EL1
 	 * exit.  Keeping entry and exit on one frame format prevents two subtly
@@ -128,3 +127,4 @@ arm64_run_vcpu:
 	 * falling back to the instruction after arm64_run_vcpu().
 	 */
 	b	vcpu_exit_return
+END(arm64_run_vcpu)

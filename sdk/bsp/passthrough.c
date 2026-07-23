@@ -452,6 +452,29 @@ int32_t passthrough_assign_device(struct acrn_vm *vm, uint32_t stream_id,
 	return ret;
 }
 
+bool passthrough_policy_allows_device(uint16_t vm_id, uint32_t stream_id,
+	bool writable)
+{
+	struct bsp_pt_device *dev;
+	uint64_t flags;
+	bool allowed = false;
+
+	if ((vm_id >= CONFIG_MAX_VM_NUM) || !bsp_pt_valid_stream(stream_id)) {
+		return false;
+	}
+
+	spinlock_irqsave_obtain(&bsp_pt_lock, &flags);
+	dev = bsp_pt_find_device(stream_id);
+	if ((dev != NULL) &&
+		(dev->policy_owner_vmid == vm_id) &&
+		(!writable || dev->writable)) {
+		allowed = true;
+	}
+	spinlock_irqrestore_release(&bsp_pt_lock, flags);
+
+	return allowed;
+}
+
 int32_t passthrough_deassign_device(struct acrn_vm *vm, uint32_t stream_id)
 {
 	struct bsp_pt_device *dev;

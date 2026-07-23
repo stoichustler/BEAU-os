@@ -21,15 +21,6 @@ void *memset(void *base, uint8_t v, size_t n)
     return base;
 }
 
-void *memset_s(void *base, uint8_t v, size_t n)
-{
-    if ((base != NULL) && (n != 0U)) {
-        (void)memset(base, v, n);
-    }
-
-    return base;
-}
-
 void memcpy(void *d, const void *s, size_t slen)
 {
     uint8_t *dst = (uint8_t *)d;
@@ -50,6 +41,15 @@ void memcpy_backwards(void *d, const void *s, size_t slen)
 	}
 }
 #endif
+
+void *memset_s(void *base, uint8_t v, size_t n)
+{
+	if ((base != NULL) && (n != 0U)) {
+		(void)memset(base, v, n);
+	}
+
+	return base;
+}
 
 int32_t memcpy_s(void *d, size_t dmax, const void *s, size_t slen)
 {

@@ -27,6 +27,22 @@ struct shell_trace_cursor {
 	bool valid;
 };
 
+static const char *shell_trace_state_name(enum trace_capture_state state)
+{
+	switch (state) {
+	case TRACE_CAPTURE_IDLE:
+		return "idle";
+	case TRACE_CAPTURE_CAPTURING:
+		return "capturing";
+	case TRACE_CAPTURE_DRAINING:
+		return "draining";
+	case TRACE_CAPTURE_READY:
+		return "ready";
+	default:
+		return "unknown";
+	}
+}
+
 static uint64_t shell_trace_category_mask(const char *category)
 {
 	uint64_t mask = 0UL;
@@ -165,16 +181,21 @@ static void shell_trace_print_record(uint32_t sequence, uint64_t base_tsc,
 static void shell_trace_status(void)
 {
 	char mask[64U];
+	struct trace_status trace_status;
 	uint16_t pcpu_id;
 
-	shell_trace_format_mask(trace_get_mask(), mask, sizeof(mask));
+	trace_get_status(&trace_status);
+	shell_trace_format_mask(trace_status.event_mask, mask, sizeof(mask));
 	shell_item_begin("TRACE");
-	/* mask lists enabled categories; capacity is records per pCPU; records and
-	 * overwritten are ring counters; writer reports active producer ownership.
+	/* session identifies one capture lifetime. Readable becomes Y only after all
+	 * producers have left their per-pCPU publish windows; a draining session is
+	 * deliberately not dumpable, even though its capture fast path is stopped.
 	 */
-	shell_item_line("state:%s mask:%s capacity:%u/pCPU record-size:%uB",
-		trace_is_running() ? "running" : "stopped", mask,
-		trace_get_capacity(), (uint32_t)sizeof(struct trace_record));
+	shell_item_line("state:%s readable:%c session:%lu last-stop:%d",
+		shell_trace_state_name(trace_status.state), trace_status.readable ? 'Y' : 'N',
+		trace_status.session, trace_status.last_stop_status);
+	shell_item_line("mask:%s capacity:%u/pCPU record-size:%uB", mask,
+		trace_status.capacity, (uint32_t)sizeof(struct trace_record));
 	shell_item_line("pCPU  records  overwritten  writer");
 	for (pcpu_id = 0U; pcpu_id < get_pcpu_nums(); pcpu_id++) {
 		struct trace_cpu_status status;
@@ -212,6 +233,7 @@ static int32_t shell_trace_start(int32_t argc, char **argv)
 static int32_t shell_trace_dump(int32_t argc, char **argv)
 {
 	struct shell_trace_cursor cursors[MAX_PCPU_NUM];
+	struct trace_status trace_status;
 	uint32_t total = 0U;
 	uint32_t requested = TRACE_DUMP_DEFAULT_COUNT;
 	uint32_t skipped;
@@ -220,8 +242,9 @@ static int32_t shell_trace_dump(int32_t argc, char **argv)
 	uint64_t base_tsc = 0UL;
 	uint16_t pcpu_id;
 
-	if (trace_is_running()) {
-		shell_puts("trace dump requires stopped capture\r\n");
+	trace_get_status(&trace_status);
+	if (!trace_status.readable) {
+		shell_puts("trace dump requires ready snapshot\r\n");
 		return -EBUSY;
 	}
 	if ((argc < 2) || (argc > 3)) {

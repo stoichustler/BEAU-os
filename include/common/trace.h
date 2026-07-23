@@ -92,6 +92,22 @@ struct trace_cpu_status {
 	bool writer_active;
 };
 
+enum trace_capture_state {
+	TRACE_CAPTURE_IDLE = 0U,
+	TRACE_CAPTURE_CAPTURING,
+	TRACE_CAPTURE_DRAINING,
+	TRACE_CAPTURE_READY,
+};
+
+struct trace_status {
+	uint64_t event_mask;
+	uint64_t session;
+	uint32_t capacity;
+	int32_t last_stop_status;
+	enum trace_capture_state state;
+	bool readable;
+};
+
 void TRACE_2L(uint32_t evid, uint64_t e, uint64_t f);
 void TRACE_4I(uint32_t evid, uint32_t a, uint32_t b, uint32_t c, uint32_t d);
 void TRACE_16STR(uint32_t evid, const char name[]);
@@ -99,6 +115,7 @@ void TRACE_16STR(uint32_t evid, const char name[]);
 bool trace_is_running(void);
 uint64_t trace_get_mask(void);
 uint32_t trace_get_capacity(void);
+void trace_get_status(struct trace_status *status);
 int32_t trace_start(uint64_t event_mask);
 int32_t trace_stop(void);
 int32_t trace_clear(void);

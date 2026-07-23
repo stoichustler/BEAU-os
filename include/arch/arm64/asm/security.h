@@ -12,6 +12,16 @@
 #include <types.h>
 #include <random.h>
 
+#define ARM64_SECURITY_FEATURE_PAUTH	(1UL << 0U)
+#define ARM64_SECURITY_FEATURE_BTI	(1UL << 1U)
+#define ARM64_SECURITY_FEATURE_RNG	(1UL << 2U)
+
+void arm64_security_early_init(void) __attribute__((no_stack_protector));
+void arm64_security_validate_pcpu(uint16_t pcpu_id);
+void arm64_security_finalize(void);
+void arm64_security_log_bsp_info(void);
+uint64_t arm64_security_host_features(void);
+
 #ifdef STACK_PROTECTOR
 extern unsigned long __stack_chk_guard;
 
@@ -23,7 +33,7 @@ static inline __attribute__((__always_inline__)) void init_stack_canary(void)
 
 static inline bool check_cpu_security_cap(void)
 {
-	return true;
+	return arm64_security_host_features() != 0UL;
 }
 
 static inline void cpu_internal_buffers_clear(void)

@@ -5,10 +5,10 @@
  */
 
 #include <asm/cpu.h>
+#include <asm/boot/macro.h>
 #include <generated/offsets.h>
 
 	.text
-	.align 4
 
 	/*
 	 * [20260714] ARM64 scheduler context switch principle
@@ -46,8 +46,7 @@
 	 *   - prev_sp and next_sp must point to durable thread_object.host_sp fields
 	 *     because the stores/loads below are the ownership transfer.
 	 */
-	.globl arch_switch_to
-arch_switch_to:
+FUNC_ALIGN(arch_switch_to, 4)
 	/*
 	 * Reserve the exact frame described by struct stack_frame.  C and assembly
 	 * share offsets through asm/cpu.h; changing the layout in only one side
@@ -122,3 +121,4 @@ arch_switch_to:
 	 * preserved register set changed.
 	 */
 	ret
+END(arch_switch_to)

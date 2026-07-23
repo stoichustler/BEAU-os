@@ -24,6 +24,42 @@
 #define BEAU_IPC_DIR_EP1_TO_EP0	1U
 #define BEAU_IPC_FLAG_NOTIFY_IRQ	0x1U
 
+#define BEAU_AI_SCHED_ABI_VERSION	1U
+#define BEAU_AI_SCHED_MAX_ENTRIES	16U
+#define BEAU_AI_SCHED_OP_REGISTER	0U
+#define BEAU_AI_SCHED_OP_SNAPSHOT	1U
+#define BEAU_AI_SCHED_OP_PROPOSE	2U
+#define BEAU_AI_SCHED_STATUS_OK	0U
+
+struct beau_ai_sched_entry {
+	uint16_t vmid;
+	uint16_t reserved;
+	uint32_t budget_us;
+} __aligned(8);
+
+struct beau_ai_sched_ioc {
+	uint32_t op;
+	uint32_t status;
+	uint32_t abi_version;
+	uint32_t ioc_size;
+	uint64_t capability;
+	uint64_t sequence;
+	uint16_t pcpu_id;
+	uint16_t entry_count;
+	uint32_t reserved0;
+	uint64_t sample_ticks;
+	uint32_t policy;
+	uint32_t period_us;
+	uint32_t pool_budget_us;
+	uint32_t min_budget_us;
+	uint32_t max_budget_us;
+	uint32_t max_step_us;
+	uint32_t min_update_ms;
+	uint64_t active_vm_mask;
+	uint64_t utilization_ppm;
+	struct beau_ai_sched_entry entries[BEAU_AI_SCHED_MAX_ENTRIES];
+} __aligned(8);
+
 struct beau_ipc_ioc {
 	uint32_t op;
 	uint32_t status;
@@ -60,5 +96,6 @@ struct beau_ipc_ring_header {
 
 long beau_hcall_vm_wdt_kick(unsigned long token);
 long beau_hcall_ipc(struct beau_ipc_ioc *ioc);
+long beau_hcall_ai_sched(struct beau_ai_sched_ioc *ioc);
 
 #endif /* BEAU_ZSH_HCALL_H */

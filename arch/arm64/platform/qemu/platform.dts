@@ -21,6 +21,7 @@
 		vfdt-model = "linux,dummy-virt";
 		vfdt-compatible = "linux,dummy-virt";
 		service-vm-initrd = <0>;
+		beau,dma-isolation = "required";
 
 		uart {
 			clock-frequency = <24000000>;
@@ -142,15 +143,15 @@
 		#size-cells = <2>;
 		ranges;
 
-		ramlog@7f2bf000 {
+		ramlog@7e6bf000 {
 			compatible = "beau,ramlog";
-			reg = <0x0 0x7f2bf000 0x0 0x00d41000>;
+			reg = <0x0 0x7e6bf000 0x0 0x01941000>;
 			no-map;
 			beau,header-size = <0x1000>;
 			beau,rtos-vm-count = <2>;
 			beau,rtos-log-size = <0x40000>;
 			beau,linux-vm-count = <3>;
-			beau,linux-log-size = <0x440000>;
+			beau,linux-log-size = <0x840000>;
 		};
 	};
 
@@ -606,6 +607,7 @@
 					compatible = "beau,passthrough-pci-device";
 					beau,pbdf = <0x0008>;
 					beau,vbdf = <0x0008>;
+					beau,stream-id = <0x0008>;
 					beau,pbar-base = <0x0 0x10000000>;
 					beau,vbar-base = <0x0 0x80000000>;
 				};
@@ -614,7 +616,7 @@
 					compatible = "beau,passthrough-pci-device";
 					beau,pbdf = <0x0010>;
 					beau,vbdf = <0x0010>;
-					beau,optional;
+					beau,stream-id = <0x0010>;
 					beau,pbar-base = <0x0 0x00000000>,
 							 <0x0 0x10100000>,
 							 <0x0 0x00000000>,

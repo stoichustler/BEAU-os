@@ -51,6 +51,7 @@ struct arm64_platform_dts_info {
 	uint32_t uart_clock_hz;
 	uint32_t uart_baud;
 	bool service_vm_initrd;
+	bool dma_isolation_required;
 	struct arm64_platform_pm_config pm;
 };
 

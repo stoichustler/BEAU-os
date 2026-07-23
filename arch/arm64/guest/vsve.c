@@ -238,7 +238,8 @@ static bool arm64_vsve_read_id_value(const struct acrn_vcpu *vcpu,
 			 */
 			val = read_id_aa64pfr1_el1();
 			val &= ~(ID_AA64PFR1_MTE_MASK |
-				ID_AA64PFR1_MTE_FRAC_MASK | ID_AA64PFR1_MTEX_MASK);
+				ID_AA64PFR1_MTE_FRAC_MASK | ID_AA64PFR1_MTEX_MASK |
+				ID_AA64PFR1_BT_MASK);
 			*value = val;
 			break;
 	case SYSREG_ID_AA64ZFR0_EL1:
@@ -252,10 +253,10 @@ static bool arm64_vsve_read_id_value(const struct acrn_vcpu *vcpu,
 		*value = read_id_aa64dfr1_el1();
 		break;
 	case SYSREG_ID_AA64ISAR0_EL1:
-		*value = read_id_aa64isar0_el1();
+		*value = read_id_aa64isar0_el1() & ~ID_AA64ISAR0_RNDR_MASK;
 		break;
 	case SYSREG_ID_AA64ISAR1_EL1:
-		*value = read_id_aa64isar1_el1();
+		*value = read_id_aa64isar1_el1() & ~ID_AA64ISAR1_PAUTH_MASK;
 		break;
 	case SYSREG_ID_AA64MMFR0_EL1:
 		*value = read_id_aa64mmfr0_el1();

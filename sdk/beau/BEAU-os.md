@@ -120,6 +120,24 @@ SMMUv3 domain。设备对 VM 可见之前，StreamID 必须已完成 STE 编程�
 代码中保留了硬件不支持 SMMU Stage-2 时的 bypass 兼容分支。该分支适合 bring-up，
 不应视为满足严格 DMA 隔离的安全模式。
 
+量产平台应在 `/beau,platform` 中设置 `beau,dma-isolation = "required"`。
+只要 DTS 配置了直通 PCI 设备，SMMUv3 必须在 VM 创建前完成 Stage-2 capability
+校验并进入 assignment-ready 状态；每个 PCI 配置还必须显式给出与静态
+`/passthrough` owner policy 匹配的 `beau,stream-id`。缺失 SMMU、能力不符、StreamID
+策略不匹配或同步失败都会停止启动，而不是隐藏设备后继续运行。严格模式禁止
+`beau,optional` PTDEV。未列入静态 policy 的 StreamID 保持 SMMU ABORT 默认状态。
+
+直通设备的发布和回收顺序为：
+
+```text
+BME=0 + IRQ masked
+    -> S2 STE body/valid publish + CMD_SYNC
+    -> vPCI config/BAR/MSI routing visible
+    -> Guest may enable BME
+
+teardown: BME=0 -> BAR hidden -> ABORT STE + CMD_SYNC -> release owner
+```
+
 ### 3.3 发布顺序必须 fail closed
 
 典型顺序如下：
@@ -594,6 +612,32 @@ walker、页分配、拆大页和增删映射。
 
 **原理**：当前 host 采用易于 bring-up 的 identity map。正常 RAM 与 device MMIO
 使用不同内存属性。
+
+`arch/arm64/copy.S` 提供 ARM64 的 `arch_memcpy()`、
+`arch_memcpy_backwards()` 与 `arch_memset()`。其 forward copy 适配自 OpenBSD
+ARM64 `kcopy()` 的普通内核复制循环，并保留 OpenBSD copyright 和许可；BEAU 不移植
+OpenBSD 的 `copyin/copyout`、user address check 或 PCB onfault ABI。`memcpy`、
+`memset` 与 `memmove` 的 C 接口是稳定语义契约；`arch_*` 是可替换的 ARM64 后端，
+不得把接口收窄为对齐地址。调用者必须传入已验证的 normal-memory 范围；汇编先以
+字节访问使端点对齐，只有两端都 8-byte 对齐才使用宽访问。重叠区间由 `memmove()`
+选择逆向 copy，汇编不访问 guest VA 或 MMIO。
+
+EL2 安全能力在 BSP 上先采集 PAC、BTI 和 RNDR，再与每个已启动 pCPU 的能力取交集。
+PAC/BTI 当前只记录为 `detected/off`，因为尚未引入 PAC key 生命周期、完整异常路径
+保护和编译器 branch-protection 策略；访客的 ID 寄存器会隐藏 PAC、BTI、RNDR，直到
+BEAU 提供对应虚拟化 ABI。RNDR/RNDRRS 仅在 ID 寄存器声明支持时执行，并须在 BSP
+成功取得种子且全部 pCPU 支持后才发布强熵接口；没有硬件熵时，栈 cookie 可使用现有
+计数器混合降级值，但该值绝不宣称为密码学随机数。
+
+Linux VM 的 4 MiB guest ramoops 输入由 EL2 复制到各自的双 bank retained snapshot：
+每个 bank 均可保存完整 4 MiB dmesg/console payload，另保留 256 KiB live console。
+capture 总是写入 inactive bank，完成 cache clean、payload checksum 及
+`magic/~magic`、`length/~length` descriptor 后才切换 active bank。4 KiB ramlog
+metadata page 同时保留两个 2 KiB header copy，valid marker 最后写入 inactive copy，
+避免 header publication 被中断时丢失两个 payload bank。因此客体 GPA 读取失败、
+Hypervisor 重启或中断 capture 不会覆盖上一份可读记录。启动恢复只选择 descriptor 和
+payload checksum 均有效的最新 bank；`ramlog <vmid>` 可重复导出 active 记录，并显示
+两个 bank 的状态与最近失败原因。
 
 `devmap` 从实际 leaf descriptor 解码属性。Host Stage-1 通过 AttrIdx 查询当前
 `MAIR_EL2`，VM Stage-2 读取 `MemAttr[3:0]`；输出统一使用 13 字符 memory-type
@@ -1319,8 +1363,13 @@ busy%、policy 和 BVT/RTDS/CBS 诊断，不再重复 per-thread CPU usage。
 ### 18.3 Trace 与符号化
 
 `core/trace.c` 为每 pCPU 分配固定 32-byte record ring，默认 256 条，满后覆盖最老
-记录并计数。trace 默认停止，需 shell 启动。类别包括 scheduler、VM exit、IRQ、
-timer 等。
+记录并计数。trace 默认 idle，需 shell 启动。当前类别包括 timer、scheduler、HVC、
+VM enter/exit。一次 capture 使用 `IDLE -> CAPTURING -> DRAINING -> READY` 状态机：
+stop 先关闭 producer fast path，随后等待全部 per-pCPU writer publish window 退出；
+只有 `READY` session 可 dump。若等待超时，状态保留为 `DRAINING`，拒绝 dump、clear
+和下一次 start；再次 `trace stop` 可继续完成 drain。`trace status` 输出 session、
+readable、last-stop、per-pCPU overwritten 和 writer 状态，便于区分正常覆盖与未完成
+快照。
 
 ARM64 build 保留 frame pointer；debug image 由 `gen_symtab.py` 生成地址到名称表。
 `arch/arm64/coredump.c` 只在已登记的 thread、per-pCPU 或 boot stack 边界内读取

@@ -17,6 +17,10 @@ obj:
 	.type fn, %function; \
 fn:
 
+#define FUNC_ALIGN(fn, alignment) \
+	.align alignment;              \
+	FUNC(fn)
+
 #define END(fn)         \
 	.size fn, . - fn
 

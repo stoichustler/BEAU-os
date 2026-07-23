@@ -27,9 +27,7 @@
 #if CONFIG_ARM64_SPE
 #include <asm/spe.h>
 #endif
-#ifdef STACK_PROTECTOR
 #include <asm/security.h>
-#endif
 
 /* [20260630] ARM64 host boot principle:
  *
@@ -144,6 +142,7 @@ void init_primary_pcpu(uint64_t mpidr, uint64_t fdt_paddr)
 	(void)fdt_paddr;
 	init_percpu_mpidr(mpidr);
 	set_pcpu_active(pcpu_id);
+	arm64_security_early_init();
 #ifdef STACK_PROTECTOR
 	init_stack_canary();
 #endif
@@ -161,6 +160,7 @@ void init_primary_pcpu(uint64_t mpidr, uint64_t fdt_paddr)
 	}
 	arm64_cache_init();
 	serial_init(false);
+	arm64_security_log_bsp_info();
 	arm64_gicv3_init_early();
 
 	pcpu_sp = (uint64_t)(&get_cpu_var(stack)[CONFIG_STACK_SIZE - 1]);
@@ -182,6 +182,7 @@ void init_secondary_pcpu(uint64_t mpidr)
 	}
 
 	pcpu_set_current_state(pcpu_id, PCPU_STATE_INITIALIZING);
+	arm64_security_validate_pcpu(pcpu_id);
 
 	init_pcpu_comm_post();
 }
@@ -235,6 +236,7 @@ static void init_pcpu_comm_post(void)
 		if (!wait_pcpus_running(AP_MASK)) {
 			panic("failed to initialize all secondary cores!");
 		}
+		arm64_security_finalize();
 		arm64_core_pmu_init_workers();
 		cpufreq_init();
 		arm64_rttest_init();

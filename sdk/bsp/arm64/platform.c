@@ -104,6 +104,17 @@ void arm64_platform_init_smmu(void)
 	if (beau_config.smmu_size != 0UL) {
 		arm_smmu_probe(beau_config.smmu_base, beau_config.smmu_size);
 	}
+	if (beau_config.dma_isolation_required &&
+		(beau_config.dma_passthrough_count != 0U) &&
+		!arm_smmu_assignment_ready()) {
+		panic("strict DMA isolation unavailable for %hu passthrough devices",
+			beau_config.dma_passthrough_count);
+	}
+}
+
+bool arm64_platform_dma_isolation_required(void)
+{
+	return beau_config.dma_isolation_required;
 }
 
 const struct arm64_mem_region *arm64_get_platform_mmio_regions(uint32_t *count)

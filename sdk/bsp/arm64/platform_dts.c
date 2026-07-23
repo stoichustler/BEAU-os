@@ -41,6 +41,8 @@
 #define ARM64_DTS_RAMLOG_RTOS_VM_COUNT	2U
 #define ARM64_DTS_RAMLOG_LINUX_VM_COUNT	3U
 #define ARM64_DTS_UINT16_MAX		0xffffU
+#define ARM64_DTS_DMA_ISOLATION_REQUIRED	"required"
+#define ARM64_DTS_DMA_ISOLATION_BRINGUP	"bringup"
 
 static const struct arm64_platform_dts_vm_storage *dts_storage;
 static uint16_t dts_bare_boot_option_count;
@@ -914,6 +916,7 @@ void arm64_platform_dts_parse_info(const void *fdt, struct arm64_platform_dts_in
 	info->uart_clock_hz = 24000000U;
 	info->uart_baud = 115200U;
 	info->service_vm_initrd = false;
+	info->dma_isolation_required = false;
 	(void)memset(&info->pm, 0U, sizeof(info->pm));
 	dts_mmio_region_count = 0U;
 
@@ -929,6 +932,16 @@ void arm64_platform_dts_parse_info(const void *fdt, struct arm64_platform_dts_in
 	info->vfdt_compatible = dts_string_prop(fdt, platform, "vfdt-compatible",
 		info->vfdt_compatible);
 	info->service_vm_initrd = dts_u32_prop(fdt, platform, "service-vm-initrd", 0U) != 0U;
+	{
+		const char *profile = dts_string_prop(fdt, platform, "beau,dma-isolation",
+			ARM64_DTS_DMA_ISOLATION_BRINGUP);
+
+		if (strcmp(profile, ARM64_DTS_DMA_ISOLATION_REQUIRED) == 0) {
+			info->dma_isolation_required = true;
+		} else if (strcmp(profile, ARM64_DTS_DMA_ISOLATION_BRINGUP) != 0) {
+			arm64_dts_panic("beau,dma-isolation", -EINVAL);
+		}
+	}
 	info->uart_clock_hz = dts_optional_u32_from_node(fdt, platform, "uart",
 		"clock-frequency", info->uart_clock_hz);
 	info->uart_baud = dts_optional_u32_from_node(fdt, platform, "uart",
@@ -1030,7 +1043,7 @@ static void dts_parse_ramlog(const void *fdt)
 	if ((header_size != ARM64_DTS_RAMLOG_HEADER_SIZE) ||
 		(rtos_vm_count != ARM64_DTS_RAMLOG_RTOS_VM_COUNT) ||
 		(linux_vm_count != ARM64_DTS_RAMLOG_LINUX_VM_COUNT) ||
-		(rtos_size != 0x40000U) || (linux_size != 0x440000U) ||
+		(rtos_size != 0x40000U) || (linux_size != 0x840000U) ||
 		!mem_aligned_check(base, PAGE_SIZE) || !mem_aligned_check(size, PAGE_SIZE) ||
 		!dts_range_end(base, size, &end) ||
 		!dts_range_end(beau_config.ram_start, beau_config.ram_size, &host_end) ||
@@ -1097,6 +1110,8 @@ void arm64_platform_dts_parse_board(const void *fdt,
 	if (info == NULL) {
 		panic("invalid arm64 platform dts info");
 	}
+	beau_config.dma_isolation_required = info->dma_isolation_required;
+	beau_config.dma_passthrough_count = 0U;
 
 	dts_parse_memory(fdt, &beau_config.ram_start, &beau_config.ram_size);
 	dts_parse_ramlog(fdt);
@@ -1446,6 +1461,18 @@ static void dts_parse_pci_devices(const void *fdt, int32_t vm_node, uint16_t vm_
 	int32_t pci_devices;
 	int32_t node;
 
+	/* [20260723] Static PCI requester policy
+	 *
+	 * PCI BDF -> explicit StreamID -> static owner policy -> VM config
+	 *                                      |
+	 *                                      +--> reject mismatch before VM creation
+	 *
+	 * Key rule:
+	 *   - the DTS owns the physical requester-to-StreamID mapping;
+	 *   - strict mode rejects missing mappings, optional PTDEV, and owner mismatch;
+	 *   - a guest-visible PCI function cannot inherit a guessed BDF StreamID.
+	 */
+
 	vm_config->pci_devs = dts_storage->pci_devs[vm_id];
 	vm_config->pci_dev_num = 0U;
 
@@ -1458,6 +1485,7 @@ static void dts_parse_pci_devices(const void *fdt, int32_t vm_node, uint16_t vm_
 		struct acrn_vm_pci_dev_config *dev_config;
 		uint32_t pbdf;
 		uint32_t vbdf;
+		uint32_t stream_id;
 
 		if (!dts_has_compatible(fdt, node, "beau,passthrough-pci-device")) {
 			continue;
@@ -1474,15 +1502,48 @@ static void dts_parse_pci_devices(const void *fdt, int32_t vm_node, uint16_t vm_
 		if (vbdf > 0xffffU) {
 			arm64_dts_panic("beau,vbdf", -EINVAL);
 		}
+		stream_id = dts_u32_prop(fdt, node, "beau,stream-id",
+			ARM_SMMU_STREAM_ID_INVALID);
+		if (stream_id == ARM_SMMU_STREAM_ID_INVALID) {
+			if (beau_config.dma_isolation_required) {
+				arm64_dts_panic("strict PCI stream-id", -EINVAL);
+			}
+			stream_id = pbdf;
+		}
+		if (!passthrough_policy_allows_device(vm_id, stream_id, true)) {
+			arm64_dts_panic("PCI StreamID policy", -EPERM);
+		}
+		if (beau_config.dma_isolation_required &&
+			(fdt_getprop(fdt, node, "beau,optional", NULL) != NULL)) {
+			arm64_dts_panic("strict optional PTDEV", -EINVAL);
+		}
+		if (beau_config.dma_passthrough_count == ARM64_DTS_UINT16_MAX) {
+			arm64_dts_panic("too many passthrough devices", -EINVAL);
+		}
+		if (beau_config.dma_isolation_required) {
+			uint16_t existing;
+
+			for (existing = 0U; existing < vm_config->pci_dev_num; existing++) {
+				const struct acrn_vm_pci_dev_config *existing_config =
+					&vm_config->pci_devs[existing];
+
+				if ((existing_config->emu_type == PCI_DEV_TYPE_PTDEV) &&
+					(existing_config->stream_id == stream_id)) {
+					arm64_dts_panic("duplicate strict PCI stream-id", -EINVAL);
+				}
+			}
+		}
 
 		dev_config = &vm_config->pci_devs[vm_config->pci_dev_num];
 		(void)memset(dev_config, 0U, sizeof(*dev_config));
 		dev_config->emu_type = PCI_DEV_TYPE_PTDEV;
 		dev_config->pbdf.value = (uint16_t)pbdf;
 		dev_config->vbdf.value = (uint16_t)vbdf;
+		dev_config->stream_id = stream_id;
 		dev_config->optional = fdt_getprop(fdt, node, "beau,optional", NULL) != NULL;
 		dts_parse_pci_pbar_base(fdt, node, dev_config);
 		dts_parse_pci_vbar_base(fdt, node, dev_config);
+		beau_config.dma_passthrough_count++;
 		vm_config->pci_dev_num++;
 	}
 }
