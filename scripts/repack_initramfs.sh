@@ -42,6 +42,7 @@ install_alpine_apk()
 {
 	pkg=$1
 	repo=$2
+	target=${3:-$WORKDIR}
 	arch=$(cat "$WORKDIR/etc/apk/arch")
 	version=$(cut -d. -f1,2 "$WORKDIR/etc/alpine-release")
 	index="$WORKDIR/tmp/APKINDEX.$repo.tar.gz"
@@ -51,8 +52,12 @@ install_alpine_apk()
 	url=
 
 	mkdir -p "$WORKDIR/tmp"
-	fetch_url "$ALPINE_MIRROR/v$version/$repo/$arch/APKINDEX.tar.gz" "$index"
-	tar -xzf "$index" -O APKINDEX > "$apkindex"
+	if [ ! -s "$index" ]; then
+		fetch_url "$ALPINE_MIRROR/v$version/$repo/$arch/APKINDEX.tar.gz" "$index"
+		tar -xzf "$index" -O APKINDEX > "$apkindex"
+	elif [ ! -s "$apkindex" ]; then
+		tar -xzf "$index" -O APKINDEX > "$apkindex"
+	fi
 	apkver=$(awk -v pkg="$pkg" 'BEGIN { RS = ""; FS = "\n" }
 		{
 			name = "";
@@ -79,8 +84,46 @@ install_alpine_apk()
 	fetch_url "$url" "$apkfile"
 	tar --warning=no-unknown-keyword \
 		--exclude='.SIGN*' --exclude='.PKGINFO' \
-		-xzf "$apkfile" -C "$WORKDIR"
-	rm -f "$WORKDIR"/.SIGN* "$WORKDIR/.PKGINFO"
+		-xzf "$apkfile" -C "$target"
+	rm -f "$target"/.SIGN* "$target/.PKGINFO"
+}
+
+install_stress_ng_package()
+{
+	# Alpine's official stress-ng package is musl-linked and ships in community.
+	# Install its shared-library providers explicitly because this repacker does
+	# not invoke apk's dependency solver inside the temporary initramfs root.
+	for pkg in judy libbsd libmd gmp liblksctp zlib; do
+		install_alpine_apk "$pkg" main
+	done
+	install_alpine_apk stress-ng community
+	if [ ! -x "$WORKDIR/usr/bin/stress-ng" ]; then
+		echo "Alpine stress-ng package did not provide /usr/bin/stress-ng" >&2
+		exit 1
+	fi
+	mkdir -p "$WORKDIR/usr/local/bin"
+	rm -f "$WORKDIR/usr/local/bin/stress-ng"
+	install -m 0755 "$WORKDIR/usr/bin/stress-ng" "$WORKDIR/usr/local/bin/stress-ng"
+	rm -f "$WORKDIR/usr/bin/stress-ng"
+}
+
+install_debug_tools()
+{
+	# The repacker extracts APKs directly, so install each runtime provider
+	# explicitly instead of relying on apk's dependency solver.
+	install_alpine_apk libmagic main
+	install_alpine_apk file main
+	install_alpine_apk lsof main
+	install_alpine_apk ncurses-terminfo-base main
+	install_alpine_apk libncursesw main
+	install_alpine_apk htop main
+
+	for tool in file htop; do
+		if [ ! -x "$WORKDIR/usr/bin/$tool" ]; then
+			echo "Alpine $tool package did not provide /usr/bin/$tool" >&2
+			exit 1
+		fi
+	done
 }
 
 gzip -dc "$ARCHIVE" | (cd "$WORKDIR" && cpio -id --quiet --no-absolute-filenames)
@@ -96,13 +139,18 @@ cat > "$WORKDIR/init" <<'EOF'
 #   \/_____/  \/_____/  \/_____/
 #                                (2026)
 
-PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+PATH="/tmp:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 mount -t proc none /proc
 mount -t sysfs none /sys
 mount -t devtmpfs devtmpfs /dev
 mkdir -p /dev/pts
 mount -t devpts devpts /dev/pts 2>/dev/null || true
+mkdir -p /tmp
+if [ -x /usr/local/bin/stress-ng ]; then
+	cp /usr/local/bin/stress-ng /tmp/stress-ng 2>/dev/null || true
+	chmod 0755 /tmp/stress-ng 2>/dev/null || true
+fi
 
 # /var/beau is the virtio-fs handoff point used by the BEAU proxy path:
 # VM2 exports it through the backend, while VM3 mounts the frontend there.
@@ -184,6 +232,8 @@ if ! command -v "$EDU_TEST_CC" >/dev/null 2>&1; then
 fi
 "$EDU_TEST_CC" -Os -static -s -Wall -Wextra -o "$WORKDIR/usr/local/bin/vpci" "$EDU_TEST_SRC"
 "$EDU_TEST_CC" -Os -static -s -Wall -Wextra -o "$WORKDIR/usr/local/bin/rpmsg" "$RPMSG_TEST_SRC"
+install_stress_ng_package
+install_debug_tools
 rm -rf "$WORKDIR/tmp"
 (cd "$WORKDIR" && find . -print0 | cpio --null -o --quiet -H newc -R 0:0 | gzip -9 > "$ARCHIVE.tmp")
 mv "$ARCHIVE.tmp" "$ARCHIVE"

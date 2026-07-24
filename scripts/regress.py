@@ -688,6 +688,20 @@ def expect_vm2_id(qemu, name):
     expect_linux_id(qemu, 2, name)
 
 
+def expect_linux_stress_ng(qemu, vmid, name):
+    command = (
+        "test -x /tmp/stress-ng && "
+        "stress-ng --version >/tmp/beau-stress-ng-version && "
+        "stress-ng --cpu 1 --timeout 1s --metrics-brief"
+    )
+    try:
+        vm_command(qemu, vmid, command, name, timeout=30.0,
+                   patterns=["stress-ng"])
+    except Exception:
+        qemu.capture_vm_diagnostics(name, vmid)
+        raise
+
+
 def expect_vm2_kbe_backends(qemu, name):
     checks = (
         "dmesg | grep -q 'BEAU virtio-fs backend started'",
@@ -1476,6 +1490,7 @@ def run_qemu(args, cmd):
             qemu.capture_vm_diagnostics("VM2 Linux initramfs shell timeout", 2)
             raise
         expect_vm2_id(qemu, "VM2 Linux root identity")
+        expect_linux_stress_ng(qemu, 2, "VM2 stress-ng CPU smoke")
         expect_vm2_kbe_backends(qemu, "VM2 BEAU KBE backend startup")
         expect_vm2_cpu1_lifecycle(qemu)
         qemu.send(CTRL_D)
@@ -1488,6 +1503,7 @@ def run_qemu(args, cmd):
             qemu.capture_vm_diagnostics("VM3 Linux initramfs shell timeout", 3)
             raise
         expect_linux_id(qemu, 3, "VM3 Linux root identity")
+        expect_linux_stress_ng(qemu, 3, "VM3 stress-ng CPU smoke")
         expect_vm3_virtio_proxy_smoke(qemu)
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM3 shell")

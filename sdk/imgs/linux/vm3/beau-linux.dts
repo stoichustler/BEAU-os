@@ -11,7 +11,7 @@
 		stdout-path = "/virtio_mmio@a000000";
 		bootargs = "console=hvc0 rdinit=/init loglevel=7";
 		linux,initrd-start = <0x0 0x5c000000>;
-		linux,initrd-end = <0x0 0x5c500000>;
+		linux,initrd-end = <0x0 0x5d000000>;
 	};
 
 	psci {
