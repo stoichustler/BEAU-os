@@ -570,9 +570,9 @@ static int32_t handle_mmio_abort(struct acrn_vcpu *vcpu)
 		}
 		advance_vcpu_elr(vcpu);
 	} else {
-		LOG_ERR("arm64 mmio abort failed: ipa=0x%lx size=%lu dir=%s srt=%u esr=0x%lx ret=%d",
-			ipa, size, ((esr & ESR_DABT_WNR) != 0UL) ? "write" : "read",
-			reg_idx, esr, ret);
+		LOG_ERR("arm64 mmio abort failed vm%u:vcpu%u ipa=0x%lx size=%lu dir=%s srt=%u esr=0x%lx ret=%d",
+			vcpu->vm->vm_id, vcpu->vcpu_id, ipa, size,
+			((esr & ESR_DABT_WNR) != 0UL) ? "write" : "read", reg_idx, esr, ret);
 	}
 
 	return ret;
@@ -1056,7 +1056,8 @@ void dispatch_vcpu_trap(struct cpu_regs *regs)
 
 	ret = vcpu_exit_handler(vcpu);
 	if (ret < 0) {
-		LOG_ERR("failed to handle arm64 vcpu exit. ret=%d", ret);
+		LOG_ERR("failed to handle arm64 vcpu exit vm%u:vcpu%u ret=%d",
+			vcpu->vm->vm_id, vcpu->vcpu_id, ret);
 		get_vm_lock(vcpu->vm);
 		pause_vcpu(vcpu);
 		put_vm_lock(vcpu->vm);
@@ -1072,7 +1073,8 @@ void dispatch_vcpu_trap(struct cpu_regs *regs)
 	vcpu = schedule_without_guest_resume(pcpu_id, vcpu);
 	ret = arm64_process_vcpu_requests(vcpu);
 	if (ret < 0) {
-		LOG_FTL("failed to process arm64 vcpu requests");
+		LOG_FTL("failed to process arm64 vcpu requests vm%u:vcpu%u ret=%d",
+			vcpu->vm->vm_id, vcpu->vcpu_id, ret);
 		get_vm_lock(vcpu->vm);
 		pause_vcpu(vcpu);
 		put_vm_lock(vcpu->vm);
@@ -1117,7 +1119,8 @@ void dispatch_vcpu_irq(struct cpu_regs *regs)
 	vcpu = schedule_without_guest_resume(pcpu_id, vcpu);
 	ret = arm64_process_vcpu_requests(vcpu);
 	if (ret < 0) {
-		LOG_FTL("failed to process arm64 vcpu requests");
+		LOG_FTL("failed to process arm64 vcpu requests vm%u:vcpu%u ret=%d",
+			vcpu->vm->vm_id, vcpu->vcpu_id, ret);
 		get_vm_lock(vcpu->vm);
 		pause_vcpu(vcpu);
 		put_vm_lock(vcpu->vm);

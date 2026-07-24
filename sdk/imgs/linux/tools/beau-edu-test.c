@@ -371,13 +371,29 @@ static int run_bar_test(const struct pci_device *dev)
 	return 0;
 }
 
-int main(void)
+static void vpci_usage(void)
+{
+	printf("usage: vpci\n");
+	printf("Validate the QEMU EDU vPCI config, BAR MMIO, and MSI/MSI-X path.\n");
+}
+
+int main(int argc, char *argv[])
 {
 	struct pci_device dev;
 	char path[320];
 	unsigned int vendor = 0U;
 	unsigned int device = 0U;
 	int ret;
+
+	if ((argc == 2) && ((strcmp(argv[1], "-h") == 0) ||
+		(strcmp(argv[1], "--help") == 0) || (strcmp(argv[1], "help") == 0))) {
+		vpci_usage();
+		return 0;
+	}
+	if (argc != 1) {
+		vpci_usage();
+		return 2;
+	}
 
 	ret = find_edu_device(&dev);
 	if (ret != 0) {

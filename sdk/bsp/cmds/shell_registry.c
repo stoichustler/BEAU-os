@@ -21,6 +21,7 @@ struct shell_cmd shell_common_cmds[] = {
 	CMD("symtab", NULL, "list debug symbol offsets and names", shell_symtab),
 	CMD("loglevel", "[<console_loglevel> [<mem_loglevel> [npk_loglevel]]]",
 		"loglevel {0-6}", shell_loglevel),
+	CMD("dmesg", "[count]", "dump retained host log records", shell_dmesg),
 	CMD("vcpus", NULL, "list all vcpus in all vms", shell_list_vcpu),
 	CMD("ps", NULL, "list scheduler threads, state, and CPU usage", shell_list_threads),
 	CMD("schedstat", NULL, "list per-pcpu scheduler statistics", shell_schedstat),

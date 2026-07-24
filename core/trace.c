@@ -73,6 +73,9 @@ static uint64_t trace_event_category(uint32_t evid)
 	case TRACE_SCHED_NEXT:
 		category = TRACE_MASK_SCHED;
 		break;
+	case TRACE_VIRQ_INJECT:
+		category = TRACE_MASK_VIRQ;
+		break;
 	case TRACE_VM_ENTER:
 	case TRACE_VM_EXIT:
 		category = TRACE_MASK_VM;

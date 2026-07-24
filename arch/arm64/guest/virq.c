@@ -6,6 +6,7 @@
 
 #include <types.h>
 #include <vcpu.h>
+#include <vm.h>
 #include <atomic.h>
 #include <logmsg.h>
 #include <asm/irq.h>
@@ -42,7 +43,8 @@ void vcpu_queue_exception(struct acrn_vcpu *vcpu, struct arm64_vcpu_trap_info *t
 
 	if (trap != NULL) {
 		if (arch->trap.esr != EXCEPTION_INVALID) {
-			LOG_ERR("nested exception happened, prev esr=0x%lx", arch->trap.esr);
+			LOG_ERR("nested exception vm%u:vcpu%u prev-esr=0x%lx",
+				vcpu->vm->vm_id, vcpu->vcpu_id, arch->trap.esr);
 		}
 
 		arch->trap = *trap;

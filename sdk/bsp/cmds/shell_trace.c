@@ -57,6 +57,8 @@ static uint64_t shell_trace_category_mask(const char *category)
 		mask = TRACE_MASK_HCALL;
 	} else if (strcmp(category, "vm") == 0) {
 		mask = TRACE_MASK_VM;
+	} else if (strcmp(category, "virq") == 0) {
+		mask = TRACE_MASK_VIRQ;
 	}
 
 	return mask;
@@ -91,6 +93,9 @@ static void shell_trace_format_mask(uint64_t mask, char *buf, size_t size)
 	if ((mask & TRACE_MASK_VM) != 0UL) {
 		shell_trace_append_category(buf, size, "vm");
 	}
+	if ((mask & TRACE_MASK_VIRQ) != 0UL) {
+		shell_trace_append_category(buf, size, "virq");
+	}
 	if (buf[0] == '\0') {
 		(void)strncpy_s(buf, size, "none", size - 1U);
 	}
@@ -102,35 +107,64 @@ static const char *shell_trace_event_name(uint32_t event_id)
 
 	switch (event_id) {
 	case TRACE_TIMER_ACTION_ADDED:
-		name = "timer-add";
+		name = "timer +";
 		break;
 	case TRACE_TIMER_ACTION_PCKUP:
-		name = "timer-fire";
+		name = "timer *";
 		break;
 	case TRACE_TIMER_ACTION_UPDAT:
-		name = "timer-update";
+		name = "timer =";
 		break;
 	case TRACE_TIMER_IRQ:
-		name = "timer-irq";
+		name = "timer !";
 		break;
 	case TRACE_SCHED_NEXT:
-		name = "sched-switch";
+		name = " switch";
+		break;
+	case TRACE_VIRQ_INJECT:
+		name = " virq +";
 		break;
 	case TRACE_VMEXIT_VMCALL:
-		name = "hcall";
+		name = "  hcall";
 		break;
 	case TRACE_VM_ENTER:
-		name = "vm-enter";
+		name = "   vm +";
 		break;
 	case TRACE_VM_EXIT:
-		name = "vm-exit";
+		name = "   vm -";
 		break;
 	default:
-		name = "unknown";
+		name = "    N/A";
 		break;
 	}
 
 	return name;
+}
+
+static void shell_trace_format_sched_thread(uint32_t token, char *buf, size_t size)
+{
+	char first;
+	char second;
+
+	if ((buf == NULL) || (size == 0U)) {
+		return;
+	}
+	if ((token & TRACE_SCHED_THREAD_VCPU_FLAG) != 0U) {
+		(void)snprintf(buf, size, "v%u:%u",
+			(token >> TRACE_SCHED_THREAD_VM_SHIFT) & TRACE_SCHED_THREAD_VM_MASK,
+			token & TRACE_SCHED_THREAD_VCPU_MASK);
+		return;
+	}
+
+	first = (char)((token >> TRACE_SCHED_THREAD_TAG_SHIFT) & TRACE_SCHED_THREAD_TAG_MASK);
+	second = (char)(token & TRACE_SCHED_THREAD_TAG_MASK);
+	if (first == '\0') {
+		(void)snprintf(buf, size, "??");
+	} else if (second == '\0') {
+		(void)snprintf(buf, size, "%c", first);
+	} else {
+		(void)snprintf(buf, size, "%c%c", first, second);
+	}
 }
 
 static void shell_trace_print_record(uint32_t sequence, uint64_t base_tsc,
@@ -154,8 +188,22 @@ static void shell_trace_print_record(uint32_t sequence, uint64_t base_tsc,
 			record->payload.fields_64.e, record->payload.fields_64.f);
 		break;
 	case TRACE_SCHED_NEXT:
-		shell_item_line("[%04u] +%8luus cpu:%u %-12s %s", sequence, delta_us,
-			record->cpu, name, record->payload.str);
+	{
+		char prev[16U];
+		char next[16U];
+
+		shell_trace_format_sched_thread(record->payload.fields_32.a, prev, sizeof(prev));
+		shell_trace_format_sched_thread(record->payload.fields_32.b, next, sizeof(next));
+		shell_item_line("[%04u] +%8luus cpu:%u %-12s %s -> %s", sequence, delta_us,
+			record->cpu, name, prev, next);
+		break;
+	}
+	case TRACE_VIRQ_INJECT:
+		shell_item_line("[%04u] +%8luus cpu:%u %-12s vm:%u vcpu:%u virq:%u %s",
+			sequence, delta_us, record->cpu, name,
+			record->payload.fields_32.a, record->payload.fields_32.b,
+			record->payload.fields_32.c,
+			record->payload.fields_32.d != 0U ? "level" : "edge");
 		break;
 	case TRACE_VMEXIT_VMCALL:
 		shell_item_line("[%04u] +%8luus cpu:%u %-12s vm:%lu id:0x%016lx",
@@ -220,7 +268,7 @@ static int32_t shell_trace_start(int32_t argc, char **argv)
 			uint64_t category = shell_trace_category_mask(argv[idx]);
 
 			if (category == 0UL) {
-				shell_puts("usage: trace start [all|timer|sched|hcall|vm]...\r\n");
+				shell_puts("usage: trace start [all|timer|sched|hcall|vm|virq]...\r\n");
 				return -EINVAL;
 			}
 			mask |= category;

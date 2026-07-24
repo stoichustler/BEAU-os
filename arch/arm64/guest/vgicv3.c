@@ -45,6 +45,7 @@
 #include <rtl.h>
 #include <guest_memory.h>
 #include <ticks.h>
+#include <trace.h>
 #include <asm/platform.h>
 #include <asm/pmu.h>
 #include <asm/sysreg.h>
@@ -308,6 +309,7 @@ struct vgic_irqstat_entry {
 	uint64_t deassert_count;
 	uint64_t lr_count;
 	uint64_t eoi_count;
+	uint64_t last_update_seq;
 #if CONFIG_IRQSTAT_LATENCY
 	uint64_t last_assert_tick;
 	uint64_t last_lr_tick;
@@ -317,6 +319,9 @@ struct vgic_irqstat_entry {
 };
 
 static struct vgic_irqstat_entry vgic_irqstats[ARM64_VGIC_IRQSTAT_MAX];
+static uint64_t vgic_irqstat_next_seq;
+static uint64_t vgic_irqstat_evicted;
+static uint64_t vgic_irqstat_dropped;
 
 static void vgicv3_sync_vcpu(struct acrn_vcpu *vcpu, bool is_current);
 static void vgicv3_flush_vcpu(struct acrn_vcpu *vcpu, bool is_current);
@@ -367,37 +372,19 @@ static void vgic_irqstat_export_latency(
 }
 #endif
 
-static bool vgic_irqstat_enabled(const struct vgic_irqstat_entry *entry)
+static void vgic_irqstat_touch_locked(struct vgic_irqstat_entry *entry)
 {
-	const struct acrn_vm *vm;
-	const struct arm64_vgicv3 *vgic;
-	bool enabled = false;
-
-	if ((entry->vm_id >= CONFIG_MAX_VM_NUM) ||
-		(entry->vcpu_id >= ARM64_VGIC_MAX_VCPUS)) {
-		return false;
+	if (vgic_irqstat_next_seq != UINT64_MAX) {
+		vgic_irqstat_next_seq++;
 	}
-
-	vm = get_vm_from_vmid(entry->vm_id);
-	vgic = &vm->arch_vm.vgic;
-	if (is_poweroff_vm(vm) || !vgic->initialized ||
-		(entry->vcpu_id >= vgic->vcpu_count)) {
-		return false;
-	}
-
-	if (entry->virq < ARM64_VGIC_IRQ_NUM) {
-		enabled = vgic->irq[entry->vcpu_id][entry->virq].enabled;
-	} else if (vgic->its_enabled && vgic_irq_is_lpi(entry->virq)) {
-		enabled = vgic->lpi[entry->vcpu_id][vgic_lpi_index(entry->virq)].enabled;
-	}
-
-	return enabled;
+	entry->last_update_seq = vgic_irqstat_next_seq;
 }
 
 static struct vgic_irqstat_entry *vgic_irqstat_find_locked(uint16_t vm_id,
 	uint16_t vcpu_id, uint32_t virq, bool create)
 {
 	struct vgic_irqstat_entry *free_entry = NULL;
+	struct vgic_irqstat_entry *evict_entry = NULL;
 	uint16_t idx;
 
 	for (idx = 0U; idx < ARM64_VGIC_IRQSTAT_MAX; idx++) {
@@ -405,21 +392,51 @@ static struct vgic_irqstat_entry *vgic_irqstat_find_locked(uint16_t vm_id,
 
 		if (entry->valid) {
 			if ((entry->vm_id == vm_id) && (entry->vcpu_id == vcpu_id) &&
-				(entry->virq == virq)) {
+					(entry->virq == virq)) {
 				return entry;
+			}
+			if (!entry->in_flight && ((evict_entry == NULL) ||
+				(entry->last_update_seq < evict_entry->last_update_seq))) {
+				evict_entry = entry;
 			}
 		} else if (free_entry == NULL) {
 			free_entry = entry;
 		}
 	}
 
-	if (create && (free_entry != NULL)) {
-		(void)memset(free_entry, 0U, sizeof(*free_entry));
-		free_entry->valid = true;
-		free_entry->vm_id = vm_id;
-		free_entry->vcpu_id = vcpu_id;
-		free_entry->virq = virq;
-		return free_entry;
+	if (create) {
+		struct vgic_irqstat_entry *entry = free_entry;
+
+		/* [20260724] Bounded vIRQ activity history
+		 *
+		 * new lifecycle record -> free slot
+		 *                       -> oldest completed record
+		 *                       -> drop when all records are in flight
+		 *
+		 * Key rule:
+		 *   - the vGIC stats lock owns table allocation and replacement;
+		 *   - an in-flight lifecycle is never evicted before its completion;
+		 *   - a bounded diagnostic cache reports eviction/drop instead of silently
+		 *     losing the newest delivery evidence.
+		 */
+		if (entry == NULL) {
+			entry = evict_entry;
+			if (entry != NULL) {
+				vgic_irqstat_evicted++;
+			}
+		}
+		if (entry != NULL) {
+			(void)memset(entry, 0U, sizeof(*entry));
+			entry->valid = true;
+			entry->vm_id = vm_id;
+			entry->vcpu_id = vcpu_id;
+			entry->virq = virq;
+			vgic_irqstat_touch_locked(entry);
+			return entry;
+		}
+		if (vgic_irqstat_dropped != UINT64_MAX) {
+			vgic_irqstat_dropped++;
+		}
 	}
 
 	return NULL;
@@ -452,6 +469,7 @@ static void vgic_irqstat_record_assert(const struct acrn_vcpu *vcpu,
 			}
 #endif
 			entry->in_flight = true;
+			vgic_irqstat_touch_locked(entry);
 		}
 		spinlock_irqrestore_release(&vgic_irqstat_lock, flags);
 	}
@@ -470,6 +488,7 @@ static void vgic_irqstat_record_deassert(const struct acrn_vcpu *vcpu,
 
 		if (entry != NULL) {
 			entry->deassert_count++;
+			vgic_irqstat_touch_locked(entry);
 		}
 		spinlock_irqrestore_release(&vgic_irqstat_lock, flags);
 	}
@@ -510,6 +529,7 @@ static void vgic_irqstat_record_lr(const struct acrn_vcpu *vcpu,
 				entry->last_lr_tick = now;
 			}
 #endif
+			vgic_irqstat_touch_locked(entry);
 		}
 		spinlock_irqrestore_release(&vgic_irqstat_lock, flags);
 	}
@@ -548,6 +568,7 @@ static void vgic_irqstat_record_eoi(const struct acrn_vcpu *vcpu,
 			entry->last_lr_tick = 0UL;
 #endif
 			entry->in_flight = false;
+			vgic_irqstat_touch_locked(entry);
 		}
 		spinlock_irqrestore_release(&vgic_irqstat_lock, flags);
 	}
@@ -571,9 +592,6 @@ uint16_t arm64_vgicv3_get_irq_stats(struct arm64_vgic_irq_stats *stats, uint16_t
 		if (!src->valid) {
 			continue;
 		}
-		if (!vgic_irqstat_enabled(src)) {
-			continue;
-		}
 
 		(void)memset(dst, 0U, sizeof(*dst));
 		dst->vm_id = src->vm_id;
@@ -594,6 +612,28 @@ uint16_t arm64_vgicv3_get_irq_stats(struct arm64_vgic_irq_stats *stats, uint16_t
 	spinlock_irqrestore_release(&vgic_irqstat_lock, flags);
 
 	return copied;
+}
+
+void arm64_vgicv3_get_irqstat_summary(struct arm64_vgic_irqstat_summary *summary)
+{
+	uint64_t flags;
+	uint16_t idx;
+
+	if (summary == NULL) {
+		return;
+	}
+
+	(void)memset(summary, 0U, sizeof(*summary));
+	spinlock_irqsave_obtain(&vgic_irqstat_lock, &flags);
+	for (idx = 0U; idx < ARM64_VGIC_IRQSTAT_MAX; idx++) {
+		if (vgic_irqstats[idx].valid) {
+			summary->used++;
+		}
+	}
+	summary->capacity = ARM64_VGIC_IRQSTAT_MAX;
+	summary->evicted = vgic_irqstat_evicted;
+	summary->dropped = vgic_irqstat_dropped;
+	spinlock_irqrestore_release(&vgic_irqstat_lock, flags);
 }
 
 static void vgic_irqstat_reset_vm(uint16_t vm_id)
@@ -2484,6 +2524,8 @@ static int32_t vgic_inject_locked(struct arm64_vgicv3 *vgic, struct acrn_vcpu *t
 			vgicv3_flush_vcpu(target_vcpu, false);
 		}
 		ret = 0;
+		TRACE_4I(TRACE_VIRQ_INJECT, target_vcpu->vm->vm_id,
+			target_vcpu->vcpu_id, virq, level ? 1U : 0U);
 	}
 
 	return ret;

@@ -62,6 +62,9 @@ Example box-drawing elements:
  ╰─   ─╮  ╭─  ─╯
 
 ──┤  ├──  ─┬─  ─┴─
+
+
+← →  ↓ ↑ 
 ```
 
 5. Use this shape for non-trivial C design comments. The compact ASCII diagram

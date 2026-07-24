@@ -1315,6 +1315,25 @@ host shell 无输入时保持 blocked。首次输入发现延迟由 2 ms timer �
 `sdk/bsp/shell.c` 提供行编辑、历史、Tab completion、异步输出保护和命令分发；
 `sdk/bsp/cmds/` 按功能提供 common 和架构诊断命令。
 
+`core/logmsg.c` 在输出到 console、memory 或 NPK 前写入独立的 host dmesg record
+ring。它不依赖当前 console 所属 VM，因此 VM 占用串口时出现的 EL2 instruction abort、
+SError 和 MMIO abort 仍可在返回 BEAU shell 后通过 `dmesg` 查看。容量由
+`CONFIG_HOST_DMESG_RING_SIZE` 在平台 `Bconfig` 中以字节配置，默认 64 KiB；记录满后
+覆盖最旧的完整记录并显示覆盖计数。该 ring 位于 host BSS，仅保留本次启动期间的日志，
+不改变 guest `ramlog` 或跨 host reboot 的留存格式。
+
+所有 ARM64 host trap、MTE/RAS fault 与 guest vCPU exit 的诊断都使用 `LOG_*`，因此
+保留完整的 host 前缀和 dmesg 记录。异常行包含可用的 pCPU、VM、vCPU、ESR、ELR、FAR
+或 IPA 身份，寄存器 dump 不再手工重复日志前缀。`daemon_log()` 是独立的后台状态输出
+接口，只显示 `[κ][HH:MM:SS.mmm,uuu]` 前缀并且仅在 BEAU shell 拥有 console 时写出；
+它不进入 dmesg、memory 或 NPK。每次有效 VM WDT HVC kick 在原 heartbeat 更新完成后
+排入每 VM 一个有界 daemon display slot，并由 `vm-wdt` 后台线程输出 HVC gap 和 token；
+slot 忙时只合并显示事件，不影响 timeout 或 recovery。WDT 以独立的
+`heartbeat_started` 状态区分首个 HVC 与运行期心跳，`vmstat` 显示 daemon 的
+merge/drop 计数。`CONFIG_VM_WDT_PRINT_PERIOD_MS` timer 继续完整扫描 timeout 与
+recovery，但不批量输出 alive 状态。severity 只用于 VT100 色彩，不会显示在 daemon 前缀中。
+WDT recovery 与 failure 事件继续使用 `LOG_*` 保留为故障证据。
+
 ### 18.2 命令参考
 
 | 命令 | 用途 |
@@ -1323,6 +1342,7 @@ host shell 无输入时保持 blocked。首次输入发现延迟由 2 ms timer �
 | `clear` | 清屏 |
 | `symtab` | 查看运行时符号表 |
 | `loglevel [console [mem [npk]]]` | 修改 0..6 日志级别 |
+| `dmesg [count]` | 输出最近的 BEAU host 日志；缺省输出整个 host 环 |
 | `vcpus` | 列出 vCPU、pCPU、状态和 switch 信息 |
 | `ps` | scheduler thread 状态、current owner 和相邻命令间 CPU% |
 | `schedstat` | pCPU policy、busy%、runqueue、BVT/CBS 统计 |
@@ -1364,7 +1384,9 @@ busy%、policy 和 BVT/RTDS/CBS 诊断，不再重复 per-thread CPU usage。
 
 `core/trace.c` 为每 pCPU 分配固定 32-byte record ring，默认 256 条，满后覆盖最老
 记录并计数。trace 默认 idle，需 shell 启动。当前类别包括 timer、scheduler、HVC、
-VM enter/exit。一次 capture 使用 `IDLE -> CAPTURING -> DRAINING -> READY` 状态机：
+VM enter/exit 和 vIRQ inject。scheduler dump 将 vCPU 显示为 `v<vmid>:<vcpu>`，
+host thread 显示为两字符 tag，例如 `v0:2 -> sh`。一次 capture 使用
+`IDLE -> CAPTURING -> DRAINING -> READY` 状态机：
 stop 先关闭 producer fast path，随后等待全部 per-pCPU writer publish window 退出；
 只有 `READY` session 可 dump。若等待超时，状态保留为 `DRAINING`，拒绝 dump、clear
 和下一次 start；再次 `trace stop` 可继续完成 drain。`trace status` 输出 session、

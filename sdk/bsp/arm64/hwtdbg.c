@@ -32,12 +32,12 @@
 #include "../shell_priv.h"
 
 #define HWTDBG_MAGIC			0x48575444U
-#define HWTDBG_VERSION			2U
+#define HWTDBG_VERSION			3U
 #define HWTDBG_EVENT_SLOTS		4U
 #define HWTDBG_RAS_MAGIC		0x48575241U
 #define HWTDBG_RAS_EVENT_SLOTS		4U
 #define HWTDBG_FAULT_MAGIC		0x48574654U
-#define HWTDBG_FAULT_VERSION		1U
+#define HWTDBG_FAULT_VERSION		2U
 #define HWTDBG_FAULT_EVENT_SLOTS	2U
 #define HWTDBG_INVALID_ID		0xffffU
 #define HWTDBG_RAS_RECORD_GPA_VALID	(1U << 2U)
@@ -1495,8 +1495,8 @@ static void hwtdbg_print_event(const struct hwtdbg_event *event)
 		hwtdbg_cause_str(event->timeout.cause), event->timeout.timeout_ms,
 		event->timeout.age_ms, event->timeout.detected_tsc,
 		event->timeout.heartbeat_tsc);
-	shell_item_line("wdt:kicks:%lu timeouts:%lu token:0x%016lx restarts:%lu failed:%lu",
-		event->timeout.kick_count, event->timeout.timeout_count,
+	shell_item_line("wdt:timeouts:%lu token:0x%016lx restarts:%lu failed:%lu",
+		event->timeout.timeout_count,
 		event->timeout.last_token, event->timeout.restart_count,
 		event->timeout.restart_fail_count);
 	shell_item_line("capture:valid flags:0x%08x tsc:0x%016lx",
@@ -1610,8 +1610,8 @@ static void hwtdbg_print_fault_event(const struct hwtdbg_fault_event *event)
 		ESR_EL2_EC(event->regs.esr), event->regs.esr, event->regs.elr,
 		event->regs.far, event->regs.hpfar);
 	if (event->wdt_valid) {
-		shell_item_line("wdt:status:%u cause:%u kick:%lu timeout:%lu restart:%lu pending:%s",
-			event->wdt.status, event->wdt.cause, event->wdt.kick_count,
+		shell_item_line("wdt:status:%u cause:%u timeout:%lu restart:%lu pending:%s",
+			event->wdt.status, event->wdt.cause,
 			event->wdt.timeout_count, event->wdt.restart_count,
 			hwtdbg_yes_no(event->wdt.restart_pending));
 	} else {

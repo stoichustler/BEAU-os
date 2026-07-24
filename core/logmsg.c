@@ -12,6 +12,8 @@
 #include <ticks.h>
 #include <console.h>
 #include <npk_log.h>
+#include <shell.h>
+#include <spinlock.h>
 
 /* [20260710] log service principle:
  *
@@ -41,6 +43,36 @@
  */
 
 static int32_t log_seq = 0;
+
+/* [20260724] Host dmesg record retention
+ *
+ * LOG_* producer -> format one plain line -> host ring -> optional sinks
+ *                                             |
+ *                                             v
+ *                                      dmesg copies one record
+ *
+ * Key rule:
+ *   - do_logmsg() owns production before any potentially slow console sink;
+ *   - the ring lock protects one complete record, never terminal output;
+ *   - a full ring replaces only its oldest complete record and accounts for
+ *     loss, so exception and IRQ paths stay bounded without allocation.
+ */
+struct host_dmesg_ring {
+	uint64_t next;
+	uint64_t stored;
+	uint64_t overwritten;
+	spinlock_t lock;
+};
+
+#define HOST_DMESG_RECORD_CAPACITY \
+	((CONFIG_HOST_DMESG_RING_SIZE / sizeof(struct host_dmesg_record)) == 0U ? 1U : \
+	 (CONFIG_HOST_DMESG_RING_SIZE / sizeof(struct host_dmesg_record)))
+
+_Static_assert(CONFIG_HOST_DMESG_RING_SIZE >= sizeof(struct host_dmesg_record),
+	"host dmesg ring must retain one complete log record");
+
+static struct host_dmesg_record host_dmesg_records[HOST_DMESG_RECORD_CAPACITY];
+static struct host_dmesg_ring host_dmesg_ring = { .lock = {0U} };
 
 uint16_t mem_loglevel = CONFIG_MEM_LOGLEVEL_DEFAULT;
 
@@ -120,6 +152,69 @@ void format_log_timestamp(char *buffer, size_t size, uint64_t timestamp_us)
 		hour, min, sec, msec, usec);
 }
 
+/* [20260724] Daemon console publication
+ *
+ * background thread -> daemon_log() -> BEAU shell
+ *
+ * Key rule:
+ *   - daemon status output is independent from LOG_* fault diagnostics;
+ *   - no daemon record enters dmesg, memory, or NPK sinks;
+ *   - shell ownership is checked before formatting so guest consoles never
+ *     receive background host status lines.
+ */
+static const char *daemon_log_severity_color(uint32_t severity)
+{
+	switch (severity) {
+	case LOG_FATAL:
+		return LOG_VT100_BOLD_INDIGO;
+	case LOG_ERROR:
+		return LOG_VT100_BOLD_RED;
+	case LOG_WARNING:
+		return LOG_VT100_BOLD_YELLOW;
+	case LOG_INFO:
+		return LOG_VT100_BOLD_GREEN;
+	case LOG_DEBUG:
+	default:
+		return LOG_VT100_BRIGHT_BLACK;
+	}
+}
+
+bool daemon_log(uint32_t severity, const char *fmt, ...)
+{
+	va_list args;
+	char timestamp_str[LOG_TIMESTAMP_MAX_SIZE];
+	char line[LOG_MESSAGE_MAX_SIZE + 32U];
+	const char *color;
+	size_t reset_length;
+	size_t length;
+
+	if ((fmt == NULL) || !shell_is_open()) {
+		return false;
+	}
+	format_log_timestamp(timestamp_str, sizeof(timestamp_str),
+		ticks_to_us(cpu_ticks()));
+	color = daemon_log_severity_color(severity);
+	reset_length = strnlen_s(LOG_VT100_RESET, 8U);
+	(void)snprintf(line, sizeof(line), "%s[κ][%s] ", color, timestamp_str);
+	length = strnlen_s(line, sizeof(line));
+	va_start(args, fmt);
+	(void)vsnprintf(line + length, sizeof(line) - length - reset_length - 3U,
+		fmt, args);
+	va_end(args);
+	length = strnlen_s(line, sizeof(line));
+	while ((length > 0U) && ((line[length - 1U] == '\n') ||
+		(line[length - 1U] == '\r'))) {
+		length--;
+	}
+	(void)memcpy(line + length, LOG_VT100_RESET, reset_length);
+	length += reset_length;
+	line[length++] = '\r';
+	line[length++] = '\n';
+	line[length] = '\0';
+
+	return shell_async_puts(line);
+}
+
 static inline bool mem_need_log(uint32_t severity)
 {
 	return (severity <= mem_loglevel);
@@ -138,17 +233,89 @@ static void mem_log(uint16_t pcpu_id, char *buffer)
 	}
 }
 
+static void host_dmesg_append(uint32_t sequence, const char *buffer)
+{
+	struct host_dmesg_record *record;
+	uint64_t rflags;
+	uint32_t length;
+
+	if (buffer == NULL) {
+		return;
+	}
+	length = (uint32_t)strnlen_s(buffer, LOG_MESSAGE_MAX_SIZE);
+	spinlock_irqsave_obtain(&host_dmesg_ring.lock, &rflags);
+	record = &host_dmesg_records[host_dmesg_ring.next % HOST_DMESG_RECORD_CAPACITY];
+	record->index = host_dmesg_ring.next;
+	record->sequence = sequence;
+	record->length = (uint16_t)length;
+	(void)memcpy(record->message, buffer, length);
+	host_dmesg_ring.next++;
+	host_dmesg_ring.stored++;
+	if (host_dmesg_ring.next > HOST_DMESG_RECORD_CAPACITY) {
+		host_dmesg_ring.overwritten++;
+	}
+	spinlock_irqrestore_release(&host_dmesg_ring.lock, rflags);
+}
+
+bool host_dmesg_get_stats(struct host_dmesg_stats *stats)
+{
+	uint64_t rflags;
+	uint64_t oldest;
+
+	if (stats == NULL) {
+		return false;
+	}
+	spinlock_irqsave_obtain(&host_dmesg_ring.lock, &rflags);
+	oldest = host_dmesg_ring.next > HOST_DMESG_RECORD_CAPACITY ?
+		host_dmesg_ring.next - HOST_DMESG_RECORD_CAPACITY : 0UL;
+	stats->capacity = HOST_DMESG_RECORD_CAPACITY;
+	stats->queued = (uint32_t)(host_dmesg_ring.next - oldest);
+	stats->oldest = oldest;
+	stats->next = host_dmesg_ring.next;
+	stats->stored = host_dmesg_ring.stored;
+	stats->overwritten = host_dmesg_ring.overwritten;
+	spinlock_irqrestore_release(&host_dmesg_ring.lock, rflags);
+
+	return true;
+}
+
+bool host_dmesg_read(uint64_t *cursor, struct host_dmesg_record *record,
+	uint64_t *skipped)
+{
+	uint64_t rflags;
+	uint64_t oldest;
+	bool copied = false;
+
+	if ((cursor == NULL) || (record == NULL) || (skipped == NULL)) {
+		return false;
+	}
+	*skipped = 0UL;
+	spinlock_irqsave_obtain(&host_dmesg_ring.lock, &rflags);
+	oldest = host_dmesg_ring.next > HOST_DMESG_RECORD_CAPACITY ?
+		host_dmesg_ring.next - HOST_DMESG_RECORD_CAPACITY : 0UL;
+	if (*cursor < oldest) {
+		*skipped = oldest - *cursor;
+		*cursor = oldest;
+	}
+	if (*cursor < host_dmesg_ring.next) {
+		(void)memcpy(record, &host_dmesg_records[*cursor % HOST_DMESG_RECORD_CAPACITY],
+			sizeof(*record));
+		(*cursor)++;
+		copied = true;
+	}
+	spinlock_irqrestore_release(&host_dmesg_ring.lock, rflags);
+
+	return copied;
+}
+
 void do_logmsg(uint32_t severity, const char *fmt, ...)
 {
 	va_list args;
 	uint64_t timestamp;
 	uint16_t pcpu_id;
+	uint32_t sequence;
 	char *buffer;
 	char timestamp_str[LOG_TIMESTAMP_MAX_SIZE];
-
-	if (!mem_need_log(severity) && !console_need_log(severity) && !npk_need_log(severity)) {
-		return;
-	}
 
 	/* Get time-stamp value */
 	timestamp = cpu_ticks();
@@ -159,13 +326,14 @@ void do_logmsg(uint32_t severity, const char *fmt, ...)
 
 	/* Get CPU ID */
 	pcpu_id = get_pcpu_id();
+	sequence = (uint32_t)atomic_inc_return(&log_seq);
 	buffer = per_cpu(logbuf, pcpu_id);
 
 	(void)memset(buffer, 0U, LOG_MESSAGE_MAX_SIZE);
 	/* Put time-stamp, CPU ID and severity into buffer */
 	snprintf(buffer, LOG_MESSAGE_MAX_SIZE,
 		"[κ][%s][cpu%hu][sev%u][seq%4u] ",
-		timestamp_str, pcpu_id, severity, atomic_inc_return(&log_seq));
+		timestamp_str, pcpu_id, severity, sequence);
 
 	/* Put message into remaining portion of local buffer */
 	va_start(args, fmt);
@@ -173,6 +341,9 @@ void do_logmsg(uint32_t severity, const char *fmt, ...)
 		LOG_MESSAGE_MAX_SIZE
 		- strnlen_s(buffer, LOG_MESSAGE_MAX_SIZE), fmt, args);
 	va_end(args);
+
+	/* Retain before console output so VM console ownership cannot hide faults. */
+	host_dmesg_append(sequence, buffer);
 
 	/* Check whether output to memory */
 	if (mem_need_log(severity)) {

@@ -452,7 +452,7 @@ static bool console_vm_input_collect(uint16_t target_vmid)
 			console_vmid = ACRN_INVALID_VMID;
 			console_vm_input_reset(ACRN_INVALID_VMID);
 			snprintf(temp_str, TEMP_STR_SIZE,
-				"\r\n%s──────── [switch to BEAU console] ────────%s\r\n",
+				"\r\n%s───────────── [switch to BEAU console] ─────────────%s\r\n",
 				SHELL_COLOR_YELLOW, SHELL_COLOR_RESET);
 			shell_puts(temp_str);
 			break;

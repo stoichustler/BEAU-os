@@ -38,6 +38,13 @@ After Phase 1 approval, inspect the implementation and present:
 - the control flow, data flow, state ownership, and cleanup path;
 - the implementation sequence and required design comments;
 - per-code-tree file changes, build targets, validation, and worktree handling;
+- the estimated change cost and impact analysis: implementation scope and
+  dependencies; ABI, state, configuration, compatibility, CPU, memory,
+  latency, and user-visible effects; affected platforms, guests, and
+  subsystems; risks, mitigations, and validation evidence. Quantify known
+  values such as files, bytes, records, or build targets. For unknown values,
+  state a low/medium/high estimate with its rationale. Explicitly state when a
+  dimension has no expected impact;
 - the validated guest source files to copy into BEAU, when guest OS code changes;
 - the build target, automated-test proposal, risks, and rollback approach.
 

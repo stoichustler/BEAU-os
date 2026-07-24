@@ -12,9 +12,7 @@
 #include <per_cpu.h>
 #include <rtl.h>
 #include <schedule.h>
-#include <shell.h>
 #include <spinlock.h>
-#include <sprintf.h>
 #include <ticks.h>
 #include <timer.h>
 #include <vm.h>
@@ -85,14 +83,20 @@ struct vm_wdt_recovery_notice {
 	enum hwtdbg_recovery_result result;
 };
 
+struct vm_wdt_daemon_event {
+	uint64_t kick_tsc;
+	uint64_t gap_ticks;
+	uint64_t token;
+};
+
 struct vm_wdt_entry {
 	uint64_t start_tsc;
 	uint64_t last_kick_tsc;
-	uint64_t kick_count;
 	uint64_t timeout_count;
 	uint64_t last_token;
-	enum vm_wdt_status reported_status;
-	enum vm_wdt_cause reported_cause;
+	struct vm_wdt_daemon_event daemon_event;
+	uint64_t daemon_merged;
+	uint64_t daemon_dropped;
 	uint64_t last_irq_total;
 	uint64_t last_irq_delta;
 	uint64_t last_irq_sample_tsc;
@@ -125,6 +129,8 @@ struct vm_wdt_entry {
 	bool restart_pending;
 	bool reset_complete;
 	bool pm_suspended;
+	bool heartbeat_started;
+	bool daemon_pending;
 };
 
 static struct vm_wdt_entry vm_wdt_entries[CONFIG_MAX_VM_NUM];
@@ -154,14 +160,14 @@ static uint64_t vm_wdt_elapsed_ticks(uint64_t now, uint64_t since)
 
 static uint64_t vm_wdt_heartbeat_age_ticks(uint64_t now, const struct vm_wdt_entry *entry)
 {
-	uint64_t since = (entry->kick_count == 0UL) ? entry->start_tsc : entry->last_kick_tsc;
+	uint64_t since = !entry->heartbeat_started ? entry->start_tsc : entry->last_kick_tsc;
 
 	return vm_wdt_elapsed_ticks(now, since);
 }
 
 static bool vm_wdt_heartbeat_started(const struct vm_wdt_entry *entry)
 {
-	return (entry != NULL) && (entry->kick_count != 0UL);
+	return (entry != NULL) && entry->heartbeat_started;
 }
 
 static bool vm_wdt_is_pm_suspended(void)
@@ -212,15 +218,14 @@ static void vm_wdt_queue_timeout_locked(uint16_t vm_id,
 		VM_WDT_PENDING_TIMEOUT_NUM);
 	pending = &entry->pending[slot];
 	(void)memset(pending, 0U, sizeof(*pending));
-	pending->context.kind = (entry->kick_count == 0UL) ?
+	pending->context.kind = !entry->heartbeat_started ?
 		HWTDBG_TIMEOUT_FIRST_KICK : HWTDBG_TIMEOUT_RUNTIME;
 	pending->context.cause = VM_WDT_CAUSE_TIMEOUT;
 	pending->context.detected_tsc = now;
-	pending->context.heartbeat_tsc = (entry->kick_count == 0UL) ?
+	pending->context.heartbeat_tsc = !entry->heartbeat_started ?
 		entry->start_tsc : entry->last_kick_tsc;
 	pending->context.age_ms = ticks_to_ms(vm_wdt_heartbeat_age_ticks(now,
 		entry));
-	pending->context.kick_count = entry->kick_count;
 	pending->context.timeout_count = entry->timeout_count;
 	pending->context.restart_count = entry->restart_count;
 	pending->context.restart_fail_count = entry->restart_fail_count;
@@ -249,6 +254,63 @@ static bool vm_wdt_record_timeout_locked(uint16_t vm_id,
 	}
 
 	return transitioned;
+}
+
+/* [20260724] WDT daemon event ownership
+ *
+ * HVC heartbeat -> protected display slot -> vm-wdt thread -> daemon_log
+ *                         |
+ *                         +--> replace prior display-only event and count merge
+ *
+ * Key rule:
+ *   - the WDT lock publishes heartbeat state before its display copy;
+ *   - the one-entry slot is lossy only for console presentation;
+ *   - timeout, capture, and recovery state never consume this slot.
+ */
+static void vm_wdt_queue_daemon_event_locked(struct vm_wdt_entry *entry,
+	uint64_t kick_tsc, uint64_t gap_ticks)
+{
+	if (entry->daemon_pending) {
+		entry->daemon_merged++;
+	}
+	entry->daemon_event.kick_tsc = kick_tsc;
+	entry->daemon_event.gap_ticks = gap_ticks;
+	entry->daemon_event.token = entry->last_token;
+	entry->daemon_pending = true;
+}
+
+static bool vm_wdt_claim_daemon_event(uint16_t vm_id,
+	struct vm_wdt_daemon_event *event)
+{
+	struct vm_wdt_entry *entry;
+	uint64_t rflags;
+	bool claimed = false;
+
+	if ((vm_id >= CONFIG_MAX_VM_NUM) || (event == NULL)) {
+		return false;
+	}
+	spinlock_irqsave_obtain(&vm_wdt_lock, &rflags);
+	entry = &vm_wdt_entries[vm_id];
+	if (entry->daemon_pending) {
+		*event = entry->daemon_event;
+		entry->daemon_pending = false;
+		claimed = true;
+	}
+	spinlock_irqrestore_release(&vm_wdt_lock, rflags);
+
+	return claimed;
+}
+
+static void vm_wdt_record_daemon_drop(uint16_t vm_id)
+{
+	uint64_t rflags;
+
+	if (vm_id >= CONFIG_MAX_VM_NUM) {
+		return;
+	}
+	spinlock_irqsave_obtain(&vm_wdt_lock, &rflags);
+	vm_wdt_entries[vm_id].daemon_dropped++;
+	spinlock_irqrestore_release(&vm_wdt_lock, rflags);
 }
 
 static void vm_wdt_queue_recovery_notice_locked(struct vm_wdt_entry *entry,
@@ -313,56 +375,6 @@ static void vm_wdt_flush_recovery_notices(uint16_t vm_id)
 		hwtdbg_update_recovery(vm_id, notice.sequence, notice.result,
 			0UL, notice.wait_vcpus, notice.reset_ret);
 	}
-}
-
-static const char *vm_wdt_status_str(enum vm_wdt_status status)
-{
-	const char *str;
-
-	switch (status) {
-	case VM_WDT_STATUS_OFFLINE:
-		str = "offline";
-		break;
-	case VM_WDT_STATUS_UNKNOWN:
-		str = "none";
-		break;
-	case VM_WDT_STATUS_ALIVE:
-		str = "alive";
-		break;
-	case VM_WDT_STATUS_STUCK:
-		str = "stuck";
-		break;
-	default:
-		str = "unused";
-		break;
-	}
-
-	return str;
-}
-
-static const char *vm_wdt_status_color(enum vm_wdt_status status)
-{
-	const char *color;
-
-	switch (status) {
-	case VM_WDT_STATUS_ALIVE:
-		color = SHELL_COLOR_GREEN;
-		break;
-	case VM_WDT_STATUS_STUCK:
-		color = SHELL_COLOR_RED;
-		break;
-	case VM_WDT_STATUS_UNKNOWN:
-		color = SHELL_COLOR_YELLOW;
-		break;
-	case VM_WDT_STATUS_OFFLINE:
-		color = SHELL_COLOR_GREY;
-		break;
-	default:
-		color = "";
-		break;
-	}
-
-	return color;
 }
 
 static const char *vm_wdt_cause_str(enum vm_wdt_cause cause)
@@ -650,98 +662,6 @@ static enum vm_wdt_cause vm_wdt_classify_locked(uint16_t vm_id,
 	return cause;
 }
 
-static bool vm_wdt_should_report(uint16_t vm_id, const struct vm_wdt_snapshot *snapshot,
-	bool force)
-{
-	bool report = false;
-	uint64_t rflags;
-
-	if ((vm_id >= CONFIG_MAX_VM_NUM) || (snapshot == NULL)) {
-		return false;
-	}
-
-	spinlock_irqsave_obtain(&vm_wdt_lock, &rflags);
-	if (force || (vm_wdt_entries[vm_id].reported_status != snapshot->status) ||
-		(vm_wdt_entries[vm_id].reported_cause != snapshot->cause)) {
-		report = true;
-	}
-	spinlock_irqrestore_release(&vm_wdt_lock, rflags);
-
-	return report;
-}
-
-static void vm_wdt_mark_reported(uint16_t vm_id, const struct vm_wdt_snapshot *snapshot)
-{
-	uint64_t rflags;
-
-	if ((vm_id >= CONFIG_MAX_VM_NUM) || (snapshot == NULL)) {
-		return;
-	}
-
-	spinlock_irqsave_obtain(&vm_wdt_lock, &rflags);
-	vm_wdt_entries[vm_id].reported_status = snapshot->status;
-	vm_wdt_entries[vm_id].reported_cause = snapshot->cause;
-	spinlock_irqrestore_release(&vm_wdt_lock, rflags);
-}
-
-static void vm_wdt_print_one(uint16_t vm_id, const struct vm_wdt_snapshot *snapshot)
-{
-	uint64_t timestamp;
-	const char *color;
-	char timestamp_str[LOG_TIMESTAMP_MAX_SIZE];
-	char line[192];
-	uint64_t last_sec;
-	uint64_t last_msec;
-
-	if ((snapshot == NULL) || !vm_wdt_is_monitored(vm_id) || !shell_is_open() ||
-		(snapshot->status == VM_WDT_STATUS_UNUSED)) {
-		return;
-	}
-
-	/*
-	 * This service is intentionally not a shell command. Guest OSes prove
-	 * liveness by periodically issuing HC_VM_WDT_KICK; the BEAU shell is only
-	 * used as a visible console gate so the background WDT line does not pollute
-	 * boot logs or a selected guest console.
-	 */
-	timestamp = ticks_to_us(cpu_ticks());
-	format_log_timestamp(timestamp_str, sizeof(timestamp_str), timestamp);
-	color = vm_wdt_status_color(snapshot->status);
-	last_sec = snapshot->last_ms / 1000UL;
-	last_msec = snapshot->last_ms % 1000UL;
-	if (snapshot->status == VM_WDT_STATUS_STUCK) {
-		(void)snprintf(line, sizeof(line),
-			"%s[κ][%s] HWT: vm%hu:%9s status:%7s (%02lu.%03lus) kick:%8lu cause:%s" SHELL_COLOR_RESET "\r\n",
-			color, timestamp_str, vm_id, vm_wdt_name(vm_id),
-			vm_wdt_status_str(snapshot->status), last_sec, last_msec,
-			snapshot->kick_count, vm_wdt_cause_str(snapshot->cause));
-	} else {
-		(void)snprintf(line, sizeof(line),
-			"%s[κ][%s] HWT: vm%hu:%9s status:%7s (%02lu.%03lus) kick:%8lu" SHELL_COLOR_RESET "\r\n",
-			color, timestamp_str, vm_id, vm_wdt_name(vm_id),
-			vm_wdt_status_str(snapshot->status), last_sec, last_msec,
-			snapshot->kick_count);
-	}
-	if (shell_async_puts(line)) {
-		vm_wdt_mark_reported(vm_id, snapshot);
-	}
-}
-
-static void vm_wdt_print_hcall(uint16_t vm_id, uint64_t last_ms)
-{
-	struct vm_wdt_snapshot snapshot;
-
-	if (vm_wdt_get_snapshot(vm_id, &snapshot) != 0) {
-		return;
-	}
-	snapshot.last_ms = last_ms;
-
-	if ((snapshot.status != VM_WDT_STATUS_UNUSED) &&
-		vm_wdt_should_report(vm_id, &snapshot, true)) {
-		vm_wdt_print_one(vm_id, &snapshot);
-	}
-}
-
 static bool vm_wdt_recovery_timed_out(uint64_t started_tsc, uint32_t timeout_ms)
 {
 	return vm_wdt_elapsed_ticks(cpu_ticks(), started_tsc) >
@@ -991,7 +911,7 @@ static bool vm_wdt_start_verification(uint16_t vm_id)
 		sequence = entry->recovery_event_sequence;
 		entry->reset_complete = false;
 		entry->reset_ret = 0;
-		if (entry->kick_count != 0UL) {
+		if (entry->heartbeat_started) {
 			entry->restart_pending = false;
 			entry->recovery_state = VM_WDT_RECOVERY_IDLE;
 			entry->recovery_cause = VM_WDT_CAUSE_NONE;
@@ -1239,7 +1159,7 @@ int32_t vm_wdt_pm_resume(uint64_t epoch)
 			(timeout_ticks + 1UL) : (timeout_ticks - entry->remaining_ticks);
 		uint64_t heartbeat_base = (now > age_ticks) ? (now - age_ticks) : 0UL;
 
-		if (entry->kick_count == 0UL) {
+		if (!entry->heartbeat_started) {
 			entry->start_tsc = heartbeat_base;
 		} else {
 			entry->last_kick_tsc = heartbeat_base;
@@ -1284,7 +1204,7 @@ static void vm_wdt_resume_entry_locked(struct vm_wdt_entry *entry, uint64_t now)
 	uint64_t heartbeat_base = (now > age_ticks) ? (now - age_ticks) : 0UL;
 	uint64_t sleep_ticks = vm_wdt_elapsed_ticks(now, entry->suspend_ticks);
 
-	if (entry->kick_count == 0UL) {
+	if (!entry->heartbeat_started) {
 		entry->start_tsc = heartbeat_base;
 	} else {
 		entry->last_kick_tsc = heartbeat_base;
@@ -1375,6 +1295,39 @@ int32_t vm_wdt_pm_resume_vm(uint16_t vm_id, uint64_t epoch)
 	return 0;
 }
 
+static bool vm_wdt_print_daemon_event(uint16_t vm_id,
+	const struct vm_wdt_daemon_event *event)
+{
+	uint64_t gap_sec;
+	uint64_t gap_msec;
+
+	if ((event == NULL) || !vm_wdt_is_monitored(vm_id)) {
+		return false;
+	}
+	gap_sec = ticks_to_ms(event->gap_ticks) / 1000UL;
+	gap_msec = ticks_to_ms(event->gap_ticks) % 1000UL;
+
+	return daemon_log(LOG_INFO,
+		"HWT: vm%hu:%9s hcall gap:(%02lu.%03lus) token:0x%016lx",
+		vm_id, vm_wdt_name(vm_id), gap_sec, gap_msec, event->token);
+}
+
+static void vm_wdt_drain_daemon_events(void)
+{
+	uint16_t vm_id;
+	uint16_t max_vm_id = (CONFIG_VM_WDT_MONITOR_VM_NUM < CONFIG_MAX_VM_NUM) ?
+		CONFIG_VM_WDT_MONITOR_VM_NUM : CONFIG_MAX_VM_NUM;
+
+	for (vm_id = 0U; vm_id < max_vm_id; vm_id++) {
+		struct vm_wdt_daemon_event event;
+
+		if (vm_wdt_claim_daemon_event(vm_id, &event) &&
+			!vm_wdt_print_daemon_event(vm_id, &event)) {
+			vm_wdt_record_daemon_drop(vm_id);
+		}
+	}
+}
+
 static void vm_wdt_check_timeouts(void)
 {
 	struct vm_wdt_snapshot snapshot;
@@ -1397,9 +1350,6 @@ static void vm_wdt_check_timeouts(void)
 			continue;
 		}
 		if (snapshot.status == VM_WDT_STATUS_STUCK) {
-			if (vm_wdt_should_report(vm_id, &snapshot, false)) {
-				vm_wdt_print_one(vm_id, &snapshot);
-			}
 			if (vm_wdt_claim_restart(vm_id, &snapshot)) {
 				LOG_INF("HWT: VM%u restart cause:%s age:%lums attempt:%lu/%u",
 					vm_id, vm_wdt_cause_str(snapshot.cause), snapshot.last_ms,
@@ -1428,6 +1378,7 @@ static void vm_wdt_thread_main(__unused struct thread_object *obj)
 		sleep_thread(&vm_wdt_thread);
 		schedule();
 		if (!vm_wdt_is_pm_suspended()) {
+			vm_wdt_drain_daemon_events();
 			vm_wdt_check_timeouts();
 		}
 	}
@@ -1506,11 +1457,8 @@ void vm_wdt_reset(const struct acrn_vm *vm)
 	reset_complete = restart_pending && vm_wdt_entries[vm->vm_id].reset_complete;
 	vm_wdt_entries[vm->vm_id].start_tsc = cpu_ticks();
 	vm_wdt_entries[vm->vm_id].last_kick_tsc = 0UL;
-	vm_wdt_entries[vm->vm_id].kick_count = 0UL;
 	vm_wdt_entries[vm->vm_id].timeout_count = 0UL;
 	vm_wdt_entries[vm->vm_id].last_token = 0UL;
-	vm_wdt_entries[vm->vm_id].reported_status = VM_WDT_STATUS_UNUSED;
-	vm_wdt_entries[vm->vm_id].reported_cause = VM_WDT_CAUSE_NONE;
 	vm_wdt_entries[vm->vm_id].last_irq_total = vm_wdt_irq_total();
 	vm_wdt_entries[vm->vm_id].last_irq_delta = 0UL;
 	vm_wdt_entries[vm->vm_id].last_irq_sample_tsc = vm_wdt_entries[vm->vm_id].start_tsc;
@@ -1545,6 +1493,12 @@ void vm_wdt_reset(const struct acrn_vm *vm)
 	vm_wdt_entries[vm->vm_id].remaining_ticks = 0UL;
 	vm_wdt_entries[vm->vm_id].suspend_epoch = 0UL;
 	vm_wdt_entries[vm->vm_id].suspend_ticks = 0UL;
+	(void)memset(&vm_wdt_entries[vm->vm_id].daemon_event, 0U,
+		sizeof(vm_wdt_entries[vm->vm_id].daemon_event));
+	vm_wdt_entries[vm->vm_id].daemon_merged = 0UL;
+	vm_wdt_entries[vm->vm_id].daemon_dropped = 0UL;
+	vm_wdt_entries[vm->vm_id].heartbeat_started = false;
+	vm_wdt_entries[vm->vm_id].daemon_pending = false;
 	vm_wdt_entries[vm->vm_id].timeout_active = false;
 	vm_wdt_entries[vm->vm_id].restart_pending = restart_pending;
 	vm_wdt_entries[vm->vm_id].pm_suspended = false;
@@ -1556,11 +1510,12 @@ void vm_wdt_kick(const struct acrn_vm *vm, uint64_t token)
 	struct vm_wdt_entry *entry;
 	uint64_t rflags;
 	uint64_t now;
-	uint64_t age_ticks = 0UL;
+	uint64_t gap_ticks = 0UL;
 	uint64_t late_sequence = 0UL;
 	uint64_t verified_sequence = 0UL;
 	bool transitioned = false;
 	bool verified = false;
+	bool daemon_event = false;
 
 	if ((vm == NULL) || (vm->vm_id >= CONFIG_MAX_VM_NUM)) {
 		return;
@@ -1570,16 +1525,20 @@ void vm_wdt_kick(const struct acrn_vm *vm, uint64_t token)
 	spinlock_irqsave_obtain(&vm_wdt_lock, &rflags);
 	entry = &vm_wdt_entries[vm->vm_id];
 	if (vm_wdt_heartbeat_started(entry) || vm_wdt_is_monitored(vm->vm_id)) {
-		age_ticks = vm_wdt_heartbeat_age_ticks(now, entry);
+		gap_ticks = vm_wdt_heartbeat_age_ticks(now, entry);
 		transitioned = vm_wdt_record_timeout_locked(vm->vm_id, entry,
-			vm_wdt_is_timeout_age(age_ticks), now);
+			vm_wdt_is_timeout_age(gap_ticks), now);
 	}
 	late_sequence = entry->candidate_event_sequence;
 	entry->candidate_event_sequence = 0UL;
 	entry->last_kick_tsc = now;
-	entry->kick_count++;
+	entry->heartbeat_started = true;
 	entry->timeout_active = false;
 	entry->last_token = token;
+	if (vm_wdt_is_monitored(vm->vm_id)) {
+		vm_wdt_queue_daemon_event_locked(entry, now, gap_ticks);
+		daemon_event = true;
+	}
 	if (entry->restart_pending &&
 		(entry->recovery_state == VM_WDT_RECOVERY_VERIFYING)) {
 		verified_sequence = entry->recovery_event_sequence;
@@ -1601,14 +1560,13 @@ void vm_wdt_kick(const struct acrn_vm *vm, uint64_t token)
 		HWTDBG_RECOVERY_VERIFIED, 0UL, 0);
 	spinlock_irqrestore_release(&vm_wdt_lock, rflags);
 
-	if ((transitioned || (late_sequence != 0UL) ||
+	if ((daemon_event || transitioned || (late_sequence != 0UL) ||
 		(verified_sequence != 0UL)) && vm_wdt_started) {
 		wake_thread(&vm_wdt_thread);
 	}
 	if (verified) {
 		LOG_INF("HWT: VM%u restart verified", vm->vm_id);
 	}
-	vm_wdt_print_hcall(vm->vm_id, ticks_to_ms(age_ticks));
 }
 
 static void vm_wdt_fill_snapshot_metadata(uint16_t vm_id,
@@ -1620,10 +1578,13 @@ static void vm_wdt_fill_snapshot_metadata(uint16_t vm_id,
 	snapshot->last_kick_tsc = entry->last_kick_tsc;
 	snapshot->irq_total = entry->last_irq_total;
 	snapshot->irq_delta = entry->last_irq_delta;
+	snapshot->daemon_merged = entry->daemon_merged;
+	snapshot->daemon_dropped = entry->daemon_dropped;
 	snapshot->timeout_ms = CONFIG_VM_WDT_TIMEOUT_MS;
 	snapshot->heartbeat_started = vm_wdt_heartbeat_started(entry);
 	snapshot->timeout_active = entry->timeout_active;
 	snapshot->restart_enabled = vm_wdt_restart_enabled(vm_id);
+	snapshot->daemon_pending = entry->daemon_pending;
 }
 
 int32_t vm_wdt_get_snapshot(uint16_t vm_id, struct vm_wdt_snapshot *snapshot)
@@ -1643,7 +1604,6 @@ int32_t vm_wdt_get_snapshot(uint16_t vm_id, struct vm_wdt_snapshot *snapshot)
 	snapshot->cause = VM_WDT_CAUSE_NONE;
 	snapshot->recovery_state = VM_WDT_RECOVERY_IDLE;
 	snapshot->last_ms = 0UL;
-	snapshot->kick_count = 0UL;
 	snapshot->timeout_count = 0UL;
 	snapshot->restart_count = 0UL;
 	snapshot->restart_fail_count = 0UL;
@@ -1654,11 +1614,14 @@ int32_t vm_wdt_get_snapshot(uint16_t vm_id, struct vm_wdt_snapshot *snapshot)
 	snapshot->last_kick_tsc = 0UL;
 	snapshot->irq_total = 0UL;
 	snapshot->irq_delta = 0UL;
+	snapshot->daemon_merged = 0UL;
+	snapshot->daemon_dropped = 0UL;
 	snapshot->timeout_ms = CONFIG_VM_WDT_TIMEOUT_MS;
 	snapshot->restart_pending = false;
 	snapshot->heartbeat_started = false;
 	snapshot->timeout_active = false;
 	snapshot->restart_enabled = false;
+	snapshot->daemon_pending = false;
 
 	vm_config = get_vm_config(vm_id);
 	vm = get_vm_from_vmid(vm_id);
@@ -1691,7 +1654,6 @@ int32_t vm_wdt_get_snapshot(uint16_t vm_id, struct vm_wdt_snapshot *snapshot)
 		snapshot->cause = vm_wdt_heartbeat_started(&entry) ?
 			VM_WDT_CAUSE_HEARTBEAT : VM_WDT_CAUSE_NONE;
 		snapshot->last_ms = ticks_to_ms(age_ticks);
-		snapshot->kick_count = entry.kick_count;
 		snapshot->timeout_count = entry.timeout_count;
 		snapshot->restart_count = entry.restart_count;
 		snapshot->restart_fail_count = entry.restart_fail_count;
@@ -1726,7 +1688,6 @@ int32_t vm_wdt_get_snapshot(uint16_t vm_id, struct vm_wdt_snapshot *snapshot)
 		snapshot->cause = snapshot->status == VM_WDT_STATUS_STUCK ?
 			VM_WDT_CAUSE_TIMEOUT : VM_WDT_CAUSE_NONE;
 		snapshot->last_ms = ticks_to_ms(age_ticks);
-		snapshot->kick_count = entry.kick_count;
 		snapshot->timeout_count = entry.timeout_count;
 		snapshot->restart_count = entry.restart_count;
 		snapshot->restart_fail_count = entry.restart_fail_count;
@@ -1769,7 +1730,6 @@ int32_t vm_wdt_get_snapshot(uint16_t vm_id, struct vm_wdt_snapshot *snapshot)
 	}
 
 	snapshot->last_ms = ticks_to_ms(age_ticks);
-	snapshot->kick_count = entry.kick_count;
 	snapshot->timeout_count = entry.timeout_count;
 	snapshot->restart_count = entry.restart_count;
 	snapshot->restart_fail_count = entry.restart_fail_count;

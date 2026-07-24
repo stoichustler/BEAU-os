@@ -30,6 +30,7 @@ int32_t shell_version(int32_t argc, char **argv);
 int32_t shell_clear(int32_t argc, char **argv);
 int32_t shell_symtab(int32_t argc, char **argv);
 int32_t shell_loglevel(int32_t argc, char **argv);
+int32_t shell_dmesg(int32_t argc, char **argv);
 int32_t shell_list_vcpu(int32_t argc, char **argv);
 int32_t shell_list_threads(int32_t argc, char **argv);
 int32_t shell_schedstat(int32_t argc, char **argv);

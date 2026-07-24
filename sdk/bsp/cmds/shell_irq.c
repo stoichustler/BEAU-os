@@ -133,6 +133,7 @@ static void shell_irqstat_format_vgic_latency(char *buf, size_t size,
 #ifdef CONFIG_ARM64
 static void shell_print_guest_irqstat(void)
 {
+	struct arm64_vgic_irqstat_summary summary;
 	uint16_t count;
 	uint16_t idx;
 
@@ -158,9 +159,11 @@ static void shell_print_guest_irqstat(void)
 	 */
 	count = arm64_vgicv3_get_irq_stats(shell_irqstat_vgic_stats,
 		ARRAY_SIZE(shell_irqstat_vgic_stats));
-	shell_item_section("guest virq:");
+	arm64_vgicv3_get_irqstat_summary(&summary);
+	shell_item_section("guest virq: entries:%hu/%hu evicted:%lu dropped:%lu",
+		summary.used, summary.capacity, summary.evicted, summary.dropped);
 	if (count == 0U) {
-		shell_item_line("(no enabled guest-visible virtual IRQ activity)");
+		shell_item_line("(no guest-visible virtual IRQ activity)");
 		return;
 	}
 

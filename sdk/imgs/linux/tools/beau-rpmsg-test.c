@@ -114,19 +114,35 @@ static int open_rpmsg(void)
 	return -1;
 }
 
+static void rpmsg_usage(void)
+{
+	fprintf(stderr, "usage: rpmsg [payload up to %u bytes]\n", BEAU_RPMSG_PAYLOAD_MAX);
+	fprintf(stderr, "Attach remoteproc0 when needed, then send and verify an RPMsg echo.\n");
+}
+
 int main(int argc, char *argv[])
 {
-	const char *payload = argc > 1 ? argv[1] : "beau-rpmsg-smoke";
+	const char *payload;
 	char reply[BEAU_RPMSG_PAYLOAD_MAX];
 	struct pollfd pfd;
-	size_t len = strlen(payload);
+	size_t len;
 	ssize_t got;
 	int fd;
 	int ret;
 
-	if (argc > 2 || len == 0U || len > sizeof(reply)) {
-		fprintf(stderr, "usage: %s [payload up to %u bytes]\n", argv[0],
-			BEAU_RPMSG_PAYLOAD_MAX);
+	if ((argc == 2) && ((strcmp(argv[1], "-h") == 0) ||
+		(strcmp(argv[1], "--help") == 0) || (strcmp(argv[1], "help") == 0))) {
+		rpmsg_usage();
+		return 0;
+	}
+	if (argc > 2) {
+		rpmsg_usage();
+		return 2;
+	}
+	payload = argc > 1 ? argv[1] : "beau-rpmsg-smoke";
+	len = strlen(payload);
+	if (len == 0U || len > sizeof(reply)) {
+		rpmsg_usage();
 		return 2;
 	}
 

@@ -40,6 +40,15 @@ config MEM_LOGLEVEL_DEFAULT
 	help
 	  Initial memory log category verbosity.
 
+config HOST_DMESG_RING_SIZE
+	int "Host dmesg ring size"
+	default 65536
+	range 4096 1048576
+	help
+	  Static storage budget in bytes for retained BEAU host log records. The
+	  dmesg shell command reads the newest complete records after the live
+	  console stream has moved on. Full rings overwrite the oldest records.
+
 config NPK_LOGLEVEL_DEFAULT
 	int "Default NPK log level"
 	default 0

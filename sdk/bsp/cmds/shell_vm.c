@@ -1119,13 +1119,14 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 		uint64_t last_sec = wdt.last_ms / 1000UL;
 		uint64_t last_msec = wdt.last_ms % 1000UL;
 
-		shell_item_line("HWT:status:%7s cause:%12s (%02lu.%03lu) kick:%08lu timeout:%02lu restart:%02lu fail:%02lu pending:%s recovery:%10s wait:0x%02lx token:0x%016lx",
+		shell_item_line("HWT:status:%7s cause:%12s (%02lu.%03lu) timeout:%02lu restart:%02lu fail:%02lu recovery:%10s wait:0x%02lx token:0x%016lx daemon:%s merge:%lu drop:%lu",
 			shell_vmstat_wdt_status_to_str(wdt.status),
 			shell_vmstat_wdt_cause_to_str(wdt.cause), last_sec, last_msec,
-			wdt.kick_count, wdt.timeout_count, wdt.restart_count,
-			wdt.restart_fail_count, shell_yes_no(wdt.restart_pending),
+			wdt.timeout_count, wdt.restart_count, wdt.restart_fail_count,
 			shell_vmstat_wdt_recovery_to_str(wdt.recovery_state),
-			wdt.recovery_wait_vcpus, wdt.last_token);
+			wdt.recovery_wait_vcpus, wdt.last_token,
+			shell_yes_no(wdt.daemon_pending), wdt.daemon_merged,
+			wdt.daemon_dropped);
 	}
 	shell_item_line("vcon:selected:%s bound:%s ramlog-pending:%u drain:%u skipped:%lu",
 		shell_yes_no(console_vmid == vm_id), shell_yes_no(ring.vuart_bound),

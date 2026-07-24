@@ -717,7 +717,7 @@ def run_smmu_passthrough_smoke(qemu):
         vm_command(
             qemu,
             2,
-            "beau-edu-test",
+			"vpci",
             "VM2 EDU PCI BAR passthrough",
             patterns=[
                 "vendor:0x1234 device:0x11e8",

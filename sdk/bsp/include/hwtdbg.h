@@ -45,7 +45,6 @@ struct hwtdbg_timeout_context {
 	uint64_t detected_tsc;
 	uint64_t heartbeat_tsc;
 	uint64_t age_ms;
-	uint64_t kick_count;
 	uint64_t timeout_count;
 	uint64_t restart_count;
 	uint64_t restart_fail_count;

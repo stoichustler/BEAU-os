@@ -57,7 +57,7 @@ int32_t shell_to_vm_console(int32_t argc, char **argv)
 		console_vm_vuart_unbind(console_vmid);
 	}
 	snprintf(temp_str, TEMP_STR_SIZE,
-		"\r\n%s──────── [switch to VM-%d console] ────────%s\r\n",
+		"\r\n%s───────────── [switch to VM-%d console] ─────────────%s\r\n",
 		SHELL_COLOR_YELLOW, vm_id, SHELL_COLOR_RESET);
 	shell_puts(temp_str);
 	shell_set_input_active(false);
@@ -183,7 +183,7 @@ int32_t shell_ramlog(int32_t argc, char **argv)
 
 	if ((argc != 2) || !shell_parse_ramlog_vmid(argv[1], &vmid) ||
 		!ramlog_get_stats(vmid, &before)) {
-		shell_puts("usage: ramlog <vm id 0-4>\r\n");
+		shell_puts("usage: ramlog <vmid>\r\n");
 		return -EINVAL;
 	}
 

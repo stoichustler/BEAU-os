@@ -17,7 +17,8 @@
  * Common trace event ID layout:
  * - 0x0001..0x0004: common timer queue and hardware IRQ events.
  * - 0x0010..0x0011: VM enter/exit boundaries.
- * - 0x0020: scheduler choice, currently emitted with the next thread name.
+ * - 0x0020: scheduler choice, with compact source and target thread tokens.
+ * - 0x0021: successful guest virtual IRQ injection.
  * - 0x10000 + reason: VM-exit namespace. On x86 the low bits mirror VMX
  *   basic exit reasons, so trace decoders can subtract TRACE_VMEXIT_ENTRY
  *   and compare the result with the architecture manual.
@@ -38,8 +39,17 @@
 #define TRACE_VM_EXIT			0x10U
 #define TRACE_VM_ENTER			0X11U
 
-/* event to calculate cpu usage with shared pcpu */
+/* Scheduler switch payload: a/b are source/target compact thread tokens. */
 #define TRACE_SCHED_NEXT		0x20U
+#define TRACE_VIRQ_INJECT		0x21U
+
+/* A vCPU token encodes VM/vCPU identity; a host token carries two name bytes. */
+#define TRACE_SCHED_THREAD_VCPU_FLAG	(1U << 31U)
+#define TRACE_SCHED_THREAD_VM_SHIFT	16U
+#define TRACE_SCHED_THREAD_VM_MASK	0x7fffU
+#define TRACE_SCHED_THREAD_VCPU_MASK	0xffffU
+#define TRACE_SCHED_THREAD_TAG_SHIFT	8U
+#define TRACE_SCHED_THREAD_TAG_MASK	0xffU
 
 #define TRACE_VMEXIT_ENTRY		0x10000U
 
@@ -66,8 +76,9 @@
 #define TRACE_MASK_SCHED		(1UL << 1U)
 #define TRACE_MASK_HCALL		(1UL << 2U)
 #define TRACE_MASK_VM			(1UL << 3U)
+#define TRACE_MASK_VIRQ		(1UL << 4U)
 #define TRACE_MASK_ALL			(TRACE_MASK_TIMER | TRACE_MASK_SCHED | \
-					 TRACE_MASK_HCALL | TRACE_MASK_VM)
+					 TRACE_MASK_HCALL | TRACE_MASK_VM | TRACE_MASK_VIRQ)
 
 /* Fixed 32-byte record shared by all trace producers and shell decoders. */
 struct trace_record {

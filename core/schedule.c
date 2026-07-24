@@ -92,6 +92,33 @@ static inline bool is_runnable_or_running(const struct thread_object *obj)
 	return (obj->status == THREAD_STS_RUNNING) || (obj->status == THREAD_STS_RUNNABLE);
 }
 
+/* [20260724] Scheduler trace identity
+ *
+ * scheduler-owned thread object -> compact trace token -> shell dump decoder
+ *
+ * Key rule:
+ *   - schedule() snapshots identity while it owns the scheduler lock;
+ *   - vCPU identity uses immutable VM/vCPU metadata, host threads use a
+ *     bounded two-character tag;
+ *   - the trace record never retains a thread pointer that teardown can reuse.
+ */
+static uint32_t sched_trace_thread_token(const struct thread_object *obj)
+{
+	uint32_t token;
+
+	if (obj->is_vcpu) {
+		token = TRACE_SCHED_THREAD_VCPU_FLAG |
+			(((uint32_t)obj->vm_id & TRACE_SCHED_THREAD_VM_MASK) <<
+			TRACE_SCHED_THREAD_VM_SHIFT) |
+			((uint32_t)obj->vcpu_id & TRACE_SCHED_THREAD_VCPU_MASK);
+	} else {
+		token = ((uint32_t)(uint8_t)obj->name[0] << TRACE_SCHED_THREAD_TAG_SHIFT) |
+			((uint32_t)(uint8_t)obj->name[1] & TRACE_SCHED_THREAD_TAG_MASK);
+	}
+
+	return token;
+}
+
 /*
  * Runtime accounting is tied to scheduler ownership:
  *
@@ -689,7 +716,6 @@ void schedule(void)
 	struct list_head *pos;
 	uint64_t rflag;
 	uint64_t now;
-	char name[16];
 
 	obtain_schedule_lock(pcpu_id, &rflag);
 	if (ctl->priority_pending) {
@@ -733,10 +759,8 @@ void schedule(void)
 	if (prev != next) {
 		now = cpu_ticks();
 		if (prev != NULL) {
-			memcpy(name, prev->name, 4);
-			memcpy(name + 4, next->name, 4);
-			memset(name + 8, 0, sizeof(name) - 8);
-			TRACE_16STR(TRACE_SCHED_NEXT, name);
+			TRACE_4I(TRACE_SCHED_NEXT, sched_trace_thread_token(prev),
+				sched_trace_thread_token(next), 0U, 0U);
 			if (prev->switch_out != NULL) {
 				prev->switch_out(prev);
 			}

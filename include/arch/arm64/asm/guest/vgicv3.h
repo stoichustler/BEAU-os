@@ -78,6 +78,13 @@ struct arm64_vgic_irq_stats {
 	struct arm64_vgic_irq_latency_stats lr_to_eoi;
 };
 
+struct arm64_vgic_irqstat_summary {
+	uint16_t used;
+	uint16_t capacity;
+	uint64_t evicted;
+	uint64_t dropped;
+};
+
 /*
  * Per-vCPU hardware virtualization context. List registers are the hardware
  * slots used by GICv3 to present pending/active virtual interrupts to EL1; the
@@ -256,5 +263,6 @@ void arm64_vgicv3_maintenance_irq_handler(uint32_t irq, void *data);
 void arm64_vgicv3_virtual_timer_irq_handler(uint32_t irq, void *data);
 int32_t arm64_vgicv3_mmio_handler(struct io_request *io_req, void *handler_private_data);
 uint16_t arm64_vgicv3_get_irq_stats(struct arm64_vgic_irq_stats *stats, uint16_t max);
+void arm64_vgicv3_get_irqstat_summary(struct arm64_vgic_irqstat_summary *summary);
 
 #endif /* ARM64_GUEST_VGICV3_H */

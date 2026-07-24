@@ -73,7 +73,6 @@ struct vm_wdt_snapshot {
 	enum vm_wdt_cause cause;
 	enum vm_wdt_recovery_state recovery_state;
 	uint64_t last_ms;
-	uint64_t kick_count;
 	uint64_t timeout_count;
 	uint64_t restart_count;
 	uint64_t restart_fail_count;
@@ -84,11 +83,14 @@ struct vm_wdt_snapshot {
 	uint64_t last_kick_tsc;
 	uint64_t irq_total;
 	uint64_t irq_delta;
+	uint64_t daemon_merged;
+	uint64_t daemon_dropped;
 	uint32_t timeout_ms;
 	bool restart_pending;
 	bool heartbeat_started;
 	bool timeout_active;
 	bool restart_enabled;
+	bool daemon_pending;
 };
 
 void vm_wdt_start(void);
