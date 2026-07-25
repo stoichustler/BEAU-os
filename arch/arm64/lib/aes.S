@@ -316,6 +316,7 @@ FUNC_ALIGN(aes_v8_set_decrypt_key, 5)
 .inst	0xd50323bf		// autiasp
 	ret
 END(aes_v8_set_decrypt_key)
+
 /* Encrypt one 16-byte block.
  *
  *   x0 = input, x1 = output, x2 = encryption schedule
@@ -352,6 +353,7 @@ FUNC_ALIGN(aes_v8_encrypt, 5)
 	st1	{v2.16b},[x1]
 	ret
 END(aes_v8_encrypt)
+
 /* Decrypt one 16-byte block with the transformed reverse schedule.
  *
  * AESD performs AddRoundKey, inverse ShiftRows, and inverse SubBytes;
@@ -385,6 +387,7 @@ FUNC_ALIGN(aes_v8_decrypt, 5)
 	st1	{v2.16b},[x1]
 	ret
 END(aes_v8_decrypt)
+
 /* Encrypt or decrypt complete blocks in Cipher Block Chaining mode.
  *
  *   x0 = input, x1 = output, x2 = byte length
@@ -903,6 +906,7 @@ FUNC_ALIGN(aes_v8_cbc_encrypt, 5)
 	ldr	x29,[sp],#16
 	ret
 END(aes_v8_cbc_encrypt)
+
 /* Encrypt or decrypt blocks with a 32-bit counter-mode keystream.
  *
  *   x0 = input, x1 = output, x2 = block count

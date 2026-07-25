@@ -74,7 +74,7 @@ static uint64_t rawimage_range_end(uint64_t base, uint64_t size)
 static void rawimage_log_load(uint16_t vm_id, const char *name, uint64_t base, uint64_t size)
 {
 	if (vm_id <= 3U) {
-		LOG_INF("VM%u: load %-7s [0x%016lx-0x%016lx] (0x%08lx)",
+		LOG_INF("VM%u:    load %-7s [0x%016lx-0x%016lx] (0x%08lx)",
 			vm_id, name, base, rawimage_range_end(base, size), size);
 	}
 }

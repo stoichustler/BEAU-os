@@ -116,7 +116,7 @@ static void init_debug_pre(void)
 	console_init();
 
 	/* [20260723] BEAU OS BANNER */
-	print_hv_banner();
+	beau_tag();
 }
 
 static void init_debug_post(uint16_t pcpu_id)

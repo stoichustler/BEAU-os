@@ -17,6 +17,15 @@ obj:
 	.type fn, %function; \
 fn:
 
+
+#define LABEL(label)     \
+	.globl label;        \
+label:
+
+#define LABEL_ALIGN(label, alignment)  \
+	.align alignment;                  \
+	LABEL(label)
+
 #define FUNC_ALIGN(fn, alignment) \
 	.align alignment;              \
 	FUNC(fn)

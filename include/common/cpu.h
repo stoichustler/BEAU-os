@@ -141,7 +141,7 @@ static inline void local_irq_restore(uint64_t flags)
 	arch_local_irq_restore(flags);
 }
 
-void print_hv_banner(void);
+void beau_tag(void);
 
 #endif /* ASSEMBLER */
 

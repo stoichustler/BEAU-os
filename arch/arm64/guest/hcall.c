@@ -236,7 +236,7 @@ int32_t arm64_dispatch_hypercall(struct acrn_vcpu *vcpu)
 	vcpu->arch.regs.x0 = (uint64_t)ret;
 	if ((ret < 0) && !((hcall_id == HC_VIRTIO_PROXY_BACKEND) &&
 		((ret == -EBUSY) || (ret == -ENODEV) || (ret == -ENODATA)))) {
-		LOG_DBG("HCALL ID:0x%lx ret:%d", hcall_id, ret);
+		LOG_DBG("HCALL:  0x%lx ret:%d", hcall_id, ret);
 	}
 	TRACE_2L(TRACE_VMEXIT_VMCALL, vm->vm_id, hcall_id);
 

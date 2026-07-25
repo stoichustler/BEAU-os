@@ -293,7 +293,7 @@ static void shell_pcistat_print_bars(const struct pci_vdev *vdev)
 		}
 		type = ((vbar->bar_type.io_space.indicator == 1U) && !vbar->is_mem64hi) ?
 			"io" : "mem";
-		shell_item_line("     bar%u:%s gpa:0x%016lx hpa:0x%016lx size:0x%016lx",
+		shell_item_line("     BAR%u:%s gpa:0x%016lx hpa:0x%016lx size:0x%016lx",
 			bar_idx, type, vbar->base_gpa, vbar->base_hpa, vbar->size);
 	}
 }
@@ -316,7 +316,7 @@ static void shell_pcistat_print_msi(const struct pci_vdev *vdev)
 		mask = shell_pci_vcfg_read(vdev, vdev->msi.capoff + mask_offset, 4U);
 	}
 
-	shell_item_line("     msi:cap:0x%02x len:%u vectors:%u 64:%s pvm:%s enabled:%s ctrl:0x%04x mask:0x%08x",
+	shell_item_line("     MSI:cap:0x%02x len:%u vectors:%u 64:%s pvm:%s enabled:%s ctrl:0x%04x mask:0x%08x",
 		vdev->msi.capoff, vdev->msi.caplen, vdev->msi.vector_count,
 		shell_yes_no(vdev->msi.is_64bit),
 		shell_yes_no(pvm), shell_yes_no((ctrl & PCIM_MSICTRL_MSI_ENABLE) != 0U),
@@ -345,7 +345,7 @@ static void shell_pcistat_print_msix(const struct pci_vdev *vdev)
 		hole_size = ((table_gpa + table_size + PAGE_SIZE - 1UL) & PAGE_MASK) - hole_gpa;
 	}
 
-	shell_item_line("     msix:cap:0x%02x len:%u table:bar%u off:0x%08x count:%u enabled:%s masked:%s on-msi:%s programmed:%s",
+	shell_item_line("     MSIx:cap:0x%02x len:%u table:bar%u off:0x%08x count:%u enabled:%s masked:%s on-MSI:%s programmed:%s",
 		vdev->msix.capoff, vdev->msix.caplen, vdev->msix.table_bar,
 		vdev->msix.table_offset, vdev->msix.table_count,
 		shell_yes_no((ctrl & PCIM_MSIXCTRL_MSIX_ENABLE) != 0U),
@@ -353,7 +353,7 @@ static void shell_pcistat_print_msix(const struct pci_vdev *vdev)
 		shell_yes_no(vdev->msix.is_vmsix_on_msi),
 		shell_yes_no(vdev->msix.is_vmsix_on_msi_programmed));
 	if (hole_size != 0UL) {
-		shell_item_line("     msix-hole:gpa:0x%016lx hpa:0x%016lx size:0x%016lx",
+		shell_item_line("     MSIx-hole:gpa:0x%016lx hpa:0x%016lx size:0x%016lx",
 			hole_gpa, hole_hpa, hole_size);
 	}
 }

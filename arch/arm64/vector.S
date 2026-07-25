@@ -6,6 +6,7 @@
 
 #include <asm/trap.h>
 #include <asm/cpu.h>
+#include <asm/boot/macro.h>
 #include <generated/offsets.h>
 
 /*
@@ -151,9 +152,8 @@
  */
 
 	.text
-	.align 11
-	.globl arm64_exception_vectors
-arm64_exception_vectors:
+
+LABEL_ALIGN(arm64_exception_vectors, 11)
 	/* Current EL with SP0: synchronous, IRQ, FIQ, SError. */
 	b	.
 	.balign 0x80
@@ -206,7 +206,7 @@ arm64_fiq_handler:
 arm64_serror_handler:
 	vector_entry ARM64_TRAP_SERROR
 
-	.macro guest_vector_entry handler
+.macro guest_vector_entry handler
 	/*
 	 * A lower-EL exception enters EL2 on SP_EL2. Preserve the guest SP_EL1
 	 * separately so C code can inspect and edit the guest frame, then ERET
@@ -220,7 +220,7 @@ arm64_serror_handler:
 	mov	x0, sp
 	bl	\handler
 	b	vcpu_exit_return
-	.endm
+.endm
 
 arm64_guest_sync_handler:
 	guest_vector_entry dispatch_vcpu_trap
@@ -234,8 +234,8 @@ arm64_guest_fiq_handler:
 arm64_guest_serror_handler:
 	guest_vector_entry dispatch_vcpu_trap
 
-	.globl vcpu_exit_return
-vcpu_exit_return:
+
+LABEL(vcpu_exit_return)
 	/*
 	 * Keep current-EL IRQs out of the ELR_EL2/SPSR_EL2 restore window.
 	 * A host IRQ taken after ELR_EL2 is programmed but before ERET would use

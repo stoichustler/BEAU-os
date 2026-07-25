@@ -53,6 +53,7 @@
  */
 
 #include <asm/cpu.h>
+#include <asm/boot/macro.h>
 
 	.section .text.entry, "ax", %progbits
 
@@ -61,8 +62,7 @@
 	 * Raw firmware convention: x1 = DTB physical address.
 	 * U-Boot booti convention: x0 = DTB physical address, x1 = 0.
 	 */
-	.globl _start
-_start:
+LABEL(_start)
 	/* DAIF masks Debug, SError, IRQ, and FIQ while EL2 state is incomplete. */
 	msr	daifset, #0xf
 
@@ -109,9 +109,8 @@ _start:
 	bl	init_primary_pcpu
 	b	_start_hang
 
-	.align 2
-	.globl _start_secondary_psci
-_start_secondary_psci:
+
+LABEL_ALIGN(_start_secondary_psci, 2)
 	/* Secondary CPUs enter with interrupts masked until per-CPU init is done. */
 	msr	daifset, #0xf
 	/* Use SP_EL2 for the scheduler/EL2 stack on secondary CPUs as well. */
@@ -130,9 +129,8 @@ _start_secondary_psci:
 	bl	init_secondary_pcpu
 	b	_start_hang
 
-	.align 2
-	.globl _start_hang
-_start_hang:
+
+LABEL_ALIGN(_start_hang, 2)
 	/* WFI keeps a failed or returned boot path parked without spinning hot. */
 	wfi
 	b	_start_hang

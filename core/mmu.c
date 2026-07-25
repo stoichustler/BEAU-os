@@ -333,7 +333,7 @@ static void split_large_page(uint64_t *pte, enum _page_table_level level,
 	paddr = pfn2paddr(ref_paddr);
 
 	pbase = (uint64_t *)alloc_page(table->pool);
-	dev_dbg(DBG_LEVEL_MMU, "%s, paddr: 0x%lx, pbase: 0x%lx\n", __func__, ref_paddr, pbase);
+	dev_dbg(DBG_LEVEL_MMU, "MMU:    PA:0x%016lx PB:0x%016lx\n", ref_paddr, pbase);
 
 	for (i = 0UL; i < PTRS_PER_PGTL0E; i++) {
 		table->set_pgentry(pbase + i, paddr, ref_prot, (level + 1), 1, table);
@@ -384,7 +384,7 @@ static void modify_or_del_pgtl0(uint64_t *pgtl1e, uint64_t vaddr_start, uint64_t
 	uint64_t vaddr = vaddr_start;
 	uint64_t index = pgtl0e_index(vaddr);
 
-	dev_dbg(DBG_LEVEL_MMU, "%s, vaddr: [0x%lx - 0x%lx]\n", __func__, vaddr, vaddr_end);
+	dev_dbg(DBG_LEVEL_MMU, "MMU:    VA:[0x%016lx - 0x%016lx] PT0\n", vaddr, vaddr_end);
 	for (; index < PTRS_PER_PGTL0E; index++) {
 		uint64_t *pgtl0e = pgtl0_page + index;
 
@@ -421,7 +421,7 @@ static void modify_or_del_pgtl1(uint64_t *pgtl2e, uint64_t vaddr_start, uint64_t
 	uint64_t vaddr = vaddr_start;
 	uint64_t index = pgtl1e_index(vaddr);
 
-	dev_dbg(DBG_LEVEL_MMU, "%s, vaddr: [0x%lx - 0x%lx]\n", __func__, vaddr, vaddr_end);
+	dev_dbg(DBG_LEVEL_MMU, "MMU:    VA:[0x%016lx - 0x%016lx] PT1\n", vaddr, vaddr_end);
 	for (; index < PTRS_PER_PGTL1E; index++) {
 		uint64_t *pgtl1e = pgtl1_page + index;
 		uint64_t vaddr_next = (vaddr & PGTL1_MASK) + PGTL1_SIZE;
@@ -471,7 +471,7 @@ static void modify_or_del_pgtl2(uint64_t *pgtl3e, uint64_t vaddr_start,
 	uint64_t vaddr = vaddr_start;
 	uint64_t index = pgtl2e_index(vaddr);
 
-	dev_dbg(DBG_LEVEL_MMU, "%s, vaddr: [0x%lx - 0x%lx]\n", __func__, vaddr, vaddr_end);
+	dev_dbg(DBG_LEVEL_MMU, "MMU:    VA:[0x%016lx - 0x%016lx] PT2\n", vaddr, vaddr_end);
 	for (; index < PTRS_PER_PGTL2E; index++) {
 		uint64_t *pgtl2e = pgtl2_page + index;
 		uint64_t vaddr_next = (vaddr & PGTL2_MASK) + PGTL2_SIZE;
@@ -548,8 +548,8 @@ void pgtable_modify_or_del_map_deferred(uint64_t *pgtl3_page,
 	uint64_t *pgtl3e;
 
 	vaddr_end = vaddr + round_page_down(size);
-	dev_dbg(DBG_LEVEL_MMU, "%s, vaddr: 0x%lx, size: 0x%lx\n",
-		__func__, vaddr, size);
+	dev_dbg(DBG_LEVEL_MMU, "MMU:    VA:[0x%016lx - 0x%016lx]\n",
+		vaddr, vaddr + size);
 
 	while (vaddr < vaddr_end) {
 		vaddr_next = (vaddr & PGTL3_MASK) + PGTL3_SIZE;
@@ -586,8 +586,8 @@ static void add_pgtl0(const uint64_t *pgtl1e, uint64_t paddr_start, uint64_t vad
 	uint64_t paddr = paddr_start;
 	uint64_t index = pgtl0e_index(vaddr);
 
-	dev_dbg(DBG_LEVEL_MMU, "%s, paddr: 0x%lx, vaddr: [0x%lx - 0x%lx]\n",
-		__func__, paddr, vaddr_start, vaddr_end);
+	dev_dbg(DBG_LEVEL_MMU, "PT0:    PA:0x%016lx VA:[0x%016lx - 0x%016lx]\n",
+		paddr, vaddr_start, vaddr_end);
 	for (; index < PTRS_PER_PGTL0E; index++) {
 		uint64_t *pgtl0e = pgtl0_page + index;
 
@@ -622,8 +622,8 @@ static void add_pgtl1(const uint64_t *pgtl2e, uint64_t paddr_start, uint64_t vad
 	uint64_t index = pgtl1e_index(vaddr);
 		uint64_t local_prot = prot;
 
-	dev_dbg(DBG_LEVEL_MMU, "%s, paddr: 0x%lx, vaddr: [0x%lx - 0x%lx]\n",
-		__func__, paddr, vaddr, vaddr_end);
+	dev_dbg(DBG_LEVEL_MMU, "PT1:    PA:0x%016lx VA:[0x%016lx - 0x%016lx]\n",
+		paddr, vaddr, vaddr_end);
 	for (; index < PTRS_PER_PGTL1E; index++) {
 		uint64_t *pgtl1e = pgtl1_page + index;
 		uint64_t vaddr_next = (vaddr & PGTL1_MASK) + PGTL1_SIZE;
@@ -675,7 +675,7 @@ static void add_pgtl2(const uint64_t *pgtl3e, uint64_t paddr_start, uint64_t vad
 	uint64_t index = pgtl2e_index(vaddr);
 	uint64_t local_prot = prot;
 
-	dev_dbg(DBG_LEVEL_MMU, "%s, paddr: 0x%lx, vaddr: [0x%lx - 0x%lx]\n", __func__, paddr, vaddr, vaddr_end);
+	dev_dbg(DBG_LEVEL_MMU, "PT2:    PA:0x%016lx VA:[0x%016lx - 0x%016lx]\n", paddr, vaddr, vaddr_end);
 	for (; index < PTRS_PER_PGTL2E; index++) {
 		uint64_t *pgtl2e = pgtl2_page + index;
 		uint64_t vaddr_next = (vaddr & PGTL2_MASK) + PGTL2_SIZE;
@@ -746,7 +746,8 @@ void pgtable_add_map(uint64_t *pgtl3_page, uint64_t paddr_base, uint64_t vaddr_b
 	uint64_t paddr;
 	uint64_t *pgtl3e;
 
-	dev_dbg(DBG_LEVEL_MMU, "%s, paddr 0x%lx, vaddr 0x%lx, size 0x%lx\n", __func__, paddr_base, vaddr_base, size);
+	dev_dbg(DBG_LEVEL_MMU, "MAP:    PA:0x%016lx VA:0x%016lx (size:0x%08lx)\n",
+		paddr_base, vaddr_base, size);
 
 	/* align address to page size*/
 	vaddr = round_page_up(vaddr_base);

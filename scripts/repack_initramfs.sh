@@ -147,11 +147,27 @@ mount -t devtmpfs devtmpfs /dev
 mkdir -p /dev/pts
 mount -t devpts devpts /dev/pts 2>/dev/null || true
 mkdir -p /tmp
-if [ -x /usr/local/bin/stress-ng ]; then
-	cp /usr/local/bin/stress-ng /tmp/stress-ng 2>/dev/null || true
-	chmod 0755 /tmp/stress-ng 2>/dev/null || true
-fi
 
+# stress-ng usage
+# ===============
+#
+# stress-ng --cpu $(nproc) --timeout 300s --metrics-brief
+# stress-ng --cpu $(nproc) --cpu-method matrixprod -t 300
+# stress-ng --cpu $(nproc) --cpu-method rand -t 300
+# stress-ng --cpu $(nproc) --cpu-load 70 -t 300
+# stress-ng --vm 2 --vm-bytes 4G --vm-keep --timeout 300s
+# stress-ng --vm 1 --vm-bytes 90% --vm-keep -t 300
+# stress-ng --context 16 --timeout 300s
+# stress-ng --sched 8 --timeout 300s
+# stress-ng --class scheduler --timeout 600s
+#
+# vCPU scheduling:
+#
+# stress-ng --cpu $(nproc) --cpu-method matrixprod -t 600
+# stress-ng --vm $(nproc) --vm-bytes 92% --vm-keep --page-in -t 600
+#
+# -------------------------------------------------------------------------
+#
 # /var/beau is the virtio-fs handoff point used by the BEAU proxy path:
 # VM2 exports it through the backend, while VM3 mounts the frontend there.
 #
@@ -234,6 +250,45 @@ fi
 "$EDU_TEST_CC" -Os -static -s -Wall -Wextra -o "$WORKDIR/usr/local/bin/rpmsg" "$RPMSG_TEST_SRC"
 install_stress_ng_package
 install_debug_tools
+rm -f "$WORKDIR/usr/bin/stress.sh"
+cat > "$WORKDIR/usr/bin/snap.sh" <<'EOF'
+#!/bin/sh
+# Run a bounded CPU, memory, and scheduler stress-ng workload for BEAU Linux.
+
+set -eu
+
+duration=${1:-120}
+case "$duration" in
+''|*[!0-9]*|0)
+	echo "usage: ${0##*/} [duration_seconds]" >&2
+	exit 64
+	;;
+esac
+
+stress_ng=/usr/local/bin/stress-ng
+if [ ! -x "$stress_ng" ]; then
+	echo "${0##*/}: stress-ng is unavailable at $stress_ng" >&2
+	exit 127
+fi
+
+workers=$(nproc 2>/dev/null || printf '%s\n' 1)
+case "$workers" in
+''|*[!0-9]*|0)
+	workers=1
+	;;
+esac
+if [ "$workers" -gt 2 ]; then
+	workers=2
+fi
+
+echo "${0##*/}: ${duration}s, cpu=${workers}, vm=32M, context=2, sched=1"
+exec "$stress_ng" \
+	--cpu "$workers" --cpu-load 80 \
+	--vm 1 --vm-bytes 32M --vm-keep --page-in \
+	--context 2 --sched rr \
+	--timeout "${duration}s" --metrics-brief --verify
+EOF
+chmod 0755 "$WORKDIR/usr/bin/snap.sh"
 rm -rf "$WORKDIR/tmp"
 (cd "$WORKDIR" && find . -print0 | cpio --null -o --quiet -H newc -R 0:0 | gzip -9 > "$ARCHIVE.tmp")
 mv "$ARCHIVE.tmp" "$ARCHIVE"

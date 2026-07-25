@@ -700,23 +700,23 @@ static void arm64_vm_log_boot_vdevs(const struct acrn_vm *vm,
 	}
 
 	arm64_boot_vdev_logged = true;
-	LOG_INF("vGICv3: GICR      [0x%016lx-0x%016lx] (0x%08lx)",
+	LOG_INF("vGICv3: GICR         [0x%016lx-0x%016lx] (0x%08lx)",
 		arch_config->guest_gicr_base,
 		arm64_vm_range_end(arch_config->guest_gicr_base, arch_config->guest_gicr_size),
 		arch_config->guest_gicr_size);
-	LOG_INF("vGICv3: GICD      [0x%016lx-0x%016lx] (0x%08lx)",
+	LOG_INF("vGICv3: GICD         [0x%016lx-0x%016lx] (0x%08lx)",
 		arch_config->guest_gicd_base,
 		arm64_vm_range_end(arch_config->guest_gicd_base, arch_config->guest_gicd_size),
 		arch_config->guest_gicd_size);
 	if (arch_config->guest_its_size != 0UL) {
-		LOG_INF("vGICv3: ITS       [0x%016lx-0x%016lx] (0x%08lx)",
+		LOG_INF("vGICv3: ITS          [0x%016lx-0x%016lx] (0x%08lx)",
 			arch_config->guest_its_base,
 			arm64_vm_range_end(arch_config->guest_its_base,
 				arch_config->guest_its_size),
 			arch_config->guest_its_size);
 	}
 	if (!arm64_vm_uses_virtio_console(vm_config) && (arch_config->guest_uart_size != 0UL)) {
-		LOG_INF("vUART:            [0x%016lx-0x%016lx] (0x%08lx)",
+		LOG_INF("vUART:               [0x%016lx-0x%016lx] (0x%08lx)",
 			arch_config->guest_uart_base,
 			arm64_vm_range_end(arch_config->guest_uart_base,
 				arch_config->guest_uart_size),

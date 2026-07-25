@@ -328,7 +328,7 @@ int32_t create_vcpu(struct acrn_vm *vm, uint16_t pcpu_id)
 void destroy_vcpu(struct acrn_vcpu *vcpu)
 {
 	if (!vcpu_try_transition_state(vcpu, VCPU_PAUSED, VCPU_OFFLINE)) {
-		LOG_ERR("VM%u: vCPU%hu destroy from %s denied", vcpu->vm->vm_id,
+		LOG_ERR("VM%u:    vCPU%hu destroy from %s denied", vcpu->vm->vm_id,
 			vcpu->vcpu_id, vcpu_state_to_str(vcpu_get_state(vcpu)));
 		return;
 	}
@@ -358,7 +358,7 @@ bool launch_vcpu(struct acrn_vcpu *vcpu)
 
 	if (vcpu_boot_log_enabled(vcpu)) {
 		kick_us = ticks_to_us(cpu_ticks() - kick_tsc);
-		LOG_INF("VM%u: kick vCPU%hu on pCPU%hu   0x%016lx +%6luus",
+		LOG_INF("VM%u:    kick vCPU%hu on pCPU%hu   0x%016lx +%6luus",
 			vcpu->vm->vm_id, vcpu->vcpu_id, pcpuid_from_vcpu(vcpu),
 			arch_vcpu_get_entry(vcpu), kick_us);
 	}
@@ -374,7 +374,7 @@ void reset_vcpu(struct acrn_vcpu *vcpu)
 	claimed = vcpu_try_transition_state(vcpu, VCPU_PAUSED, VCPU_INIT) ||
 		vcpu_try_transition_state(vcpu, VCPU_OFFLINE, VCPU_INIT);
 	if (!claimed) {
-		LOG_ERR("VM%u: vCPU%hu reset from %s denied", vcpu->vm->vm_id,
+		LOG_ERR("VM%u:    vCPU%hu reset from %s denied", vcpu->vm->vm_id,
 			vcpu->vcpu_id, vcpu_state_to_str(vcpu_get_state(vcpu)));
 		return;
 	}
