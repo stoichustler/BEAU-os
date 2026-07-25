@@ -10,6 +10,7 @@
 #include <logmsg.h>
 #include <mmu.h>
 #include <timer.h>
+#include <vm.h>
 #include <vm_wdt.h>
 #include <ptdev.h>
 #include <console.h>
@@ -244,6 +245,7 @@ static void init_pcpu_comm_post(void)
 		arm64_rttest_init();
 		shell_start();
 		vm_wdt_start();
+		vm_publish_static_boot_state();
 		arm64_release_vm_launch();
 	}
 

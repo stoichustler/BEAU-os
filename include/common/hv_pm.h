@@ -182,7 +182,7 @@ static inline void shutdown_host(void) {
 }
 
 static inline void reset_host(bool warm) {
-	LOG_INF("%s rebooting BEAU", warm ? "warm" : "cold");
+	LOG_INF("%s rebooting BEAU OS", warm ? "warm" : "cold");
 	arch_reset_host(warm);
 }
 

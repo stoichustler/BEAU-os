@@ -1721,7 +1721,7 @@ int32_t shell_hwtdbg(int32_t argc, char **argv)
 		char line[MAX_STR_SIZE];
 
 		(void)snprintf(line, sizeof(line),
-			"HWTDBG: vm%hu has no retained watchdog timeout event\r\n", vm_id);
+			"HWTDBG: VM%hu:no retained HWT event\r\n", vm_id);
 		shell_puts(line);
 		return 0;
 	}

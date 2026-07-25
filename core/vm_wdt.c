@@ -972,7 +972,7 @@ static bool vm_wdt_process_recovery(uint16_t vm_id)
 	if (state == VM_WDT_RECOVERY_QUIESCING) {
 		vm = get_vm_from_vmid(vm_id);
 		if ((vm == NULL) || (vm->state != VM_RUNNING) || is_service_vm(vm)) {
-			LOG_ERR("HWT: VM%u restart failed cause:invalid-state", vm_id);
+			LOG_ERR("HWT:    VM%u restart failed cause:invalid-state", vm_id);
 			(void)vm_wdt_complete_recovery(vm_id, false,
 				HWTDBG_RECOVERY_INVALID_STATE, 0UL, -EINVAL);
 			return false;
@@ -1012,17 +1012,17 @@ static bool vm_wdt_process_recovery(uint16_t vm_id)
 			if (!vm_wdt_begin_reset(vm_id)) {
 				return vm_wdt_recovery_pending(vm_id);
 			}
-			LOG_INF("HWT: VM%u quiesced; cold restart queued", vm_id);
+			LOG_INF("HWT:    VM%u quiesced; cold restart queued", vm_id);
 			ret = request_vm_wdt_restart(vm);
 			if (ret != 0) {
-				LOG_ERR("HWT: VM%u restart failed cause:reset-queue ret=%d",
+				LOG_ERR("HWT:    VM%u restart failed cause:reset-queue ret=%d",
 					vm_id, ret);
 				(void)vm_wdt_complete_recovery(vm_id, false,
 					HWTDBG_RECOVERY_RESET_FAILED, 0UL, ret);
 				return false;
 			}
 		} else if (vm_wdt_update_quiesce(vm_id, wait_vcpus)) {
-			LOG_ERR("HWT: VM%u restart failed cause:quiesce-timeout wait:0x%lx",
+			LOG_ERR("HWT:    VM%u restart failed cause:quiesce-timeout wait:0x%lx",
 				vm_id, wait_vcpus);
 			(void)vm_wdt_complete_recovery(vm_id, false,
 				HWTDBG_RECOVERY_QUIESCE_TIMEOUT, wait_vcpus, 0);
@@ -1031,20 +1031,20 @@ static bool vm_wdt_process_recovery(uint16_t vm_id)
 	} else if (state == VM_WDT_RECOVERY_RESETTING) {
 		if (vm_wdt_claim_reset_completion(vm_id, &ret)) {
 			if (ret != 0) {
-				LOG_ERR("HWT: VM%u restart failed cause:reset ret=%d", vm_id, ret);
+				LOG_ERR("HWT:    VM%u restart failed cause:reset ret=%d", vm_id, ret);
 				(void)vm_wdt_complete_recovery(vm_id, false,
 					HWTDBG_RECOVERY_RESET_FAILED, 0UL, ret);
 				return false;
 			}
 			if (vm_wdt_start_verification(vm_id)) {
-				LOG_INF("HWT: VM%u restart verified", vm_id);
+				LOG_INF("HWT:    VM%u restart verified", vm_id);
 			} else {
-				LOG_INF("HWT: VM%u restart launched", vm_id);
+				LOG_INF("HWT:    VM%u restart launched", vm_id);
 			}
 		}
 	} else if (state == VM_WDT_RECOVERY_VERIFYING) {
 		if (vm_wdt_verify_timed_out(vm_id)) {
-			LOG_ERR("HWT: VM%u restart failed cause:verify-timeout", vm_id);
+			LOG_ERR("HWT:    VM%u restart failed cause:verify-timeout", vm_id);
 			(void)vm_wdt_complete_recovery(vm_id, false,
 				HWTDBG_RECOVERY_VERIFY_TIMEOUT, 0UL, 0);
 			return false;
@@ -1061,7 +1061,7 @@ static void vm_wdt_schedule_recovery_poll(void)
 	if (!timer_is_started(&vm_wdt_recovery_timer)) {
 		update_timer(&vm_wdt_recovery_timer, cpu_ticks() + poll_ticks, 0UL);
 		if (add_timer(&vm_wdt_recovery_timer) != 0) {
-			LOG_ERR("HWT: cannot schedule recovery poll");
+			LOG_ERR("HWT:    cannot schedule recovery poll");
 		}
 	}
 }
@@ -1184,7 +1184,7 @@ int32_t vm_wdt_pm_resume(uint64_t epoch)
 	if (vm_wdt_started) {
 		update_timer(&vm_wdt_timer, now + period_ticks, period_ticks);
 		if (add_timer(&vm_wdt_timer) != 0) {
-			LOG_ERR("HWT: cannot resume periodic timer");
+			LOG_ERR("HWT:    cannot resume periodic timer");
 			status = -EIO;
 		}
 		if (recovery_pending) {
@@ -1351,7 +1351,7 @@ static void vm_wdt_check_timeouts(void)
 		}
 		if (snapshot.status == VM_WDT_STATUS_STUCK) {
 			if (vm_wdt_claim_restart(vm_id, &snapshot)) {
-				LOG_INF("HWT: VM%u restart cause:%s age:%lums attempt:%lu/%u",
+				LOG_INF("HWT:    VM%u restart cause:%s age:%lums attempt:%lu/%u",
 					vm_id, vm_wdt_cause_str(snapshot.cause), snapshot.last_ms,
 					snapshot.restart_count + 1UL, CONFIG_VM_WDT_RESTART_MAX);
 				recovery_pending |= vm_wdt_process_recovery(vm_id);
@@ -1409,7 +1409,7 @@ void vm_wdt_start(void)
 	vm_wdt_params.prio = PRIO_LOW;
 	init_thread_data(&vm_wdt_thread, &vm_wdt_params);
 	if (add_timer(&vm_wdt_timer) != 0) {
-		LOG_ERR("HWT: cannot start periodic timer");
+		LOG_ERR("HWT:    cannot start periodic timer");
 		return;
 	}
 	wake_thread(&vm_wdt_thread);
@@ -1565,7 +1565,7 @@ void vm_wdt_kick(const struct acrn_vm *vm, uint64_t token)
 		wake_thread(&vm_wdt_thread);
 	}
 	if (verified) {
-		LOG_INF("HWT: VM%u restart verified", vm->vm_id);
+		LOG_INF("HWT:    VM%u restart verified", vm->vm_id);
 	}
 }
 

@@ -273,6 +273,7 @@ void arch_vm_prepare_bsp(struct acrn_vcpu *bsp);
 int32_t arch_reset_vm(struct acrn_vm *vm);
 
 int32_t create_vm(uint16_t vm_id, uint64_t pcpu_bitmap, struct acrn_vm_config *vm_config, struct acrn_vm **rtn_vm);
+void vm_publish_static_boot_state(void);
 void launch_vms(uint16_t pcpu_id);
 void start_vm(struct acrn_vm *vm);
 void pause_vm(struct acrn_vm *vm);

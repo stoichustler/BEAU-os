@@ -121,7 +121,7 @@ static void hv_pm_fail_epoch(uint64_t epoch, int32_t status)
 	}
 	spinlock_irqrestore_release(&pm_transaction.lock, flags);
 	if (failed) {
-		LOG_ERR("STR: PM_FAILED epoch:%lu status:%d", epoch, status);
+		LOG_ERR("STR:    PM_FAILED epoch:%lu status:%d", epoch, status);
 	}
 }
 
@@ -820,7 +820,7 @@ static int32_t hv_pm_freeze_guests(uint64_t epoch)
 		asm_pause();
 	}
 
-	LOG_INF("STR: PM_GUESTS_FROZEN epoch:%lu vm-mask:0x%lx", epoch,
+	LOG_INF("STR:    PM_GUESTS_FROZEN epoch:%lu vm-mask:0x%lx", epoch,
 		snapshot.required_vm_mask);
 	return 0;
 }
@@ -912,7 +912,7 @@ static int32_t hv_pm_thaw_guests(uint64_t epoch, bool require_frozen)
 	}
 	spinlock_irqrestore_release(&pm_transaction.lock, flags);
 
-	LOG_INF("STR: PM_GUESTS_THAWED epoch:%lu vm-mask:0x%lx", epoch,
+	LOG_INF("STR:    PM_GUESTS_THAWED epoch:%lu vm-mask:0x%lx", epoch,
 		snapshot.required_vm_mask);
 
 	return 0;
@@ -942,7 +942,7 @@ static void hv_pm_complete_running(uint64_t epoch, int32_t last_status)
 	}
 	spinlock_irqrestore_release(&pm_transaction.lock, flags);
 	if (completed) {
-		LOG_INF("STR: PM_RUNNING epoch:%lu", epoch);
+		LOG_INF("STR:    PM_RUNNING epoch:%lu", epoch);
 	}
 }
 
@@ -983,7 +983,7 @@ static int32_t hv_pm_restore_from_idle(uint64_t epoch)
 {
 	int32_t status;
 
-	LOG_INF("STR: PM_RESUMING epoch:%lu", epoch);
+	LOG_INF("STR:    PM_RESUMING epoch:%lu", epoch);
 	status = hv_pm_run_resume(epoch);
 	if (status == 0) {
 		status = hv_pm_thaw_guests(epoch, true);
@@ -1057,7 +1057,7 @@ void hv_pm_process_from_idle(uint16_t pcpu_id)
 	}
 	hv_pm_get_snapshot(&snapshot);
 	if (snapshot.scope == HV_PM_SCOPE_VM) {
-		LOG_INF("STR: PM_VM_SUSPENDED epoch:%lu vm:%hu",
+		LOG_INF("STR:    PM_VM_SUSPENDED epoch:%lu vm:%hu",
 			epoch, snapshot.target_vmid);
 		return;
 	}

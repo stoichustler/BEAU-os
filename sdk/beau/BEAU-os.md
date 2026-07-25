@@ -422,12 +422,18 @@ AP 从 `_start_secondary_psci` 进入，使用 PSCI context 中的 per-CPU stack
 - boot module tag、源地址、load/entry 地址。
 - PCI 设备的 physical/virtual BDF、BAR 和 optional 属性。
 
-### 7.2 两阶段启动
+### 7.2 Ready-first 启动
 
 入口：`core/vm.c::launch_vms()`。
 
 ```text
-for each configured service/prelaunch VM
+all pCPU scheduler instances ready
+    |
+    +--> BSP publishes the static Service VM object
+    +--> release VM launch barrier
+    |
+    v
+for each configured service/prelaunch VM whose vCPU0 belongs to this pCPU
     |
     +--> create_vm()
     |     - init common object/locks
@@ -439,16 +445,13 @@ for each configured service/prelaunch VM
     +--> prepare_os_image()
     |
     v
-all VM objects and images prepared
-    |
-    +--> start BSP vCPUs on remote pCPUs
-    +--> start BSP vCPU pinned to launcher pCPU last
-    |
-    v
-VM_RUNNING
+start this VM's BSP immediately -> VM_RUNNING
 ```
 
-这样可避免 launcher pCPU 上的第一个客体过早运行，导致配置表后面的 VM 尚未创建。
+每个 pCPU 仅处理 `cpu_affinity_order[0]` 属于自己的静态 VM。同一 pCPU 仍按配置表顺序
+prepare 和启动，不同 pCPU 可并行推进；任意 VM 的失败不会阻塞无关 VM。Service VM 对象引用会在
+全局启动屏障释放前发布，确保早启动客体不会观察到空的 Service VM 引用。跨 VM 服务依赖仍由既有
+协议处理，本路径不根据 VM ID 或镜像装载顺序推断依赖。
 
 ### 7.3 `arch_init_vm()` 的隔离顺序
 

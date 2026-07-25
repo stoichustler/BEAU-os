@@ -262,7 +262,7 @@ static int32_t arm64_pm_release_secondary_cpus(uint64_t epoch,
 		resumed_mask = __atomic_load_n(&arm64_pm_secondary.resumed_mask,
 			__ATOMIC_ACQUIRE);
 		failed_pcpu = arm64_pm_first_unacked_pcpu(target_mask, resumed_mask);
-		LOG_ERR("STR: PM_AP_RELEASE_FAILED epoch:%lu target:0x%lx parked:0x%lx "
+		LOG_ERR("STR:    PM_AP_RELEASE_FAILED epoch:%lu target:0x%lx parked:0x%lx "
 			"resumed:0x%lx pcpu:%hu status:%d", epoch, target_mask,
 			parked_mask, resumed_mask, failed_pcpu, -ETIMEDOUT);
 		return -ETIMEDOUT;
@@ -274,7 +274,7 @@ static int32_t arm64_pm_release_secondary_cpus(uint64_t epoch,
 			__ATOMIC_ACQUIRE);
 		resumed_mask = __atomic_load_n(&arm64_pm_secondary.resumed_mask,
 			__ATOMIC_ACQUIRE);
-		LOG_ERR("STR: PM_AP_RESUME_FAILED epoch:%lu target:0x%lx parked:0x%lx "
+		LOG_ERR("STR:    PM_AP_RESUME_FAILED epoch:%lu target:0x%lx parked:0x%lx "
 			"resumed:0x%lx pcpu:%hu status:%d", epoch, target_mask,
 			parked_mask, resumed_mask, failed_pcpu, status);
 	}
@@ -310,7 +310,7 @@ int32_t arch_pm_suspend_secondary_cpus(uint64_t epoch, bool *restored)
 			__ATOMIC_ACQUIRE);
 		failed_pcpu = arm64_pm_first_unacked_pcpu(mask, parked_mask);
 		status = -ETIMEDOUT;
-		LOG_ERR("STR: PM_AP_PARK_FAILED epoch:%lu target:0x%lx parked:0x%lx "
+		LOG_ERR("STR:    PM_AP_PARK_FAILED epoch:%lu target:0x%lx parked:0x%lx "
 			"resumed:0x%lx pcpu:%hu status:%d", epoch, mask,
 			parked_mask, resumed_mask, failed_pcpu, status);
 	} else {
@@ -321,7 +321,7 @@ int32_t arch_pm_suspend_secondary_cpus(uint64_t epoch, bool *restored)
 				__ATOMIC_ACQUIRE);
 			resumed_mask = __atomic_load_n(&arm64_pm_secondary.resumed_mask,
 				__ATOMIC_ACQUIRE);
-			LOG_ERR("STR: PM_AP_SUSPEND_FAILED epoch:%lu target:0x%lx "
+			LOG_ERR("STR:    PM_AP_SUSPEND_FAILED epoch:%lu target:0x%lx "
 				"parked:0x%lx resumed:0x%lx pcpu:%hu status:%d",
 				epoch, mask, parked_mask, resumed_mask, failed_pcpu,
 				status);

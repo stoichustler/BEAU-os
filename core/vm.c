@@ -302,44 +302,6 @@ static int32_t create_vm_vcpus(struct acrn_vm *vm, uint64_t pcpu_bitmap,
 	return status;
 }
 
-static void start_prepared_vm(struct acrn_vm *vm, __unused const struct acrn_vm_config *vm_config)
-{
-	start_vm(vm);
-}
-
-static void start_prepared_vms(struct acrn_vm *const start_vms[],
-	const struct acrn_vm_config *const start_vm_configs[], uint16_t start_count,
-	uint16_t pcpu_id, bool start_launcher_pcpu)
-{
-	uint16_t idx;
-
-	for (idx = 0U; idx < start_count; idx++) {
-		const struct acrn_vm_config *vm_config = start_vm_configs[idx];
-		bool launcher_pcpu_vm = get_configured_bsp_pcpu_id(vm_config) == pcpu_id;
-
-		if (launcher_pcpu_vm == start_launcher_pcpu) {
-			start_prepared_vm(start_vms[idx], vm_config);
-		}
-	}
-}
-
-static void log_started_vms(struct acrn_vm *const start_vms[],
-	const struct acrn_vm_config *const start_vm_configs[], uint16_t start_count)
-{
-	uint16_t idx;
-
-	for (idx = 0U; idx < start_count; idx++) {
-		const struct acrn_vm *vm = start_vms[idx];
-		const struct acrn_vm_config *vm_config = start_vm_configs[idx];
-
-		if (vm_boot_log_enabled(vm->vm_id)) {
-			LOG_INF("VM%u:    %-10s vm: %9s started",
-				vm->vm_id, vm_boot_load_order_name(vm_config->load_order),
-				vm_config->name);
-		}
-	}
-}
-
 struct acrn_vm *get_vm_from_vmid(uint16_t vm_id)
 {
 	return &vm_array[vm_id];
@@ -370,8 +332,34 @@ bool is_ready_for_system_shutdown(void)
 	return ret;
 }
 
-/*
- * Static VM creation-to-run flow:
+/* [20260725] Static Service VM publication
+ *
+ * BSP boot setup                         every VM BSP pCPU
+ *       |                                        |
+ *       v                                        v
+ * publish service_vm_ptr ------release/acquire--> launch_vms()
+ *                                                -> guest may execute
+ *
+ * Key rule:
+ *   - core/vm.c owns the static VM object array and this global reference;
+ *   - the reference is published before the ARM64 launch barrier releases APs;
+ *   - this prevents an early guest from observing a null Service VM reference
+ *     on vPCI management paths while independent VMs start in parallel.
+ */
+void vm_publish_static_boot_state(void)
+{
+	uint16_t vm_id;
+
+	service_vm_ptr = NULL;
+	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
+		if (get_vm_config(vm_id)->load_order == SERVICE_VM) {
+			service_vm_ptr = &vm_array[vm_id];
+			break;
+		}
+	}
+}
+
+/* [20260725] ACRN-style static VM ready-first launch
  *
  * The platform VM table is the policy source. Common VM code consumes only the
  * configured load order, CPU affinity, guest flags, and boot image metadata; it
@@ -381,7 +369,7 @@ bool is_ready_for_system_shutdown(void)
  *          |
  *          v
  *   launch_vms(pcpu_id)
- *     - only the configured launch pCPU creates this VM
+ *     - only the configured VM BSP pCPU creates this VM
  *     - service/pre-launched VMs are autostart candidates
  *          |
  *          v
@@ -399,7 +387,7 @@ bool is_ready_for_system_shutdown(void)
  *     - copy or place the guest image into the VM memory contract
  *          |
  *          v
- *   start_vm()
+ *   start_vm() immediately after this VM is ready
  *     - arch_vm_prepare_bsp() finalizes the BSP entry state
  *     - launch_vcpu(BSP) wakes the BSP vCPU thread
  *          |
@@ -410,18 +398,17 @@ bool is_ready_for_system_shutdown(void)
  *   scheduler picks vCPU thread -> arch_vcpu_thread() -> guest EL1 entry
  *
  * VM_CREATED means VM/vCPU objects and architecture state exist, but no guest
- * code has run yet. VM_RUNNING is set only after the BSP vCPU is made runnable;
- * AP vCPUs are later brought up by the guest-visible CPU_ON path.
+ * code has run yet. There is no cross-VM start barrier: each pCPU processes its
+ * own static VM BSPs in table order, while independent pCPUs make progress in
+ * parallel. VM_RUNNING is set only after the BSP vCPU is made runnable; AP
+ * vCPUs are later brought up by the guest-visible CPU_ON path.
  */
 void launch_vms(uint16_t pcpu_id)
 {
 #if CONFIG_AUTOSTART_VM
 	uint16_t vm_id;
-	uint16_t start_count = 0U;
 	struct acrn_vm *vm;
 	struct acrn_vm_config *vm_config;
-	struct acrn_vm *start_vms[CONFIG_MAX_VM_NUM];
-	const struct acrn_vm_config *start_vm_configs[CONFIG_MAX_VM_NUM];
 
 	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
 		int32_t create_status;
@@ -449,10 +436,6 @@ void launch_vms(uint16_t pcpu_id)
 					continue;
 				}
 
-				if (vm_config->load_order == SERVICE_VM) {
-					service_vm_ptr = vm;
-				}
-
 				/*
 				 * We can only start a VM when there is no error in prepare_vm.
 				 * Otherwise, print out the corresponding error.
@@ -475,9 +458,13 @@ void launch_vms(uint16_t pcpu_id)
 							prepare_os_image(vm) : boot_status;
 						stage_us = ticks_to_us(cpu_ticks() - stage_tsc);
 						if ((boot_status == 0) && (image_status == 0)) {
-							start_vms[start_count] = vm;
-							start_vm_configs[start_count] = vm_config;
-							start_count++;
+							start_vm(vm);
+							if (vm_boot_log_enabled(vm_id) &&
+								(vm->state == VM_RUNNING)) {
+								LOG_INF("VM%u:    %-10s vm: %9s started",
+									vm_id, vm_boot_load_order_name(vm_config->load_order),
+									vm_config->name);
+							}
 						} else {
 							LOG_ERR("VM%u: prepare failed +%6luus boot=%d image=%d k=%s",
 								vm_id, stage_us, boot_status, image_status,
@@ -492,20 +479,6 @@ void launch_vms(uint16_t pcpu_id)
 			}
 		}
 	}
-
-	/* [20260708] two-phase static VM start:
-	 *
-	 *   create/prepare all VM images
-	 *        -> start VM BSPs on remote pCPUs
-	 *        -> start VM BSPs pinned to this launcher pCPU
-	 *
-	 * Keep the launcher pCPU available until the static table is prepared.
-	 * Otherwise a VM whose BSP vCPU is pinned here can run guest code before
-	 * later VMs in the same table are even created.
-	 */
-	start_prepared_vms(start_vms, start_vm_configs, start_count, pcpu_id, false);
-	start_prepared_vms(start_vms, start_vm_configs, start_count, pcpu_id, true);
-	log_started_vms(start_vms, start_vm_configs, start_count);
 #else
 	(void)pcpu_id;
 #endif
@@ -699,7 +672,7 @@ static int32_t restart_vm_locked(struct acrn_vm *vm, bool reload_image)
 		}
 		if (ret == 0) {
 			start_vm(vm);
-			LOG_INF("VM%u: %s reset complete", vm->vm_id,
+			LOG_INF("VM%u:    %s reset complete", vm->vm_id,
 				reload_image ? "cold" : "warm");
 		}
 	}

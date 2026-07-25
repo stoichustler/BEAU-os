@@ -123,7 +123,7 @@ static int32_t qemu_pm_simulated_wait(uint64_t epoch,
 	if ((context == NULL) || !context->valid || (context->epoch != epoch)) {
 		return -EINVAL;
 	}
-	LOG_INF("STR: PM_SUSPENDED epoch:%lu", epoch);
+	LOG_INF("STR:    PM_SUSPENDED epoch:%lu", epoch);
 	do {
 		arm64_wfi();
 		hv_pm_get_snapshot(&snapshot);

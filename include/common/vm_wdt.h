@@ -18,7 +18,7 @@
 #endif
 
 #ifndef CONFIG_VM_WDT_TIMEOUT_MS
-#define CONFIG_VM_WDT_TIMEOUT_MS	15000U
+#define CONFIG_VM_WDT_TIMEOUT_MS	25000U
 #endif
 
 /*
