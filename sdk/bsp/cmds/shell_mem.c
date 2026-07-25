@@ -490,29 +490,29 @@ int32_t shell_s2walk(int32_t argc, char **argv)
 
 	if ((argc != 3) || !shell_s2walk_parse_vmid(argv[1], &vmid) ||
 		!shell_s2walk_parse_ipa(argv[2], &ipa)) {
-		shell_puts("usage: s2walk <vmid> <ipa>\r\n");
+		shell_puts("usage: walkpt <vmid> <ipa>\r\n");
 		return -EINVAL;
 	}
 	vm = get_vm_from_vmid(vmid);
 	ret = arm64_stage2_walk(vm, ipa, &walk);
 	if (ret == -EBUSY) {
-		shell_puts("s2walk: stage-2 update in progress; retry\r\n");
+		shell_puts("walkpt: stage-2 update in progress; retry\r\n");
 		return ret;
 	}
 	if (ret == -EFAULT) {
-		shell_puts("s2walk: invalid stage-2 root\r\n");
+		shell_puts("walkpt: invalid stage-2 root\r\n");
 		return ret;
 	}
 	if (ret == -ENODEV) {
-		shell_puts("s2walk: VM has no stage-2 root\r\n");
+		shell_puts("walkpt: VM has no stage-2 root\r\n");
 		return ret;
 	}
 	if (ret != 0) {
-		shell_puts("s2walk: invalid VM or IPA\r\n");
+		shell_puts("walkpt: invalid VM or IPA\r\n");
 		return ret;
 	}
 
-	shell_item_begin("S2 walk vm%hu", vmid);
+	shell_item_begin("walkpt vm%hu", vmid);
 	/* ipa is the requested guest address; L rows give table HPA/index/raw
 	 * descriptor; result and leaf identify the terminating translation state.
 	 */

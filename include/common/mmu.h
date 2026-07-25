@@ -73,6 +73,9 @@ struct pgtable_update {
 	uint64_t *retired_bitmap;
 	uint64_t retired_bitmap_words;
 	uint64_t retired_pages;
+	uint64_t range_start;
+	uint64_t range_end;
+	uint32_t operations;
 	bool changed;
 };
 
@@ -89,6 +92,25 @@ enum _page_table_level {
 	PGT_LVL2 = 1,
 	PGT_LVL1 = 2,
 	PGT_LVL0 = 3,
+};
+
+#define PGTABLE_LEAF_LVL2	(1U << PGT_LVL2)
+#define PGTABLE_LEAF_LVL1	(1U << PGT_LVL1)
+#define PGTABLE_LEAF_LVL0	(1U << PGT_LVL0)
+#define PGTABLE_LEAF_LEVEL_MASK	(PGTABLE_LEAF_LVL2 | PGTABLE_LEAF_LVL1 | \
+	PGTABLE_LEAF_LVL0)
+
+#define PGTABLE_UPDATE_MAP	(1U << 0U)
+#define PGTABLE_UPDATE_MODIFY	(1U << 1U)
+#define PGTABLE_UPDATE_DELETE	(1U << 2U)
+
+/* Caller policy selects the coarsest leaf levels; the walker enforces alignment. */
+struct pgtable_map_request {
+	uint64_t paddr_base;
+	uint64_t vaddr_base;
+	uint64_t size;
+	uint64_t prot;
+	uint32_t allowed_leaf_levels;
 };
 
 struct pgtable {
@@ -154,8 +176,11 @@ const uint64_t *pgtable_lookup_entry(uint64_t *pgtl3_page, uint64_t addr,
                uint64_t *pg_size, const struct pgtable *table);
 
 void pgtable_add_map(uint64_t *pgtl3_page, uint64_t paddr_base,
-	               uint64_t vaddr_base, uint64_t size,
-	               uint64_t prot, const struct pgtable *table);
+		       uint64_t vaddr_base, uint64_t size,
+		       uint64_t prot, const struct pgtable *table);
+int32_t pgtable_add_map_deferred(uint64_t *pgtl3_page,
+	const struct pgtable_map_request *request, const struct pgtable *table,
+	struct pgtable_update *update);
 void pgtable_update_init(struct pgtable_update *update, uint64_t *retired_bitmap,
 		uint64_t retired_bitmap_words, const struct pgtable *table);
 void pgtable_free_retired_pages(struct pgtable_update *update,

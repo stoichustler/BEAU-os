@@ -81,6 +81,10 @@
 #define ARM64_STAGE2_ADDRESS_LIMIT	(1UL << 48U)
 #define ARM64_STAGE2_MAP_FLAG_MASK	(ARM64_STAGE2_MAP_READ | ARM64_STAGE2_MAP_WRITE | \
 	ARM64_STAGE2_MAP_DEVICE | ARM64_STAGE2_MAP_NORMAL)
+#define ARM64_STAGE2_STATIC_RAM_LEAVES	(PGTABLE_LEAF_LVL2 | PGTABLE_LEAF_LVL1 | \
+	PGTABLE_LEAF_LVL0)
+#define ARM64_STAGE2_DYNAMIC_LEAVES	(PGTABLE_LEAF_LVL1 | PGTABLE_LEAF_LVL0)
+#define ARM64_STAGE2_PAGE_LEAVES	PGTABLE_LEAF_LVL0
 
 /* A single static pool backs all per-VM stage-2 page tables for QEMU bring-up. */
 static struct page_pool stage2_page_pool;
@@ -752,6 +756,30 @@ static void validate_stage2_ram_identity(const struct acrn_vm *vm, uint64_t mem_
 	}
 }
 
+static void arm64_stage2_complete_update(struct acrn_vm *vm, uint64_t ipa,
+	uint64_t size, struct pgtable_update *update);
+
+static void arm64_stage2_add_map(struct acrn_vm *vm, uint64_t hpa, uint64_t ipa,
+	uint64_t size, uint64_t prot, uint32_t allowed_leaf_levels,
+	struct pgtable_update *update)
+{
+	const struct pgtable_map_request request = {
+		.paddr_base = hpa,
+		.vaddr_base = ipa,
+		.size = size,
+		.prot = prot,
+		.allowed_leaf_levels = allowed_leaf_levels,
+	};
+	int32_t status;
+
+	status = pgtable_add_map_deferred((uint64_t *)vm->root_stg2ptp, &request,
+		&vm->stg2_pgtable, update);
+	if (status != 0) {
+		panic("vm-%u stage-2 map request failed ipa=0x%lx size=0x%lx status:%d",
+			vm->vm_id, ipa, size, status);
+	}
+}
+
 static void init_stage2_identity_map(struct acrn_vm *vm)
 {
 	const struct arch_vm_config *arch_config = &get_vm_config(vm->vm_id)->arch;
@@ -795,12 +823,13 @@ static void init_stage2_identity_map(struct acrn_vm *vm)
 	 * bases and emits stage-2 block/page descriptors whose output address is
 	 * the same number the guest uses as its IPA. That is the VM RAM 1:1 map.
 	 */
-	pgtable_add_map((uint64_t *)vm->root_stg2ptp, mem_hpa, mem_start,
-		mem_size, PAGE_S2_ATTR_NORMAL | PAGE_BLOCK_DESC, &vm->stg2_pgtable);
+	arm64_stage2_add_map(vm, mem_hpa, mem_start, mem_size,
+		PAGE_S2_ATTR_NORMAL | PAGE_BLOCK_DESC, ARM64_STAGE2_STATIC_RAM_LEAVES,
+		NULL);
 
-	pgtable_add_map((uint64_t *)vm->root_stg2ptp, hva2hpa(stage2_zero_page), 0UL,
-		PAGE_SIZE, PAGE_S2_MEMATTR_NORMAL | PAGE_S2_S2AP_READ |
-		PAGE_S2_SH_INNER | PAGE_S2_AF, &vm->stg2_pgtable);
+	arm64_stage2_add_map(vm, hva2hpa(stage2_zero_page), 0UL, PAGE_SIZE,
+		PAGE_S2_MEMATTR_NORMAL | PAGE_S2_S2AP_READ | PAGE_S2_SH_INNER |
+		PAGE_S2_AF, ARM64_STAGE2_PAGE_LEAVES, NULL);
 
 	/*
 	 * Device IPA ranges stay unmapped at stage-2 and are registered below as
@@ -846,6 +875,8 @@ static void arm64_stage2_validate_range(const struct acrn_vm *vm,
 void arm64_stage2_map(struct acrn_vm *vm, uint64_t hpa, uint64_t ipa,
 	uint64_t size, uint32_t flags)
 {
+	uint64_t retired_bitmap[ARM64_STAGE2_RETIRED_WORDS];
+	struct pgtable_update update;
 	uint64_t owner;
 	uint64_t prot;
 
@@ -860,12 +891,50 @@ void arm64_stage2_map(struct acrn_vm *vm, uint64_t hpa, uint64_t ipa,
 
 	prot = arm64_stage2_map_prot(flags);
 	owner = arm64_stage2_acquire_update(vm, ipa, size);
-	spinlock_obtain(&vm->stg2pt_lock);
-	pgtable_add_map((uint64_t *)vm->root_stg2ptp, hpa, ipa, size, prot,
+	pgtable_update_init(&update, retired_bitmap, ARRAY_SIZE(retired_bitmap),
 		&vm->stg2_pgtable);
+	spinlock_obtain(&vm->stg2pt_lock);
+	arm64_stage2_add_map(vm, hpa, ipa, size, prot, ARM64_STAGE2_DYNAMIC_LEAVES,
+		&update);
 	spinlock_release(&vm->stg2pt_lock);
-	arm64_stage2_sync_or_panic(vm, ipa, size, "map");
+	arm64_stage2_complete_update(vm, ipa, size, &update);
 	arm64_stage2_release_update(vm, owner);
+}
+
+/* [20260725] Stage-2 update completion
+ *
+ *   descriptor update
+ *       |
+ *       v
+ *   CPU VMID TLBI + SMMU TLBI/CMD_SYNC
+ *       |
+ *       +--> fail closed: retain detached table and stop
+ *       |
+ *       v
+ *   return retired table page to the shared pool
+ *
+ * Key rule:
+ *   - the update owner retains exclusive write access until synchronization ends;
+ *   - every published mapping change, including a new dynamic map, completes
+ *     CPU and DMA translation synchronization before ownership can advance;
+ *   - no detached table can be retagged or reused after a failed sync.
+ */
+static void arm64_stage2_complete_update(struct acrn_vm *vm, uint64_t ipa,
+	uint64_t size, struct pgtable_update *update)
+{
+	if (update == NULL) {
+		panic("vm-%u stage-2 unmap has no update batch", vm->vm_id);
+	}
+	if ((update->retired_pages != 0UL) && !update->changed) {
+		panic("vm-%u stage-2 unmap retire without descriptor update ipa=0x%lx pages:%lu",
+			vm->vm_id, ipa, update->retired_pages);
+	}
+	if (update->changed) {
+		arm64_stage2_sync_or_panic(vm, ipa, size, "unmap");
+	}
+	if (update->retired_pages != 0UL) {
+		pgtable_free_retired_pages(update, &vm->stg2_pgtable);
+	}
 }
 
 void arm64_stage2_unmap(struct acrn_vm *vm, uint64_t ipa, uint64_t size)
@@ -882,12 +951,7 @@ void arm64_stage2_unmap(struct acrn_vm *vm, uint64_t ipa, uint64_t size)
 	pgtable_modify_or_del_map_deferred((uint64_t *)vm->root_stg2ptp,
 		ipa, size, 0UL, 0UL, &vm->stg2_pgtable, MR_DEL, &update);
 	spinlock_release(&vm->stg2pt_lock);
-	if (update.changed) {
-		arm64_stage2_sync_or_panic(vm, ipa, size, "unmap");
-	}
-	if (update.retired_pages != 0UL) {
-		pgtable_free_retired_pages(&update, &vm->stg2_pgtable);
-	}
+	arm64_stage2_complete_update(vm, ipa, size, &update);
 	arm64_stage2_release_update(vm, owner);
 }
 

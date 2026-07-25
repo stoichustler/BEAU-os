@@ -40,7 +40,7 @@ uint32_t shell_common_cmds_sz = ARRAY_SIZE(shell_common_cmds);
 struct shell_cmd shell_arch_cmds[] = {
 	CMD("devmap", NULL, "list arm64 host stage-1 and vm stage-2 memory mappings", shell_list_mem),
 	CMD("memstat", NULL, "list ARM64 page-table pool and stage-2 ownership statistics", shell_memstat),
-	CMD("s2walk", "<vmid> <ipa>", "walk one VM stage-2 translation without modifying it", shell_s2walk),
+	CMD("walkpt", "<vmid> <ipa>", "walk one VM stage-2 translation without modifying it", shell_s2walk),
 	CMD("kusg", NULL, "list BEAU static memory usage in KB", shell_kusg),
 	CMD("health", NULL, "summarize current host and VM operational health", shell_health),
 	CMD("hwtdbg", "<vmid>", "show retained VM watchdog minidump", shell_hwtdbg),

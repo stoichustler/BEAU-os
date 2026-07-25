@@ -48,7 +48,7 @@ void panic_dump_context(void)
 		vcpu = get_running_vcpu(pcpu_id);
 	}
 
-	LOG_FTL("context: pcpu:%hu active:0x%lx mpidr:0x%lx daif:0x%lx",
+	LOG_FTL("ctx: pcpu:%hu    active:0x%lx   mpidr:0x%lx  daif:0x%lx",
 		pcpu_id, get_active_pcpu_bitmap(), read_mpidr_el1(), read_daif());
 	LOG_FTL("el2:  elr:0x%08lx  spsr:0x%08lx   esr:0x%08lx far:0x%08lx hpfar:0x%08lx",
 		read_elr_el2(), read_spsr_el2(), read_esr_el2(), read_far_el2(),

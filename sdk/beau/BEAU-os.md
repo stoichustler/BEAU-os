@@ -1350,7 +1350,7 @@ WDT recovery 与 failure 事件继续使用 `LOG_*` 保留为故障证据。
 | `vsh <vmid>` | 切到客体 console，`Ctrl-D` 返回 |
 | `devmap` | host Stage-1 与每 VM Stage-2 map |
 | `memstat` | 页表池和 Stage-2 ownership |
-| `s2walk <vmid> <ipa>` | 只读输出指定 IPA 的逐级 Stage-2 descriptor、映射与属性 |
+| `walkpt <vmid> <ipa>` | 只读输出指定 IPA 的逐级 Stage-2 descriptor、映射与属性 |
 | `health` | host/VM 运行健康摘要与 findings |
 | `hwtdbg` | 打印所有已保留 WDT 超时现场，读取不清除 |
 | `coredump <print\|erase>` | 查看或清除最近一次 ARM64 panic/异常快照 |

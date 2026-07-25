@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 #include <types.h>
+#include <errno.h>
 #include <lib/bits.h>
 #include <logmsg.h>
 #include <util.h>
@@ -213,7 +214,35 @@ void pgtable_update_init(struct pgtable_update *update, uint64_t *retired_bitmap
 	update->retired_bitmap = retired_bitmap;
 	update->retired_bitmap_words = retired_bitmap_words;
 	update->retired_pages = 0UL;
+	update->range_start = 0UL;
+	update->range_end = 0UL;
+	update->operations = 0U;
 	update->changed = false;
+}
+
+static void pgtable_update_record_range(struct pgtable_update *update,
+	uint64_t start, uint64_t end, uint32_t operation)
+{
+	if (update == NULL) {
+		return;
+	}
+	if ((update->operations == 0U) || (start < update->range_start)) {
+		update->range_start = start;
+	}
+	if ((update->operations == 0U) || (end > update->range_end)) {
+		update->range_end = end;
+	}
+	update->operations |= operation;
+}
+
+static void pgtable_update_record(struct pgtable_update *update,
+	uint64_t start, uint64_t end, uint32_t operation)
+{
+	pgtable_update_record_range(update, start, end, operation);
+	if (update == NULL) {
+		return;
+	}
+	update->changed = true;
 }
 
 static void defer_pgtable_page(const struct pgtable *table, uint64_t *pt_page,
@@ -548,6 +577,8 @@ void pgtable_modify_or_del_map_deferred(uint64_t *pgtl3_page,
 	uint64_t *pgtl3e;
 
 	vaddr_end = vaddr + round_page_down(size);
+	pgtable_update_record_range(update, vaddr, vaddr_end,
+		(type == MR_MODIFY) ? PGTABLE_UPDATE_MODIFY : PGTABLE_UPDATE_DELETE);
 	dev_dbg(DBG_LEVEL_MMU, "MMU:    VA:[0x%016lx - 0x%016lx]\n",
 		vaddr, vaddr + size);
 
@@ -572,6 +603,17 @@ void pgtable_modify_or_del_map(uint64_t *pgtl3_page, uint64_t vaddr_base,
 {
 	pgtable_modify_or_del_map_deferred(pgtl3_page, vaddr_base, size,
 		prot_set, prot_clr, table, type, NULL);
+}
+
+static bool pgtable_map_allows_leaf(const struct pgtable_map_request *request,
+	enum _page_table_level level, uint64_t paddr, uint64_t vaddr,
+	uint64_t vaddr_next, uint64_t vaddr_end, const struct pgtable *table)
+{
+	return ((request->allowed_leaf_levels & (1U << level)) != 0U) &&
+		table->large_page_support(level, request->prot) &&
+		mem_aligned_check(paddr, get_level_size(level)) &&
+		mem_aligned_check(vaddr, get_level_size(level)) &&
+		(vaddr_next <= vaddr_end);
 }
 
 /*
@@ -614,7 +656,8 @@ static void add_pgtl0(const uint64_t *pgtl1e, uint64_t paddr_start, uint64_t vad
  * add [vaddr_start, vaddr_end) to [paddr_base, ...) MT PT mapping
  */
 static void add_pgtl1(const uint64_t *pgtl2e, uint64_t paddr_start, uint64_t vaddr_start, uint64_t vaddr_end,
-		uint64_t prot, const struct pgtable *table)
+		uint64_t prot, const struct pgtable *table,
+		const struct pgtable_map_request *request)
 {
 	uint64_t *pgtl1_page = page_addr(*pgtl2e);
 	uint64_t vaddr = vaddr_start;
@@ -636,10 +679,8 @@ static void add_pgtl1(const uint64_t *pgtl2e, uint64_t paddr_start, uint64_t vad
 				__func__, vaddr);
 		} else {
 			if (!table->pgentry_present(*pgtl1e)) {
-				if (table->large_page_support(PGT_LVL1, prot) &&
-					mem_aligned_check(paddr, PGTL1_SIZE) &&
-					mem_aligned_check(vaddr, PGTL1_SIZE) &&
-					(vaddr_next <= vaddr_end)) {
+				if (pgtable_map_allows_leaf(request, PGT_LVL1, paddr, vaddr,
+					vaddr_next, vaddr_end, table)) {
 					table->set_pgentry(pgtl1e, paddr, local_prot, PGT_LVL1, 1, table);
 					if (vaddr_next < vaddr_end) {
 						paddr += (vaddr_next - vaddr);
@@ -652,7 +693,7 @@ static void add_pgtl1(const uint64_t *pgtl2e, uint64_t paddr_start, uint64_t vad
 					table->set_pgentry(pgtl1e, hva2hpa((void *)pgtl0_page), 0, PGT_LVL1, 0, table);
 				}
 			}
-			add_pgtl0(pgtl1e, paddr, vaddr, vaddr_end, prot, table);
+				add_pgtl0(pgtl1e, paddr, vaddr, vaddr_end, prot, table);
 		}
 		if (vaddr_next >= vaddr_end) {
 			break;	/* done */
@@ -667,7 +708,8 @@ static void add_pgtl1(const uint64_t *pgtl2e, uint64_t paddr_start, uint64_t vad
  * add [vaddr_start, vaddr_end) to [paddr_base, ...) MT PT mapping
  */
 static void add_pgtl2(const uint64_t *pgtl3e, uint64_t paddr_start, uint64_t vaddr_start, uint64_t vaddr_end,
-		uint64_t prot, const struct pgtable *table)
+		uint64_t prot, const struct pgtable *table,
+		const struct pgtable_map_request *request)
 {
 	uint64_t *pgtl2_page = page_addr(*pgtl3e);
 	uint64_t vaddr = vaddr_start;
@@ -688,10 +730,8 @@ static void add_pgtl2(const uint64_t *pgtl3e, uint64_t paddr_start, uint64_t vad
 				__func__, vaddr);
 		} else {
 			if (!table->pgentry_present(*pgtl2e)) {
-				if (table->large_page_support(PGT_LVL2, prot) &&
-					mem_aligned_check(paddr, PGTL2_SIZE) &&
-					mem_aligned_check(vaddr, PGTL2_SIZE) &&
-					(vaddr_next <= vaddr_end)) {
+				if (pgtable_map_allows_leaf(request, PGT_LVL2, paddr, vaddr,
+					vaddr_next, vaddr_end, table)) {
 					table->set_pgentry(pgtl2e, paddr, local_prot, PGT_LVL2, 1, table);
 					if (vaddr_next < vaddr_end) {
 						paddr += (vaddr_next - vaddr);
@@ -704,7 +744,7 @@ static void add_pgtl2(const uint64_t *pgtl3e, uint64_t paddr_start, uint64_t vad
 					table->set_pgentry(pgtl2e, hva2hpa((void *)pgtl1_page), 0, PGT_LVL2, 0, table);
 				}
 			}
-			add_pgtl1(pgtl2e, paddr, vaddr, vaddr_end, prot, table);
+				add_pgtl1(pgtl2e, paddr, vaddr, vaddr_end, prot, table, request);
 		}
 		if (vaddr_next >= vaddr_end) {
 			break;	/* done */
@@ -739,20 +779,39 @@ static void add_pgtl2(const uint64_t *pgtl3e, uint64_t paddr_start, uint64_t vad
  *   - large leaves are used only when address alignment, range size, and the
  *     architecture table callbacks all allow the mapping to stay coarse.
  */
-void pgtable_add_map(uint64_t *pgtl3_page, uint64_t paddr_base, uint64_t vaddr_base,
-		uint64_t size, uint64_t prot, const struct pgtable *table)
+int32_t pgtable_add_map_deferred(uint64_t *pgtl3_page,
+	const struct pgtable_map_request *request, const struct pgtable *table,
+	struct pgtable_update *update)
 {
 	uint64_t vaddr, vaddr_next, vaddr_end;
 	uint64_t paddr;
+	uint64_t map_size;
 	uint64_t *pgtl3e;
 
-	dev_dbg(DBG_LEVEL_MMU, "MAP:    PA:0x%016lx VA:0x%016lx (size:0x%08lx)\n",
-		paddr_base, vaddr_base, size);
+	if ((pgtl3_page == NULL) || (request == NULL) || (table == NULL) ||
+		(table->pool == NULL) || (table->pgentry_present == NULL) ||
+		(table->large_page_support == NULL) || (table->set_pgentry == NULL) ||
+		(table->flush_cache_pagewalk == NULL) || (request->size == 0UL) ||
+		((request->allowed_leaf_levels & ~PGTABLE_LEAF_LEVEL_MASK) != 0U) ||
+		((request->allowed_leaf_levels & PGTABLE_LEAF_LVL0) == 0U)) {
+		return -EINVAL;
+	}
+	if ((request->vaddr_base > (UINT64_MAX - (PAGE_SIZE - 1UL))) ||
+		(request->paddr_base > (UINT64_MAX - (PAGE_SIZE - 1UL)))) {
+		return -EINVAL;
+	}
 
-	/* align address to page size*/
-	vaddr = round_page_up(vaddr_base);
-	paddr = round_page_up(paddr_base);
-	vaddr_end = vaddr + round_page_down(size);
+	map_size = round_page_down(request->size);
+	vaddr = round_page_up(request->vaddr_base);
+	paddr = round_page_up(request->paddr_base);
+	if ((map_size == 0UL) || (map_size > (UINT64_MAX - vaddr)) ||
+		(map_size > (UINT64_MAX - paddr))) {
+		return -EINVAL;
+	}
+	vaddr_end = vaddr + map_size;
+
+	dev_dbg(DBG_LEVEL_MMU, "MAP:    PA:0x%016lx VA:0x%016lx (size:0x%08lx)\n",
+		request->paddr_base, request->vaddr_base, request->size);
 
 	while (vaddr < vaddr_end) {
 		vaddr_next = (vaddr & PGTL3_MASK) + PGTL3_SIZE;
@@ -761,10 +820,34 @@ void pgtable_add_map(uint64_t *pgtl3_page, uint64_t paddr_base, uint64_t vaddr_b
 			void *pgtl2_page = alloc_page(table->pool);
 			table->set_pgentry(pgtl3e, hva2hpa((void *)pgtl2_page), 0, PGT_LVL3, 0, table);
 		}
-		add_pgtl2(pgtl3e, paddr, vaddr, vaddr_end, prot, table);
+		add_pgtl2(pgtl3e, paddr, vaddr, vaddr_end, request->prot, table,
+			request);
 
 		paddr += (vaddr_next - vaddr);
 		vaddr = vaddr_next;
+	}
+	pgtable_update_record(update, round_page_up(request->vaddr_base), vaddr_end,
+		PGTABLE_UPDATE_MAP);
+
+	return 0;
+}
+
+void pgtable_add_map(uint64_t *pgtl3_page, uint64_t paddr_base, uint64_t vaddr_base,
+	uint64_t size, uint64_t prot, const struct pgtable *table)
+{
+	const struct pgtable_map_request request = {
+		.paddr_base = paddr_base,
+		.vaddr_base = vaddr_base,
+		.size = size,
+		.prot = prot,
+		.allowed_leaf_levels = PGTABLE_LEAF_LEVEL_MASK,
+	};
+	int32_t status;
+
+	status = pgtable_add_map_deferred(pgtl3_page, &request, table, NULL);
+	if (status != 0) {
+		panic("invalid page-table map status:%d va=0x%lx size=0x%lx", status,
+			vaddr_base, size);
 	}
 }
 
