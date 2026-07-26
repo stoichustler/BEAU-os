@@ -141,10 +141,14 @@ int32_t copy_from_gpa(struct acrn_vm *vm, void *h_ptr, uint64_t gpa, uint32_t si
 
 	if (size == 0U) {
 		ret = 0;
+	} else if (h_ptr == NULL) {
+		ret = -EINVAL;
 	} else if (arm64_guest_gpa_range_valid(vm, gpa, size)) {
 		hva = gpa2hva(vm, gpa);
-		memcpy(h_ptr, hva, size);
-		ret = 0;
+		if (hva != NULL) {
+			memcpy(h_ptr, hva, size);
+			ret = 0;
+		}
 	}
 
 	return ret;
@@ -157,10 +161,14 @@ int32_t copy_to_gpa(struct acrn_vm *vm, void *h_ptr, uint64_t gpa, uint32_t size
 
 	if (size == 0U) {
 		ret = 0;
+	} else if (h_ptr == NULL) {
+		ret = -EINVAL;
 	} else if (arm64_guest_gpa_range_valid(vm, gpa, size)) {
 		hva = gpa2hva(vm, gpa);
-		memcpy(hva, h_ptr, size);
-		ret = 0;
+		if (hva != NULL) {
+			memcpy(hva, h_ptr, size);
+			ret = 0;
+		}
 	}
 
 	return ret;

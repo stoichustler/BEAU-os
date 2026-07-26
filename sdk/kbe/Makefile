@@ -7,5 +7,6 @@ obj-$(CONFIG_BEAU_VIRTIORNG_BACKEND) += virtio-rng-backend.o
 obj-$(CONFIG_BEAU_VIRTIOI2C_BACKEND) += virtio-i2c-backend.o
 obj-$(CONFIG_BEAU_VIRTIONET_BACKEND) += virtio-net-backend.o
 obj-$(CONFIG_BEAU_VWDT) += vwdt.o
+obj-$(CONFIG_BEAU_CRASH_REPORTER) += crash.o
 obj-$(CONFIG_BEAU_EDU_TEST) += edu-test.o
 obj-$(CONFIG_BEAU_IPC_TEST) += ipc-test.o

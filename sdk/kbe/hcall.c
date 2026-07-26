@@ -4,6 +4,7 @@
  */
 
 #include <linux/arm-smccc.h>
+#include <linux/errno.h>
 #include <linux/export.h>
 #include <asm/memory.h>
 
@@ -15,6 +16,7 @@
 #define HC_VM_WDT_KICK			_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x04UL)
 #define HC_VIRTIO_PROXY_BACKEND		_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x05UL)
 #define HC_IPC				_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x06UL)
+#define HC_VM_CRASH_REPORT		_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x08UL)
 
 static long beau_hcall1(unsigned long hcall_id, unsigned long param1)
 {
@@ -24,11 +26,29 @@ static long beau_hcall1(unsigned long hcall_id, unsigned long param1)
 	return res.a0;
 }
 
+static long beau_hcall2(unsigned long hcall_id, unsigned long param1,
+	unsigned long param2)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_hvc(hcall_id, param1, param2, &res);
+	return res.a0;
+}
+
 long beau_hcall_vm_wdt_kick(unsigned long token)
 {
 	return beau_hcall1(HC_VM_WDT_KICK, token);
 }
 EXPORT_SYMBOL_GPL(beau_hcall_vm_wdt_kick);
+
+long beau_hcall_vm_crash_report(const struct beau_vm_crash_report *report)
+{
+	if (report == NULL)
+		return -EINVAL;
+
+	return beau_hcall2(HC_VM_CRASH_REPORT, virt_to_phys(report), report->sequence);
+}
+EXPORT_SYMBOL_GPL(beau_hcall_vm_crash_report);
 
 long beau_hcall_virtio_proxy_backend(struct beau_proxy_ioc *ioc)
 {

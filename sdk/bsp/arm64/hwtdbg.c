@@ -23,6 +23,7 @@
 #include <vm.h>
 #include <virtio_proxy.h>
 #include <hwtdbg.h>
+#include <vm_crash.h>
 #include <debug/symbol.h>
 #include <asm/boot/ld_sym.h>
 #include <asm/guest/vcpu.h>
@@ -231,6 +232,7 @@ static uint8_t hwtdbg_fault_next_slot[CONFIG_MAX_VM_NUM];
 static spinlock_t hwtdbg_fault_locks[CONFIG_MAX_VM_NUM];
 static uint64_t hwtdbg_fault_next_sequence;
 static struct hwtdbg_fault_event hwtdbg_fault_readback;
+static struct vm_crash_record vm_crash_readback[BEAU_VM_CRASH_HISTORY_SLOTS];
 
 static bool hwtdbg_range_contains(uint64_t start, uint64_t end,
 	uint64_t address, uint64_t bytes)
@@ -1752,7 +1754,11 @@ int32_t shell_hwtdbg(int32_t argc, char **argv)
 int32_t shell_crash(int32_t argc, char **argv)
 {
 	uint16_t vm_id;
-	bool corrupt;
+	bool fault_corrupt;
+	bool guest_corrupt;
+	bool printed = false;
+	uint32_t guest_count;
+	uint32_t index;
 
 	if (((argc != 2) && (argc != 3)) ||
 		!hwtdbg_parse_vmid(argv[1], CONFIG_MAX_VM_NUM, &vm_id) ||
@@ -1761,22 +1767,34 @@ int32_t shell_crash(int32_t argc, char **argv)
 		return -EINVAL;
 	}
 	if (argc == 3) {
+		vm_crash_erase(vm_id);
 		hwtdbg_erase_fault(vm_id);
 		shell_puts("CRASH: erased\r\n");
 		return 0;
 	}
-	if (!hwtdbg_copy_latest_fault(vm_id, &hwtdbg_fault_readback, &corrupt)) {
+	guest_count = vm_crash_copy_history(vm_id, vm_crash_readback,
+		ARRAY_SIZE(vm_crash_readback), &guest_corrupt);
+	for (index = 0U; index < guest_count; index++) {
+		vm_crash_print(&vm_crash_readback[index], index, guest_count);
+		printed = true;
+	}
+	if (guest_corrupt) {
+		shell_puts("CRASH: checksum-invalid guest history entries skipped\r\n");
+	}
+	if (!hwtdbg_copy_latest_fault(vm_id, &hwtdbg_fault_readback, &fault_corrupt)) {
 		char line[MAX_STR_SIZE];
 
-		(void)snprintf(line, sizeof(line),
-			"CRASH: vm%hu has no retained guest fault event\r\n", vm_id);
-		shell_puts(line);
-		return 0;
+		if (!printed) {
+			(void)snprintf(line, sizeof(line),
+				"CRASH: vm%hu has no retained guest fault event\r\n", vm_id);
+			shell_puts(line);
+		}
+		return guest_corrupt ? -EIO : 0;
 	}
-	if (corrupt) {
+	if (fault_corrupt) {
 		shell_puts("CRASH: latest event is checksum-invalid\r\n");
 		return -EIO;
 	}
 	hwtdbg_print_fault_event(&hwtdbg_fault_readback);
-	return 0;
+	return guest_corrupt ? -EIO : 0;
 }

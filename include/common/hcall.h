@@ -54,6 +54,8 @@ struct hcall_dispatch_entry {
  */
 int32_t hcall_vm_wdt_kick(struct acrn_vcpu *vcpu, struct acrn_vm *target_vm,
 	uint64_t param1, uint64_t param2);
+int32_t hcall_vm_crash_report(struct acrn_vcpu *vcpu, struct acrn_vm *target_vm,
+	uint64_t param1, uint64_t param2);
 
 /*
  * Trusty / secure-world hcalls. These remain architecture-neutral at the

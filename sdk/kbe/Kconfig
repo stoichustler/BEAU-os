@@ -17,6 +17,14 @@ config BEAU_VWDT
 	  This is a heartbeat only: if Linux stops scheduling the heartbeat worker,
 	  BEAU can mark the VM as stuck.
 
+config BEAU_CRASH_REPORTER
+	bool "BEAU guest panic and oops reporting"
+	default y
+	help
+	  Notify the BEAU Host through HVC when Linux enters panic or an ARM64
+	  DIE_OOPS path. The Host records the bounded diagnostic message and makes
+	  it available through the BEAU shell crash command and Host dmesg log.
+
 config BEAU_EDU_TEST
 	bool "BEAU QEMU edu PCI passthrough test"
 	depends on PCI && PCI_MSI

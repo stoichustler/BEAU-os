@@ -20,14 +20,8 @@ Linux kernel tree so they can be ported to multiple Linux versions.
 - `virtio-net-backend.c`: VM2 virtio-net uplink backend for VM3 frontend
   Ethernet validation through BEAU virtio-proxy.
 - `vwdt.c`: BEAU VM watchdog heartbeat driver.
-- `beau_static_rproc.c`: attach-only Linux remoteproc transport for a BEAU
-  Zephyr service VM, using standard virtio-rpmsg and `rpmsg_char`.
-- `beau-static-rproc.Kconfig`, `beau-static-rproc.Makefile`: integration
-  fragments for `drivers/remoteproc`.
-- `beau_rpmsg_peer.c`: VM3 RPMsg peer for the dedicated VM0 full-duplex
-  validation endpoint.
-- `beau-rpmsg-peer.Kconfig`, `beau-rpmsg-peer.Makefile`: integration
-  fragments for `drivers/rpmsg`.
+- `crash.c`: Linux panic and ARM64 oops notifier that reports a bounded crash
+  record to the BEAU Host through HVC.
 - `Kconfig`, `Makefile`: Kbuild integration snippets for `drivers/virt/beau`.
 
 ## Porting To A Linux Tree
@@ -40,33 +34,13 @@ Linux kernel tree so they can be ported to multiple Linux versions.
 5. Run the target kernel's config update, then enable:
    - `CONFIG_BEAU`
    - `CONFIG_BEAU_VWDT`
+   - `CONFIG_BEAU_CRASH_REPORTER`
    - one or more virtio-proxy backends, for example:
      `CONFIG_BEAU_VIRTIOFS_BACKEND`, `CONFIG_BEAU_VIRTIORNG_BACKEND`, and
      `CONFIG_BEAU_VIRTIOBLK_BACKEND`, `CONFIG_BEAU_VIRTIOI2C_BACKEND`, and
      `CONFIG_BEAU_VIRTIONET_BACKEND`
 6. Build the target kernel image and install it into the BEAU Linux image slot
    used by the VM that should run the driver.
-
-## Static Remoteproc/RPMsg
-
-To integrate the VM3 attach-only transport, copy `beau_static_rproc.c` into
-`drivers/remoteproc`, append `beau-static-rproc.Kconfig` to that directory's
-`Kconfig`, and append `beau-static-rproc.Makefile` to its `Makefile`. Enable
-`CONFIG_REMOTEPROC`, `CONFIG_RPMSG_VIRTIO`, `CONFIG_RPMSG_CHAR`, and
-`CONFIG_BEAU_STATIC_RPROC`; `RPMSG_CHAR` also requires `CONFIG_NET`.
-
-For VM0-initiated full-duplex validation, copy `beau_rpmsg_peer.c` into
-`drivers/rpmsg`, append `beau-rpmsg-peer.Kconfig` and
-`beau-rpmsg-peer.Makefile` to that directory's Kconfig and Makefile, then
-enable `CONFIG_BEAU_RPMSG_PEER`. The driver binds only `beau-rpmsg-peer`:
-it publishes READY and returns an ACK with the validated sequence and payload.
-The existing `rpmsg-raw` endpoint remains available to `rpmsg_char`.
-
-The guest DT node has compatible `beau,static-rproc`, a `shared` memory
-resource followed by a `doorbell` resource, and one GIC SPI interrupt. The
-driver starts in `RPROC_DETACHED`; userspace explicitly attaches it through
-the standard remoteproc `state` sysfs file. It does not load firmware or
-control the service VM lifecycle.
 
 ## Notes
 
@@ -95,17 +69,9 @@ The virtio-net backend is a QEMU validation backend. It exposes VM3 MAC
 `52:54:00:be:03:00`, advertises only `VIRTIO_NET_F_MAC` and
 `VIRTIO_NET_F_STATUS`, and forwards frames through one VM2 uplink netdev. The
 uplink defaults to `eth0`; override it with the backend's `uplink` parameter
-when the passthrough or QEMU NIC has a different interface name. If `eth0` is
-not present, the backend auto-selects the first non-loopback VM2 netdev. The backend
+when the passthrough or QEMU NIC has a different interface name. The backend
 keeps offload, mergeable buffers, control queue, multi-queue, and RSS disabled
 for the first BEAU virtio-proxy data-plane validation.
-On QEMU, keep the existing edu passthrough endpoint at `addr=0x1`/BDF
-`0x0008`; attach a modern MMIO PCI net endpoint such as
-`virtio-net-pci-non-transitional` as an additional endpoint at `addr=0x2`/BDF
-`0x0010`. VM3 still uses the virtio-net frontend; the VM2 PCI netdev is only
-the physical uplink that the backend forwards frames through. Avoid legacy
-PIO-dependent NICs such as QEMU `e1000` for the default ARM64 validation path
-unless PCI I/O space forwarding is being tested explicitly.
 
 Backend poll loops run through the common virtio-proxy worker. The worker
 registers ABI v3 capabilities, sends `BEAU_PROXY_OP_HEARTBEAT`, and uses

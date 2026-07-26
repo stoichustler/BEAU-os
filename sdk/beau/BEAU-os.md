@@ -514,6 +514,30 @@ load FDT module
 
 只启动 vCPU0。Linux/Zephyr 的 secondary vCPU 由客体 PSCI `CPU_ON` 触发。
 
+### 7.6 Linux Guest 崩溃通知
+
+Linux `drivers/virt/beau/crash.c` 在 panic notifier 与 ARM64 `DIE_OOPS` notifier
+中构造版本化 `beau_vm_crash_report`（v1 为 144 bytes，v2 为 320 bytes），并通过 `HC_VM_CRASH_REPORT`
+向 BEAU Host 通知。报文包含 ABI magic/version/size、事件类型、
+vCPU、序号、PC、错误码及最多 95 个 ASCII 诊断字符。v2 额外记录触发
+进程/ 线程、寄存器快照及最多 16 个原始 guest stack PC。
+
+```text
+Linux panic / DIE_OOPS
+    -> one versioned fixed-size HVC report per event kind
+    -> validate guest GPA and ABI, then sanitize and checksum
+    -> LOG_ERR host log ring (visible through dmesg)
+    -> per-VM eight-entry retained history ring
+    -> crash <vmid> / crash <vmid> erase
+```
+
+Host 根据 HVC 发起者确定 VM ID，不接受客体提供的 VM 身份。报文
+必须含有一致的序号寄存器参数、完整 ABI 和 NUL 结尾的消息；静态 VM
+以外、无效 GPA 或无效报文均被拒绝。dmesg 仅记录简洁的 KE 通知；完整 task、寄存器和原始
+guest stack 诊断只由 `crash <vmid>` 输出。每个 VM 保留最近八条可校验的
+崩溃记录：一致的 HVC 重试不消耗新槽，而新事件仅在缓存已满时淘汰最早记录。
+`crash <vmid>` 按捕获顺序显示 guest history 与已有 EL2 guest-fault 信息，`erase` 清除两者。
+
 ## 8. vCPU、上下文切换与 VM-exit
 
 ### 8.1 vCPU 是调度线程

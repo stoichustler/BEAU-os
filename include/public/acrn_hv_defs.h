@@ -84,6 +84,7 @@
 #define HC_VIRTIO_PROXY_BACKEND     BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x05UL)
 #define HC_IPC                      BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x06UL)
 #define HC_AI_SCHED                 BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x07UL)
+#define HC_VM_CRASH_REPORT          BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x08UL)
 
 /* BEAU AI scheduler advisor: registration, snapshots, and observe-only proposals. */
 #define ACRN_AI_SCHED_ABI_VERSION   1U

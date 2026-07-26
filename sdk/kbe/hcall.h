@@ -8,6 +8,20 @@
 #include <linux/types.h>
 
 #define BEAU_PROXY_ABI_VERSION		3U
+#define BEAU_VM_CRASH_MAGIC		0x42435253U
+#define BEAU_VM_CRASH_ABI_VERSION_V1	1U
+#define BEAU_VM_CRASH_ABI_VERSION	2U
+#define BEAU_VM_CRASH_TEXT_MAX		96U
+#define BEAU_VM_CRASH_COMM_MAX		16U
+#define BEAU_VM_CRASH_STACK_MAX		16U
+#define BEAU_VM_CRASH_REPORT_V1_SIZE	144U
+#define BEAU_VM_CRASH_REPORT_SIZE	320U
+
+#define BEAU_VM_CRASH_F_REGS_VALID	BIT(0)
+#define BEAU_VM_CRASH_F_STACK_VALID	BIT(1)
+
+#define BEAU_VM_CRASH_PANIC		1U
+#define BEAU_VM_CRASH_OOPS		2U
 
 #define BEAU_PROXY_OP_REGISTER		0U
 #define BEAU_PROXY_OP_POLL		1U
@@ -126,6 +140,30 @@ struct beau_ipc_ring_header {
 	u64 bytes;
 } __aligned(64);
 
+struct beau_vm_crash_report {
+	u32 magic;
+	u16 version;
+	u16 size;
+	u32 kind;
+	u32 cpu_id;
+	u64 sequence;
+	u64 pc;
+	u64 fault_address;
+	u64 error_code;
+	char message[BEAU_VM_CRASH_TEXT_MAX];
+	u64 sp;
+	u64 pstate;
+	u32 pid;
+	u32 tgid;
+	u16 stack_count;
+	u16 flags;
+	char comm[BEAU_VM_CRASH_COMM_MAX];
+	unsigned long stack[BEAU_VM_CRASH_STACK_MAX];
+};
+
+static_assert(offsetof(struct beau_vm_crash_report, message) == 48U);
+static_assert(sizeof(struct beau_vm_crash_report) == BEAU_VM_CRASH_REPORT_SIZE);
+
 static inline void beau_proxy_poll_idle_delay(unsigned int *idle_polls)
 {
 	if (idle_polls == NULL)
@@ -149,6 +187,7 @@ static inline void beau_proxy_poll_active(unsigned int *idle_polls)
 }
 
 long beau_hcall_vm_wdt_kick(unsigned long token);
+long beau_hcall_vm_crash_report(const struct beau_vm_crash_report *report);
 long beau_hcall_virtio_proxy_backend(struct beau_proxy_ioc *ioc);
 long beau_hcall_ipc(struct beau_ipc_ioc *ioc);
 

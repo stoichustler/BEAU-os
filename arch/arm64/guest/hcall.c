@@ -17,6 +17,7 @@
 #include <logmsg.h>
 #include <trace.h>
 #include <virtio_proxy.h>
+#include <vm_crash.h>
 #include <asm/guest/vipc.h>
 
 /* [20260630] ARM64 hcall dispatch principle:
@@ -178,6 +179,10 @@ static const struct hcall_dispatch_entry arm64_hc_dispatch_table[] = {
 	},
 	[HC_IDX(HC_AI_SCHED)] = {
 		.handler = hcall_ai_sched,
+		.permission_flags = GUEST_FLAG_STATIC_VM,
+	},
+	[HC_IDX(HC_VM_CRASH_REPORT)] = {
+		.handler = hcall_vm_crash_report,
 		.permission_flags = GUEST_FLAG_STATIC_VM,
 	},
 };
