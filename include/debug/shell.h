@@ -23,6 +23,14 @@
 void shell_init(void);
 void shell_start(void);
 void arm64_rttest_init(void);
+void oslat_init(void);
+void ipilat_init(void);
+#ifdef CONFIG_COREMARK
+void coremark_init(void);
+#endif
+#ifdef CONFIG_DHRYSTONE
+void dhrystone_init(void);
+#endif
 void shell_kick(void);
 bool shell_is_open(void);
 bool shell_async_puts(const char *string_ptr);

@@ -54,6 +54,14 @@ struct shell_cmd shell_arch_cmds[] = {
 	CMD("pcistat", NULL, "list PCI passthrough and SMMU stream state", shell_pcistat),
 	CMD("cpufreq", NULL, "list host CPU frequency policy state", shell_cpufreq),
 	CMD("rttest", NULL, "run local EL2 timer latency tests on every pCPU", shell_rttest),
+	CMD("oslat", "[duration-ms]", "measure bounded EL2 polling gaps on every pCPU", shell_oslat),
+	CMD("ipilat", "[samples]", "measure bounded EL2 IPI latency from BSP", shell_ipilat),
+#ifdef CONFIG_COREMARK
+	CMD("coremark", "[iterations]", "run asynchronous CoreMark contexts on every pCPU", shell_coremark),
+#endif
+#ifdef CONFIG_DHRYSTONE
+	CMD("dhrystone", "[initial-runs]", "run serialized Dhrystone diagnostics on every pCPU", shell_dhrystone),
+#endif
 	CMD("trace", "<status|start|stop|clear|dump> [category|count]",
 		"capture and dump per-pCPU EL2 trace events", shell_trace),
 #ifdef CONFIG_PERF

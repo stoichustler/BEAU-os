@@ -352,11 +352,37 @@ BSP_LIB_SRCS += sdk/bsp/pl011.c
 BSP_LIB_SRCS += $(wildcard sdk/bsp/arm64/*.c)
 BSP_LIB_SRCS += $(wildcard sdk/bsp/virtio/*.c)
 BSP_LIB_SRCS += $(wildcard sdk/bsp/pci/*.c)
+BSP_LIB_SRCS += sdk/bsp/benchmark/rt-tests/rt-test.c
+BSP_LIB_SRCS += sdk/bsp/benchmark/rt-tests/oslat.c
+BSP_LIB_SRCS += sdk/bsp/benchmark/rt-tests/ipilat.c
 BSP_LIB_SRCS += sdk/bsp/vpci/vpci_core.c
 BSP_LIB_SRCS += sdk/bsp/vpci/vpci_pt.c
 BSP_LIB_SRCS += sdk/bsp/vpci/vpci_msi.c
 BSP_LIB_SRCS += sdk/bsp/vpci/vpci_rc.c
 BSP_LIB_SRCS += sdk/bsp/vpci/vpci_sriov.c
+ifeq ($(CONFIG_COREMARK),y)
+BSP_LIB_SRCS += sdk/bsp/benchmark/coremark/coremark_entry.c
+BSP_LIB_SRCS += sdk/bsp/benchmark/coremark/coremark_engine.c
+BSP_LIB_SRCS += sdk/bsp/benchmark/coremark/coremark_port.c
+BSP_LIB_SRCS += sdk/bsp/benchmark/coremark/coremark_runner.c
+BSP_LIB_SRCS += sdk/bsp/benchmark/coremark/core_list_join.c
+BSP_LIB_SRCS += sdk/bsp/benchmark/coremark/core_main.c
+BSP_LIB_SRCS += sdk/bsp/benchmark/coremark/core_matrix.c
+BSP_LIB_SRCS += sdk/bsp/benchmark/coremark/core_state.c
+BSP_LIB_SRCS += sdk/bsp/benchmark/coremark/core_util.c
+BSP_LIB_SRCS += sdk/bsp/benchmark/coremark/coremark.h
+BSP_LIB_SRCS += sdk/bsp/benchmark/coremark/core_portme.h
+BSP_LIB_SRCS += sdk/bsp/benchmark/coremark/coremark_engine.h
+BSP_LIB_SRCS += sdk/bsp/benchmark/coremark/coremark_port.h
+endif
+ifeq ($(CONFIG_DHRYSTONE),y)
+BSP_LIB_SRCS += sdk/bsp/benchmark/dhrystone/dry.c
+BSP_LIB_SRCS += sdk/bsp/benchmark/dhrystone/dhrystone_1.c
+BSP_LIB_SRCS += sdk/bsp/benchmark/dhrystone/dhrystone_2.c
+BSP_LIB_SRCS += sdk/bsp/benchmark/dhrystone/dhrystone_port.c
+BSP_LIB_SRCS += sdk/bsp/benchmark/dhrystone/dhrystone_runner.c
+BSP_LIB_SRCS += sdk/bsp/benchmark/dhrystone/dhrystone_port.h
+endif
 
 ifeq ($(ARCH),arm64)
 COMMON_C_SRCS += arch/arm64/guest/hcall.c
@@ -461,7 +487,7 @@ $(ARM64_PLATFORM_CFG_STAMP): $(HV_CONFIG_TIMESTAMP) | $(HV_CONFIG_DIR)
 checkconfig: $(HV_KCONFIG_CHECK_STAMP)
 
 Bconfig defconfig: $(HV_PLATFORM_BCONFIG) $(HV_KCONFIG_CHECK_STAMP) | $(HV_CONFIG_DIR) $(HV_KCONFIG_DEPS_DIR) $(HV_OBJDIR)/include/generated
-	@echo "CONFIG             $(HV_PLATFORM_BCONFIG)"
+	@echo "CONFIG             $(notdir $(HV_PLATFORM_BCONFIG))"
 	$(Q)KCONFIG_CONFIG=$(HV_DOTCONFIG) python3 $(HV_KCONFIG_DEFCONFIG) --kconfig $(HV_KCONFIG) $(HV_PLATFORM_BCONFIG)
 	$(Q)$(MAKE) syncconfig ARCH=$(ARCH) PLATFORM=$(PLATFORM) HV_OBJDIR=$(HV_OBJDIR)
 

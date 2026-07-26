@@ -243,6 +243,14 @@ static void init_pcpu_comm_post(void)
 		arm64_core_pmu_init_workers();
 		cpufreq_init();
 		arm64_rttest_init();
+		oslat_init();
+		ipilat_init();
+#ifdef CONFIG_COREMARK
+		coremark_init();
+#endif
+#ifdef CONFIG_DHRYSTONE
+		dhrystone_init();
+#endif
 		shell_start();
 		vm_wdt_start();
 		vm_publish_static_boot_state();

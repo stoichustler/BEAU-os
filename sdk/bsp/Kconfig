@@ -49,6 +49,82 @@ config HOST_DMESG_RING_SIZE
 	  dmesg shell command reads the newest complete records after the live
 	  console stream has moved on. Full rings overwrite the oldest records.
 
+config COREMARK
+	bool "CoreMark parallel diagnostic"
+	default y if STATIC_ARM64_PLATFORM
+	help
+	  Build the fixed CoreMark upstream snapshot and expose the asynchronous
+	  coremark [iterations] shell command. It runs one context on every active
+	  pCPU and reports scheduler-inclusive EL2 diagnostic results.
+
+if COREMARK
+
+config COREMARK_MAX_ITERATIONS
+	int "Maximum explicit CoreMark iterations"
+	default 1000000
+	range 1 10000000
+	help
+	  Upper bound for an explicit coremark iteration argument. Zero selects the
+	  upstream automatic calibration path, which targets at least ten seconds.
+
+config COREMARK_START_TIMEOUT_MS
+	int "CoreMark pCPU start timeout in milliseconds"
+	default 250
+	range 10 10000
+	help
+	  Maximum time a dispatched pCPU worker may remain queued before the
+	  generation reports that pCPU as unavailable. The worker context remains
+	  reserved until a delayed wakeup completes.
+
+config COREMARK_RUN_TIMEOUT_MS
+	int "CoreMark pCPU completion timeout in milliseconds"
+	default 30000
+	range 1000 120000
+	help
+	  Maximum time a running pCPU worker may take before the generation reports
+	  a partial result. BEAU does not forcibly stop a late worker; its fixed
+	  context remains reserved until completion.
+
+endif
+
+config DHRYSTONE
+	bool "Dhrystone serialized diagnostic"
+	default y if STATIC_ARM64_PLATFORM
+	help
+	  Build the Dhrystone 2.2a port and expose the asynchronous dhrystone
+	  [initial-runs] shell command. The upstream global state runs on one pCPU
+	  at a time and reports each pCPU separately.
+
+if DHRYSTONE
+
+config DHRYSTONE_MAX_INITIAL_RUNS
+	int "Maximum Dhrystone initial runs"
+	default 10000000
+	range 1 100000000
+	help
+	  Upper bound for the optional initial run count. Dhrystone preserves its
+	  upstream two-second measurement rule and may increase this value by ten.
+
+config DHRYSTONE_START_TIMEOUT_MS
+	int "Dhrystone pCPU start timeout in milliseconds"
+	default 5000
+	range 10 10000
+	help
+	  Maximum time a pinned worker may remain queued before BEAU atomically
+	  cancels it before execution. This covers BVT catch-up after a prior
+	  diagnostic run without permitting deferred background work.
+
+config DHRYSTONE_RUN_TIMEOUT_MS
+	int "Dhrystone pCPU completion timeout in milliseconds"
+	default 30000
+	range 1000 120000
+	help
+	  Maximum time one pCPU Dhrystone execution may take before BEAU marks it
+	  late. A late worker retains command ownership until it completes, so a
+	  completed command never leaves benchmark work running in the background.
+
+endif
+
 config NPK_LOGLEVEL_DEFAULT
 	int "Default NPK log level"
 	default 0

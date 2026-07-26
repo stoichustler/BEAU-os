@@ -54,6 +54,14 @@ int32_t shell_smmustat(int32_t argc, char **argv);
 int32_t shell_pcistat(int32_t argc, char **argv);
 int32_t shell_cpufreq(int32_t argc, char **argv);
 int32_t shell_rttest(int32_t argc, char **argv);
+int32_t shell_oslat(int32_t argc, char **argv);
+int32_t shell_ipilat(int32_t argc, char **argv);
+#ifdef CONFIG_COREMARK
+int32_t shell_coremark(int32_t argc, char **argv);
+#endif
+#ifdef CONFIG_DHRYSTONE
+int32_t shell_dhrystone(int32_t argc, char **argv);
+#endif
 int32_t shell_trace(int32_t argc, char **argv);
 #ifdef CONFIG_PERF
 int32_t shell_perf(int32_t argc, char **argv);
