@@ -275,7 +275,7 @@ int32_t arch_reset_vm(struct acrn_vm *vm);
 int32_t create_vm(uint16_t vm_id, uint64_t pcpu_bitmap, struct acrn_vm_config *vm_config, struct acrn_vm **rtn_vm);
 void vm_publish_static_boot_state(void);
 void launch_vms(uint16_t pcpu_id);
-void start_vm(struct acrn_vm *vm);
+int32_t start_vm(struct acrn_vm *vm);
 void pause_vm(struct acrn_vm *vm);
 /* Caller holds vm_state_lock. Returns online vCPUs still awaiting generation ACK. */
 uint64_t pause_vm_async(struct acrn_vm *vm, uint64_t generation);

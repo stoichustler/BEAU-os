@@ -248,8 +248,9 @@ struct sched_prio_control {
 	struct list_head prio_queue;
 };
 
-const struct list_head *sched_get_thread_list(void);
 uint32_t sched_get_thread_count(void);
+uint32_t sched_snapshot_threads(struct thread_object **threads, uint32_t max_threads,
+	bool *truncated);
 bool is_idle_thread(const struct thread_object *obj);
 uint16_t sched_get_pcpuid(const struct thread_object *obj);
 struct thread_object *sched_get_current(uint16_t pcpu_id);

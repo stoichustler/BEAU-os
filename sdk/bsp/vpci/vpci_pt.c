@@ -237,7 +237,7 @@ static void vdev_pt_unmap_msix(struct pci_vdev *vdev)
 		addr_hi = addr_lo + (msix->table_count * MSIX_TABLE_ENTRY_SIZE);
 		addr_lo = round_page_down(addr_lo);
 		addr_hi = round_page_up(addr_hi);
-		unregister_mmio_emulation_handler(vpci2vm(vdev->vpci), addr_lo, addr_hi);
+		unregister_mmio_emul_handler(vpci2vm(vdev->vpci), addr_lo, addr_hi);
 		msix->mmio_gpa = 0UL;
 	}
 }
@@ -269,7 +269,7 @@ void vdev_pt_map_msix(struct pci_vdev *vdev, bool hold_lock)
 		 * memory. Trap the table page so guest writes can be
 		 * translated into safe interrupt-remap programming.
 		 */
-		register_mmio_emulation_handler(vm, pt_vmsix_handle_table_mmio_access,
+		register_mmio_emul_handler(vm, pt_vmsix_handle_table_mmio_access,
 				addr_lo, addr_hi, vdev, hold_lock);
 		arm64_stage2_unmap(vm, addr_lo, addr_hi - addr_lo);
 		msix->mmio_gpa = vbar->base_gpa;

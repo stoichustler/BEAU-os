@@ -429,7 +429,7 @@ AP 从 `_start_secondary_psci` 进入，使用 PSCI context 中的 per-CPU stack
 ```text
 all pCPU scheduler instances ready
     |
-    +--> BSP publishes the static Service VM object
+    +--> BSP clears prior Service VM publication
     +--> release VM launch barrier
     |
     v
@@ -440,18 +440,23 @@ for each configured service/prelaunch VM whose vCPU0 belongs to this pCPU
     |     - arch_init_vm()
     |     - create_vcpu() in authored affinity order
     |     - VM_CREATED
+    |     - Service VM pointer is release-published only after this point
     |
-    +--> init_vm_boot_info()
-    +--> prepare_os_image()
+    +--> PREPARING: init_vm_boot_info() + prepare_os_image()
+    |     - failure tears down the partial VM and returns to VM_POWERED_OFF
     |
     v
-start this VM's BSP immediately -> VM_RUNNING
+start this VM's BSP immediately
+    - only VCPU_INIT may transition to VCPU_RUNNING
+    - launch denial returns the VM to VM_CREATED
+    -> VM_RUNNING
 ```
 
 每个 pCPU 仅处理 `cpu_affinity_order[0]` 属于自己的静态 VM。同一 pCPU 仍按配置表顺序
-prepare 和启动，不同 pCPU 可并行推进；任意 VM 的失败不会阻塞无关 VM。Service VM 对象引用会在
-全局启动屏障释放前发布，确保早启动客体不会观察到空的 Service VM 引用。跨 VM 服务依赖仍由既有
-协议处理，本路径不根据 VM ID 或镜像装载顺序推断依赖。
+prepare 和启动，不同 pCPU 可并行推进；任意 VM 的失败不会阻塞无关 VM。Service VM 指针不是
+预分配对象地址，而是在其锁、vPCI 和 vCPU 基础状态完整后 release-publish；消费者必须把空指针
+视为可重试的未就绪状态。跨 VM 服务依赖仍由既有协议处理，本路径不根据 VM ID 或镜像装载顺序
+推断依赖。
 
 ### 7.3 `arch_init_vm()` 的隔离顺序
 
@@ -469,6 +474,9 @@ prepare 和启动，不同 pCPU 可并行推进；任意 VM 的失败不会阻�
 ```
 
 先建立 Stage-2 再创建设备，保证虚拟设备注册时已经有明确的 RAM 和 trap 边界。
+`VM_CREATING` 期间的 VIPC、remoteproc 等首建图尚未被任何 vCPU VTTBR 或 SMMU DMA
+domain 使用，因此仅完成页表写回；进入 `VM_CREATED` 后的每次 Stage-2 更新都必须完成
+CPU VMID TLBI 与 SMMU CMD_SYNC，失败保持 fail-closed。
 
 ### 7.4 镜像装载
 

@@ -231,6 +231,7 @@
 
 static uint32_t vgic_lr_count;
 static bool vgic_global_initialized;
+static spinlock_t vgic_global_init_lock = { .head = 0U, .tail = 0U };
 static spinlock_t vgic_irqstat_lock = { .head = 0U, .tail = 0U };
 
 struct arm64_vgicv3_pm_state {
@@ -1284,6 +1285,16 @@ static void vgicv3_write_loaded_lrs(const struct acrn_vcpu *vcpu, bool is_curren
 
 void arm64_vgicv3_global_init(void)
 {
+	/* [20260726] vGIC global capability publication
+	 *
+	 * VM creator A/B -> lock -> read ICH_VTR_EL2 -> publish LR count -> unlock
+	 *
+	 * Key rule:
+	 *   - the global capability owner is this once-only lock, not a VM creator;
+	 *   - lr_count is written before initialized becomes observable;
+	 *   - concurrent VM creation cannot install a partially initialized vGIC.
+	 */
+	spinlock_obtain(&vgic_global_init_lock);
 	if (!vgic_global_initialized) {
 		/*
 		 * ICH_VTR_EL2 reports the hardware LR count minus one. The value is a
@@ -1311,6 +1322,7 @@ void arm64_vgicv3_global_init(void)
 		}
 		vgic_global_initialized = true;
 	}
+	spinlock_release(&vgic_global_init_lock);
 }
 
 void arm64_vgicv3_init_vm(struct acrn_vm *vm, uint64_t cpu_affinity)

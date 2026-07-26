@@ -257,7 +257,7 @@ int32_t emulate_io(struct acrn_vcpu *vcpu, struct io_request *io_req);
  * @param io_write_fn_ptr The handler for emulating writes to the given range
  * @pre pio_idx < EMUL_PIO_IDX_MAX
  */
-void   register_pio_emulation_handler(struct acrn_vm *vm, uint32_t pio_idx,
+void   register_pio_emul_handler(struct acrn_vm *vm, uint32_t pio_idx,
 		const struct vm_io_range *range, io_read_fn_t io_read_fn_ptr, io_write_fn_t io_write_fn_ptr);
 
 /**
@@ -272,7 +272,7 @@ void   register_pio_emulation_handler(struct acrn_vm *vm, uint32_t pio_idx,
  * @param handler_private_data Handler-specific data which will be passed to \p read_write when called
  * @param hold_lock Whether hold the lock to handle the MMIO access
  */
-void register_mmio_emulation_handler(struct acrn_vm *vm,
+void register_mmio_emul_handler(struct acrn_vm *vm,
 	hv_mem_io_handler_t read_write, uint64_t start,
 	uint64_t end, void *handler_private_data, bool hold_lock);
 
@@ -285,7 +285,7 @@ void register_mmio_emulation_handler(struct acrn_vm *vm,
  * @param start The base address of the range which wants to unregister
  * @param end The end of the range (exclusive) which wants to unregister
  */
-void unregister_mmio_emulation_handler(struct acrn_vm *vm,
+void unregister_mmio_emul_handler(struct acrn_vm *vm,
 					uint64_t start, uint64_t end);
 void deinit_emul_io(struct acrn_vm *vm);
 

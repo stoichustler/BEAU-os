@@ -310,9 +310,11 @@ struct acrn_vm *get_vm_from_vmid(uint16_t vm_id)
 /* return a pointer to the virtual machine structure of Service VM */
 struct acrn_vm *get_service_vm(void)
 {
-	ASSERT(service_vm_ptr != NULL, "service_vm_ptr is null");
+	struct acrn_vm *vm = __atomic_load_n(&service_vm_ptr, __ATOMIC_ACQUIRE);
 
-	return service_vm_ptr;
+	return ((vm != NULL) && (vm->lifecycle.phase >= VM_LIFECYCLE_CREATED) &&
+		(vm->lifecycle.phase != VM_LIFECYCLE_DESTROYING) &&
+		(vm->lifecycle.phase != VM_LIFECYCLE_FAILED)) ? vm : NULL;
 }
 
 bool is_ready_for_system_shutdown(void)
@@ -332,31 +334,21 @@ bool is_ready_for_system_shutdown(void)
 	return ret;
 }
 
-/* [20260725] Static Service VM publication
+/* [20260726] Static Service VM reset gate
  *
- * BSP boot setup                         every VM BSP pCPU
- *       |                                        |
- *       v                                        v
- * publish service_vm_ptr ------release/acquire--> launch_vms()
- *                                                -> guest may execute
+ * BSP boot setup -> clear service_vm_ptr -> release VM launch barrier
+ *                                             |
+ *                                             v
+ * service VM creator -> VM_CREATED -> release-publish service_vm_ptr
  *
  * Key rule:
  *   - core/vm.c owns the static VM object array and this global reference;
- *   - the reference is published before the ARM64 launch barrier releases APs;
- *   - this prevents an early guest from observing a null Service VM reference
- *     on vPCI management paths while independent VMs start in parallel.
+ *   - a pointer is published only after the Service VM locks and vPCI state exist;
+ *   - a consumer seeing NULL must retry instead of using a BSS-backed VM object.
  */
 void vm_publish_static_boot_state(void)
 {
-	uint16_t vm_id;
-
-	service_vm_ptr = NULL;
-	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
-		if (get_vm_config(vm_id)->load_order == SERVICE_VM) {
-			service_vm_ptr = &vm_array[vm_id];
-			break;
-		}
-	}
+	__atomic_store_n(&service_vm_ptr, NULL, __ATOMIC_RELEASE);
 }
 
 /* [20260725] ACRN-style static VM ready-first launch
@@ -414,6 +406,7 @@ void launch_vms(uint16_t pcpu_id)
 		int32_t create_status;
 		int32_t boot_status;
 		int32_t image_status;
+		int32_t cleanup_status;
 		uint64_t stage_tsc;
 		uint64_t stage_us;
 
@@ -452,24 +445,33 @@ void launch_vms(uint16_t pcpu_id)
 					if ((vm_config->guest_flags & GUEST_FLAG_REE) != 0U) {
 						/* Nothing need to do here, REE will start in TEE hypercall */
 					} else {
+						(void)vm_lifecycle_begin_locked(vm, VM_LIFECYCLE_PREPARING);
 						stage_tsc = cpu_ticks();
 						boot_status = init_vm_boot_info(vm);
 						image_status = (boot_status == 0) ?
 							prepare_os_image(vm) : boot_status;
 						stage_us = ticks_to_us(cpu_ticks() - stage_tsc);
 						if ((boot_status == 0) && (image_status == 0)) {
-							start_vm(vm);
-							if (vm_boot_log_enabled(vm_id) &&
-								(vm->state == VM_RUNNING)) {
-								LOG_INF("VM%u:    %-10s vm: %9s started",
-									vm_id, vm_boot_load_order_name(vm_config->load_order),
-									vm_config->name);
+							vm_lifecycle_commit_locked(vm, VM_LIFECYCLE_CREATED, VM_CREATED);
+							if (start_vm(vm) == 0) {
+								if (vm_boot_log_enabled(vm_id)) {
+									LOG_INF("VM%u:    %-10s vm: %9s started",
+										vm_id, vm_boot_load_order_name(vm_config->load_order),
+										vm_config->name);
+								}
+							} else {
+								LOG_ERR("VM%u: start deferred state=%s", vm_id,
+									vm_lifecycle_phase_name(vm->lifecycle.phase));
 							}
 						} else {
 							LOG_ERR("VM%u: prepare failed +%6luus boot=%d image=%d k=%s",
 								vm_id, stage_us, boot_status, image_status,
 								vm_config->os_config.kernel_mod_tag);
-							(void)destroy_vm(vm);
+							cleanup_status = destroy_vm(vm);
+							if (cleanup_status != 0) {
+								LOG_ERR("VM%u: prepare rollback failed ret=%d", vm_id,
+									cleanup_status);
+							}
 						}
 					}
 				} else {
@@ -484,22 +486,31 @@ void launch_vms(uint16_t pcpu_id)
 #endif
 }
 
-void start_vm(struct acrn_vm *vm)
+int32_t start_vm(struct acrn_vm *vm)
 {
-	struct acrn_vcpu *vcpu = vcpu_from_vid(vm, BSP_CPU_ID);
+	struct acrn_vcpu *vcpu;
 
-	if (vm->lifecycle.phase != VM_LIFECYCLE_CREATED) {
-		return;
+	if (vm == NULL) {
+		return -EINVAL;
+	}
+	vcpu = vcpu_from_vid(vm, BSP_CPU_ID);
+	if ((vm->lifecycle.phase != VM_LIFECYCLE_CREATED) ||
+		(vcpu_get_state(vcpu) != VCPU_INIT)) {
+		return -EBUSY;
 	}
 	vm->lifecycle.phase = VM_LIFECYCLE_STARTING;
 	vm_wdt_reset(vm);
 	arch_vm_prepare_bsp(vcpu);
 	if (launch_vcpu(vcpu)) {
 		vm_lifecycle_commit_locked(vm, VM_LIFECYCLE_RUNNING, VM_RUNNING);
+		return 0;
 	} else {
-		vm_lifecycle_fail_locked(vm, -EBUSY);
+		vm->lifecycle.failed_phase = VM_LIFECYCLE_STARTING;
+		vm->lifecycle.last_error = -EBUSY;
+		vm_lifecycle_commit_locked(vm, VM_LIFECYCLE_CREATED, VM_CREATED);
 		LOG_ERR("VM%u: BSP launch from %s denied", vm->vm_id,
 			vcpu_state_to_str(vcpu_get_state(vcpu)));
+		return -EBUSY;
 	}
 }
 
@@ -562,6 +573,9 @@ int32_t destroy_vm(struct acrn_vm *vm)
 
 	vm->lifecycle.phase = VM_LIFECYCLE_DESTROYING;
 	vm_wdt_reset(vm);
+	if (is_service_vm(vm)) {
+		__atomic_store_n(&service_vm_ptr, NULL, __ATOMIC_RELEASE);
+	}
 
 	if (is_service_vm(vm)) {
 		sbuf_reset();
@@ -572,6 +586,7 @@ int32_t destroy_vm(struct acrn_vm *vm)
 	foreach_vcpu(i, vm, vcpu) {
 		destroy_vcpu(vcpu);
 	}
+	vm->hw.created_vcpus = 0U;
 
 	vm_config = get_vm_config(vm->vm_id);
 	vm_config->guest_flags &= ~DM_OWNED_GUEST_FLAG_MASK;
@@ -612,11 +627,10 @@ int32_t create_vm(uint16_t vm_id, uint64_t pcpu_bitmap, struct acrn_vm_config *v
 	(void)memset(&vm->lifecycle, 0U, sizeof(vm->lifecycle));
 	(void)vm_lifecycle_begin_locked(vm, VM_LIFECYCLE_CREATING);
 	vm->nr_emul_mmio_regions = 0U;
-
+	vm->hw.cpu_affinity = pcpu_bitmap;
 	status = arch_init_vm(vm, vm_config);
 
 	if (status == 0) {
-		vm->hw.cpu_affinity = pcpu_bitmap;
 		status = create_vm_vcpus(vm, pcpu_bitmap, vm_config);
 	}
 
@@ -625,7 +639,18 @@ int32_t create_vm(uint16_t vm_id, uint64_t pcpu_bitmap, struct acrn_vm_config *v
 
 		/* Populate return VM handle */
 		*rtn_vm = vm;
+		if (is_service_vm(vm)) {
+			__atomic_store_n(&service_vm_ptr, vm, __ATOMIC_RELEASE);
+		}
 	} else {
+		uint16_t i;
+		struct acrn_vcpu *vcpu = NULL;
+
+		foreach_vcpu(i, vm, vcpu) {
+			destroy_vcpu(vcpu);
+		}
+		vm->hw.created_vcpus = 0U;
+		(void)arch_deinit_vm(vm);
 		vm_lifecycle_fail_locked(vm, status);
 	}
 
@@ -671,9 +696,11 @@ static int32_t restart_vm_locked(struct acrn_vm *vm, bool reload_image)
 			ret = prepare_os_image(vm);
 		}
 		if (ret == 0) {
-			start_vm(vm);
-			LOG_INF("VM%u:    %s reset complete", vm->vm_id,
-				reload_image ? "cold" : "warm");
+			ret = start_vm(vm);
+			if (ret == 0) {
+				LOG_INF("VM%u:    %4s reset complete", vm->vm_id,
+					reload_image ? "cold" : "warm");
+			}
 		}
 	}
 

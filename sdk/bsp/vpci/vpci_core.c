@@ -329,16 +329,16 @@ int32_t init_vpci(struct acrn_vm *vm)
 	}
 
 	if (ret == 0) {
-		register_mmio_emulation_handler(vm, vpci_mmio_cfg_access, vm->vpci.pci_mmcfg.address,
+		register_mmio_emul_handler(vm, vpci_mmio_cfg_access, vm->vpci.pci_mmcfg.address,
 			vm->vpci.pci_mmcfg.address + get_pci_mmcfg_size(&vm->vpci.pci_mmcfg), &vm->vpci, false);
 
 #if !CONFIG_STATIC_ARM64_PLATFORM
 		/* Intercept and handle legacy PCI I/O ports CF8h. */
-		register_pio_emulation_handler(vm, PCI_CFGADDR_PIO_IDX, &pci_cfgaddr_range,
+		register_pio_emul_handler(vm, PCI_CFGADDR_PIO_IDX, &pci_cfgaddr_range,
 			vpci_pio_cfgaddr_read, vpci_pio_cfgaddr_write);
 
 		/* Intercept and handle legacy PCI I/O ports CFCh -- CFFh. */
-		register_pio_emulation_handler(vm, PCI_CFGDATA_PIO_IDX, &pci_cfgdata_range,
+		register_pio_emul_handler(vm, PCI_CFGDATA_PIO_IDX, &pci_cfgdata_range,
 			vpci_pio_cfgdata_read, vpci_pio_cfgdata_write);
 #endif
 
@@ -1205,6 +1205,9 @@ int32_t vpci_assign_pcidev(struct acrn_vm *tgt_vm, struct acrn_pcidev *pcidev)
 
 	bdf.value = pcidev->phys_bdf;
 	service_vm = get_service_vm();
+	if (service_vm == NULL) {
+		return -EBUSY;
+	}
 	spinlock_obtain(&service_vm->vpci.lock);
 	vdev_in_service_vm = pci_find_vdev(&service_vm->vpci, bdf);
 	if ((vdev_in_service_vm != NULL) && (vdev_in_service_vm->user == vdev_in_service_vm) &&

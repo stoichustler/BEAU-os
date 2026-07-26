@@ -901,9 +901,13 @@ void arm64_stage2_map(struct acrn_vm *vm, uint64_t hpa, uint64_t ipa,
 	arm64_stage2_release_update(vm, owner);
 }
 
-/* [20260725] Stage-2 update completion
+/* [20260726] Stage-2 update completion
  *
- *   descriptor update
+ *   VM_CREATING descriptor update
+ *       -> clean page-walk memory only
+ *       -> no vCPU VTTBR or DMA domain is published
+ *
+ *   VM_CREATED/RUNNING descriptor update
  *       |
  *       v
  *   CPU VMID TLBI + SMMU TLBI/CMD_SYNC
@@ -915,10 +919,16 @@ void arm64_stage2_map(struct acrn_vm *vm, uint64_t hpa, uint64_t ipa,
  *
  * Key rule:
  *   - the update owner retains exclusive write access until synchronization ends;
- *   - every published mapping change, including a new dynamic map, completes
- *     CPU and DMA translation synchronization before ownership can advance;
+ *   - only a published VM requires CPU and DMA translation synchronization;
+ *   - boot-time maps stay private until vCPU and device ownership publication;
  *   - no detached table can be retagged or reused after a failed sync.
  */
+static bool arm64_stage2_sync_required(const struct acrn_vm *vm)
+{
+	return (vm->lifecycle.phase != VM_LIFECYCLE_CREATING) ||
+		(vm->hw.created_vcpus != 0U);
+}
+
 static void arm64_stage2_complete_update(struct acrn_vm *vm, uint64_t ipa,
 	uint64_t size, struct pgtable_update *update)
 {
@@ -929,7 +939,7 @@ static void arm64_stage2_complete_update(struct acrn_vm *vm, uint64_t ipa,
 		panic("vm-%u stage-2 unmap retire without descriptor update ipa=0x%lx pages:%lu",
 			vm->vm_id, ipa, update->retired_pages);
 	}
-	if (update->changed) {
+	if (update->changed && arm64_stage2_sync_required(vm)) {
 		arm64_stage2_sync_or_panic(vm, ipa, size, "unmap");
 	}
 	if (update->retired_pages != 0UL) {
@@ -985,28 +995,28 @@ static void register_arm64_vio_mmio(struct acrn_vm *vm)
 	 *              v
 	 *   vGIC / vPL011 / virtio handler
 	 */
-	register_mmio_emulation_handler(vm, arm64_vgicv3_mmio_handler,
+	register_mmio_emul_handler(vm, arm64_vgicv3_mmio_handler,
 		gicd_base, gicd_base + arch_config->guest_gicd_size,
 		&vm->arch_vm.vgic, false);
-	register_mmio_emulation_handler(vm, arm64_vgicv3_mmio_handler,
+	register_mmio_emul_handler(vm, arm64_vgicv3_mmio_handler,
 		gicr_base, gicr_base + arch_config->guest_gicr_size,
 		&vm->arch_vm.vgic, false);
 	if (its_size != 0UL) {
-		register_mmio_emulation_handler(vm, arm64_vgicv3_mmio_handler,
+		register_mmio_emul_handler(vm, arm64_vgicv3_mmio_handler,
 			its_base, its_base + its_size, &vm->arch_vm.vgic, false);
 	}
 	if (arm64_vsmmu_available(vm)) {
-		register_mmio_emulation_handler(vm, arm64_vsmmu_mmio_handler,
+		register_mmio_emul_handler(vm, arm64_vsmmu_mmio_handler,
 			smmu_base, smmu_base + arch_config->guest_smmu_size,
 			vm, false);
 	}
 	if (arm64_vm_uses_virtio_console(get_vm_config(vm->vm_id))) {
-		register_mmio_emulation_handler(vm, virtio_console_mmio_handler,
+		register_mmio_emul_handler(vm, virtio_console_mmio_handler,
 			virtio_console_base,
 			virtio_console_base + arch_config->guest_virtio_console_size,
 			vm, false);
 	} else {
-		register_mmio_emulation_handler(vm, arm64_vpl011_mmio_handler,
+		register_mmio_emul_handler(vm, arm64_vpl011_mmio_handler,
 			uart_base, uart_base + arch_config->guest_uart_size,
 			vm, false);
 	}
@@ -1016,7 +1026,7 @@ static void register_arm64_vio_mmio(struct acrn_vm *vm)
 			uint64_t base = arch_config->guest_virtio_proxy[i].base;
 			uint64_t size = arch_config->guest_virtio_proxy[i].size;
 
-			register_mmio_emulation_handler(vm, virtio_proxy_mmio_handler,
+			register_mmio_emul_handler(vm, virtio_proxy_mmio_handler,
 				base, base + size, proxy, false);
 		}
 	}

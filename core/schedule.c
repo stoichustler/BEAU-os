@@ -20,10 +20,21 @@
 #include <hv_pm.h>
 #include <asm/guest/vm_reset.h>
 
-static struct list_head thread_list;
+static struct list_head thread_list = { &thread_list, &thread_list };
 static uint32_t thread_count;
-static bool thread_list_initialized;
+static spinlock_t thread_registry_lock = { .head = 0U, .tail = 0U };
 static struct sched_platform_config sched_platform_config;
+
+/* [20260726] Global scheduler registry ownership
+ *
+ * VM creator on pCPU A/B -> target scheduler lock -> registry lock -> publish
+ * shell observer             -> registry lock -> bounded pointer snapshot
+ *
+ * Key rule:
+ *   - the registry lock owns list topology and thread_count across all pCPUs;
+ *   - target scheduler locks still own each thread's runqueue state;
+ *   - observers never retain the registry lock across output or scheduling.
+ */
 
 /* [20260719] Target-pCPU quiesce completion
  *
@@ -52,23 +63,42 @@ static struct sched_quiesce_slot
 _Static_assert(CONFIG_MAX_VM_NUM <= 64U,
 	"scheduler quiesce VM mask supports at most 64 VMs");
 
-static void init_thread_list_once(void)
-{
-	if (!thread_list_initialized) {
-		INIT_LIST_HEAD(&thread_list);
-		thread_list_initialized = true;
-	}
-}
-
-const struct list_head *sched_get_thread_list(void)
-{
-	init_thread_list_once();
-	return &thread_list;
-}
-
 uint32_t sched_get_thread_count(void)
 {
-	return thread_count;
+	uint64_t flags;
+	uint32_t count;
+
+	spinlock_irqsave_obtain(&thread_registry_lock, &flags);
+	count = thread_count;
+	spinlock_irqrestore_release(&thread_registry_lock, flags);
+	return count;
+}
+
+uint32_t sched_snapshot_threads(struct thread_object **threads, uint32_t max_threads,
+	bool *truncated)
+{
+	struct list_head *pos;
+	uint64_t flags;
+	uint32_t count = 0U;
+
+	if ((threads == NULL) || (max_threads == 0U)) {
+		return 0U;
+	}
+
+	if (truncated != NULL) {
+		*truncated = false;
+	}
+	spinlock_irqsave_obtain(&thread_registry_lock, &flags);
+	list_for_each(pos, &thread_list) {
+		if (count < max_threads) {
+			threads[count++] = container_of(pos, struct thread_object, node);
+		} else if (truncated != NULL) {
+			*truncated = true;
+		}
+	}
+	spinlock_irqrestore_release(&thread_registry_lock, flags);
+
+	return count;
 }
 
 bool is_idle_thread(const struct thread_object *obj)
@@ -397,11 +427,28 @@ static void sched_mark_not_running(struct thread_object *obj, uint64_t now, bool
 
 static void register_thread_object(struct thread_object *obj)
 {
-	init_thread_list_once();
+	uint64_t flags;
+
+	spinlock_irqsave_obtain(&thread_registry_lock, &flags);
 	if (list_empty(&obj->node)) {
 		list_add_tail(&obj->node, &thread_list);
 		thread_count++;
 	}
+	spinlock_irqrestore_release(&thread_registry_lock, flags);
+}
+
+static void unregister_thread_object(struct thread_object *obj)
+{
+	uint64_t flags;
+
+	spinlock_irqsave_obtain(&thread_registry_lock, &flags);
+	if (!list_empty(&obj->node)) {
+		list_del_init(&obj->node);
+		if (thread_count != 0U) {
+			thread_count--;
+		}
+	}
+	spinlock_irqrestore_release(&thread_registry_lock, flags);
 }
 
 void obtain_schedule_lock(uint16_t pcpu_id, uint64_t *rflag)
@@ -513,10 +560,14 @@ void init_thread_data(struct thread_object *obj, struct sched_params *params)
 void deinit_thread_data(struct thread_object *obj)
 {
 	struct acrn_scheduler *scheduler = get_scheduler(obj->pcpu_id);
+	uint64_t rflag;
 
+	obtain_schedule_lock(obj->pcpu_id, &rflag);
 	if (scheduler->deinit_data != NULL) {
 		scheduler->deinit_data(obj);
 	}
+	unregister_thread_object(obj);
+	release_schedule_lock(obj->pcpu_id, rflag);
 }
 
 struct thread_object *sched_get_current(uint16_t pcpu_id)
@@ -640,6 +691,7 @@ static bool sched_current_is_only_runnable_locked(struct sched_control *ctl)
 	struct thread_object *current = ctl->curr_obj;
 	struct thread_object *obj;
 	struct list_head *pos;
+	uint64_t flags;
 	uint32_t runnable = 0U;
 
 	if ((current == NULL) || is_idle_thread(current) || current->be_blocking ||
@@ -647,6 +699,7 @@ static bool sched_current_is_only_runnable_locked(struct sched_control *ctl)
 		return false;
 	}
 
+	spinlock_irqsave_obtain(&thread_registry_lock, &flags);
 	list_for_each(pos, &thread_list) {
 		obj = container_of(pos, struct thread_object, node);
 		if ((obj->pcpu_id != ctl->pcpu_id) || is_idle_thread(obj) || obj->be_blocking ||
@@ -656,11 +709,12 @@ static bool sched_current_is_only_runnable_locked(struct sched_control *ctl)
 
 		runnable++;
 		if ((runnable > 1U) || (obj != current)) {
-			return false;
+			break;
 		}
 	}
+	spinlock_irqrestore_release(&thread_registry_lock, flags);
 
-	return runnable == 1U;
+	return (runnable == 1U) && (current == obj);
 }
 
 static bool sched_idle_work_pending_locked(const struct sched_control *ctl)
@@ -737,6 +791,9 @@ void schedule(void)
 		 *   schedule() -> scheduler->prioritize() -> pick_next()
 		 */
 		ctl->priority_pending = false;
+		uint64_t registry_flags;
+
+		spinlock_irqsave_obtain(&thread_registry_lock, &registry_flags);
 		list_for_each(pos, &thread_list) {
 			obj = container_of(pos, struct thread_object, node);
 			if ((obj->pcpu_id == pcpu_id) && obj->priority_pending) {
@@ -747,6 +804,7 @@ void schedule(void)
 				}
 			}
 		}
+		spinlock_irqrestore_release(&thread_registry_lock, registry_flags);
 	}
 	if (sched_idle_work_pending_locked(ctl)) {
 		next = &per_cpu(idle, pcpu_id);

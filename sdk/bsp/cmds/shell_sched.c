@@ -56,6 +56,11 @@ static struct shell_schedstat_snapshot shell_schedstat_last;
 static struct shell_schedstat_snapshot shell_schedstat_sample;
 static struct shell_ps_snapshot shell_ps_last;
 static struct shell_ps_snapshot shell_ps_sample;
+
+static uint32_t shell_snapshot_threads(struct thread_object **threads, bool *overflow)
+{
+	return sched_snapshot_threads(threads, SHELL_THREAD_SAMPLE_MAX, overflow);
+}
 static bool pcpu_is_shared_by_vcpus(uint16_t pcpu_id)
 {
 	struct acrn_vm *vm;
@@ -220,23 +225,20 @@ static const struct shell_ps_thread_sample *shell_ps_find_thread_sample(
 
 static void shell_ps_take_snapshot(struct shell_ps_snapshot *snapshot)
 {
-	const struct list_head *head = sched_get_thread_list();
-	struct list_head *pos;
+	struct thread_object *threads[SHELL_THREAD_SAMPLE_MAX];
+	uint32_t idx;
+	uint32_t count;
 
 	(void)memset(snapshot, 0U, sizeof(*snapshot));
-	list_for_each(pos, head) {
-		struct thread_object *thread = container_of(pos, struct thread_object, node);
+	count = shell_snapshot_threads(threads, &snapshot->overflow);
+	for (idx = 0U; idx < count; idx++) {
+		struct thread_object *thread = threads[idx];
 		struct sched_latency_stats stats = { 0U };
 
 		sched_get_latency(thread, &stats);
-		if (snapshot->thread_count < SHELL_THREAD_SAMPLE_MAX) {
-			snapshot->thread[snapshot->thread_count].thread = thread;
-			snapshot->thread[snapshot->thread_count].runtime_ticks =
-				stats.runtime_ticks;
-			snapshot->thread_count++;
-		} else {
-			snapshot->overflow = true;
-		}
+		snapshot->thread[idx].thread = thread;
+		snapshot->thread[idx].runtime_ticks = stats.runtime_ticks;
+		snapshot->thread_count++;
 	}
 	snapshot->sample_ticks = cpu_ticks();
 	snapshot->valid = true;
@@ -258,8 +260,7 @@ static void shell_ps_take_snapshot(struct shell_ps_snapshot *snapshot)
  */
 int32_t shell_list_threads(__unused int32_t argc, __unused char **argv)
 {
-	const struct list_head *head = sched_get_thread_list();
-	struct list_head *pos;
+	uint32_t idx;
 	uint64_t window_ticks;
 	bool has_window;
 
@@ -280,8 +281,8 @@ int32_t shell_list_threads(__unused int32_t argc, __unused char **argv)
 	shell_item_line("name             pcpu  lifecycle  thread    current  cpu%%   run.us");
 	shell_item_line("───────────────  ────  ─────────  ────────  ───────  ─────  ─────────");
 
-	list_for_each(pos, head) {
-		struct thread_object *thread = container_of(pos, struct thread_object, node);
+	for (idx = 0U; idx < shell_ps_sample.thread_count; idx++) {
+		const struct thread_object *thread = shell_ps_sample.thread[idx].thread;
 		const struct shell_ps_thread_sample *current_sample =
 			shell_ps_find_thread_sample(&shell_ps_sample, thread);
 		const struct shell_ps_thread_sample *previous_sample =
@@ -326,12 +327,14 @@ int32_t shell_list_threads(__unused int32_t argc, __unused char **argv)
 
 static uint32_t shell_sched_runqueue_count(uint16_t pcpu_id)
 {
-	const struct list_head *head = sched_get_thread_list();
-	struct list_head *pos;
+	struct thread_object *threads[SHELL_THREAD_SAMPLE_MAX];
+	uint32_t idx;
+	uint32_t thread_count;
 	uint32_t count = 0U;
 
-	list_for_each(pos, head) {
-		struct thread_object *thread = container_of(pos, struct thread_object, node);
+	thread_count = shell_snapshot_threads(threads, NULL);
+	for (idx = 0U; idx < thread_count; idx++) {
+		struct thread_object *thread = threads[idx];
 
 		if ((thread->pcpu_id == pcpu_id) && (thread->status == THREAD_STS_RUNNABLE)) {
 			count++;
@@ -370,26 +373,23 @@ static const struct shell_schedstat_thread_sample *shell_schedstat_find_thread_s
  */
 static void shell_schedstat_take_snapshot(struct shell_schedstat_snapshot *snapshot)
 {
-	const struct list_head *head = sched_get_thread_list();
-	struct list_head *pos;
+	struct thread_object *threads[SHELL_THREAD_SAMPLE_MAX];
+	uint32_t idx;
+	uint32_t count;
 
 	(void)memset(snapshot, 0U, sizeof(*snapshot));
-
-	list_for_each(pos, head) {
-		struct thread_object *thread = container_of(pos, struct thread_object, node);
+	count = shell_snapshot_threads(threads, &snapshot->overflow);
+	for (idx = 0U; idx < count; idx++) {
+		struct thread_object *thread = threads[idx];
 		struct sched_latency_stats stats = { 0U };
 		uint16_t pcpu_id = thread->pcpu_id;
 
 		sched_get_latency(thread, &stats);
-		if (snapshot->thread_count < SHELL_THREAD_SAMPLE_MAX) {
-			snapshot->thread[snapshot->thread_count].thread = thread;
-			snapshot->thread[snapshot->thread_count].max_wait_ticks = stats.max_wait_ticks;
-			memcpy(snapshot->thread[snapshot->thread_count].wait_hist, stats.wait_hist,
-				sizeof(stats.wait_hist));
-			snapshot->thread_count++;
-		} else {
-			snapshot->overflow = true;
-		}
+		snapshot->thread[idx].thread = thread;
+		snapshot->thread[idx].max_wait_ticks = stats.max_wait_ticks;
+		memcpy(snapshot->thread[idx].wait_hist, stats.wait_hist,
+			sizeof(stats.wait_hist));
+		snapshot->thread_count++;
 
 		if ((pcpu_id < MAX_PCPU_NUM) && is_idle_thread(thread)) {
 			snapshot->idle_runtime_ticks[pcpu_id] = stats.runtime_ticks;
@@ -448,14 +448,14 @@ static const char *shell_schedstat_pcpu_role(uint16_t pcpu_id)
 	return pcpu_is_shared_by_vcpus(pcpu_id) ? "shared" : "exclusive";
 }
 
-static void shell_schedstat_print_cbs_latency_hist(const struct list_head *head)
+static void shell_schedstat_print_cbs_latency_hist(const struct shell_schedstat_snapshot *snapshot)
 {
-	struct list_head *pos;
+	uint32_t idx;
 	bool printed_header = false;
 	bool has_previous = shell_schedstat_last.valid;
 
-	list_for_each(pos, head) {
-		struct thread_object *thread = container_of(pos, struct thread_object, node);
+	for (idx = 0U; idx < snapshot->thread_count; idx++) {
+		const struct thread_object *thread = snapshot->thread[idx].thread;
 		const struct shell_schedstat_thread_sample *current;
 		const struct shell_schedstat_thread_sample *previous;
 		struct sched_cbs_stats cbs;
@@ -511,8 +511,7 @@ static void shell_schedstat_print_cbs_latency_hist(const struct list_head *head)
 
 int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 {
-	const struct list_head *head = sched_get_thread_list();
-	struct list_head *pos;
+	uint32_t idx;
 	uint16_t pcpu_id;
 	uint16_t pcpu_num = get_pcpu_nums();
 	bool has_bvt_stats = false;
@@ -573,8 +572,8 @@ int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 		}
 	}
 
-	list_for_each(pos, head) {
-		struct thread_object *thread = container_of(pos, struct thread_object, node);
+	for (idx = 0U; idx < shell_schedstat_sample.thread_count; idx++) {
+		const struct thread_object *thread = shell_schedstat_sample.thread[idx].thread;
 		struct sched_bvt_stats bvt;
 		struct sched_rtds_stats rtds;
 		struct sched_cbs_stats cbs;
@@ -602,8 +601,8 @@ int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 		shell_item_line("name             pcpu  state     weight  avt       evt");
 		shell_item_line("───────────────  ────  ────────  ──────  ────────  ────────");
 
-		list_for_each(pos, head) {
-			struct thread_object *thread = container_of(pos, struct thread_object, node);
+		for (idx = 0U; idx < shell_schedstat_sample.thread_count; idx++) {
+			const struct thread_object *thread = shell_schedstat_sample.thread[idx].thread;
 			struct sched_bvt_stats bvt;
 
 			if (sched_get_bvt_stats(thread, &bvt)) {
@@ -630,8 +629,8 @@ int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 		shell_item_line("name             pcpu  state     period.us  budget.us  remain.us  deadline-in.us");
 		shell_item_line("───────────────  ────  ────────  ─────────  ─────────  ─────────  ──────────────");
 
-		list_for_each(pos, head) {
-			struct thread_object *thread = container_of(pos, struct thread_object, node);
+		for (idx = 0U; idx < shell_schedstat_sample.thread_count; idx++) {
+			const struct thread_object *thread = shell_schedstat_sample.thread[idx].thread;
 			struct sched_rtds_stats rtds;
 
 			if (sched_get_rtds_stats(thread, &rtds)) {
@@ -660,8 +659,8 @@ int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 		shell_item_line("name             pcpu  state     period.us  budget.us  remain.us  deadline-in.us  dep       repl      wake      late");
 		shell_item_line("───────────────  ────  ────────  ─────────  ─────────  ─────────  ──────────────  ────────  ────────  ────────  ────────");
 
-		list_for_each(pos, head) {
-			struct thread_object *thread = container_of(pos, struct thread_object, node);
+		for (idx = 0U; idx < shell_schedstat_sample.thread_count; idx++) {
+			const struct thread_object *thread = shell_schedstat_sample.thread[idx].thread;
 			struct sched_cbs_stats cbs;
 
 			if (sched_get_cbs_stats(thread, &cbs)) {
@@ -681,7 +680,7 @@ int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 				shell_output_checkpoint();
 			}
 		}
-		shell_schedstat_print_cbs_latency_hist(head);
+		shell_schedstat_print_cbs_latency_hist(&shell_schedstat_sample);
 	}
 
 	shell_schedstat_last = shell_schedstat_sample;

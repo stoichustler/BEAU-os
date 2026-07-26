@@ -249,7 +249,7 @@ void arm64_vrproc_register_mmio(struct acrn_vm *vm)
 		if (!channel->valid || !arm64_vrproc_endpoint_index(channel, vm->vm_id, &endpoint)) {
 			continue;
 		}
-		register_mmio_emulation_handler(vm, arm64_vrproc_mmio_handler,
+		register_mmio_emul_handler(vm, arm64_vrproc_mmio_handler,
 			channel->config.doorbell_gpa[endpoint],
 			channel->config.doorbell_gpa[endpoint] + ARM64_VRPROC_DOORBELL_SIZE,
 			channel, false);

@@ -130,7 +130,7 @@ struct acrn_vcpu *get_ever_run_vcpu(uint16_t pcpu_id)
 	return per_cpu(ever_run_vcpu, pcpu_id);
 }
 
-static void init_vcpu_thread(struct acrn_vcpu *vcpu, uint16_t pcpu_id)
+static void prepare_vcpu_thread(struct acrn_vcpu *vcpu, uint16_t pcpu_id)
 {
 	struct acrn_vm *vm = vcpu->vm;
 	char thread_name[16];
@@ -146,7 +146,12 @@ static void init_vcpu_thread(struct acrn_vcpu *vcpu, uint16_t pcpu_id)
 	vcpu->thread_obj.host_sp = arch_build_stack_frame(vcpu);
 	vcpu->thread_obj.switch_out = arch_context_switch_out;
 	vcpu->thread_obj.switch_in = arch_context_switch_in;
-	init_thread_data(&vcpu->thread_obj, &get_vm_config(vm->vm_id)->sched_params);
+
+}
+
+static void publish_vcpu_thread(struct acrn_vcpu *vcpu)
+{
+	init_thread_data(&vcpu->thread_obj, &get_vm_config(vcpu->vm->vm_id)->sched_params);
 }
 
 static bool vcpu_transition_allowed(enum vcpu_state old_state,
@@ -278,44 +283,41 @@ int32_t create_vcpu(struct acrn_vm *vm, uint16_t pcpu_id)
 	uint16_t vcpu_id;
 	int32_t i, ret;
 
-	/*
-	 * vcpu->vcpu_id = vm->hw.created_vcpus;
-	 * vm->hw.created_vcpus++;
+	/* [20260726] vCPU publish-last creation
+	 *
+	 * private vCPU -> arch/event/thread initialization -> scheduler registry
+	 *                                                       |
+	 *                                                       v
+	 *                                             release-publish per-pCPU slot
+	 *
+	 * Key rule:
+	 *   - the creating VM owns the object until the architecture state is VCPU_INIT;
+	 *   - scheduler and per-pCPU readers observe it only after all fields are valid;
+	 *   - an initialization failure leaves no externally discoverable vCPU.
 	 */
 	vcpu_id = vm->hw.created_vcpus;
 	if (vcpu_id < MAX_VCPUS_PER_VM) {
-		/* Allocate memory for VCPU */
 		vcpu = &(vm->hw.vcpu_array[vcpu_id]);
 		(void)memset((void *)vcpu, 0U, sizeof(struct acrn_vcpu));
 
 		vcpu->vcpu_id = vcpu_id;
-		per_cpu(ever_run_vcpu, pcpu_id) = vcpu;
-
 		vcpu->vm = vm;
-
-		cpu_compiler_barrier();
-
-		/*
-		 * We maintain a per-pCPU array of vCPUs, and use vm_id as the index to the
-		 * vCPU array
-		 */
-		per_cpu(vcpu_array, pcpu_id)[vm->vm_id] = vcpu;
-
 		(void)memset((void *)&vcpu->req, 0U, sizeof(struct io_request));
-		vm->hw.created_vcpus++;
+		prepare_vcpu_thread(vcpu, pcpu_id);
 
-		/* pcpuid_from_vcpu works after this call */
-		init_vcpu_thread(vcpu, pcpu_id);
-
-		/* init event */
 		for (i = 0; i < MAX_VCPU_EVENT_NUM; i++) {
 			init_event(&vcpu->events[i]);
 		}
 
 		ret = arch_init_vcpu(vcpu);
-
 		if ((ret == 0) && (vcpu_get_state(vcpu) != VCPU_INIT)) {
 			ret = -EINVAL;
+		}
+		if (ret == 0) {
+			publish_vcpu_thread(vcpu);
+			__atomic_store_n(&per_cpu(vcpu_array, pcpu_id)[vm->vm_id], vcpu,
+				__ATOMIC_RELEASE);
+			vm->hw.created_vcpus++;
 		}
 	} else {
 		LOG_ERR("%s, vcpu id is invalid!\n", __func__);
@@ -327,18 +329,30 @@ int32_t create_vcpu(struct acrn_vm *vm, uint16_t pcpu_id)
 
 void destroy_vcpu(struct acrn_vcpu *vcpu)
 {
+	uint16_t pcpu_id;
+	struct acrn_vcpu *expected;
+
+	if ((vcpu_get_state(vcpu) == VCPU_INIT) &&
+		!vcpu_try_transition_state(vcpu, VCPU_INIT, VCPU_PAUSED)) {
+		LOG_ERR("VM%u:    vCPU%hu destroy init transition denied", vcpu->vm->vm_id,
+			vcpu->vcpu_id);
+		return;
+	}
 	if (!vcpu_try_transition_state(vcpu, VCPU_PAUSED, VCPU_OFFLINE)) {
 		LOG_ERR("VM%u:    vCPU%hu destroy from %s denied", vcpu->vm->vm_id,
 			vcpu->vcpu_id, vcpu_state_to_str(vcpu_get_state(vcpu)));
 		return;
 	}
 
+	pcpu_id = pcpuid_from_vcpu(vcpu);
 	arch_deinit_vcpu(vcpu);
-
-	per_cpu(ever_run_vcpu, pcpuid_from_vcpu(vcpu)) = NULL;
-
-	/* This operation must be atomic to avoid contention with posted interrupt handler */
-	per_cpu(vcpu_array, pcpuid_from_vcpu(vcpu))[vcpu->vm->vm_id] = NULL;
+	deinit_thread_data(&vcpu->thread_obj);
+	expected = vcpu;
+	(void)__atomic_compare_exchange_n(&per_cpu(ever_run_vcpu, pcpu_id), &expected,
+		NULL, false, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+	expected = vcpu;
+	(void)__atomic_compare_exchange_n(&per_cpu(vcpu_array, pcpu_id)[vcpu->vm->vm_id],
+		&expected, NULL, false, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
 }
 
 bool launch_vcpu(struct acrn_vcpu *vcpu)
@@ -346,12 +360,15 @@ bool launch_vcpu(struct acrn_vcpu *vcpu)
 	uint64_t kick_tsc = cpu_ticks();
 	uint64_t kick_us;
 	enum vcpu_state state = vcpu_get_state(vcpu);
+	struct acrn_vcpu *expected = NULL;
 	bool launched;
 
 	launched = vcpu_try_transition_state(vcpu, state, VCPU_RUNNING);
 	if (!launched) {
 		return false;
 	}
+	(void)__atomic_compare_exchange_n(&per_cpu(ever_run_vcpu, pcpuid_from_vcpu(vcpu)),
+		&expected, vcpu, false, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
 
 	release_thread_quiesce(&vcpu->thread_obj);
 	wake_thread(&vcpu->thread_obj);

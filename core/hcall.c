@@ -245,8 +245,7 @@ int32_t hcall_start_vm(__unused struct acrn_vcpu *vcpu, struct acrn_vm *target_v
 	int32_t ret = -1;
 
 	if ((is_created_vm(target_vm)) && (target_vm->sw.io_shared_page != NULL)) {
-		start_vm(target_vm);
-		ret = 0;
+		ret = start_vm(target_vm);
 	}
 
 	return ret;
@@ -748,10 +747,15 @@ int32_t hcall_set_ptdev_intr_info(struct acrn_vcpu *vcpu, struct acrn_vm *target
 				if ((vdev != NULL) && (vdev->pdev->bdf.value == irq.phys_bdf)) {
 					if ((((!irq.intx.pic_pin) && (irq.intx.virt_pin < get_vm_gsicount(target_vm)))
 						|| ((irq.intx.pic_pin) && (irq.intx.virt_pin < vpic_pincount())))
-							&& is_gsi_valid(irq.intx.phys_pin)) {
-						ptirq_remove_intx_remapping(get_service_vm(), irq.intx.phys_pin, false, true);
-						ret = ptirq_add_intx_remapping(target_vm, irq.intx.virt_pin,
+						&& is_gsi_valid(irq.intx.phys_pin)) {
+						struct acrn_vm *service_vm = get_service_vm();
+
+						if (service_vm != NULL) {
+							ptirq_remove_intx_remapping(service_vm, irq.intx.phys_pin,
+								false, true);
+							ret = ptirq_add_intx_remapping(target_vm, irq.intx.virt_pin,
 								irq.intx.phys_pin, irq.intx.pic_pin);
+						}
 					} else {
 						LOG_ERR("%s: invalid phys pin or virt pin\n", __func__);
 					}
