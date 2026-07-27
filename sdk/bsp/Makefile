@@ -30,6 +30,7 @@ SRCS += $(FILE_PATH)/benchmark/dhrystone/dhrystone_runner.c
 CFLAGS += -I$(FILE_PATH)/benchmark/dhrystone
 endif
 SRCS += $(wildcard $(FILE_PATH)/virtio/*.c)
+SRCS += $(wildcard $(FILE_PATH)/vhost/*.c)
 SRCS += $(wildcard $(FILE_PATH)/pci/*.c)
 SRCS += $(FILE_PATH)/vpci/vpci_core.c
 SRCS += $(FILE_PATH)/vpci/vpci_pt.c

@@ -9,7 +9,6 @@
 #include <sprintf.h>
 #include <util.h>
 #include <vconfig.h>
-#include <virtio_console.h>
 #include <virtio_proxy.h>
 
 #include "shell_cmds.h"

@@ -971,11 +971,12 @@ RTOS UART MMIO
 guest 拥有 vring 内存，但不拥有 BEAU 的 queue shadow。设备语义只有在 descriptor
 验证后才能执行。
 
-### 12.4 内建 virtio-console
+### 12.4 内建 vhost-console backend
 
-**定位**：`sdk/bsp/virtio/virtio_console.c`。
+**定位**：`sdk/bsp/vhost/vhost_console.c`。
 
-它不是 virtio-proxy。BEAU 自己完成 Linux console backend：
+它不是 virtio-proxy。BEAU 的 vhost-console backend 自己完成 Linux
+virtio-console frontend 的 console 路径：
 
 ```text
 guest TX queue -> copy readable descriptors -> console_vm_tx_put()
@@ -1750,7 +1751,7 @@ arch/arm64/guest/vtimer.c
 
 ```text
 sdk/bsp/virtio/virtio_mmio.c
-sdk/bsp/virtio/virtio_console.c
+sdk/bsp/vhost/vhost_console.c
 sdk/bsp/virtio/virtio_proxy.c
 sdk/kbe/virtio-proxy-backend.c
 sdk/bsp/pci/pci.c

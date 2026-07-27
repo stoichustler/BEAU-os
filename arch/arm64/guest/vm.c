@@ -31,7 +31,7 @@
 #include <asm/guest/vrproc.h>
 #include <asm/guest/vsmmu.h>
 #include <asm/vtd.h>
-#include <virtio_console.h>
+#include <vhost_console.h>
 #include <virtio_proxy.h>
 #include <debug/ramlog.h>
 
@@ -973,7 +973,7 @@ static void register_arm64_vio_mmio(struct acrn_vm *vm)
 	uint64_t its_base = arch_config->guest_its_base;
 	uint64_t its_size = arch_config->guest_its_size;
 	uint64_t uart_base = arch_config->guest_uart_base;
-	uint64_t virtio_console_base = arch_config->guest_virtio_console_base;
+	uint64_t vhost_console_base = arch_config->guest_virtio_console_base;
 	uint64_t smmu_base = arch_config->guest_smmu_base;
 
 	/*
@@ -1011,9 +1011,9 @@ static void register_arm64_vio_mmio(struct acrn_vm *vm)
 			vm, false);
 	}
 	if (arm64_vm_uses_virtio_console(get_vm_config(vm->vm_id))) {
-		register_mmio_emul_handler(vm, virtio_console_mmio_handler,
-			virtio_console_base,
-			virtio_console_base + arch_config->guest_virtio_console_size,
+		register_mmio_emul_handler(vm, vhost_console_mmio_handler,
+			vhost_console_base,
+			vhost_console_base + arch_config->guest_virtio_console_size,
 			vm, false);
 	} else {
 		register_mmio_emul_handler(vm, arm64_vpl011_mmio_handler,
@@ -1069,7 +1069,7 @@ int32_t arch_init_vm(struct acrn_vm *vm, struct acrn_vm_config *vm_config)
 	arm64_vipc_init_vm(vm);
 	arm64_vrproc_init_vm(vm);
 	if (arm64_vm_uses_virtio_console(vm_config)) {
-		virtio_console_init_vm(vm);
+		vhost_console_init_vm(vm);
 	} else {
 		arm64_vpl011_init_vm(vm);
 	}
@@ -1136,7 +1136,7 @@ int32_t arch_reset_vm(struct acrn_vm *vm)
 		arm64_vsmmu_deinit_vm(vm);
 	}
 	if (arm64_vm_uses_virtio_console(vm_config)) {
-		virtio_console_reset_vm(vm);
+		vhost_console_reset_vm(vm);
 	} else {
 		arm64_vpl011_reset_vm(vm);
 	}

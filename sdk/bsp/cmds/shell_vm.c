@@ -15,7 +15,7 @@
 #include <vconfig.h>
 #include <vm.h>
 #include <vm_wdt.h>
-#include <virtio_console.h>
+#include <vhost_console.h>
 #include <virtio_proxy.h>
 #include <bsp/vuart.h>
 #include <asm/cache.h>
@@ -1050,7 +1050,7 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 	struct shell_vmstat_timer_summary timer = { 0U };
 	struct vm_wdt_snapshot wdt = { 0U };
 	struct console_vm_ring_stats ring = { 0U };
-	struct virtio_console_stats vcon = { 0U };
+	struct vhost_console_stats vcon = { 0U };
 	struct acrn_vuart *vu = NULL;
 	struct arm64_vm_mpu_sve_status sve_status = { 0U };
 	struct arm64_vits_stats vits = { 0U };
@@ -1137,7 +1137,7 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 			shell_yes_no(vu->active), vu->irq, vuart_rx_numchars(vu),
 			vu->txfifo.num, vu->ier, vu->lsr);
 	}
-	if (virtio_console_get_stats(vm_id, &vcon)) {
+	if (vhost_console_get_stats(vm_id, &vcon)) {
 		shell_item_line("        virtio-console:active:%s irq:%u status:0x%02x isr:0x%02x tx:%lu rx:%lu",
 			shell_yes_no(vcon.active), vcon.irq, vcon.status,
 			vcon.interrupt_status, vcon.tx_count, vcon.rx_count);
@@ -1150,8 +1150,8 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 			vcon.tx_latency.max_us, vcon.rx_latency.min_us,
 			vcon.rx_latency.avg_us, vcon.rx_latency.max_us,
 			vcon.tx_latency.count, vcon.rx_latency.count);
-		for (uint16_t qid = 0U; qid < VIRTIO_CONSOLE_STAT_QUEUE_NUM; qid++) {
-			const struct virtio_console_queue_stats *queue = &vcon.queues[qid];
+		for (uint16_t qid = 0U; qid < VHOST_CONSOLE_STAT_QUEUE_NUM; qid++) {
+			const struct vhost_console_queue_stats *queue = &vcon.queues[qid];
 
 			shell_item_line("        vcon.q%hu ready:%s num:%hu idx:%hu desc:0x%016lx avail:0x%016lx used:0x%016lx",
 				qid, shell_yes_no(queue->ready), queue->num,

@@ -149,6 +149,6 @@ void cpu_dead(void)
 
 void beau_tag(void)
 {
-	LOG_INF("Launching BEAU OS v%s [%s] %s (%s)", BEAU_OS_VERSION,
+	LOG_INF("Launching BEAU HYPERVISOR v%s [%s] %s (%s)", BEAU_OS_VERSION,
 		HV_BUILD_TYPE, HV_COMMIT_TIME, HV_COMMIT_DIRTY);
 }
