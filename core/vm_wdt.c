@@ -1308,7 +1308,7 @@ static bool vm_wdt_print_daemon_event(uint16_t vm_id,
 	gap_msec = ticks_to_ms(event->gap_ticks) % 1000UL;
 
 	return daemon_log(LOG_INFO,
-		"HWT: vm%hu:%9s gap:%02lu.%03lus token:0x%016lx",
+		"HWT: vm%hu:%9s (GAP: %02lu.%03lus) token:0x%016lx",
 		vm_id, vm_wdt_name(vm_id), gap_sec, gap_msec, event->token);
 }
 

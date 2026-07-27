@@ -8,17 +8,36 @@ ARCHIVE=${1:-"$ROOT/sdk/imgs/linux/Initramfs.cpio.gz"}
 EDU_TEST_SRC="$ROOT/sdk/imgs/linux/tools/beau-edu-test.c"
 RPMSG_TEST_SRC="$ROOT/sdk/imgs/linux/tools/beau-rpmsg-test.c"
 EDU_TEST_CC=${EDU_TEST_CC:-aarch64-linux-gnu-gcc}
+RT_TESTS_SRC=${RT_TESTS_SRC:-"$ROOT/../rt-tests-2.10"}
+RT_TESTS_VERSION=2.10
+NUMACTL_VERSION=2.0.19
+NUMACTL_ARCHIVE="numactl-$NUMACTL_VERSION.tar.gz"
+NUMACTL_URL="https://github.com/numactl/numactl/releases/download/v$NUMACTL_VERSION/$NUMACTL_ARCHIVE"
+NUMACTL_SHA256=f2672a0381cb59196e9c246bf8bcc43d5568bc457700a697f1a1df762b9af884
+# QEMU VM2/VM3 reserve the final 4 KiB before pstore for their generated FDT.
+INITRAMFS_MAX_SIZE=62910464
 case "$ARCHIVE" in
 /*) ;;
 *) ARCHIVE="$ROOT/$ARCHIVE" ;;
 esac
+if [ ! -d "$RT_TESTS_SRC" ] || [ ! -f "$RT_TESTS_SRC/Makefile" ]; then
+	echo "RT_TESTS_SRC must name an rt-tests-$RT_TESTS_VERSION source directory" >&2
+	exit 1
+fi
+if ! grep -qx "VERSION = $RT_TESTS_VERSION" "$RT_TESTS_SRC/Makefile"; then
+	echo "RT_TESTS_SRC is not rt-tests-$RT_TESTS_VERSION" >&2
+	exit 1
+fi
+RT_TESTS_SRC=$(CDPATH= cd -- "$RT_TESTS_SRC" && pwd)
 TMPDIR_ROOT=${TMPDIR:-/tmp}
 WORKDIR=$(mktemp -d "$TMPDIR_ROOT/beau-initramfs.XXXXXX")
 ALPINE_MIRROR=${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}
+LIBNUMA_PREFIX=
 
 cleanup()
 {
 	rm -rf "$WORKDIR"
+	rm -f "$ARCHIVE.tmp"
 }
 
 trap cleanup EXIT
@@ -123,6 +142,74 @@ install_debug_tools()
 			echo "Alpine $tool package did not provide /usr/bin/$tool" >&2
 			exit 1
 		fi
+	done
+}
+
+copy_rt_tests_source()
+{
+	target=$1
+
+	mkdir -p "$target"
+	(
+		cd "$RT_TESTS_SRC"
+		tar --exclude='./.git' --exclude='./bld' \
+			--exclude='*.a' --exclude='*.d' --exclude='*.o' -cf - .
+	) | (
+		cd "$target"
+		tar -xf -
+	)
+}
+
+build_static_libnuma()
+{
+	numactl_tar="$WORKDIR/tmp/$NUMACTL_ARCHIVE"
+	numactl_src="$WORKDIR/tmp/numactl-$NUMACTL_VERSION"
+	LIBNUMA_PREFIX="$WORKDIR/tmp/numactl-prefix"
+
+	fetch_url "$NUMACTL_URL" "$numactl_tar"
+	printf '%s  %s\n' "$NUMACTL_SHA256" "$numactl_tar" | sha256sum -c -
+	tar -xzf "$numactl_tar" -C "$WORKDIR/tmp"
+	if [ ! -x "$numactl_src/configure" ]; then
+		echo "numactl-$NUMACTL_VERSION does not contain configure" >&2
+		exit 1
+	fi
+	(
+		cd "$numactl_src"
+		CC="$EDU_TEST_CC" ./configure --host=aarch64-linux-gnu \
+			--disable-shared --enable-static --prefix="$LIBNUMA_PREFIX"
+		make
+		make install
+	)
+	if [ ! -s "$LIBNUMA_PREFIX/lib/libnuma.a" ]; then
+		echo "failed to build AArch64 static libnuma" >&2
+		exit 1
+	fi
+}
+
+install_rt_tests()
+{
+	rt_tests_build="$WORKDIR/tmp/rt-tests-$RT_TESTS_VERSION-build"
+	rt_tests_src_dest="$WORKDIR/usr/local/src/rt-tests-$RT_TESTS_VERSION"
+	rt_tests_bin_dest="$WORKDIR/usr/local/lib/rt-tests/$RT_TESTS_VERSION/bin"
+
+	build_static_libnuma
+	copy_rt_tests_source "$rt_tests_src_dest"
+	copy_rt_tests_source "$rt_tests_build"
+	make -C "$rt_tests_build" clean
+	make -C "$rt_tests_build" CROSS_COMPILE="${EDU_TEST_CC%gcc}" \
+		no_libcpupower=1 CPPFLAGS="-D_GNU_SOURCE -Isrc/include -I$LIBNUMA_PREFIX/include" \
+		LDFLAGS="-static -s -L$LIBNUMA_PREFIX/lib"
+	mkdir -p "$rt_tests_bin_dest" "$WORKDIR/usr/local/bin"
+	for tool in cyclictest hackbench pip_stress pi_stress pmqtest ptsematest \
+		rt-migrate-test signaltest sigwaittest svsematest cyclicdeadline \
+		deadline_test queuelat ssdd oslat; do
+		if [ ! -x "$rt_tests_build/$tool" ]; then
+			echo "rt-tests build did not produce $tool" >&2
+			exit 1
+		fi
+		install -m 0755 "$rt_tests_build/$tool" "$rt_tests_bin_dest/$tool"
+		ln -sf "../lib/rt-tests/$RT_TESTS_VERSION/bin/$tool" \
+			"$WORKDIR/usr/local/bin/$tool"
 	done
 }
 
@@ -248,6 +335,7 @@ if ! command -v "$EDU_TEST_CC" >/dev/null 2>&1; then
 fi
 "$EDU_TEST_CC" -Os -static -s -Wall -Wextra -o "$WORKDIR/usr/local/bin/vpci" "$EDU_TEST_SRC"
 "$EDU_TEST_CC" -Os -static -s -Wall -Wextra -o "$WORKDIR/usr/local/bin/rpmsg" "$RPMSG_TEST_SRC"
+install_rt_tests
 install_stress_ng_package
 install_debug_tools
 rm -f "$WORKDIR/usr/bin/stress.sh"
@@ -291,4 +379,9 @@ EOF
 chmod 0755 "$WORKDIR/usr/bin/snap.sh"
 rm -rf "$WORKDIR/tmp"
 (cd "$WORKDIR" && find . -print0 | cpio --null -o --quiet -H newc -R 0:0 | gzip -9 > "$ARCHIVE.tmp")
+archive_size=$(stat -c %s "$ARCHIVE.tmp")
+if [ "$archive_size" -gt "$INITRAMFS_MAX_SIZE" ]; then
+	echo "initramfs size $archive_size exceeds QEMU RAM/FDT limit $INITRAMFS_MAX_SIZE" >&2
+	exit 1
+fi
 mv "$ARCHIVE.tmp" "$ARCHIVE"

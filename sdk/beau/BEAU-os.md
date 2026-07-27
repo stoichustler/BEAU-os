@@ -517,10 +517,10 @@ load FDT module
 ### 7.6 Linux Guest 崩溃通知
 
 Linux `drivers/virt/beau/crash.c` 在 panic notifier 与 ARM64 `DIE_OOPS` notifier
-中构造版本化 `beau_vm_crash_report`（v1 为 144 bytes，v2 为 320 bytes），并通过 `HC_VM_CRASH_REPORT`
+中构造固定 320-byte 的 V2 `beau_vm_crash_report`，并通过 `HC_VM_CRASH_REPORT`
 向 BEAU Host 通知。报文包含 ABI magic/version/size、事件类型、
-vCPU、序号、PC、错误码及最多 95 个 ASCII 诊断字符。v2 额外记录触发
-进程/ 线程、寄存器快照及最多 16 个原始 guest stack PC。
+vCPU、序号、PC、错误码、触发进程/线程、寄存器快照及最多 16 个原始 guest stack PC，
+并含最多 95 个 ASCII 诊断字符。
 
 ```text
 Linux panic / DIE_OOPS

@@ -13,12 +13,10 @@ struct acrn_vcpu;
 struct acrn_vm;
 
 #define BEAU_VM_CRASH_MAGIC		0x42435253U
-#define BEAU_VM_CRASH_ABI_VERSION_V1	1U
 #define BEAU_VM_CRASH_ABI_VERSION	2U
 #define BEAU_VM_CRASH_TEXT_MAX		96U
 #define BEAU_VM_CRASH_COMM_MAX		16U
 #define BEAU_VM_CRASH_STACK_MAX		16U
-#define BEAU_VM_CRASH_REPORT_V1_SIZE	144U
 #define BEAU_VM_CRASH_REPORT_SIZE	320U
 #define BEAU_VM_CRASH_HISTORY_SLOTS	8U
 
@@ -62,7 +60,7 @@ struct vm_crash_record {
 };
 
 _Static_assert(offsetof(struct beau_vm_crash_report, message) == 48U,
-	"BEAU VM crash ABI v1 prefix changed");
+	"BEAU VM crash ABI diagnostic prefix changed");
 _Static_assert(sizeof(struct beau_vm_crash_report) == BEAU_VM_CRASH_REPORT_SIZE,
 	"BEAU VM crash ABI layout changed");
 

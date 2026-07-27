@@ -64,10 +64,8 @@ static bool vm_crash_kind_valid(uint32_t kind)
 
 static bool vm_crash_version_valid(const struct beau_vm_crash_report *report)
 {
-	return ((report->version == BEAU_VM_CRASH_ABI_VERSION_V1) &&
-		(report->size == BEAU_VM_CRASH_REPORT_V1_SIZE)) ||
-		((report->version == BEAU_VM_CRASH_ABI_VERSION) &&
-		(report->size == sizeof(*report)));
+	return (report->version == BEAU_VM_CRASH_ABI_VERSION) &&
+		(report->size == sizeof(*report));
 }
 
 static bool vm_crash_text_terminated(const char *text, uint32_t size)
@@ -92,11 +90,10 @@ static bool vm_crash_report_valid(const struct beau_vm_crash_report *report)
 		vm_crash_version_valid(report) && vm_crash_kind_valid(report->kind) &&
 		(report->cpu_id < MAX_VCPUS_PER_VM) &&
 		vm_crash_message_terminated(report) &&
-		((report->version == BEAU_VM_CRASH_ABI_VERSION_V1) ||
-			((report->stack_count <= BEAU_VM_CRASH_STACK_MAX) &&
-				vm_crash_text_terminated(report->comm, sizeof(report->comm)) &&
-			((report->flags & ~(BEAU_VM_CRASH_F_REGS_VALID |
-				BEAU_VM_CRASH_F_STACK_VALID)) == 0U)));
+		(report->stack_count <= BEAU_VM_CRASH_STACK_MAX) &&
+		vm_crash_text_terminated(report->comm, sizeof(report->comm)) &&
+		((report->flags & ~(BEAU_VM_CRASH_F_REGS_VALID |
+			BEAU_VM_CRASH_F_STACK_VALID)) == 0U);
 }
 
 static void vm_crash_sanitize_text(char *text, uint32_t size)
@@ -166,10 +163,8 @@ int32_t hcall_vm_crash_report(struct acrn_vcpu *vcpu,
 		return -EINVAL;
 	}
 	if ((header.magic != BEAU_VM_CRASH_MAGIC) ||
-		!(((header.version == BEAU_VM_CRASH_ABI_VERSION_V1) &&
-			(header.size == BEAU_VM_CRASH_REPORT_V1_SIZE)) ||
-			((header.version == BEAU_VM_CRASH_ABI_VERSION) &&
-			(header.size == sizeof(report))))) {
+		(header.version != BEAU_VM_CRASH_ABI_VERSION) ||
+		(header.size != sizeof(report))) {
 		LOG_ERR("KE:     VM%u reject ABI magic:0x%08x ver:%u size:%u",
 			vm_id, header.magic, header.version, header.size);
 		return -EINVAL;
@@ -193,9 +188,7 @@ int32_t hcall_vm_crash_report(struct acrn_vcpu *vcpu,
 		return -EINVAL;
 	}
 	vm_crash_sanitize_text(report.message, sizeof(report.message));
-	if (report.version == BEAU_VM_CRASH_ABI_VERSION) {
-		vm_crash_sanitize_text(report.comm, sizeof(report.comm));
-	}
+	vm_crash_sanitize_text(report.comm, sizeof(report.comm));
 	generation = vm->lifecycle.generation;
 
 	spinlock_irqsave_obtain(&vm_crash_locks[vm_id], &flags);
@@ -224,7 +217,7 @@ int32_t hcall_vm_crash_report(struct acrn_vcpu *vcpu,
 	__atomic_store_n(&record->valid, true, __ATOMIC_RELEASE);
 	spinlock_irqrestore_release(&vm_crash_locks[vm_id], flags);
 
-	LOG_ERR("KE:     VM%u [%5s] sequence:%lu (use 'crash %u')", vm_id,
+	LOG_ERR("KE:     VM%u [%5s] sequence:%lu (use 'crash %u' for more)", vm_id,
 		vm_crash_kind_str(report.kind), report.sequence, vm_id);
 	return 0;
 }
@@ -305,18 +298,14 @@ void vm_crash_print(const struct vm_crash_record *record, uint32_t history_index
 		record->captured_tsc, report->cpu_id);
 	shell_item_line("   PC:0x%016lx FAR:0x%016lx ERR:0x%016lx",
 		report->pc, report->fault_address, report->error_code);
-	if (report->version == BEAU_VM_CRASH_ABI_VERSION_V1) {
-		shell_item_line("task:unavailable ABI:v1");
-		shell_item_line("registers:unavailable ABI:v1");
-		shell_item_line("stack:unavailable ABI:v1");
-	} else {
-		shell_item_line(" task:pid:%u tgid:%u comm:%s", report->pid,
-			report->tgid, report->comm);
-		shell_item_line("stack:count:%u", report->stack_count);
-		for (uint32_t index = 0U; index < report->stack_count; index++) {
-			shell_item_line("stack[%02u]:0x%016lx", index, report->stack[index]);
-		}
+
+	shell_item_line(" task:pid:%u tgid:%u comm:%s", report->pid,
+		report->tgid, report->comm);
+	shell_item_line("stack:count:%u", report->stack_count);
+	for (uint32_t index = 0U; index < report->stack_count; index++) {
+		shell_item_line("stack[%02u]:0x%016lx", index, report->stack[index]);
 	}
+
 	shell_item_line("  MSG:%s", report->message);
 	shell_item_end();
 }

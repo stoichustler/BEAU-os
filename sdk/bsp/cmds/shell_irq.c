@@ -236,7 +236,7 @@ int32_t shell_irqstat(int32_t argc, __unused char **argv)
 		return -EINVAL;
 	}
 
-	shell_item_begin("irqstat");
+	shell_item_begin("IRQSTAT");
 	/* Host active is descriptor allocation; CPU columns are entry counts; optional
 	 * handler-lat is min/avg/max handler duration in us.
 	 */
