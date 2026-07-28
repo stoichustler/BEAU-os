@@ -4,7 +4,7 @@
 
 API_MAJOR_VERSION=1
 API_MINOR_VERSION=0
-BEAU_OS_VERSION ?= 0.1.0
+BEAU_OS_VERSION ?= 0.1.1
 
 ifneq ($(filter command line,$(origin RELEASE)),)
 $(error RELEASE is no longer supported; BEAU always builds the full image)

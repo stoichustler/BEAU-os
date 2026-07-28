@@ -12,21 +12,21 @@ transport.
 
 Build the firmware after building the BEAU raw image:
 
-~~~
+```sh
 make ARCH=arm64 PLATFORM=qemu CROSS_COMPILE=aarch64-none-elf- -j"$(getconf _NPROCESSORS_ONLN)"
 make -C sdk/trusty CROSS_COMPILE=aarch64-none-elf- firmware
-~~~
+```
 
 Launch BEAU OS with Trusty TEE:
 
-~~~
+```sh
 python3 scripts/kick.py --build --tee
-~~~
+```
 
 The resulting 'out/qemu/tf-a/qemu_fw.bios' is coupled to the specified BEAU
 raw BL33 image. Rebuild TF-A when the BL33 image changes.
 
 ## Contents
 
-- 'lk/': Trusty LK and the QEMU-only minimal Trusty SM source closure.
-- 'tf-a/': Trusted Firmware-A with the Trusty SPD.
+- `lk`: Trusty LK and the QEMU-only minimal Trusty SM source closure.
+- `tfa`: Trusted Firmware-A with the Trusty SPD.

@@ -21,9 +21,25 @@
  * reuse on warm boot. The dcache is not enabled when this macro is
  * used so no flush is needed.
  *
+ * base + idx * HOLD_SLOT_SIZE
+ *             |
+ *             v
+ * check magic1 and magic2
+ *             |
+ *             +--> invalid --> wfe --> poll again
+ *             |
+ *             v
+ * check entry != HOLD_STATE_WAIT
+ *             |
+ *             +--> waiting --> wfe --> poll again
+ *             |
+ *             v
+ * write HOLD_STATE_WAIT --> branch to entry
+ *
  *   base: register holding the hold pen base address (clobbered)
  *   idx:  register holding the core index (clobbered)
  *   tmp:  scratch register
+ *
  */
 
 #ifdef __aarch64__

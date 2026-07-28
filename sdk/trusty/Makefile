@@ -23,7 +23,7 @@ lk:
 
 tfa: check-bl33 lk
 	@mkdir -p "$(OUT)/tf-a"
-	@$(MAKE) -C tf-a BUILD_BASE="$(TF_A_BUILD)" PLAT=qemu DEBUG=1 \
+	@$(MAKE) -C tfa BUILD_BASE="$(TF_A_BUILD)" PLAT=qemu DEBUG=1 \
 		SPD=trusty TRUSTY_SPD_WITH_GENERIC_SERVICES=1 \
 		QEMU_USE_GIC_DRIVER=QEMU_GICV3 \
 		ENABLE_SVE_FOR_NS=0 ENABLE_SME_FOR_NS=0 \

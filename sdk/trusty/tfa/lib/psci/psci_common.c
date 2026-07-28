@@ -1224,11 +1224,16 @@ void psci_print_power_domain_map(void)
 	}
 
 	for (idx = 0; idx < psci_plat_core_count; idx++) {
+		u_register_t mpidr = PER_CPU_BY_INDEX(psci_cpu_pd_nodes, idx)->mpidr;
+
+		if (mpidr == PSCI_INVALID_MPIDR)
+			continue;
+
 		state = psci_get_cpu_local_state_by_idx(idx);
 		state_type = find_local_state_type(state);
 		INFO("  CPU Node : MPID 0x%llx, parent_node %u,"
 				" State %s (0x%x)\n",
-				(unsigned long long)PER_CPU_BY_INDEX(psci_cpu_pd_nodes, idx)->mpidr,
+				(unsigned long long)mpidr,
 				PER_CPU_BY_INDEX(psci_cpu_pd_nodes, idx)->parent_node,
 				psci_state_type_str[state_type],
 				psci_get_cpu_local_state_by_idx(idx));
