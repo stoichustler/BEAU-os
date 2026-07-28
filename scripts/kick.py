@@ -14,6 +14,9 @@ LINUX_VM2_IMAGE_STAGE_ADDR = "0x76000000"
 LINUX_VM3_IMAGE_STAGE_ADDR = "0x7c000000"
 DEFAULT_LINUX_INITRAMFS = ROOT / "sdk/imgs/linux/Initramfs.cpio.gz"
 REPACK_INITRAMFS = ROOT / "scripts/repack_initramfs.sh"
+DEFAULT_TEE_FIRMWARE = ROOT / "sdk/trusty/out/qemu/tf-a/qemu_fw.bios"
+DEFAULT_TEE_BL33 = ROOT / "out/qemu_out/beau.debug.bin"
+TEE_SMP_TOPOLOGY = "cpus=8,maxcpus=8,sockets=1,clusters=1,cores=8,threads=1"
 
 
 def relpath(path):
@@ -67,6 +70,29 @@ def parse_args():
     parser.add_argument("--cross-prefix", default=getenv("BEAU_CROSS_COMPILE", "aarch64-none-elf-"))
     parser.add_argument("--build", action="store_true")
     parser.add_argument(
+        "--tee",
+        "--trusty",
+        dest="tee",
+        action="store_true",
+        help="boot TF-A/Trusty BL32 and load the BEAU raw image as BL33",
+    )
+    parser.add_argument(
+        "--tee-firmware",
+        "--trusty-firmware",
+        dest="tee_firmware",
+        default=DEFAULT_TEE_FIRMWARE,
+        type=relpath,
+        help="TF-A qemu_fw.bios built with the Trusty SPD",
+    )
+    parser.add_argument(
+        "--tee-bl33",
+        "--trusty-bl33",
+        dest="tee_bl33",
+        default=DEFAULT_TEE_BL33,
+        type=relpath,
+        help="BEAU raw BL33 image preloaded at 0x50000000",
+    )
+    parser.add_argument(
         "--no-pcie-test",
         action="store_true",
         help="do not attach the default QEMU PCIe passthrough test endpoint",
@@ -109,6 +135,8 @@ def parse_args():
     if args.linux_image is not None:
         args.linux_vm2_image = args.linux_image
         args.linux_vm3_image = args.linux_image
+    if args.tee and args.smp != "8":
+        parser.error("--tee requires --smp 8 for the Trusty QEMU GICv3 configuration")
     return args
 
 
@@ -126,6 +154,13 @@ def verify_guest_images(args):
         raise SystemExit(f"Linux VM3 Image not found: {args.linux_vm3_image}")
     if not args.linux_initramfs.is_file():
         raise SystemExit(f"Linux shared initramfs not found: {args.linux_initramfs}")
+
+
+def verify_tee_images(args):
+    if not args.tee_firmware.is_file():
+        raise SystemExit(f"TF-A Trusty firmware not found: {args.tee_firmware}")
+    if not args.tee_bl33.is_file():
+        raise SystemExit(f"BEAU BL33 raw image not found: {args.tee_bl33}")
 
 
 def uses_default_initramfs(args):
@@ -163,6 +198,16 @@ def build_steps(args):
     ]
 
 
+def tee_firmware_cmd(args):
+    return [
+        "make",
+        "-C",
+        str(ROOT / "sdk/trusty"),
+        "firmware",
+        f"BEAU_BL33={args.tee_bl33}",
+    ]
+
+
 def main():
     args = parse_args()
     env = os.environ.copy()
@@ -170,16 +215,22 @@ def main():
         env["PATH"] = f"{args.toolchains}{os.pathsep}{env.get('PATH', '')}"
 
     build_cmds = build_steps(args)
+    machine = "virt,virtualization=on,gic-version=3,its=on,iommu=smmuv3"
+    qemu_smp = args.smp
+    if args.tee:
+        machine = "virt,secure=on,virtualization=on,gic-version=3,its=on,iommu=smmuv3"
+        qemu_smp = TEE_SMP_TOPOLOGY
+
     qemu_cmd = [
         args.qemu,
         "-machine",
-        "virt,virtualization=on,gic-version=3,its=on,iommu=smmuv3",
+        machine,
         "-global",
         "arm-smmuv3.stage=2",
         "-cpu",
         "cortex-a57",
         "-smp",
-        args.smp,
+        qemu_smp,
         "-m",
         args.memory,
         "-nographic",
@@ -187,8 +238,6 @@ def main():
         "mon:stdio",
         "-net",
         "none",
-        "-kernel",
-        str(args.kernel),
         "-device",
         f"loader,file={args.linux_vm2_image},addr={LINUX_VM2_IMAGE_STAGE_ADDR},force-raw=on",
         "-device",
@@ -196,6 +245,17 @@ def main():
         "-device",
         f"loader,file={args.linux_initramfs},addr={LINUX_INITRAMFS_STAGE_ADDR},force-raw=on",
     ]
+    if args.tee:
+        qemu_cmd.extend(
+            [
+                "-bios",
+                str(args.tee_firmware),
+                "-device",
+                f"loader,file={args.tee_bl33},addr=0x50000000,force-raw=on",
+            ]
+        )
+    else:
+        qemu_cmd.extend(["-kernel", str(args.kernel)])
     # Precise icount disables MTTCG; keep it opt-in for PMU register validation.
     if args.pmu_icount:
         qemu_cmd.extend(["-icount", "shift=0,align=off,sleep=off"])
@@ -212,6 +272,8 @@ def main():
                 print(render(["sh", REPACK_INITRAMFS, args.linux_initramfs]))
             for cmd in build_cmds:
                 print(render(cmd, args.toolchains))
+            if args.tee:
+                print(render(tee_firmware_cmd(args), args.toolchains))
         print(render(qemu_cmd))
         return
 
@@ -227,8 +289,12 @@ def main():
             raise SystemExit(f"Compiler not found: {compiler}")
         for cmd in build_cmds:
             subprocess.run(cmd, cwd=ROOT, env=env, check=True)
+        if args.tee:
+            subprocess.run(tee_firmware_cmd(args), cwd=ROOT, env=env, check=True)
 
-    if not args.kernel.is_file():
+    if args.tee:
+        verify_tee_images(args)
+    elif not args.kernel.is_file():
         print(f"Kernel image not found: {args.kernel}")
         print("Build it with:")
         for cmd in build_cmds:

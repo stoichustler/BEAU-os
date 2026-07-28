@@ -23,7 +23,7 @@ MAKEFLAGS += -rR --no-print-directory
 
 BASEDIR := $(shell pwd)
 GIT_TOPDIR := $(shell git rev-parse --show-toplevel 2>/dev/null)
-LICENSE_FILE := $(or $(firstword $(wildcard ../LICENSE $(if $(GIT_TOPDIR),$(GIT_TOPDIR)/LICENSE))),/dev/null)
+LICENSE_FILE ?= $(or $(firstword $(wildcard $(GIT_TOPDIR)/LICENSE LICENSE ../LICENSE)),/dev/null)
 ARCH ?= arm64
 PLATFORM ?= qemu
 ifeq ($(strip $(PLATFORM)),)

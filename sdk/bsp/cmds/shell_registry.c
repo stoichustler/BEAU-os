@@ -74,6 +74,7 @@ struct shell_cmd shell_arch_cmds[] = {
 	CMD("pmstat", NULL, "list coordinated guest suspend transaction statistics", shell_pmstat),
 	CMD("pmustat", "<start|stop|reset|dump>", "control and dump EL2-owned core PMU statistics", shell_pmustat),
 	CMD("aes", "<enc|dec> <text|hex>", "verify ARMv8 AES text encryption and decryption", shell_aes),
+	CMD("tee", "<version|dump>", "display Trusty TEE build or system information", shell_tee),
 	{ .str = "ddb", .cmd_param = "<passwd>", .help_str = "enter the ARM64 kernel debugger",
 		.fcn = shell_ddb, .flags = SHELL_CMD_FLAG_SENSITIVE_ARGS },
 };

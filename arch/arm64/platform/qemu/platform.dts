@@ -582,7 +582,7 @@
 			beau,pstore = <0x0 0x4fc00000 0x0 0x00400000>;
 			direct-map;
 			cpu-affinity = <2 4 6 7>;
-			guest-flags = "static";
+			guest-flags = "static", "trusty-client";
 			beau,sve = "enabled";
 			beau,sve-vl-bits = <128>;
 

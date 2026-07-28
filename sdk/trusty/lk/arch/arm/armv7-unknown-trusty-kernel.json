@@ -1,0 +1,22 @@
+{
+    "abi": "eabi",
+    "arch": "arm",
+    "crt-objects-fallback": "musl",
+    "crt-static-default": false,
+    "data-layout": "e-m:e-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64",
+    "dynamic-linking": false,
+    "env": "musl",
+    "features": "+v7,+thumb2,+soft-float,-neon",
+    "has-rpath": false,
+    "linker-flavor": "gnu-cc",
+    "llvm-target": "armv7-unknown-unknown-gnueabi",
+    "max-atomic-width": 64,
+    "os": "trusty",
+    "panic-strategy": "abort",
+    "plt-by-default": false,
+    "relro-level": "full",
+    "static-position-independent-executables": true,
+    "supported-sanitizers": [],
+    "target-mcount": "\u0001mcount",
+    "target-pointer-width": "32"
+}

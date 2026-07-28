@@ -143,6 +143,7 @@ VP_C_SRCS += arch/arm64/guest/vipc.c
 VP_C_SRCS += arch/arm64/guest/vrproc.c
 VP_C_SRCS += arch/arm64/guest/vm.c
 VP_C_SRCS += arch/arm64/guest/vcpu_exit.c
+VP_C_SRCS += arch/arm64/guest/trusty_smc.c
 VP_C_SRCS += arch/arm64/guest/vpsci.c
 VP_C_SRCS += arch/arm64/guest/virq.c
 VP_C_SRCS += arch/arm64/guest/vgicv3.c

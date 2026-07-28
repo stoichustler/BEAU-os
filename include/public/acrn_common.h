@@ -67,6 +67,7 @@
 #define GUEST_FLAG_VTM				(1UL << 13U)    /* Whether the VM supports virtual thermal monitor */
 #define GUEST_FLAG_STATELESS			(1UL << 14U)	/* Whether the VM is stateless (can be forcefully shutdown with no data loss) */
 #define GUEST_FLAG_NO_FW			(1UL << 15U)	/* Whether this VM does not need external ACPI/FDT modules */
+#define GUEST_FLAG_TRUSTY_CLIENT		(1UL << 16U)	/* Whether this VM may use the restricted Trusty SMC ABI */
 
 #define VIRTUAL_SLEEP_CTL_ADDR		0x400U /* Pre-launched VM uses ACPI reduced HW mode and sleep control register */
 #define VIRTUAL_PM1A_CNT_ADDR		0x404U

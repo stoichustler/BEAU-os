@@ -1056,11 +1056,28 @@ ARM64 dispatcher 自身也是权限表：
 公共头 `include/public/acrn_hv_defs.h` 还定义了 VM 动态创建、ioreq、PCI、Trusty、PM
 等 ACRN ABI，但 ARM64 dispatch table 当前大多不挂接或明确返回 `-ENOTTY`。
 
-### 13.3 静态 IPC
+### 13.3 Trusty TEE 版本查询
+
+QEMU 的 `--tee` 启动链为 `TF-A -> Trusty LK -> BEAU`。BEAU shell 的 `tee version`
+使用 Trusty `SMC_FC_GET_VERSION_STR` 读取实际 LK 构建字符串；先查询受限长度，再逐字符
+读取，且只接受最多 128 个可打印 ASCII 字符。它不调用会锁定 Trusty 全局协商状态的
+`SMC_FC_API_VERSION`，也不传递任何指针、共享内存或客体参数。
+
+`tee dump` 不重复构建字符串。它只通过 `SMC_FC_GET_SMP_MAX_CPUS` 获取 Trusty 的最大
+SMP CPU 数，并读取 BEAU 从 VM2 成功 API 协商后原子缓存的 ABI 版本。尚无成功协商记录时
+显示 `smc.api-version: unavailable`；dump 不主动调用 API-version SMC，因而不会改变
+Trusty 的全局协商状态。CPU 查询失败时输出 `Trusty TEE system information unavailable`，
+不会输出部分 dump。
+
+两个命令只在 QEMU 平台尝试 secure-world SMC；未使用 Trusty firmware、SMC 返回未知值或
+字符串校验失败时失败关闭。VM2 的 `trusty-client` API-version 白名单独立于这些诊断命令，
+其他客体 SMC 仍保持拒绝。
+
+### 13.4 静态 IPC
 
 **定位**：`arch/arm64/guest/vipc.c`。
 
-### 13.4 静态 remoteproc/RPMsg
+### 13.5 静态 remoteproc/RPMsg
 
 `arch/arm64/guest/vrproc.c` 提供与 HVC IPC 分离的静态 transport。平台 DTS 定义
 两端 VM、共享 GPA、两个 doorbell GPA、vIRQ 和 vring 参数；EL2 仅将共享页映射给
@@ -1691,7 +1708,9 @@ smmustat
 1. 只支持 ARM64 静态平台 `qemu` 和 `rk356x`。
 2. 客体 RAM 强制 1:1 Stage-2，尚无通用非 identity backing。
 3. GVA page walk/copy 未实现，Hypercall 主要使用 GPA ABI。
-4. post-launched VM、Trusty、HSM I/O、ACPI 默认关闭。
+4. post-launched VM、HSM I/O、ACPI 默认关闭；Trusty 仅支持 QEMU POC 的
+   `TF-A -> Trusty LK -> BEAU` 启动链和只读 `tee <version|dump>` 诊断，不提供通用 TEE、
+   FF-A、共享内存或 RK 平台支持。
 5. ARM64 动态 VM 管理与多数继承的 ACRN Hypercall 未接通。
 6. relocation 函数未实现，默认固定链接地址。
 7. CPUFreq backend 为 stub；rk356x PM 当前 disabled。

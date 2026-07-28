@@ -12,6 +12,7 @@
 #include <util.h>
 #include <asm/aes.h>
 #include <asm/ddb.h>
+#include <asm/trusty.h>
 
 #include "shell_cmds.h"
 
@@ -23,6 +24,7 @@
 #define SHELL_DDB_PASSWORD_MAX_LEN	32U
 #define SHELL_DDB_AUTH_FAILURE_LIMIT	3U
 #define SHELL_DDB_AUTH_LOCKOUT_US	5000000U
+#define SHELL_TRUSTY_VERSION_SIZE	129U
 
 static const uint8_t shell_aes_test_key[ARM64_AES_BLOCK_SIZE] = {
 	0x2bU, 0x7eU, 0x15U, 0x16U, 0x28U, 0xaeU, 0xd2U, 0xa6U,
@@ -258,6 +260,78 @@ int32_t shell_aes(int32_t argc, char **argv)
 
 	shell_puts("usage: aes <enc|dec> <text|hex>\r\n");
 	return -EINVAL;
+}
+
+/* [20260728] Trusty shell diagnostics
+ *
+ * shell argv -> version -> bounded build-string query -> console line
+ *           |
+ *           `-> dump -> complete system snapshot -> console lines
+ *                              |
+ *                              +--> unavailable: no partial result
+ *
+ * Key rule:
+ *   - the shell owns the stack buffer and the ARM64 helper owns secure-world
+ *     argument validation;
+ *   - only fixed diagnostics can leave BEAU, after argument validation;
+ *   - failed queries publish no partial Trusty result and clear local storage.
+ */
+static int32_t shell_tee_dump(void)
+{
+	struct arm64_trusty_system_info info = { 0U };
+	char line[MAX_STR_SIZE] = { 0 };
+	int32_t status;
+
+	status = arm64_trusty_get_system_info(&info);
+	if (status != 0) {
+		shell_puts("Trusty TEE system information unavailable\r\n");
+		return status;
+	}
+
+	shell_puts("Trusty TEE system information\r\n");
+	(void)snprintf(line, sizeof(line), "smp.max-cpus: %u\r\n", info.smp_max_cpus);
+	shell_puts(line);
+	if (info.api_version_valid) {
+		(void)snprintf(line, sizeof(line), "smc.api-version: %u\r\n",
+			info.api_version);
+	} else {
+		(void)snprintf(line, sizeof(line), "smc.api-version: unavailable\r\n");
+	}
+	shell_puts(line);
+	(void)memset(line, 0U, sizeof(line));
+	(void)memset(&info, 0U, sizeof(info));
+
+	return 0;
+}
+
+int32_t shell_tee(int32_t argc, char **argv)
+{
+	char version[SHELL_TRUSTY_VERSION_SIZE] = { 0 };
+	int32_t status;
+
+	if (argc != 2) {
+		shell_puts("usage: tee <version|dump>\r\n");
+		return -EINVAL;
+	}
+	if (strcmp(argv[1], "dump") == 0) {
+		return shell_tee_dump();
+	}
+	if (strcmp(argv[1], "version") != 0) {
+		shell_puts("usage: tee <version|dump>\r\n");
+		return -EINVAL;
+	}
+
+	status = arm64_trusty_get_version(version, sizeof(version));
+	if (status == 0) {
+		shell_puts("Trusty TEE version: ");
+		shell_puts(version);
+		shell_puts("\r\n");
+	} else {
+		shell_puts("Trusty TEE version unavailable\r\n");
+	}
+	(void)memset(version, 0U, sizeof(version));
+
+	return status;
 }
 
 /* [20260720] Privileged DDB shell entry

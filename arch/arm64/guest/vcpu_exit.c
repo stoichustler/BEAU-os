@@ -90,6 +90,8 @@
 #define PSCI_0_2_FN64_AFFINITY_INFO	0xc4000004U
 #define PSCI_1_0_FN64_SYSTEM_SUSPEND	0xc400000eU
 #define PSCI_0_2_TOS_MP		2L
+#define TRUSTY_SMC_FC_API_VERSION	0xbc00000bU
+#define SMC_UNK				UINT64_MAX
 
 #define PSCI_RET_SUCCESS		0L
 #define PSCI_RET_NOT_SUPPORTED		(-1L)
@@ -99,6 +101,9 @@
 #define PSCI_AFFINITY_LEVEL_OFF		1UL
 #define SPSR_MODE_MASK			0xfUL
 #define SPSR_MODE_EL1H			0x5UL
+
+uint64_t beau_trusty_smc(struct acrn_vcpu *vcpu, uint64_t function_id,
+	uint64_t requested_version);
 
 #define ESR_SYSREG_DIR_READ		1UL
 #define ESR_SYSREG_OP0_SHIFT		20U
@@ -767,6 +772,48 @@ static int32_t handle_psci64(struct acrn_vcpu *vcpu, bool advance_elr)
 	return 0;
 }
 
+static bool is_local_psci_smc(uint64_t function_id)
+{
+	switch (function_id) {
+	case PSCI_0_2_FN_PSCI_VERSION:
+	case PSCI_0_2_FN_CPU_SUSPEND:
+	case PSCI_0_2_FN_CPU_OFF:
+	case PSCI_0_2_FN_CPU_ON:
+	case PSCI_0_2_FN_AFFINITY_INFO:
+	case PSCI_0_2_FN_MIGRATE_INFO_TYPE:
+	case PSCI_0_2_FN_SYSTEM_OFF:
+	case PSCI_0_2_FN_SYSTEM_RESET:
+	case PSCI_1_0_FN_PSCI_FEATURES:
+	case PSCI_1_0_FN_SYSTEM_SUSPEND:
+	case PSCI_1_0_FN64_SYSTEM_SUSPEND:
+	case PSCI_0_2_FN64_CPU_SUSPEND:
+	case PSCI_0_2_FN64_CPU_ON:
+	case PSCI_0_2_FN64_AFFINITY_INFO:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static int32_t handle_smc64(struct acrn_vcpu *vcpu)
+{
+	uint64_t function_id = vcpu->arch.regs.x0;
+
+	if (is_local_psci_smc(function_id)) {
+		return handle_psci64(vcpu, true);
+	}
+
+	if (function_id == (uint64_t)TRUSTY_SMC_FC_API_VERSION) {
+		vcpu->arch.regs.x0 = beau_trusty_smc(vcpu, function_id,
+			vcpu->arch.regs.x1);
+	} else {
+		vcpu->arch.regs.x0 = SMC_UNK;
+	}
+	advance_vcpu_elr(vcpu);
+
+	return 0;
+}
+
 static int32_t handle_hvc64(struct acrn_vcpu *vcpu)
 {
 	int32_t ret;
@@ -991,7 +1038,7 @@ int32_t vcpu_exit_handler(struct acrn_vcpu *vcpu)
 		ret = handle_hvc64(vcpu);
 		break;
 	case ESR_EL2_EC_SMC64:
-		ret = handle_psci64(vcpu, true);
+		ret = handle_smc64(vcpu);
 		break;
 	case ESR_EL2_EC_SYSREG:
 		ret = handle_sysreg(vcpu);

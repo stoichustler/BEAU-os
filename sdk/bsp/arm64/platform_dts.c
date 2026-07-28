@@ -332,16 +332,6 @@ static const char *dts_required_string_prop(const void *fdt, int32_t node, const
 	return value;
 }
 
-static bool dts_stringlist_contains(const void *fdt, int32_t node, const char *name,
-	const char *value)
-{
-	const char *prop;
-	int32_t len;
-
-	prop = fdt_getprop(fdt, node, name, &len);
-	return (prop != NULL) && (fdt_stringlist_contains(prop, len, value) != 0);
-}
-
 static int32_t dts_vm_generic_node(const void *fdt, int32_t vm_root)
 {
 	int32_t generic = dts_child_by_any_name(fdt, vm_root, "generic", "guest-defaults");
@@ -1380,15 +1370,40 @@ static uint64_t dts_parse_cpu_affinity(const void *fdt, int32_t node,
 static uint64_t dts_parse_guest_flags(const void *fdt, int32_t node)
 {
 	uint64_t flags = 0UL;
+	const char *flag;
+	int32_t flag_count;
+	int32_t flag_index;
+	int32_t flag_len;
 
-	if (dts_stringlist_contains(fdt, node, "guest-flags", "static")) {
-		flags |= GUEST_FLAG_STATIC_VM;
+	flag_count = fdt_stringlist_count(fdt, node, "guest-flags");
+	if (flag_count == -FDT_ERR_NOTFOUND) {
+		return flags;
 	}
-	if (dts_stringlist_contains(fdt, node, "guest-flags", "no-fw")) {
-		flags |= GUEST_FLAG_NO_FW;
+	if (flag_count <= 0) {
+		arm64_dts_panic("guest-flags", flag_count == 0 ? -EINVAL : flag_count);
 	}
-	if (dts_stringlist_contains(fdt, node, "guest-flags", "rt")) {
-		flags |= GUEST_FLAG_RT;
+
+	for (flag_index = 0; flag_index < flag_count; flag_index++) {
+		flag = fdt_stringlist_get(fdt, node, "guest-flags", flag_index,
+			&flag_len);
+		if (flag == NULL) {
+			arm64_dts_panic("guest-flags", flag_len);
+		}
+		if (flag_len <= 0) {
+			arm64_dts_panic("guest-flags", -EINVAL);
+		}
+
+		if (strcmp(flag, "static") == 0) {
+			flags |= GUEST_FLAG_STATIC_VM;
+		} else if (strcmp(flag, "no-fw") == 0) {
+			flags |= GUEST_FLAG_NO_FW;
+		} else if (strcmp(flag, "rt") == 0) {
+			flags |= GUEST_FLAG_RT;
+		} else if (strcmp(flag, "trusty-client") == 0) {
+			flags |= GUEST_FLAG_TRUSTY_CLIENT;
+		} else {
+			arm64_dts_panic("guest-flags", -EINVAL);
+		}
 	}
 
 	return flags;

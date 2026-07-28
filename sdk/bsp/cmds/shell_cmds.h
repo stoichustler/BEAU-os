@@ -71,6 +71,7 @@ int32_t shell_pm(int32_t argc, char **argv);
 int32_t shell_pmstat(int32_t argc, char **argv);
 int32_t shell_pmustat(int32_t argc, char **argv);
 int32_t shell_aes(int32_t argc, char **argv);
+int32_t shell_tee(int32_t argc, char **argv);
 int32_t shell_ddb(int32_t argc, char **argv);
 
 /* Stateless strings used only while rendering command output. */
