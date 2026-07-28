@@ -17,13 +17,13 @@ check-bl33:
 
 lk:
 	@mkdir -p "$(OUT)"
-	$(MAKE) -C lk PROJECT=qemu-arm64 BUILDROOT="$(LK_BUILDROOT)" \
+	@$(MAKE) -C lk PROJECT=qemu-arm64 BUILDROOT="$(LK_BUILDROOT)" \
 		ARCH_arm64_TOOLCHAIN_PREFIX="$(CROSS_COMPILE)"
 	@cp "$(LK_BUILDROOT)/build-qemu-arm64/lk.bin" "$(LK_BIN)"
 
 tfa: check-bl33 lk
 	@mkdir -p "$(OUT)/tf-a"
-	$(MAKE) -C tf-a BUILD_BASE="$(TF_A_BUILD)" PLAT=qemu DEBUG=1 \
+	@$(MAKE) -C tf-a BUILD_BASE="$(TF_A_BUILD)" PLAT=qemu DEBUG=1 \
 		SPD=trusty TRUSTY_SPD_WITH_GENERIC_SERVICES=1 \
 		QEMU_USE_GIC_DRIVER=QEMU_GICV3 \
 		ENABLE_SVE_FOR_NS=0 ENABLE_SME_FOR_NS=0 \

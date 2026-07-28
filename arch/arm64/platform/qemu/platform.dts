@@ -135,7 +135,7 @@
 
 	memory@40000000 {
 		device_type = "memory";
-		reg = <0x0 0x40000000 0x0 0x40000000>;
+		reg = <0x0 0x40000000 0x0 0x60000000>;
 	};
 
 	reserved-memory {
@@ -578,8 +578,8 @@
 			#size-cells = <2>;
 			beau,name = "Linux-2";
 			load-order = "pre-std";
-			beau,static-mem = <0x0 0x48000000 0x0 0x08000000>;
-			beau,pstore = <0x0 0x4fc00000 0x0 0x00400000>;
+			beau,static-mem = <0x0 0x80000000 0x0 0x10000000>;
+			beau,pstore = <0x0 0x8fc00000 0x0 0x00400000>;
 			direct-map;
 			cpu-affinity = <2 4 6 7>;
 			guest-flags = "static", "trusty-client";
@@ -604,8 +604,8 @@
 				reg = <0x0 0x76000000 0x0 0x0>;
 				size-source = "symbol";
 				size-symbol = "BEAU_LINUX_VM2_IMAGE_SIZE";
-				load-addr = <0x0 0x48200000>;
-				entry-addr = <0x0 0x48200000>;
+				load-addr = <0x0 0x80200000>;
+				entry-addr = <0x0 0x80200000>;
 			};
 
 			vboot@74000000 {
@@ -614,17 +614,17 @@
 				reg = <0x0 0x74000000 0x0 0x0>;
 				size-source = "symbol";
 				size-symbol = "BEAU_LINUX_INITRAMFS_SIZE";
-				load-addr = <0x0 0x4c000000>;
+				load-addr = <0x0 0x84000000>;
 			};
 
-			vboot@4f000000 {
+			vboot@8f000000 {
 				compatible = "beau,device-tree", "beau,vboot";
 				tag = "dtb-vm2";
 				source = "symbol";
 				addr-symbol = "arm64_beau_linux_vm2_dtb_start";
 				size-source = "symbol";
 				size-symbol = "arm64_beau_linux_vm2_dtb_size";
-				reg = <0x0 0x4f000000 0x0 0x0>;
+				reg = <0x0 0x8f000000 0x0 0x0>;
 			};
 
 			pci-devices {
@@ -634,7 +634,7 @@
 					beau,vbdf = <0x0008>;
 					beau,stream-id = <0x0008>;
 					beau,pbar-base = <0x0 0x10000000>;
-					beau,vbar-base = <0x0 0x80000000>;
+					beau,vbar-base = <0x0 0xa0000000>;
 				};
 
 				pcie-net {
@@ -658,8 +658,8 @@
 			#size-cells = <2>;
 			beau,name = "Linux-3";
 			load-order = "pre-std";
-			beau,static-mem = <0x0 0x58000000 0x0 0x08000000>;
-			beau,pstore = <0x0 0x5fc00000 0x0 0x00400000>;
+			beau,static-mem = <0x0 0x90000000 0x0 0x10000000>;
+			beau,pstore = <0x0 0x9fc00000 0x0 0x00400000>;
 			direct-map;
 			cpu-affinity = <3 5 6 7>;
 			guest-flags = "static";
@@ -684,8 +684,8 @@
 				reg = <0x0 0x7c000000 0x0 0x0>;
 				size-source = "symbol";
 				size-symbol = "BEAU_LINUX_VM3_IMAGE_SIZE";
-				load-addr = <0x0 0x58200000>;
-				entry-addr = <0x0 0x58200000>;
+				load-addr = <0x0 0x90200000>;
+				entry-addr = <0x0 0x90200000>;
 			};
 
 			vboot@74000000 {
@@ -694,17 +694,17 @@
 				reg = <0x0 0x74000000 0x0 0x0>;
 				size-source = "symbol";
 				size-symbol = "BEAU_LINUX_INITRAMFS_SIZE";
-				load-addr = <0x0 0x5c000000>;
+				load-addr = <0x0 0x94000000>;
 			};
 
-			vboot@5f000000 {
+			vboot@9f000000 {
 				compatible = "beau,device-tree", "beau,vboot";
 				tag = "dtb-vm3";
 				source = "symbol";
 				addr-symbol = "arm64_beau_linux_vm3_dtb_start";
 				size-source = "symbol";
 				size-symbol = "arm64_beau_linux_vm3_dtb_size";
-				reg = <0x0 0x5f000000 0x0 0x0>;
+				reg = <0x0 0x9f000000 0x0 0x0>;
 			};
 		};
 	};

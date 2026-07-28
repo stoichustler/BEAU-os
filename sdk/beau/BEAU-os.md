@@ -255,7 +255,7 @@ make ARCH=arm64 PLATFORM=qemu CROSS_COMPILE=aarch64-none-elf- -j"$(getconf _NPRO
 ```text
 -machine virt,virtualization=on,gic-version=3,its=on,iommu=smmuv3
 -global arm-smmuv3.stage=2
--cpu cortex-a57 -smp 8 -m 1024M
+-cpu cortex-a57 -smp 8 -m 1536M
 -kernel out/qemu_out/beau.debug.out
 ```
 
@@ -274,14 +274,14 @@ console:\>
 
 ### 5.1 QEMU `virt`
 
-主机：8 pCPU、1 GiB RAM、GICv3+ITS、PL011、PCIe ECAM、SMMUv3。
+主机：8 pCPU、1.5 GiB RAM、GICv3+ITS、PL011、PCIe ECAM、SMMUv3。
 
 | VM | 角色 | RAM | vCPU 到 pCPU | 客体入口 | 控制台/设备 |
 |---|---|---|---|---|---|
 | VM0 Zephyr | service VM、RTOS | `0x42000000`, 96 MiB | `0->0`, `1->4` | `0x42000000` | vPL011、IPC、WDT |
 | VM1 RT-Thread | prelaunch RTOS | `0x60000000`, 128 MiB | `0->1`, `1->5` | `0x60080000` | vPL011、WDT |
-| VM2 Linux-2 | prelaunch backend | `0x48000000`, 128 MiB | `0->2`, `1->4`, `2->6`, `3->7` | `0x48200000` | virtio-console、KBE、vPCI 直通 |
-| VM3 Linux-3 | prelaunch frontend | `0x58000000`, 128 MiB | `0->3`, `1->5`, `2->6`, `3->7` | `0x58200000` | virtio-console、virtio proxy 前端 |
+| VM2 Linux-2 | prelaunch backend | `0x80000000`, 256 MiB | `0->2`, `1->4`, `2->6`, `3->7` | `0x80200000` | virtio-console、KBE、vPCI 直通 |
+| VM3 Linux-3 | prelaunch frontend | `0x90000000`, 256 MiB | `0->3`, `1->5`, `2->6`, `3->7` | `0x90200000` | virtio-console、virtio proxy 前端 |
 
 这里的 `cpu-affinity` 是有序数组，不是无序 bitmap。数组第 N 项就是 vCPU N 的
 pCPU。运行时仍保留 bitmap，用于集合、共享和权限检查。
@@ -1058,6 +1058,174 @@ ARM64 dispatcher 自身也是权限表：
 
 ### 13.3 Trusty TEE 版本查询
 
+#### 整体启动流程
+
+启用 QEMU `--tee` 时，以下流程按源码执行顺序连接 secure boot、BEAU EL2 初始化、静态
+VM 创建和客体首次执行。图中的 `path:function()` 是后续跟踪代码时应打开的实际位置。
+
+- Boot Loader stage 1 (`BL1`) AP Trusted ROM
+- Boot Loader stage 2 (`BL2`) Trusted Boot Firmware
+- Boot Loader stage 3-1 (`BL31`) EL3 Runtime Software
+- Boot Loader stage 3-2 (`BL32`) Secure-EL1 Payload (optional)
+- Boot Loader stage 3-3 (`BL33`) Non-trusted Firmware
+
+```text
+                                    Resident                         Noraml
+      Trusted                       Runtime                          World
+      Bootstrap                     Firmware                         Bootloader
+ ┌──► EL3                      ┌──► EL3                         ┌──► EL2
+ │                             │                                │
+BL1  ──►  BL2  ──►  BL1  ──►  BL31  ──►  BL32  ──►  BL31  ──►  BL33
+           │                              │
+           └──► Trusted                   └──► Trusted OS
+                Bootloader                     EL1S
+                EL1S
+```
+
+`bl1_entrypoint` implemented in bl1_entrypoint.S:
+
+- do primary CPU (CPU0) cold boot
+- secondary CPUs stay in `wfe` loop
+
+
+##### 1. Secure boot 到 BEAU EL2
+
+```text
+TF-A BL1 / BL2 / BL31 -> Trusty LK BL32 -> BEAU BL33
+                                              |
+                                              v
+arch/arm64/boot/entry.S:_start                 boot pCPU
+    |
+    +--> msr daifset, #0xf                     mask Debug, SError, IRQ, FIQ
+    |
+    +--> mrs x2, CurrentEL; cmp x2, EL2
+    |       |
+    |       `--> not EL2: b _start_hang -> wfi -> b _start_hang
+    |
+    +--> msr spsel, #1; isb                    select SP_EL2
+    |
+    +--> adrp/add arm64_exception_vectors
+    |    -> msr vbar_el2, x2; isb              install EL2 vector base
+    |
+    +--> _bss_start .. _bss_end
+    |    -> str xzr, [x2], #8 loop             zero C global/static storage
+    |
+    +--> adrp/add _boot_stack_end; mov sp, x4  install temporary SP_EL2
+    |
+    +--> Image-header fallback: x1 == 0 ? x1 = x0 : keep x1
+    |       raw-loader ABI: x1 is DTB physical address
+    |
+    +--> mrs x0, mpidr_el1                     x0 is boot pCPU affinity
+    `--> bl init_primary_pcpu(x0, x1)
+            |
+            `--> arch/arm64/init.c:init_primary_pcpu(mpidr, fdt_paddr)
+```
+
+`_start` owns only the state needed before C code may run: masked asynchronous exceptions,
+EL2 stack selection, EL2 vector base, zeroed BSS and a temporary boot stack. `bl` 返回后不会
+继续启动另一条路径；`init_primary_pcpu()` 若意外返回，入口同样落入 `_start_hang` 的低功耗
+`WFI` 循环。TF-A/Trusty 不创建 BEAU VM；它们把控制权交给 BL33，之后由 BEAU 完成 host 与
+guest 初始化。
+
+```text
+PSCI CPU_ON
+    |
+    v
+arch/arm64/boot/entry.S:_start_secondary_psci  secondary pCPU
+    |
+    +--> msr daifset, #0xf
+    +--> msr spsel, #1; isb
+    +--> VBAR_EL2 = arm64_exception_vectors; isb
+    +--> mov sp, x0                            PSCI-provided EL2 stack
+    +--> mrs x0, mpidr_el1
+    `--> bl init_secondary_pcpu(x0)
+            |
+            `--> arch/arm64/init.c:init_secondary_pcpu(mpidr)
+```
+
+次核不重复清 BSS，也不重新选择平台策略；它只建立本核的异常与栈上下文，然后加入
+`init.c` 的公共 pCPU 初始化路径。主核在后续 `start_pcpus()` 发起 `PSCI CPU_ON`，所有 AP
+到达运行态后，才释放静态 VM 的启动。
+
+##### 2. BEAU EL2 初始化到静态 VM 创建
+
+```text
+init_primary_pcpu()
+    |
+    +--> sdk/bsp/arm64/platform.c:arm64_platform_init_early()
+    |     -> embedded platform.dts -> CPU topology
+    |
+    +--> arm64_platform_init()
+    |     -> host memory, GIC, SMMU, PCI, and board policy
+    |
+    +--> arm64_platform_init_post_console()
+    |     -> sdk/bsp/arm64/vconfig.c:arm64_parse_vm_config_from_dts()
+    |     -> vm_configs[]: RAM, vCPU affinity, images, entry, virtual devices
+    |
+    +--> init_paging() + arm64_gicv3_init_early()
+    `--> init_pcpu_comm_post()
+            |
+            +--> init_interrupt() + timer_init() + init_sched()
+            +--> BSP: start_pcpus() -> wait_pcpus_running()
+            +--> BSP: vm_publish_static_boot_state()
+            `--> init_guest_mode() -> core/vm.c:launch_vms(pcpu_id)
+                    |
+                    | per configured VM BSP pCPU, for VM0..VM3
+                    v
+                    create_vm()
+                    +--> arch/arm64/guest/vm.c:arch_init_vm()
+                    |     -> stage-2 identity map, vGIC, virtual devices/MMIO
+                    +--> create_vm_vcpus() -> core/vcpu.c:create_vcpu()
+                    |     -> one scheduler thread for each configured pCPU
+                    +--> sdk/bsp/boot/guest/vboot_info.c:init_vm_boot_info()
+                    +--> core/vm_load.c:prepare_os_image()
+                    |     -> rawimage_loader() copies image/FDT into guest RAM
+                    `--> core/vm.c:start_vm()
+                          -> arch_vm_prepare_bsp() -> launch_vcpu(BSP)
+```
+
+`launch_vms()` is reached by every online pCPU, but each VM is constructed only by its
+configured BSP pCPU. A failure in VM creation or image preparation prevents `start_vm()`
+and tears down the partial VM.
+
+##### 3. vCPU 首次进入、客体 EL1 与 EL2 回流
+
+```text
+launch_vcpu(BSP)
+    |
+    v
+scheduler selects vCPU thread
+    |
+    +--> arch/arm64/guest/vcpu.c:arch_context_switch_in()
+    |     -> load_vcpu(): VTTBR/VTCR, EL1 sysregs, vtimer, vGIC
+    |
+    +--> arch_vcpu_thread()
+    |     -> arm64_process_vcpu_requests()
+    `--> arch/arm64/guest/entry.S:arm64_run_vcpu()
+            -> copies vcpu->arch.regs to EL2 stack frame
+            -> arch/arm64/vector.S:vcpu_exit_return
+            -> restores ELR_EL2/SPSR_EL2/SP_EL1 and GPRs
+            -> ERET
+                |
+                v
+            guest EL1 first instruction
+                +--> VM0 Zephyr       service RTOS
+                +--> VM1 RT-Thread    prelaunch RTOS
+                +--> VM2 Linux-2      prelaunch backend
+                `--> VM3 Linux-3      prelaunch frontend
+
+guest trap / IRQ
+    -> arch/arm64/vector.S:guest_vector_entry
+    -> arch/arm64/guest/vcpu_exit.c:dispatch_vcpu_trap() or dispatch_vcpu_irq()
+    -> emulate, inject virtual IRQ, process request, or schedule
+    -> vcpu_exit_return -> ERET to the selected guest EL1 context
+```
+
+按图阅读时，先追 `entry.S` 和 `init.c` 以理解 EL2 启动顺序；再追 `platform.c`、
+`vconfig.c` 和 `vm.c` 以理解配置如何成为 VM；最后追 `vcpu.c`、`guest/entry.S`、
+`vector.S` 和 `vcpu_exit.c` 以理解每次 EL1/EL2 往返。`vcpu->arch` 保存可迁移的客体状态，
+EL2 栈中的寄存器帧仅用于本次进入或退出。
+
 QEMU 的 `--tee` 启动链为 `TF-A -> Trusty LK -> BEAU`。BEAU shell 的 `tee version`
 使用 Trusty `SMC_FC_GET_VERSION_STR` 读取实际 LK 构建字符串；先查询受限长度，再逐字符
 读取，且只接受最多 128 个可打印 ASCII 字符。它不调用会锁定 Trusty 全局协商状态的
@@ -1065,8 +1233,8 @@ QEMU 的 `--tee` 启动链为 `TF-A -> Trusty LK -> BEAU`。BEAU shell 的 `tee 
 
 `tee dump` 不重复构建字符串。它只通过 `SMC_FC_GET_SMP_MAX_CPUS` 获取 Trusty 的最大
 SMP CPU 数，并读取 BEAU 从 VM2 成功 API 协商后原子缓存的 ABI 版本。尚无成功协商记录时
-显示 `smc.api-version: unavailable`；dump 不主动调用 API-version SMC，因而不会改变
-Trusty 的全局协商状态。CPU 查询失败时输出 `Trusty TEE system information unavailable`，
+显示 `smc.api-version: N/A`；dump 不主动调用 API-version SMC，因而不会改变
+Trusty 的全局协商状态。CPU 查询失败时输出 `Trusty TEE Information: N/A`，
 不会输出部分 dump。
 
 两个命令只在 QEMU 平台尝试 secure-world SMC；未使用 Trusty firmware、SMC 返回未知值或

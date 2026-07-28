@@ -96,7 +96,7 @@ def parse_args():
     parser.add_argument("--kernel", default=ROOT / "out/qemu_out/beau.debug.out", type=relpath)
     parser.add_argument("--qemu", default=os.getenv("QEMU_SYSTEM_AARCH64", "qemu-system-aarch64"))
     parser.add_argument("--smp", default=getenv("BEAU_QEMU_SMP", "8"))
-    parser.add_argument("-m", "--memory", default=getenv("BEAU_QEMU_MEM", "1024M"))
+    parser.add_argument("-m", "--memory", default=getenv("BEAU_QEMU_MEM", "1536M"))
     parser.add_argument("--linux-image", default=None, type=relpath)
     parser.add_argument("--linux-vm1-image", default=None, type=relpath, help=argparse.SUPPRESS)
     parser.add_argument("--linux-vm2-image", default=ROOT / "sdk/imgs/linux/Image", type=relpath)

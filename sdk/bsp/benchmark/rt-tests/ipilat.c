@@ -209,7 +209,7 @@ static void ipilat_report(uint64_t generation)
 		const struct ipilat_target *target = &ipilat_targets[pcpu_id];
 
 		(void)snprintf(&ipilat_output[offset], sizeof(ipilat_output) - offset,
-			"│ %3hu %-10s %5lu  %6lu/%6lu/%6lu       %6lu/%6lu/%6lu  %4u %7u\r\n",
+			"│ %3hu %-10s %5lu  %06lu/%06lu/%06lu       %06lu/%06lu/%06lu  %4u %7u\r\n",
 			pcpu_id, ipilat_state_name(target->state), target->arrival.count,
 			ticks_to_us(target->arrival.min_ticks), ticks_to_us(ipilat_average(&target->arrival)),
 			ticks_to_us(target->arrival.max_ticks), ticks_to_us(target->roundtrip.min_ticks),

@@ -45,7 +45,7 @@ def parse_args():
     parser.add_argument("-k", "--kernel", default=kernel, type=relpath)
     parser.add_argument("--qemu", default=os.getenv("QEMU_SYSTEM_AARCH64", "qemu-system-aarch64"))
     parser.add_argument("--smp", default=getenv("BEAU_QEMU_SMP", "8"))
-    parser.add_argument("-m", "--memory", default=getenv("BEAU_QEMU_MEM", "1024M"))
+    parser.add_argument("-m", "--memory", default=getenv("BEAU_QEMU_MEM", "1536M"))
     parser.add_argument(
         "--pmu-icount",
         action="store_true",
@@ -208,6 +208,10 @@ def tee_firmware_cmd(args):
     ]
 
 
+def tee_clean_cmd():
+    return ["make", "-C", str(ROOT / "sdk/trusty"), "clean"]
+
+
 def main():
     args = parse_args()
     env = os.environ.copy()
@@ -273,6 +277,7 @@ def main():
             for cmd in build_cmds:
                 print(render(cmd, args.toolchains))
             if args.tee:
+                print(render(tee_clean_cmd(), args.toolchains))
                 print(render(tee_firmware_cmd(args), args.toolchains))
         print(render(qemu_cmd))
         return
@@ -290,6 +295,7 @@ def main():
         for cmd in build_cmds:
             subprocess.run(cmd, cwd=ROOT, env=env, check=True)
         if args.tee:
+            subprocess.run(tee_clean_cmd(), cwd=ROOT, env=env, check=True)
             subprocess.run(tee_firmware_cmd(args), cwd=ROOT, env=env, check=True)
 
     if args.tee:

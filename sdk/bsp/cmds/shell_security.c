@@ -284,18 +284,18 @@ static int32_t shell_tee_dump(void)
 
 	status = arm64_trusty_get_system_info(&info);
 	if (status != 0) {
-		shell_puts("Trusty TEE system information unavailable\r\n");
+		shell_puts("Trusty TEE Information: N/A\r\n");
 		return status;
 	}
 
-	shell_puts("Trusty TEE system information\r\n");
+	shell_puts("Trusty TEE Information\r\n");
 	(void)snprintf(line, sizeof(line), "smp.max-cpus: %u\r\n", info.smp_max_cpus);
 	shell_puts(line);
 	if (info.api_version_valid) {
 		(void)snprintf(line, sizeof(line), "smc.api-version: %u\r\n",
 			info.api_version);
 	} else {
-		(void)snprintf(line, sizeof(line), "smc.api-version: unavailable\r\n");
+		(void)snprintf(line, sizeof(line), "smc.api-version: N/A\r\n");
 	}
 	shell_puts(line);
 	(void)memset(line, 0U, sizeof(line));

@@ -10,8 +10,8 @@
 	chosen {
 		stdout-path = "/virtio_mmio@a000000";
 		bootargs = "console=hvc0 rdinit=/init loglevel=7";
-		linux,initrd-start = <0x0 0x5c000000>;
-		linux,initrd-end = <0x0 0x5d000000>;
+		linux,initrd-start = <0x0 0x94000000>;
+		linux,initrd-end = <0x0 0x95000000>;
 	};
 
 	psci {
@@ -93,9 +93,9 @@
 		cache-sets = <512>;
 	};
 
-	memory@58000000 {
+	memory@90000000 {
 		device_type = "memory";
-		reg = <0x0 0x58000000 0x0 0x08000000>;
+		reg = <0x0 0x90000000 0x0 0x10000000>;
 	};
 
 	reserved-memory {
@@ -103,9 +103,9 @@
 		#size-cells = <2>;
 		ranges;
 
-		ramoops@5fc00000 {
+		ramoops@9fc00000 {
 			compatible = "ramoops";
-			reg = <0x0 0x5fc00000 0x0 0x00400000>;
+			reg = <0x0 0x9fc00000 0x0 0x00400000>;
 			record-size = <0x00200000>;
 			console-size = <0x00200000>;
 			mem-type = <2>;
