@@ -14,18 +14,27 @@ unsigned long __stack_chk_guard;
 #endif
 
 static uint64_t arm64_security_bsp_features;
+static uint64_t arm64_security_bsp_pauth_algorithm;
 static uint64_t arm64_security_host_feature_mask;
 static bool arm64_security_initialized;
 static bool arm64_security_finalized;
+
+static uint64_t arm64_security_pauth_algorithm(void)
+{
+	uint64_t isar1 = arm64_sysreg_read(s3_0_c0_c6_1);
+	uint64_t isar2 = arm64_sysreg_read(s3_0_c0_c6_2);
+
+	return (isar1 & ID_AA64ISAR1_ADDR_PAUTH_MASK) |
+		(isar2 & ID_AA64ISAR2_APA3_MASK);
+}
 
 static uint64_t arm64_security_collect_features(void)
 {
 	uint64_t features = 0UL;
 	uint64_t pfr1 = arm64_sysreg_read(s3_0_c0_c4_1);
 	uint64_t isar0 = arm64_sysreg_read(s3_0_c0_c6_0);
-	uint64_t isar1 = arm64_sysreg_read(s3_0_c0_c6_1);
 
-	if ((isar1 & ID_AA64ISAR1_PAUTH_MASK) != 0UL) {
+	if (arm64_security_pauth_algorithm() != 0UL) {
 		features |= ARM64_SECURITY_FEATURE_PAUTH;
 	}
 	if ((pfr1 & ID_AA64PFR1_BT_MASK) != 0UL) {
@@ -57,6 +66,7 @@ static uint64_t arm64_security_collect_features(void)
 void arm64_security_early_init(void)
 {
 	arm64_security_bsp_features = arm64_security_collect_features();
+	arm64_security_bsp_pauth_algorithm = arm64_security_pauth_algorithm();
 	__atomic_store_n(&arm64_security_host_feature_mask,
 		arm64_security_bsp_features, __ATOMIC_RELEASE);
 	arch_random_bootstrap_init();
@@ -66,14 +76,21 @@ void arm64_security_early_init(void)
 void arm64_security_validate_pcpu(uint16_t pcpu_id)
 {
 	uint64_t local_features;
+	uint64_t local_pauth_algorithm;
 
 	if (!__atomic_load_n(&arm64_security_initialized, __ATOMIC_ACQUIRE)) {
 		return;
 	}
 
 	local_features = arm64_security_collect_features();
+	local_pauth_algorithm = arm64_security_pauth_algorithm();
 	(void)__atomic_fetch_and(&arm64_security_host_feature_mask, local_features,
 		__ATOMIC_ACQ_REL);
+	if (local_pauth_algorithm != arm64_security_bsp_pauth_algorithm) {
+		(void)__atomic_fetch_and(&arm64_security_host_feature_mask,
+			~ARM64_SECURITY_FEATURE_PAUTH, __ATOMIC_ACQ_REL);
+		LOG_WRN("SEC:    CPU%hu PAC algorithm mismatch", pcpu_id);
+	}
 	if ((local_features & arm64_security_bsp_features) !=
 		arm64_security_bsp_features) {
 		LOG_WRN("SEC:    CPU%hu security capability mismatch", pcpu_id);
@@ -92,9 +109,18 @@ void arm64_security_finalize(void)
 	if ((features & ARM64_SECURITY_FEATURE_RNG) != 0UL) {
 		arch_random_publish_strong();
 	}
+#if CONFIG_ARM64_PTRAUTH
+	arm64_ptrauth_finalize(features);
+#endif
 	arm64_security_finalized = true;
 	LOG_INF("SEC:    PAC:%s BTI:%s RNG:%s",
-		(features & ARM64_SECURITY_FEATURE_PAUTH) != 0UL ? "detected/off" : "off",
+		(features & ARM64_SECURITY_FEATURE_PAUTH) != 0UL ?
+#if CONFIG_ARM64_PTRAUTH
+		(arm64_ptrauth_enabled() ? "armed" : "detected/off") :
+#else
+		"detected/off" :
+#endif
+		"off",
 		(features & ARM64_SECURITY_FEATURE_BTI) != 0UL ? "detected/off" : "off",
 		arch_random_strong_ready() ? "RNDR" : "degraded");
 }

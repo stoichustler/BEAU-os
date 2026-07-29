@@ -12,6 +12,7 @@
 	.type obj, %object;  \
 obj:
 
+
 #define FUNC(fn)         \
 	.globl fn;           \
 	.type fn, %function; \
@@ -22,16 +23,20 @@ fn:
 	.globl label;        \
 label:
 
+
 #define LABEL_ALIGN(label, alignment)  \
 	.align alignment;                  \
 	LABEL(label)
+
 
 #define FUNC_ALIGN(fn, alignment) \
 	.align alignment;              \
 	FUNC(fn)
 
+
 #define END(fn)         \
 	.size fn, . - fn
+
 
 #define ASM_EMBED_BIN(bin, path)                                      \
 	.section .rodata.embed.bin, "a", %progbits;                       \
@@ -44,5 +49,13 @@ arm64_##bin##_end:                                                    \
 	.globl arm64_##bin##_size;                                        \
 	.set arm64_##bin##_size, arm64_##bin##_end - arm64_##bin##_start; \
 	.p2align 12
+
+/* [20260729] BEAU OS: macro used to take the PC-relative address of 'sym' within
+ * the range of +/- 4GB of the PC.
+ */
+.macro loadl, xn, sym
+	adrp   \xn, \sym
+	add    \xn, \xn, :lo12:\sym
+.endm
 
 #endif /* ARM64_MACRO_H */

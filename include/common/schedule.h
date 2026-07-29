@@ -119,6 +119,12 @@ struct sched_cbs_pcpu_stats {
 struct thread_object;
 typedef void (*thread_entry_t)(struct thread_object *obj);
 typedef void (*switch_t)(struct thread_object *obj);
+
+struct arm64_ptrauth_key {
+	uint64_t lo;
+	uint64_t hi;
+};
+
 struct thread_object {
 	struct list_head node;
 	char name[16];
@@ -146,6 +152,8 @@ struct thread_object {
 	uint64_t host_sp;
 	uint64_t host_stack_base;
 	uint64_t host_stack_size;
+	struct arm64_ptrauth_key ptrauth_key;
+	bool ptrauth_return_authenticated;
 	switch_t switch_out;
 	switch_t switch_in;
 
@@ -307,7 +315,9 @@ void schedule(void);
 
 void arch_send_reschedule_request(uint16_t pcpu_id);
 void arch_default_idle(__unused struct thread_object *obj);
-void arch_switch_to(void *prev_sp, void *next_sp);
+void arch_switch_to(void *prev_sp, void *next_sp,
+	const struct arm64_ptrauth_key *next_key, bool authenticate_return,
+	bool ptrauth_active);
 uint64_t arch_setup_thread_stack(struct thread_object *obj, uint8_t *stack, uint64_t stack_size);
 void run_idle_thread(void);
 #endif /* SCHEDULE_H */

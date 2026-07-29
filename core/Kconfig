@@ -125,7 +125,7 @@ config VM_WDT_PRINT_PERIOD_MS
 
 config VM_WDT_TIMEOUT_MS
 	int "VM watchdog timeout in milliseconds"
-	default 15000
+	default 25000
 	help
 	  VM heartbeat age that is considered timed out by the watchdog.
 

@@ -75,6 +75,15 @@ config ARM64_MTE
 	  path. The initial implementation protects BEAU-owned page-table pools
 	  and does not expose MTE to guests.
 
+config ARM64_PTRAUTH
+	bool "ARM64 EL2 Pointer Authentication"
+	default y
+	help
+	  Build EL2 return-address pointer authentication support. PAC is enabled
+	  only after every online pCPU reports PAC and RNDR support; unsupported or
+	  mixed-capability systems retain the architectural HINT fallback. Guests do
+	  not receive PAC capability or access to EL2 PAC keys.
+
 config PERF
 	bool "ARM64 EL2 sampling profiler"
 	default n

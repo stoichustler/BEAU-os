@@ -79,6 +79,7 @@ endif
 endef
 KCONFIG_BOOL_VARS := \
 	CONFIG_AARCH64_IMAGE_HEADER \
+	CONFIG_ARM64_PTRAUTH \
 	CONFIG_ACPI_PARSE_ENABLED \
 	CONFIG_ARM64_MTE \
 	CONFIG_ARM64_SPE \
@@ -705,7 +706,7 @@ endif
 
 $(HV_OBJDIR)/%.o: %.S $(HEADERS) $(ARCH_PRE_BUILD_TARGETS)
 	$(Q)[ ! -e $@ ] && mkdir -p $(dir $@) && mkdir -p $(HV_MODDIR); \
-	echo "CC                 $(notdir $@)"; \
+	echo "AS                 $(notdir $@)"; \
 	$(CC) $(patsubst %, -I%, $(INCLUDE_PATH)) -I. $(ASFLAGS) $(ARCH_ASFLAGS) -c $< -o $@ -MMD -MT $@
 
 .DEFAULT_GOAL := all

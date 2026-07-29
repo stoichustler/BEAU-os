@@ -24,7 +24,7 @@
 	 *       |       starts executing the next thread body
 	 *       |
 	 *       v
-	 *   arch_switch_to(&prev->host_sp, &next->host_sp)
+	 *   arch_switch_to(&prev->host_sp, &next->host_sp, next_key, resume, pac)
 	 *       |
 	 *       +--> build a small host stack frame on prev's current SP
 	 *       +--> publish that SP through prev->host_sp
@@ -47,6 +47,16 @@
 	 *     because the stores/loads below are the ownership transfer.
 	 */
 FUNC_ALIGN(arch_switch_to, 4)
+	/* Keep the incoming PAC key pointer while x2 is reused for stack transfer. */
+	mov	x5, x2
+	/*
+	 * BL arch_switch_to() creates a fresh, unsigned LR. Sign it while SP and
+	 * the outgoing thread's APIA key still match; AUTIASP below runs only
+	 * after the incoming frame has restored that same SP and key.
+	 */
+	cbz	x4, 0f
+	hint	#25
+0:
 	/*
 	 * Reserve the exact frame described by struct stack_frame.  C and assembly
 	 * share offsets through asm/cpu.h; changing the layout in only one side
@@ -94,6 +104,15 @@ FUNC_ALIGN(arch_switch_to, 4)
 	str	x2, [x0]
 	ldr	x2, [x1]
 	mov	sp, x2
+	cbz	x4, 1f
+	cbz	x5, 1f
+	ldp	x6, x7, [x5]
+	.arch_extension pauth
+	msr	APIAKeyLo_EL1, x6
+	msr	APIAKeyHi_EL1, x7
+	.arch_extension nopauth
+	isb
+1:
 
 	/*
 	 * Restore the preserved host context from the incoming stack.  For an
@@ -120,5 +139,9 @@ FUNC_ALIGN(arch_switch_to, 4)
 	 * thread.  The physical pCPU continued executing; only the host stack and
 	 * preserved register set changed.
 	 */
+	cbz	x4, 2f
+	cbz	x3, 2f
+	hint	#29
+2:
 	ret
 END(arch_switch_to)

@@ -658,9 +658,14 @@ OpenBSD 的 `copyin/copyout`、user address check 或 PCB onfault ABI。`memcpy`
 选择逆向 copy，汇编不访问 guest VA 或 MMIO。
 
 EL2 安全能力在 BSP 上先采集 PAC、BTI 和 RNDR，再与每个已启动 pCPU 的能力取交集。
-PAC/BTI 当前只记录为 `detected/off`，因为尚未引入 PAC key 生命周期、完整异常路径
-保护和编译器 branch-protection 策略；访客的 ID 寄存器会隐藏 PAC、BTI、RNDR，直到
-BEAU 提供对应虚拟化 ABI。RNDR/RNDRRS 仅在 ID 寄存器声明支持时执行，并须在 BSP
+启用 `CONFIG_ARM64_PTRAUTH` 时，BEAU 只有在所有在线 pCPU 同时具备 PAC 与 RNDR、PAC
+算法字段 `APA/API/APA3` 完全一致，且
+强随机源已发布后，才为每个 host scheduler thread 生成独立 APIA key，并在进入 idle 的
+不返回边界设置 `SCTLR_EL2.EnIA`。调度汇编在恢复已运行线程的 LR 前装载该线程 key 并
+认证返回地址；能力或熵条件不足时 PAC 指令保持 HINT fallback，系统继续以未启用 PAC
+的路径运行。访客的 ID 寄存器始终隐藏 PAC、BTI、RNDR；进入 EL1 前 BEAU 清除
+`HCR_EL2.API` 与 `HCR_EL2.APK`，因此访客无法执行 PAC 指令或访问 PAC key，也不会
+读取、修改或使用 EL2 key。RNDR/RNDRRS 仅在 ID 寄存器声明支持时执行，并须在 BSP
 成功取得种子且全部 pCPU 支持后才发布强熵接口；没有硬件熵时，栈 cookie 可使用现有
 计数器混合降级值，但该值绝不宣称为密码学随机数。
 

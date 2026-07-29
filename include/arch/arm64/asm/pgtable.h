@@ -140,6 +140,7 @@ struct arm64_memory_attr {
 #define SCTLR_EL2_I			(1UL << 12U)
 #define SCTLR_EL2_SA			(1UL << 3U)
 #define SCTLR_EL2_WXN			(1UL << 19U)
+#define SCTLR_EL2_ENIA			(1UL << 31U)
 #define SCTLR_EL2_TCF_SHIFT		40U
 #define SCTLR_EL2_TCF_MASK		(3UL << SCTLR_EL2_TCF_SHIFT)
 #define SCTLR_EL2_TCF_SYNC		(1UL << SCTLR_EL2_TCF_SHIFT)

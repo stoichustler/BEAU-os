@@ -63,6 +63,8 @@
 static void init_pcpu_comm_post(void);
 static volatile bool boot_vm_launch_released;
 
+static void arm64_enter_runtime(void) __attribute__((noreturn));
+
 static void arm64_release_vm_launch(void)
 {
 	cpu_write_memory_barrier();
@@ -203,6 +205,17 @@ static void init_guest_mode(uint16_t pcpu_id)
 	launch_vms(pcpu_id);
 }
 
+static void arm64_enter_runtime(void)
+{
+#if CONFIG_ARM64_PTRAUTH
+	if (arm64_ptrauth_prepare_current_cpu()) {
+		arm64_ptrauth_activate_and_run_idle(arm64_ptrauth_current_cpu_key());
+	}
+#endif
+	run_idle_thread();
+	__builtin_unreachable();
+}
+
 static void init_pcpu_comm_post(void)
 {
 	uint16_t pcpu_id = get_pcpu_id();
@@ -259,5 +272,5 @@ static void init_pcpu_comm_post(void)
 
 	init_guest_mode(pcpu_id);
 
-	run_idle_thread();
+	arm64_enter_runtime();
 }

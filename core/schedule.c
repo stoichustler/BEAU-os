@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <hv_pm.h>
 #include <asm/guest/vm_reset.h>
+#include <asm/security.h>
 
 static struct list_head thread_list = { &thread_list, &thread_list };
 static uint32_t thread_count;
@@ -815,6 +816,19 @@ void schedule(void)
 
 	/* If we picked different sched object, switch context */
 	if (prev != next) {
+		const struct arm64_ptrauth_key *next_ptrauth_key = NULL;
+		bool authenticate_return = false;
+		bool ptrauth_active = false;
+
+		#if CONFIG_ARM64_PTRAUTH
+		ptrauth_active = arm64_ptrauth_active_current();
+		if (ptrauth_active) {
+			next_ptrauth_key = &next->ptrauth_key;
+			authenticate_return = next->ptrauth_return_authenticated;
+			next->ptrauth_return_authenticated = true;
+		}
+		#endif
+
 		now = cpu_ticks();
 		if (prev != NULL) {
 			TRACE_4I(TRACE_SCHED_NEXT, sched_trace_thread_token(prev),
@@ -836,7 +850,8 @@ void schedule(void)
 		ctl->curr_obj = next;
 		ctl->context_switches++;
 		release_schedule_lock(pcpu_id, rflag);
-		arch_switch_to(&prev->host_sp, &next->host_sp);
+		arch_switch_to(&prev->host_sp, &next->host_sp, next_ptrauth_key,
+			authenticate_return, ptrauth_active);
 	} else {
 		release_schedule_lock(pcpu_id, rflag);
 	}
@@ -1231,6 +1246,9 @@ void run_idle_thread(void)
 	idle->switch_in = NULL;
 	idle->host_stack_base = (uint64_t)&per_cpu(stack, pcpu_id)[0];
 	idle->host_stack_size = CONFIG_STACK_SIZE;
+	#if CONFIG_ARM64_PTRAUTH
+	arm64_ptrauth_bind_idle_thread(idle);
+	#endif
 	idle_params.prio = PRIO_IDLE;
 	init_thread_data(idle, &idle_params);
 

@@ -40,6 +40,9 @@ ifeq ($(CONFIG_PERF),y)
 ARCH_CFLAGS += -mno-omit-leaf-frame-pointer
 endif
 ARCH_CFLAGS += -mno-outline-atomics
+ifeq ($(CONFIG_ARM64_PTRAUTH),y)
+ARCH_CFLAGS += -mbranch-protection=pac-ret+leaf
+endif
 
 ARCH_ASFLAGS +=
 
@@ -76,6 +79,9 @@ endif
 HOST_S_SRCS += arch/arm64/boot/entry.S
 HOST_S_SRCS += arch/arm64/vector.S
 HOST_S_SRCS += arch/arm64/sched.S
+ifeq ($(CONFIG_ARM64_PTRAUTH),y)
+HOST_S_SRCS += arch/arm64/boot/ptrauth.S
+endif
 HOST_S_SRCS += arch/arm64/suspend.S
 HOST_S_SRCS += arch/arm64/asm.S
 HOST_S_SRCS += arch/arm64/copy.S
@@ -114,6 +120,9 @@ HOST_C_SRCS += arch/arm64/timer.c
 HOST_C_SRCS += arch/arm64/notify.c
 HOST_C_SRCS += arch/arm64/trap.c
 HOST_C_SRCS += arch/arm64/security.c
+ifeq ($(CONFIG_ARM64_PTRAUTH),y)
+HOST_C_SRCS += arch/arm64/ptrauth.c
+endif
 HOST_C_SRCS += arch/arm64/pm.c
 HOST_C_SRCS += arch/arm64/pmu.c
 ifeq ($(CONFIG_ARM64_SPE),y)

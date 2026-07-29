@@ -15,6 +15,7 @@
 #include <asm/irq.h>
 #include <asm/cpu.h>
 #include <asm/pmu.h>
+#include <asm/security.h>
 #include <asm/sysreg.h>
 #include <asm/trap.h>
 #include <asm/guest/vcpu_priv.h>
@@ -258,7 +259,11 @@ void load_vcpu(__unused struct acrn_vcpu *vcpu)
 	arm64_vcpu_mpu_load(vcpu);
 	arm64_vtimer_load_current(vcpu);
 	arm64_vgicv3_load_vcpu(vcpu);
-	write_hcr_el2(gctx->hcr_el2);
+	uint64_t hcr = gctx->hcr_el2;
+
+	/* EL2-only PAC: zero API/APK denies guest PAC instructions and key access. */
+	hcr &= ~(HCR_API | HCR_APK);
+	write_hcr_el2(hcr);
 }
 
 void unload_vcpu(__unused struct acrn_vcpu *vcpu)
@@ -437,6 +442,11 @@ uint64_t arch_setup_thread_stack(struct thread_object *obj, uint8_t *stack, uint
 	if (((stack_base | stacktop) & (CPU_STACK_ALIGN - 1UL)) != 0UL) {
 		return 0UL;
 	}
+	#if CONFIG_ARM64_PTRAUTH
+	if (!arm64_ptrauth_prepare_thread(obj)) {
+		return 0UL;
+	}
+	#endif
 	obj->host_stack_base = stack_base;
 	obj->host_stack_size = stack_size;
 	frame = (struct stack_frame *)stacktop;
