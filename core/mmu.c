@@ -637,7 +637,7 @@ static void add_pgtl0(const uint64_t *pgtl1e, uint64_t paddr_start, uint64_t vad
 			if (table->replace_pgentry != NULL) {
 				panic("%s stage-2 mapping overlap at 0x%lx", __func__, vaddr);
 			}
-			LOG_FTL("%s, pgtl0e 0x%lx is already present!\n",
+			LOG_ERR("%s, pgtl0e 0x%lx is already present!\n",
 				__func__, vaddr);
 		} else {
 			table->set_pgentry(pgtl0e, paddr, prot, PGT_LVL0, 1, table);
@@ -675,7 +675,7 @@ static void add_pgtl1(const uint64_t *pgtl2e, uint64_t paddr_start, uint64_t vad
 			if (table->replace_pgentry != NULL) {
 				panic("%s stage-2 mapping overlap at 0x%lx", __func__, vaddr);
 			}
-			LOG_FTL("%s, pgtl1e 0x%lx is already present!\n",
+			LOG_ERR("%s, pgtl1e 0x%lx is already present!\n",
 				__func__, vaddr);
 		} else {
 			if (!table->pgentry_present(*pgtl1e)) {
@@ -726,7 +726,7 @@ static void add_pgtl2(const uint64_t *pgtl3e, uint64_t paddr_start, uint64_t vad
 			if (table->replace_pgentry != NULL) {
 				panic("%s stage-2 mapping overlap at 0x%lx", __func__, vaddr);
 			}
-			LOG_FTL("%s, pgtl2e 0x%lx is already present!\n",
+			LOG_ERR("%s, pgtl2e 0x%lx is already present!\n",
 				__func__, vaddr);
 		} else {
 			if (!table->pgentry_present(*pgtl2e)) {

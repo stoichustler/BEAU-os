@@ -43,7 +43,7 @@ int32_t shell_coredump(int32_t argc, char **argv)
 	}
 
 	if (strncmp(argv[1], "print", sizeof("print")) == 0) {
-		if (!arm64_coredump_print_stored(LOG_INFO)) {
+		if (!arm64_coredump_print_stored()) {
 			shell_puts("COREDUMP: no valid stored snapshot\r\n");
 		}
 		return 0;

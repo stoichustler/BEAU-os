@@ -23,6 +23,7 @@
 #include <hwtdbg.h>
 #include <asm/platform.h>
 #include <asm/cpu.h>
+#include <asm/esr.h>
 #include <asm/irq.h>
 #include <asm/page.h>
 #include <asm/pmu.h>
@@ -177,11 +178,6 @@ static uint64_t arm64_fault_ipa(const struct cpu_regs *regs)
 		(regs->far & FAR_EL2_PAGE_MASK);
 }
 
-static uint32_t arm64_abort_fsc(uint64_t esr)
-{
-	return (uint32_t)(esr & ESR_ABORT_FSC_MASK);
-}
-
 static void dump_vm_stack_trace(struct acrn_vcpu *vcpu, const struct cpu_regs *regs,
 	const char *reason)
 {
@@ -235,7 +231,7 @@ static struct acrn_vcpu *get_exit_vcpu(uint16_t pcpu_id)
 	struct acrn_vcpu *vcpu = get_running_vcpu(pcpu_id);
 
 	if (vcpu == NULL) {
-		LOG_FTL("arm64 vcpu exit without current vcpu on pcpu%hu", pcpu_id);
+		LOG_ERR("arm64 vcpu exit without current vcpu on pcpu%hu", pcpu_id);
 		cpu_dead();
 	}
 
@@ -493,19 +489,20 @@ static uint64_t mmio_size_mask(uint64_t size)
 	return (size >= sizeof(uint64_t)) ? ~0UL : ((1UL << (size * 8U)) - 1UL);
 }
 
-static uint64_t extend_mmio_read(uint64_t value, uint64_t size, uint64_t esr)
+static uint64_t extend_mmio_read(uint64_t value, uint64_t size,
+	const struct arm64_esr_abort_info *abort)
 {
 	uint64_t mask = mmio_size_mask(size);
 
 	value &= mask;
-	if (((esr & ESR_DABT_SSE) != 0UL) && (size < sizeof(uint64_t))) {
+	if (abort->sse && (size < sizeof(uint64_t))) {
 		uint64_t sign = 1UL << ((size * 8U) - 1U);
 
 		if ((value & sign) != 0UL) {
 			value |= ~mask;
 		}
 	}
-	if ((esr & ESR_DABT_SF) == 0UL) {
+	if (!abort->sf) {
 		value &= 0xffffffffUL;
 	}
 
@@ -525,6 +522,7 @@ static int32_t handle_mmio_abort(struct acrn_vcpu *vcpu)
 	struct cpu_regs *regs = &vcpu->arch.regs;
 	struct io_request *io_req = &vcpu->req;
 	struct acrn_mmio_request *mmio = &io_req->reqs.mmio_request;
+	struct arm64_esr_info esr_info;
 	uint64_t esr = regs->esr;
 	uint64_t ipa;
 	uint64_t size;
@@ -539,20 +537,22 @@ static int32_t handle_mmio_abort(struct acrn_vcpu *vcpu)
 	 * must not use this path because ESR.DABT fields describe data access size,
 	 * direction, and source/target GPR.
 	 */
-	if ((esr & ESR_DABT_ISV) == 0UL) {
+	if (!arm64_esr_decode(esr, &esr_info) || !esr_info.abort.valid ||
+		!esr_info.abort.data || !esr_info.abort.isv ||
+		(esr_info.abort.access_size == 0U)) {
 		return -EINVAL;
 	}
 
 	ipa = arm64_fault_ipa(regs);
-	size = 1UL << ((esr >> ESR_DABT_SAS_SHIFT) & ESR_DABT_SAS_MASK);
-	reg_idx = (uint32_t)((esr >> ESR_DABT_SRT_SHIFT) & ESR_DABT_SRT_MASK);
+	size = esr_info.abort.access_size;
+	reg_idx = esr_info.abort.srt;
 	reg = arm64_gpr(regs, reg_idx);
 
 	(void)memset(io_req, 0U, sizeof(*io_req));
 	io_req->io_type = ACRN_IOREQ_TYPE_MMIO;
 	mmio->address = ipa;
 	mmio->size = size;
-	if ((esr & ESR_DABT_WNR) != 0UL) {
+	if (esr_info.abort.write) {
 		mmio->direction = ACRN_IOREQ_DIR_WRITE;
 		mmio->value = (reg != NULL) ? (*reg & mmio_size_mask(size)) : 0UL;
 	} else {
@@ -570,14 +570,14 @@ static int32_t handle_mmio_abort(struct acrn_vcpu *vcpu)
 	ret = emulate_io(vcpu, io_req);
 	arm64_core_pmu_path_end(ARM64_CORE_PMU_PATH_MMIO, &pmu_token);
 	if (ret == 0) {
-		if (((esr & ESR_DABT_WNR) == 0UL) && (reg != NULL)) {
-			*reg = extend_mmio_read(mmio->value, size, esr);
+		if (!esr_info.abort.write && (reg != NULL)) {
+			*reg = extend_mmio_read(mmio->value, size, &esr_info.abort);
 		}
 		advance_vcpu_elr(vcpu);
 	} else {
 		LOG_ERR("arm64 mmio abort failed vm%u:vcpu%u ipa=0x%lx size=%lu dir=%s srt=%u esr=0x%lx ret=%d",
 			vcpu->vm->vm_id, vcpu->vcpu_id, ipa, size,
-			((esr & ESR_DABT_WNR) != 0UL) ? "write" : "read", reg_idx, esr, ret);
+			esr_info.abort.write ? "write" : "read", reg_idx, esr, ret);
 	}
 
 	return ret;
@@ -586,8 +586,12 @@ static int32_t handle_mmio_abort(struct acrn_vcpu *vcpu)
 static int32_t handle_instruction_abort(struct acrn_vcpu *vcpu)
 {
 	const struct cpu_regs *regs = &vcpu->arch.regs;
+	struct arm64_esr_info esr_info;
 	uint64_t ipa = arm64_fault_ipa(regs);
-	uint32_t fsc = arm64_abort_fsc(regs->esr);
+	uint32_t fsc;
+
+	(void)arm64_esr_decode(regs->esr, &esr_info);
+	fsc = esr_info.abort.fsc;
 
 	/*
 	 * Instruction aborts are guest instruction-fetch failures, such as
@@ -1064,6 +1068,7 @@ int32_t vcpu_exit_handler(struct acrn_vcpu *vcpu)
 	LOG_ERR("unhandled arm64 vcpu exit vm%u:vcpu%u ec=0x%lx esr=0x%lx elr=0x%lx far=0x%lx hpfar=0x%lx",
 		vcpu->vm->vm_id, vcpu->vcpu_id, ec, vcpu->arch.regs.esr,
 		vcpu->arch.regs.elr, vcpu->arch.regs.far, vcpu->arch.regs.hpfar);
+	arm64_esr_log(LOG_ERROR, "vm.esr", vcpu->arch.regs.esr);
 	hwtdbg_capture_guest_fault(vcpu, vcpu_exit_fault_reason(ec), ret);
 	return -EINVAL;
 }
@@ -1120,7 +1125,7 @@ void dispatch_vcpu_trap(struct cpu_regs *regs)
 	vcpu = schedule_without_guest_resume(pcpu_id, vcpu);
 	ret = arm64_process_vcpu_requests(vcpu);
 	if (ret < 0) {
-		LOG_FTL("failed to process arm64 vcpu requests vm%u:vcpu%u ret=%d",
+		LOG_ERR("failed to process arm64 vcpu requests vm%u:vcpu%u ret=%d",
 			vcpu->vm->vm_id, vcpu->vcpu_id, ret);
 		get_vm_lock(vcpu->vm);
 		pause_vcpu(vcpu);
@@ -1166,7 +1171,7 @@ void dispatch_vcpu_irq(struct cpu_regs *regs)
 	vcpu = schedule_without_guest_resume(pcpu_id, vcpu);
 	ret = arm64_process_vcpu_requests(vcpu);
 	if (ret < 0) {
-		LOG_FTL("failed to process arm64 vcpu requests vm%u:vcpu%u ret=%d",
+		LOG_ERR("failed to process arm64 vcpu requests vm%u:vcpu%u ret=%d",
 			vcpu->vm->vm_id, vcpu->vcpu_id, ret);
 		get_vm_lock(vcpu->vm);
 		pause_vcpu(vcpu);

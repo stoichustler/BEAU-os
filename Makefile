@@ -350,6 +350,7 @@ COMMON_C_SRCS += sdk/bsp/pm.c
 BSP_LIB_SRCS := $(filter-out sdk/bsp/ns16550.c sdk/bsp/pl011.c,$(wildcard sdk/bsp/*.c))
 BSP_LIB_SRCS += sdk/bsp/pl011.c
 BSP_LIB_SRCS += $(wildcard sdk/bsp/arm64/*.c)
+BSP_LIB_SRCS += $(wildcard sdk/bsp/cmds/*.c)
 BSP_LIB_SRCS += $(wildcard sdk/bsp/virtio/*.c)
 BSP_LIB_SRCS += $(wildcard sdk/bsp/pci/*.c)
 BSP_LIB_SRCS += sdk/bsp/benchmark/rt-tests/rt-test.c

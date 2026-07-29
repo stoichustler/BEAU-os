@@ -112,7 +112,7 @@ bool arm64_mte_prepare_pcpu(uint64_t *mair, uint64_t *tcr,
 
 	local_version = arm64_mte_version();
 	if (local_version < ID_AA64PFR1_MTE_MTE2) {
-		LOG_FTL("MTE: pcpu capability mismatch bsp:%u local:%u",
+		LOG_ERR("MTE: pcpu capability mismatch bsp:%u local:%u",
 			arm64_mte_bsp_version, local_version);
 		return false;
 	}
@@ -363,6 +363,6 @@ void arm64_mte_report_sync_fault(uint64_t esr, uint64_t far,
 	uint8_t logical_tag = (uint8_t)((far & ARM64_MTE_TAG_MASK) >>
 		ARM64_MTE_TAG_SHIFT);
 
-	LOG_FTL("MTE: synchronous tag check fault pcpu:%hu elr:0x%lx far:0x%lx tag:%u esr:0x%lx",
+	LOG_ERR("MTE: synchronous tag check fault pcpu:%hu elr:0x%lx far:0x%lx tag:%u esr:0x%lx",
 		pcpu_id, elr, far, logical_tag, esr);
 }

@@ -107,11 +107,6 @@ void vprintf(const char *fmt, va_list args);
 #endif
 
 /* LOG_* is the single BEAU system log API. Console output adds color by severity. */
-#define LOG_FTL(...)						\
-	do {							\
-		do_logmsg(LOG_FATAL, LOG_PREFIX __VA_ARGS__);	\
-	} while (0)
-
 #define LOG_ERR(...)						\
 	do {							\
 		do_logmsg(LOG_ERROR, LOG_PREFIX __VA_ARGS__);	\
@@ -140,8 +135,8 @@ void vprintf(const char *fmt, va_list args);
 	} while (0)
 
 #define panic(...) 							\
-	do { LOG_FTL("panic: %s line: %d\n", __func__, __LINE__);	\
-		LOG_FTL(__VA_ARGS__); 					\
+	do { LOG_ERR("panic: %s @ %s:%d\n", __func__, __FILE__, __LINE__);	\
+		LOG_ERR(__VA_ARGS__); 					\
 		panic_dump_context();					\
 		while (1) { asm_pause(); }; } while (0)
 

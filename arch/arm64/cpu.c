@@ -78,7 +78,7 @@ void arch_start_pcpu(uint16_t pcpu_id)
 	int64_t ret;
 
 	if (pcpu_id >= MAX_PCPU_NUM) {
-		LOG_FTL("invalid arm64 secondary cpu%hu", pcpu_id);
+		LOG_ERR("invalid arm64 secondary cpu%hu", pcpu_id);
 		return;
 	}
 
@@ -87,7 +87,7 @@ void arch_start_pcpu(uint16_t pcpu_id)
 
 	ret = psci_cpu_on(per_cpu(arch.mpidr, pcpu_id), (uint64_t)_start_secondary_psci, pcpu_sp);
 	if ((ret != PSCI_RET_SUCCESS) && (ret != PSCI_RET_ALREADY_ON)) {
-		LOG_FTL("psci cpu_on failed for cpu%hu mpidr=0x%lx ret=%ld",
+		LOG_ERR("psci cpu_on failed for cpu%hu mpidr=0x%lx ret=%ld",
 			pcpu_id, per_cpu(arch.mpidr, pcpu_id), ret);
 	}
 }

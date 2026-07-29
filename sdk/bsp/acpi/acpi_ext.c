@@ -119,7 +119,7 @@ static struct acpi_mcfg_allocation *parse_mcfg_allocation_tables(const uint8_t *
 	uint32_t length = get_acpi_dt_dword(mcfg_addr, OFFSET_MCFG_LENGTH);
 
 	if (length > OFFSET_MCFG_ENTRY1) {
-		LOG_FTL("multiple pci segment groups is not supported!");
+		LOG_ERR("multiple pci segment groups is not supported!");
 	} else {
 		mcfg_table = (struct acpi_mcfg_allocation *)(mcfg_addr + OFFSET_MCFG_ENTRY0_BASE);
 	}

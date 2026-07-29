@@ -151,7 +151,7 @@ int add_asyncio(struct acrn_vm *vm, const struct acrn_asyncio_info *async_info)
 			}
 			spinlock_release(&vm->asyncio_lock);
 			if (i == ACRN_ASYNCIO_MAX) {
-				LOG_FTL("too much fastio, would not support!");
+				LOG_ERR("too much fastio, would not support!");
 			}
 		} else {
 			spinlock_release(&vm->asyncio_lock);
@@ -188,7 +188,7 @@ int remove_asyncio(struct acrn_vm *vm, const struct acrn_asyncio_info *async_inf
 		}
 		spinlock_release(&vm->asyncio_lock);
 		if (i == ACRN_ASYNCIO_MAX) {
-			LOG_FTL("failed to find asyncio req on addr: %lx!", async_info->addr);
+			LOG_ERR("failed to find asyncio req on addr: %lx!", async_info->addr);
 		}
 	} else {
 		LOG_ERR("%s: base = 0 is not supported!", __func__);
@@ -826,7 +826,7 @@ hv_emulate_mmio(struct acrn_vcpu *vcpu, struct io_request *io_req)
 	address = mmio_req->address;
 	size = mmio_req->size;
 	if ((size == 0UL) || (address > (UINT64_MAX - size))) {
-		LOG_FTL("err mmio, address:0x%lx, size:%lx", address, size);
+		LOG_ERR("err mmio, address:0x%lx, size:%lx", address, size);
 		return -EIO;
 	}
 	access_end = address + size;
@@ -845,7 +845,7 @@ hv_emulate_mmio(struct acrn_vcpu *vcpu, struct io_request *io_req)
 		read_write = mmio_handler->read_write;
 		handler_private_data = mmio_handler->handler_private_data;
 	} else if (emul_mmio_node_overlaps(mmio_handler, address, access_end)) {
-		LOG_FTL("err mmio, address:0x%lx, size:%lx", address, size);
+		LOG_ERR("err mmio, address:0x%lx, size:%lx", address, size);
 		status = -EIO;
 	}
 
@@ -869,7 +869,7 @@ hv_emulate_mmio(struct acrn_vcpu *vcpu, struct io_request *io_req)
 			handler_private_data = mmio_handler->handler_private_data;
 			emul_mmio_cache_node(vcpu->vm, address, mmio_handler);
 		} else {
-			LOG_FTL("err mmio, address:0x%lx, size:%lx", address, size);
+			LOG_ERR("err mmio, address:0x%lx, size:%lx", address, size);
 			status = -EIO;
 		}
 	}
@@ -979,7 +979,7 @@ emulate_io(struct acrn_vcpu *vcpu, struct io_request *io_req)
 			 */
 			struct acrn_pio_request *pio_req = &io_req->reqs.pio_request;
 
-			LOG_FTL("%s err: access dir %d, io_type %d, addr = 0x%lx, size=%lu", __func__,
+			LOG_ERR("%s err: access dir %d, io_type %d, addr = 0x%lx, size=%lu", __func__,
 				pio_req->direction, io_req->io_type,
 				pio_req->address, pio_req->size);
 		}

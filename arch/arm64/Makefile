@@ -84,6 +84,7 @@ HOST_S_SRCS += arch/arm64/ddb/ddb_probe.S
 
 HOST_C_SRCS += arch/arm64/init.c
 HOST_C_SRCS += arch/arm64/coredump.c
+HOST_C_SRCS += arch/arm64/esr.c
 HOST_C_SRCS += arch/arm64/ddb/ddb.c
 HOST_C_SRCS += arch/arm64/ddb/ddb_console.c
 HOST_C_SRCS += arch/arm64/ddb/ddb_mem.c

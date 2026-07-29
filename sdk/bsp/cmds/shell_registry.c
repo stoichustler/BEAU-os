@@ -43,6 +43,7 @@ struct shell_cmd shell_arch_cmds[] = {
 	CMD("walkpt", "<vmid> <ipa>", "walk one VM stage-2 translation without modifying it", shell_s2walk),
 	CMD("kusg", NULL, "list BEAU static memory usage in KB", shell_kusg),
 	CMD("health", NULL, "summarize current host and VM operational health", shell_health),
+	CMD("gen", "<panic|brk|esr <hex>>", "generate controlled ARM64 diagnostic faults", shell_gen),
 	CMD("hwtdbg", "<vmid>", "show retained VM watchdog minidump", shell_hwtdbg),
 	CMD("crash", "<vmid> [erase]", "show or erase retained VM crash history", shell_crash),
 	CMD("coredump", "<print|erase>", "print or erase the latest ARM64 coredump", shell_coredump),

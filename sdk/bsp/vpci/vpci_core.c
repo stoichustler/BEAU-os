@@ -1216,7 +1216,7 @@ int32_t vpci_assign_pcidev(struct acrn_vm *tgt_vm, struct acrn_pcidev *pcidev)
 
 		if (!vdev_in_service_vm->pdev->has_pm_reset && !vdev_in_service_vm->pdev->has_flr &&
 				!vdev_in_service_vm->pdev->has_af_flr) {
-			LOG_FTL("%s %x:%x.%x not support flr or not support pm reset\n",
+			LOG_ERR("%s %x:%x.%x not support flr or not support pm reset\n",
 				__func__, bdf.bits.b,  bdf.bits.d,  bdf.bits.f);
 		} else {
 			/* DM will reset this device before assigning it */
@@ -1259,7 +1259,7 @@ int32_t vpci_assign_pcidev(struct acrn_vm *tgt_vm, struct acrn_pcidev *pcidev)
 				vdev_in_service_vm->vdev_ops->init_vdev(vdev_in_service_vm);
 			}
 		} else {
-			LOG_FTL("%s, failed to initialize pci device %x:%x.%x for vm [%d]\n", __func__,
+			LOG_ERR("%s, failed to initialize pci device %x:%x.%x for vm [%d]\n", __func__,
 				pcidev->phys_bdf >> 8U, (pcidev->phys_bdf >> 3U) & 0x1fU, pcidev->phys_bdf & 0x7U,
 				tgt_vm->vm_id);
 			vdev_in_service_vm->vdev_ops->init_vdev(vdev_in_service_vm);
@@ -1267,7 +1267,7 @@ int32_t vpci_assign_pcidev(struct acrn_vm *tgt_vm, struct acrn_pcidev *pcidev)
 		}
 		spinlock_release(&tgt_vm->vpci.lock);
 	} else {
-		LOG_FTL("%s, can't find pci device %x:%x.%x for vm[%d] %x:%x.%x\n", __func__,
+		LOG_ERR("%s, can't find pci device %x:%x.%x for vm[%d] %x:%x.%x\n", __func__,
 			pcidev->phys_bdf >> 8U, (pcidev->phys_bdf >> 3U) & 0x1fU, pcidev->phys_bdf & 0x7U,
 			tgt_vm->vm_id,
 			pcidev->virt_bdf >> 8U, (pcidev->virt_bdf >> 3U) & 0x1fU, pcidev->virt_bdf & 0x7U);
@@ -1308,7 +1308,7 @@ int32_t vpci_deassign_pcidev(struct acrn_vm *tgt_vm, struct acrn_pcidev *pcidev)
 			spinlock_release(&parent_vdev->vpci->lock);
 		}
 	} else {
-		LOG_FTL("%s, can't find pci device %x:%x.%x for vm[%d] %x:%x.%x\n", __func__,
+		LOG_ERR("%s, can't find pci device %x:%x.%x for vm[%d] %x:%x.%x\n", __func__,
 			pcidev->phys_bdf >> 8U, (pcidev->phys_bdf >> 3U) & 0x1fU, pcidev->phys_bdf & 0x7U,
 			tgt_vm->vm_id,
 			pcidev->virt_bdf >> 8U, (pcidev->virt_bdf >> 3U) & 0x1fU, pcidev->virt_bdf & 0x7U);

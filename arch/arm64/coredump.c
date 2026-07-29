@@ -15,9 +15,10 @@
 #include <debug/symbol.h>
 #include <asm/boot/ld_sym.h>
 #include <asm/coredump.h>
+#include <asm/esr.h>
 
 #define ARM64_COREDUMP_MAGIC		0x42434450U
-#define ARM64_COREDUMP_VERSION		1U
+#define ARM64_COREDUMP_VERSION		2U
 #define ARM64_COREDUMP_MAX_FRAMES	16U
 #define ARM64_COREDUMP_STACK_WORDS	16U
 #define ARM64_COREDUMP_SLOT_COUNT	(MAX_PCPU_NUM + 1U)
@@ -348,22 +349,22 @@ static const char *arm64_coredump_stop_name(uint16_t stop)
 	return name;
 }
 
-static void arm64_coredump_emit(const struct arm64_coredump_snapshot *snapshot,
-	uint32_t severity)
+static void arm64_coredump_emit(const struct arm64_coredump_snapshot *snapshot)
 {
 	uint32_t index;
 	char symbol[96U];
 
-	do_logmsg(severity,
+	LOG_ERR(
 		"coredump.header version:%u sequence:%u pcpu:%hu checksum:0x%08x",
 		snapshot->version, snapshot->sequence, snapshot->pcpu_id,
 		snapshot->checksum);
-	do_logmsg(severity,
-		"coredump.regs pc:0x%016lx lr:0x%016lx sp:0x%016lx fp:0x%016lx",
+	LOG_ERR(
+		"coredump.regs pc:0x%016lx lr:0x%016lx sp:0x%016lx fp:0x%016lx esr:0x%016lx",
 		snapshot->context.pc, snapshot->context.lr,
-		snapshot->context.sp, snapshot->context.fp);
+		snapshot->context.sp, snapshot->context.fp, snapshot->context.esr);
+	arm64_esr_log(LOG_ERROR, "coredump.esr", snapshot->context.esr);
 	if (snapshot->stack_end > snapshot->stack_start) {
-		do_logmsg(severity,
+		LOG_ERR(
 			"coredump.stack owner:%s range:[0x%016lx-0x%016lx) used:%lu free:%lu",
 			snapshot->owner, snapshot->stack_start, snapshot->stack_end,
 			snapshot->stack_end - snapshot->context.sp,
@@ -377,17 +378,17 @@ static void arm64_coredump_emit(const struct arm64_coredump_snapshot *snapshot,
 			((index + word) < snapshot->stack_word_count); word++) {
 			words[word] = snapshot->stack_words[index + word];
 		}
-		do_logmsg(severity,
+		LOG_ERR(
 			"coredump.stack:0x%016lx %016lx %016lx %016lx %016lx",
 			snapshot->stack_word_start + ((uint64_t)index * sizeof(uint64_t)),
 			words[0], words[1], words[2], words[3]);
 	}
 	for (index = 0U; index < snapshot->frame_count; index++) {
 		dbg_format_symbol(snapshot->frames[index], symbol, sizeof(symbol));
-		do_logmsg(severity, "coredump.frame:%02u pc:0x%016lx %s",
+		LOG_ERR("coredump.frame:%02u pc:0x%016lx %s",
 			index, snapshot->frames[index], symbol);
 	}
-	do_logmsg(severity, "coredump.stop:%s",
+	LOG_ERR("coredump.stop:%s",
 		arm64_coredump_stop_name(snapshot->stop));
 }
 
@@ -443,19 +444,18 @@ static const struct arm64_coredump_snapshot *arm64_coredump_latest(void)
 	return latest;
 }
 
-void arm64_coredump_log(const struct arm64_coredump_context *context,
-	uint16_t pcpu_id, uint32_t severity)
+void arm64_coredump_log(const struct arm64_coredump_context *context, uint16_t pcpu_id)
 {
 	struct arm64_coredump_snapshot *snapshot;
 
 	if (context == NULL) {
 		return;
 	}
-	snapshot = arm64_coredump_capture(context, pcpu_id);
-	arm64_coredump_emit(snapshot, severity);
+		snapshot = arm64_coredump_capture(context, pcpu_id);
+	arm64_coredump_emit(snapshot);
 }
 
-bool arm64_coredump_print_stored(uint32_t severity)
+bool arm64_coredump_print_stored(void)
 {
 	const struct arm64_coredump_snapshot *stored = arm64_coredump_latest();
 
@@ -468,7 +468,7 @@ bool arm64_coredump_print_stored(uint32_t severity)
 	if (!arm64_coredump_snapshot_valid(&arm64_coredump_readback)) {
 		return false;
 	}
-	arm64_coredump_emit(&arm64_coredump_readback, severity);
+	arm64_coredump_emit(&arm64_coredump_readback);
 	return true;
 }
 
