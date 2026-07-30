@@ -284,7 +284,7 @@ static struct acrn_scheduler *scheduler_from_policy(enum sched_policy_id policy)
 	 *   Principle: fixed time-slice round robin; the local scheduler tick charges
 	 *   the current object and rotates it to the runqueue tail when its slice is
 	 *   exhausted.
-	 *   Main parameters: compile-time slice length in sched_iorr.c
+	 *   Main parameters: compile-time slice length in iorr.c
 	 *   (CONFIG_SLICE_MS, currently 10 ms) and the 1 ms scheduler tick.
 	 *
 	 * bvt:
@@ -317,7 +317,7 @@ static struct acrn_scheduler *scheduler_from_policy(enum sched_policy_id policy)
 	 *   earliest deadline among servers with remaining budget; depleted servers
 	 *   wait for the next period boundary, with work-conserving slack only when no
 	 *   budgeted server is ready.
-	 *   Main parameters: cpupool period/budget, normalized by sched_rtds.c.
+	 *   Main parameters: cpupool period/budget, normalized by rtds.c.
 	 *
 	 * prio:
 	 *   Fit: small, controlled sets of runnable objects with a clear static
@@ -326,6 +326,23 @@ static struct acrn_scheduler *scheduler_from_policy(enum sched_policy_id policy)
 	 *   Principle: keep the runqueue sorted by fixed priority and always pick the
 	 *   highest-priority runnable object.
 	 *   Main parameters: sched_params.prio.
+	 *
+	 * arinc653:
+	 *   Fit: dedicated pCPUs whose vCPUs must run in a statically provisioned
+	 *   major/minor-frame sequence.
+	 *   Principle: each minor window belongs to exactly one VM/vCPU identity;
+	 *   an absent or blocked owner leaves the pCPU idle for the rest of that
+	 *   window. Unused major-frame time is also idle.
+	 *   Main parameters: sched_arinc653_set_schedule(). DTS provisioning is not
+	 *   part of the scheduler backend.
+	 *
+	 * bfp:
+	 *   Fit: dedicated vCPU pCPUs that need analyzable fixed-priority service
+	 *   with a hard execution budget in each fixed period.
+	 *   Principle: run the highest-priority eligible vCPU; budget-depleted vCPUs
+	 *   remain ineligible until their next replenishment boundary.
+	 *   Main parameters: sched_params.prio, bfp_period_us, and bfp_budget_us.
+	 *   DTS provisioning is not part of the scheduler backend.
 	 */
 	switch (policy) {
 	case SCHED_POLICY_NOOP:
@@ -345,6 +362,12 @@ static struct acrn_scheduler *scheduler_from_policy(enum sched_policy_id policy)
 		break;
 	case SCHED_POLICY_PRIO:
 		scheduler = &sched_prio;
+		break;
+	case SCHED_POLICY_ARINC653:
+		scheduler = &sched_arinc653;
+		break;
+	case SCHED_POLICY_BFP:
+		scheduler = &sched_bfp;
 		break;
 	default:
 		break;

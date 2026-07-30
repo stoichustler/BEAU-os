@@ -41,6 +41,10 @@ struct sched_params {
 	/* per-thread parameters for the CBS scheduler */
 	uint32_t cbs_period_us;	/* server period in microseconds */
 	uint32_t cbs_budget_us;	/* server execution budget in microseconds */
+
+	/* per-thread parameters for the BFP scheduler */
+	uint32_t bfp_period_us;	/* fixed-priority server period in microseconds */
+	uint32_t bfp_budget_us;	/* execution budget per period in microseconds */
 };
 
 enum sched_policy_id {
@@ -51,6 +55,23 @@ enum sched_policy_id {
 	SCHED_POLICY_RTDS,
 	SCHED_POLICY_CBS,	/* partitioned CBS */
 	SCHED_POLICY_PRIO,
+	SCHED_POLICY_ARINC653,
+	SCHED_POLICY_BFP,
+};
+
+#define SCHED_ARINC653_MAX_ENTRIES	64U
+
+struct sched_arinc653_entry_config {
+	uint16_t vm_id;
+	uint16_t vcpu_id;
+	uint32_t runtime_us;
+};
+
+struct sched_arinc653_config {
+	uint32_t major_frame_us;
+	uint16_t entry_count;
+	uint16_t reserved;
+	struct sched_arinc653_entry_config entries[SCHED_ARINC653_MAX_ENTRIES];
 };
 
 struct sched_cpupool_config {
@@ -187,7 +208,7 @@ struct sched_control {
 	volatile bool priority_pending;
 };
 
-#define SCHEDULER_MAX_NUMBER 6U
+#define SCHEDULER_MAX_NUMBER 8U
 struct acrn_scheduler {
 	char name[16];
 	char stat_desc[64];
@@ -254,6 +275,21 @@ struct sched_cbs_control {
 extern struct acrn_scheduler sched_prio;
 struct sched_prio_control {
 	struct list_head prio_queue;
+};
+
+extern struct acrn_scheduler sched_arinc653;
+int32_t sched_arinc653_set_schedule(uint16_t pcpu_id,
+	const struct sched_arinc653_config *config);
+int32_t sched_arinc653_get_schedule(uint16_t pcpu_id,
+	struct sched_arinc653_config *config);
+
+extern struct acrn_scheduler sched_bfp;
+struct sched_bfp_control {
+	struct list_head ready_queue;
+	struct list_head depleted_queue;
+	struct hv_timer tick_timer;
+	uint64_t timer_deadline_ticks;
+	uint16_t admitted_vcpus;
 };
 
 uint32_t sched_get_thread_count(void);

@@ -795,7 +795,7 @@ scheduler data。跨 pCPU 迁移需要重建私有数据，当前不支持。
 
 ### 10.3 BVT
 
-`core/sched/sched_bvt.c` 用实际运行时间推进 AVT。权重越大，虚拟时间增长越慢，
+`core/sched/bvt.c` 用实际运行时间推进 AVT。权重越大，虚拟时间增长越慢，
 长期获得的 CPU share 越高。wake/event 可以开启有界 warp：
 
 ```text
@@ -813,7 +813,7 @@ BEAU host shell 使用 2 ms console timer 观察 PL011 RX-ready。timer 只在�
 
 ### 10.4 CBS
 
-`core/sched/sched_cbs.c` 把每个线程建模为 Constant Bandwidth Server：
+`core/sched/cbs.c` 把每个线程建模为 Constant Bandwidth Server：
 
 ```text
 budget Q, period T, absolute deadline D
@@ -1960,8 +1960,8 @@ arch/arm64/guest/vsmmu.c
 
 ```text
 core/schedule.c
-core/sched/sched_bvt.c
-core/sched/sched_cbs.c
+core/sched/bvt.c
+core/sched/cbs.c
 core/vm_wdt.c
 core/pm.c
 arch/arm64/pm.c
