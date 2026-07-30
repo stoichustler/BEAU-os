@@ -9,7 +9,6 @@
 #include <cpu.h>
 
 /* Logging severity levels */
-#define LOG_FATAL		1U
 #define LOG_ERROR		3U
 #define LOG_WARNING		4U
 #define LOG_INFO		5U
@@ -21,7 +20,6 @@
 #define LOG_VT100_BOLD_GREEN	"\x1B[1;32m"
 #define LOG_VT100_BOLD_WHITE	"\x1B[1;37m"
 #define LOG_VT100_BRIGHT_BLACK	"\x1B[90m"
-#define LOG_VT100_BOLD_INDIGO	"\x1B[1;38;5;54m"
 
 #define LOG_ENTRY_SIZE	80U
 /* Size of buffer used to store a message being logged,

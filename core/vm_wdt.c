@@ -1351,7 +1351,7 @@ static void vm_wdt_check_timeouts(void)
 		}
 		if (snapshot.status == VM_WDT_STATUS_STUCK) {
 			if (vm_wdt_claim_restart(vm_id, &snapshot)) {
-				LOG_INF("HWT:    VM%u restart cause:%s age:%lums attempt:%lu/%u",
+				LOG_ERR("HWT:    VM%u restart cause:%s age:%lums attempt:%lu/%u",
 					vm_id, vm_wdt_cause_str(snapshot.cause), snapshot.last_ms,
 					snapshot.restart_count + 1UL, CONFIG_VM_WDT_RESTART_MAX);
 				recovery_pending |= vm_wdt_process_recovery(vm_id);

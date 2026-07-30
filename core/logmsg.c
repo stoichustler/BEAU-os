@@ -97,9 +97,6 @@ const char *logmsg_severity_color(uint32_t severity)
 	 *        console_log() wraps that line with severity color + reset
 	 */
 	switch (severity) {
-	case LOG_FATAL:
-		color = LOG_VT100_BOLD_INDIGO;
-		break;
 	case LOG_ERROR:
 		color = LOG_VT100_BOLD_RED;
 		break;
@@ -165,8 +162,6 @@ void format_log_timestamp(char *buffer, size_t size, uint64_t timestamp_us)
 static const char *daemon_log_severity_color(uint32_t severity)
 {
 	switch (severity) {
-	case LOG_FATAL:
-		return LOG_VT100_BOLD_INDIGO;
 	case LOG_ERROR:
 		return LOG_VT100_BOLD_RED;
 	case LOG_WARNING:
