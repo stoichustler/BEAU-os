@@ -19,7 +19,7 @@ Linux kernel tree so they can be ported to multiple Linux versions.
   frontend I2C validation through BEAU virtio-proxy.
 - `virtio-net-backend.c`: VM2 virtio-net uplink backend for VM3 frontend
   Ethernet validation through BEAU virtio-proxy.
-- `vwdt.c`: BEAU VM watchdog heartbeat driver.
+- `vwdt.c`: hotplug-aware, per-CPU BEAU VM watchdog heartbeat driver.
 - `crash.c`: Linux panic and ARM64 oops notifier that reports a bounded crash
   record to the BEAU Host through HVC.
 - `Kconfig`, `Makefile`: Kbuild integration snippets for `drivers/virt/beau`.
@@ -43,6 +43,15 @@ Linux kernel tree so they can be ported to multiple Linux versions.
    used by the VM that should run the driver.
 
 ## Notes
+
+The watchdog uses one normal-priority pinned kernel thread per online CPU. A
+pinned hrtimer wakes the local thread every five seconds, but only the scheduled
+thread increments its counter and issues `HC_VM_WDT_KICK`. The hypervisor binds
+the kick to the calling vCPU and can therefore detect one CPU that stops making
+process-context progress while the rest of the VM continues running. CPU
+hotplug parks and unparks the corresponding heartbeat thread. The per-vCPU ABI
+uses an exact version selector in the second HVC argument so legacy guest
+binaries whose old wrappers did not initialize that register remain compatible.
 
 The virtio-fs backend currently supports a narrow test export: VM3 can create,
 truncate, write, read, and update attributes for regular files directly under

@@ -86,6 +86,9 @@
 #define HC_AI_SCHED                 BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x07UL)
 #define HC_VM_CRASH_REPORT          BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x08UL)
 
+/* Exact param2 selector; legacy SMCCC wrappers did not initialize x2. */
+#define ACRN_VM_WDT_KICK_F_PER_VCPU_V1  0x4257445400000001UL
+
 /* BEAU AI scheduler advisor: registration, snapshots, and observe-only proposals. */
 #define ACRN_AI_SCHED_ABI_VERSION   1U
 #define ACRN_AI_SCHED_MAX_ENTRIES   16U

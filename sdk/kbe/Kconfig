@@ -13,9 +13,10 @@ config BEAU_VWDT
 	bool "BEAU hypervisor watchdog heartbeat"
 	default y
 	help
-	  Periodically kick the BEAU hypervisor VM watchdog from the Linux guest.
-	  This is a heartbeat only: if Linux stops scheduling the heartbeat worker,
-	  BEAU can mark the VM as stuck.
+	  Run one pinned heartbeat thread per online CPU and periodically kick the
+	  BEAU hypervisor VM watchdog. The timer only wakes the thread, so a kick
+	  proves that process context made scheduling progress on that CPU. BEAU can
+	  identify and recover the VM when one CPU stops making progress.
 
 config BEAU_CRASH_REPORTER
 	bool "BEAU guest panic and oops reporting"

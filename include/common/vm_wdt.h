@@ -8,6 +8,7 @@
 #define VM_WDT_H
 
 #include <types.h>
+#include <vconfig.h>
 
 #ifndef CONFIG_VM_WDT_MONITOR_VM_NUM
 #define CONFIG_VM_WDT_MONITOR_VM_NUM	3U
@@ -30,7 +31,7 @@
 #endif
 
 #ifndef CONFIG_VM_WDT_RESTART_MAX
-#define CONFIG_VM_WDT_RESTART_MAX	3U
+#define CONFIG_VM_WDT_RESTART_MAX	5U
 #endif
 
 #ifndef CONFIG_VM_WDT_RESTART_QUIESCE_TIMEOUT_MS
@@ -42,6 +43,7 @@
 #endif
 
 struct acrn_vm;
+struct acrn_vcpu;
 
 enum vm_wdt_status {
 	VM_WDT_STATUS_UNUSED = 0U,
@@ -59,6 +61,7 @@ enum vm_wdt_cause {
 	VM_WDT_CAUSE_IRQ_STORM,
 	VM_WDT_CAUSE_CONSOLE_STUCK,
 	VM_WDT_CAUSE_VIRTIO_STUCK,
+	VM_WDT_CAUSE_GUEST_VCPU_STALL,
 };
 
 enum vm_wdt_recovery_state {
@@ -85,18 +88,24 @@ struct vm_wdt_snapshot {
 	uint64_t irq_delta;
 	uint64_t daemon_merged;
 	uint64_t daemon_dropped;
+	uint64_t expected_vcpu_mask;
+	uint64_t started_vcpu_mask;
+	uint64_t stalled_vcpu_mask;
+	uint64_t vcpu_age_ms[MAX_VCPUS_PER_VM];
+	uint64_t vcpu_last_token[MAX_VCPUS_PER_VM];
 	uint32_t timeout_ms;
 	bool restart_pending;
 	bool heartbeat_started;
 	bool timeout_active;
 	bool restart_enabled;
 	bool daemon_pending;
+	bool per_vcpu_mode;
 };
 
 void vm_wdt_start(void);
 void vm_wdt_reset(const struct acrn_vm *vm);
 void vm_wdt_restart_complete(uint16_t vm_id, int32_t reset_ret);
-void vm_wdt_kick(const struct acrn_vm *vm, uint64_t token);
+int32_t vm_wdt_kick(const struct acrn_vcpu *vcpu, uint64_t token, uint64_t flags);
 int32_t vm_wdt_get_snapshot(uint16_t vm_id, struct vm_wdt_snapshot *snapshot);
 int32_t vm_wdt_pm_suspend(uint64_t epoch);
 int32_t vm_wdt_pm_resume(uint64_t epoch);

@@ -9,13 +9,13 @@
 
 #define BEAU_PROXY_ABI_VERSION		3U
 #define BEAU_VM_CRASH_MAGIC		0x42435253U
-#define BEAU_VM_CRASH_ABI_VERSION_V1	1U
 #define BEAU_VM_CRASH_ABI_VERSION	2U
 #define BEAU_VM_CRASH_TEXT_MAX		96U
 #define BEAU_VM_CRASH_COMM_MAX		16U
 #define BEAU_VM_CRASH_STACK_MAX		16U
-#define BEAU_VM_CRASH_REPORT_V1_SIZE	144U
 #define BEAU_VM_CRASH_REPORT_SIZE	320U
+
+#define BEAU_VM_WDT_KICK_F_PER_VCPU_V1	0x4257445400000001UL
 
 #define BEAU_VM_CRASH_F_REGS_VALID	BIT(0)
 #define BEAU_VM_CRASH_F_STACK_VALID	BIT(1)
@@ -187,6 +187,7 @@ static inline void beau_proxy_poll_active(unsigned int *idle_polls)
 }
 
 long beau_hcall_vm_wdt_kick(unsigned long token);
+long beau_hcall_vm_wdt_kick_vcpu(unsigned long token);
 long beau_hcall_vm_crash_report(const struct beau_vm_crash_report *report);
 long beau_hcall_virtio_proxy_backend(struct beau_proxy_ioc *ioc);
 long beau_hcall_ipc(struct beau_ipc_ioc *ioc);

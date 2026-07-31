@@ -310,6 +310,9 @@ static const char *shell_vmstat_wdt_cause_to_str(enum vm_wdt_cause cause)
 	case VM_WDT_CAUSE_VIRTIO_STUCK:
 		str = "virtio";
 		break;
+	case VM_WDT_CAUSE_GUEST_VCPU_STALL:
+		str = "guestvcpu";
+		break;
 	case VM_WDT_CAUSE_NONE:
 	default:
 		str = "N/A";
@@ -908,9 +911,9 @@ static void shell_health_print_findings(const struct shell_health_host *host,
 			printed = true;
 		}
 		if ((health->reasons & SHELL_HEALTH_VM_WDT_STUCK) != 0UL) {
-			shell_item_line("vm%hu:%s watchdog stuck cause:%s age:%lums", vm_id,
+			shell_item_line("vm%hu:%s watchdog stuck cause:%s age:%lums stalled:0x%lx", vm_id,
 				health->name, shell_vmstat_wdt_cause_to_str(health->wdt.cause),
-				health->wdt.last_ms);
+				health->wdt.last_ms, health->wdt.stalled_vcpu_mask);
 			printed = true;
 		}
 		if ((health->reasons & SHELL_HEALTH_VM_WDT_RECOVERY) != 0UL) {
@@ -1118,6 +1121,7 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 	if (vm_wdt_get_snapshot(vm_id, &wdt) == 0) {
 		uint64_t last_sec = wdt.last_ms / 1000UL;
 		uint64_t last_msec = wdt.last_ms % 1000UL;
+		uint16_t vcpu_id;
 
 		shell_item_line("HWT:status:%7s cause:%12s (%02lu.%03lu) timeout:%02lu restart:%02lu fail:%02lu recovery:%10s wait:0x%02lx token:0x%016lx daemon:%s merge:%lu drop:%lu",
 			shell_vmstat_wdt_status_to_str(wdt.status),
@@ -1127,6 +1131,21 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 			wdt.recovery_wait_vcpus, wdt.last_token,
 			shell_yes_no(wdt.daemon_pending), wdt.daemon_merged,
 			wdt.daemon_dropped);
+		shell_item_line("HWT:heartbeat mode:%s expected:0x%02lx started:0x%02lx stalled:0x%02lx",
+			wdt.per_vcpu_mode ? "per-vcpu" : "legacy",
+			wdt.expected_vcpu_mask, wdt.started_vcpu_mask,
+			wdt.stalled_vcpu_mask);
+		if (wdt.per_vcpu_mode) {
+			for (vcpu_id = 0U; vcpu_id < MAX_VCPUS_PER_VM; vcpu_id++) {
+				if ((wdt.expected_vcpu_mask & (1UL << vcpu_id)) != 0UL) {
+					shell_item_line("        vcpu%hu age:%lums token:0x%016lx%s",
+						vcpu_id, wdt.vcpu_age_ms[vcpu_id],
+						wdt.vcpu_last_token[vcpu_id],
+						(wdt.stalled_vcpu_mask & (1UL << vcpu_id)) != 0UL ?
+						" STALLED" : "");
+				}
+			}
+		}
 	}
 	shell_item_line("vcon:selected:%s bound:%s ramlog-pending:%u drain:%u skipped:%lu",
 		shell_yes_no(console_vmid == vm_id), shell_yes_no(ring.vuart_bound),

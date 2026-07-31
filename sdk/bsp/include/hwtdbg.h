@@ -51,8 +51,14 @@ struct hwtdbg_timeout_context {
 	uint64_t last_token;
 	uint64_t irq_total;
 	uint64_t irq_delta;
+	uint64_t expected_vcpu_mask;
+	uint64_t started_vcpu_mask;
+	uint64_t stalled_vcpu_mask;
+	uint64_t vcpu_age_ms[MAX_VCPUS_PER_VM];
+	uint64_t vcpu_last_token[MAX_VCPUS_PER_VM];
 	uint32_t timeout_ms;
 	bool restart_enabled;
+	bool per_vcpu_mode;
 };
 
 uint64_t hwtdbg_capture_timeout(uint16_t vm_id,

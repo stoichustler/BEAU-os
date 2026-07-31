@@ -139,7 +139,7 @@ config VM_WDT_RESTART_VM_MASK
 
 config VM_WDT_RESTART_MAX
 	int "Maximum watchdog recovery attempts per VM boot"
-	default 3
+	default 5
 	help
 	  Limits automatic restarts after a VM watchdog timeout. The count survives
 	  VM restarts for the lifetime of one VM instance, preventing a guest that

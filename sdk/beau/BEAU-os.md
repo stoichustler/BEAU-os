@@ -1054,7 +1054,7 @@ ARM64 dispatcher 自身也是权限表：
 | `HC_GET_API_VERSION` | `0x00` | service VM | 读取 ABI `1.0` |
 | `HC_VM_GPA2HPA` | `0x41` | service VM | 查询目标 VM GPA 到 HPA |
 | `HC_GET_HW_INFO` | `0x63` | service VM | 读取 pCPU 数量 |
-| `HC_VM_WDT_KICK` | `0x64` | static VM | 提交 watchdog token |
+| `HC_VM_WDT_KICK` | `0x64` | static VM | 提交 VM-wide 或 per-vCPU watchdog token |
 | `HC_VIRTIO_PROXY_BACKEND` | `0x65` | static VM | backend register/poll/reply/heartbeat |
 | `HC_IPC` | `0x66` | static VM | IPC query/notify/ack |
 
@@ -1348,12 +1348,19 @@ CPU MMIO、DMA 和 IRQ 三条链必须同时成立，单独映射 BAR 不等于�
 
 **定位**：`core/vm_wdt.c`。
 
-Linux/Zephyr 客体周期性调用 `HC_VM_WDT_KICK`。Hypervisor 不用普通 VM-exit 代替
-heartbeat，因为客体 watchdog worker 卡死时仍可能发生其他 VM-exit。
+Linux/Zephyr 客体周期性调用 `HC_VM_WDT_KICK`。`param2=0` 保留旧的 VM-wide
+heartbeat；Linux 可设置 `ACRN_VM_WDT_KICK_F_PER_VCPU_V1`，由 Hypervisor 根据 HVC
+caller 绑定 vCPU 身份，不能由客体参数伪造。per-vCPU 模式激活后不允许退回 VM-wide
+模式，重复 counter 或降级 kick 均返回负 errno 且不刷新 deadline。旧 SMCCC wrapper
+未保证 `x2` 为零，所以 V1 使用精确 64-bit selector；模式激活前的其他值按 legacy
+处理以兼容旧二进制，激活后则作为降级 kick 拒绝。
+Hypervisor 不用普通 VM-exit 代替 heartbeat，因为客体 watchdog worker 卡死时仍可能
+发生其他 VM-exit。
 
 监测信号：
 
-- heartbeat age 与 token/kick count。
+- VM-wide heartbeat age，或每个 RUNNING vCPU 的 age/counter 与
+  expected/started/stalled mask。
 - vCPU runtime stall。
 - IRQ storm。
 - console queue stuck。
@@ -1363,7 +1370,7 @@ heartbeat，因为客体 watchdog worker 卡死时仍可能发生其他 VM-exit�
 
 ```text
 UNUSED/OFFLINE/UNKNOWN/ALIVE/STUCK
-cause: HEARTBEAT/TIMEOUT/VCPU_STALL/IRQ_STORM/CONSOLE_STUCK/VIRTIO_STUCK
+cause: HEARTBEAT/TIMEOUT/VCPU_STALL/GUEST_VCPU_STALL/IRQ_STORM/CONSOLE_STUCK/VIRTIO_STUCK
 ```
 
 可配置 VM 进入有界恢复：
@@ -1379,10 +1386,18 @@ detect stuck
 ```
 
 `CONFIG_VM_WDT_RESTART_VM_MASK` 选择允许恢复的 VM，service VM 永不自动重启；
-`CONFIG_VM_WDT_RESTART_MAX` 防止无限重启。WDT 控制线程保持在 pCPU0，只负责检测、
+`CONFIG_VM_WDT_RESTART_MAX=5` 将每个 VM 实例的自动恢复限制为最多 5 次，防止无限重启。
+WDT 控制线程保持在 pCPU0，只负责检测、
 排队和验证；每个 VM 的 cold reset 在其独占 BSP pCPU 上执行。因此 VM2 的镜像重载
 不会累积 BVT runtime 并延迟 VM3 的恢复。若目标 pCPU 未完成 reset，该 VM 保持
 `RESETTING` 可观测状态，其他 VM 的检测和恢复仍可继续。
+
+per-vCPU 模式只监测 `VCPU_RUNNING`。新进入 RUNNING 的 vCPU 从当前时刻获得完整超时
+宽限，进入 INIT/OFFLINE/POWERED_OFF 的 vCPU 立即从 expected mask 移除；VM reset 清空
+模式和全部 counter。已纳入 expected 的短暂 PAUSED 状态保留原 deadline，但 PAUSED
+vCPU 不会被新纳入。system/VM STR 分别冻结每个 expected vCPU 的剩余 deadline，resume
+后恢复原 age，因此 suspend 时间不会制造误报。任一 stalled bit 都进入同一个有界整 VM
+恢复状态机；QEMU 的 `CONFIG_VM_WDT_RESTART_VM_MASK=0xc` 因而允许 VM2/VM3 自动重启。
 
 ### 15.2 超时现场保留
 
@@ -1392,8 +1407,9 @@ detect stuck
 ```text
 timeout false -> true
     -> WDT lock 下排队轻量 metadata，立即解锁
-    -> durable vCPU GPR/异常寄存器、调度状态和 pCPU owner snapshot
-    -> 一次 batched pCPU live capture，SMP 槽忙立即回退，等待上限 1 ms
+    -> per-vCPU 模式选择 stalled mask；legacy/空 mask 回退全部 created vCPU
+    -> durable selected-vCPU GPR/异常寄存器、调度状态和 pCPU owner snapshot
+    -> 对 selected vCPU 执行一次 batched pCPU live capture，等待上限 1 ms
     -> guest/host stack 各最多 16 frame
     -> pending request/IRQ、IRQ 和 virtio 汇总
     -> checksum + barrier，最后发布 valid
@@ -1407,15 +1423,24 @@ per-pCPU generation mailbox；超时后的晚到回调不能修改事件槽。`h
 `hwtdbg: no watchdog timeout events`。
 
 为避免超时报告被高频轨迹和底层寄存器细节淹没，事件不保留 guest exit、vGIC
-或 vtimer trace，也不冻结 vGIC/vtimer context。每个 vCPU 只保留完整 GPR/异常寄存器、
-guest/host stack、调度延迟、pCPU 当前 owner、pending request/IRQ；VM 级另保留 WDT/
-recovery、IRQ 和 virtio 信息。架构持续态只维护 `vmstat/health` 使用的
+或 vtimer trace，也不冻结 vGIC/vtimer context。per-vCPU 模式只为 stalled mask 中的
+vCPU 保留完整 GPR/异常寄存器、guest/host stack、调度延迟、pCPU 当前 owner 和 pending
+request/IRQ；多个 stalled bit 全部采集，legacy 或空/无效 stalled mask 回退为全量采集。
+VM 级仍保留 WDT/recovery、全部 expected vCPU 的 heartbeat mask/age/token、IRQ 和 virtio
+信息。架构持续态只维护
+`vmstat/health` 使用的
 `vtimer_diag` 聚合计数，不维护 trace ring。
 
 ### 15.3 客体驱动
 
-- `sdk/kbe/vwdt.c`：Linux `core_initcall` 尽早发送第一次 kick，默认 5 秒周期。
+- 外部 Linux `vwdt.c`（验证后同步到 `sdk/kbe`）：`core_initcall` 注册 hotplug-aware
+  per-CPU 普通优先级线程；pinned hrtimer 默认每 5 秒只负责唤醒，线程实际获得调度后
+  才递增 counter 并 HVC。
 - `sdk/zsh/beau_wdt.c`：Zephyr 静态线程，默认 5 秒周期。
+
+该机制证明 vCPU 上的 process-context scheduling progress，覆盖 IRQ 仍响应但长期不能
+调度的常见 RCU stall/CPU starvation。它不解析 Linux RCU 状态；若 RCU 子系统异常而
+所有 heartbeat 线程仍正常调度，则不会仅凭本机制判定为 RCU stall。
 
 ## 16. 透明电源管理与 STR
 
@@ -1669,7 +1694,7 @@ QEMU 只能验证控制流、SMP ring ownership 和回溯边界，不能作为�
 | `virtio-blk-backend.c` | 1 MiB 非持久 RAM disk，有限单段请求 |
 | `virtio-i2c-backend.c` | 0x50、256-byte 内存 EEPROM |
 | `virtio-net-backend.c` | VM2 uplink 转发，关闭 offload/MQ/RSS 等复杂能力 |
-| `vwdt.c` | 早期 Hypervisor heartbeat |
+| `vwdt.c` | 早期、hotplug-aware per-vCPU scheduling-progress heartbeat |
 | `edu-test.c` | QEMU edu 直通与 IRQ 验证 |
 | `ipc-test.c` | Linux IPC query/ring/notify/ack endpoint |
 

@@ -33,12 +33,12 @@
 #include "../shell_priv.h"
 
 #define HWTDBG_MAGIC			0x48575444U
-#define HWTDBG_VERSION			3U
+#define HWTDBG_VERSION			4U
 #define HWTDBG_EVENT_SLOTS		4U
 #define HWTDBG_RAS_MAGIC		0x48575241U
 #define HWTDBG_RAS_EVENT_SLOTS		4U
 #define HWTDBG_FAULT_MAGIC		0x48574654U
-#define HWTDBG_FAULT_VERSION		2U
+#define HWTDBG_FAULT_VERSION		3U
 #define HWTDBG_FAULT_EVENT_SLOTS	2U
 #define HWTDBG_INVALID_ID		0xffffU
 #define HWTDBG_RAS_RECORD_GPA_VALID	(1U << 2U)
@@ -202,9 +202,10 @@ struct hwtdbg_live_request {
 
 /* [20260718] Watchdog timeout evidence ownership:
  *
- *   WDT transition -> reserve invalid event -> durable VM/vCPU snapshot
+ *   WDT transition -> reserve invalid event -> select stalled vCPU mask
+ *       -> durable selected-vCPU snapshot
  *       -> publish live request generation
- *       -> one bounded SMP try-call over the target pCPU mask
+ *       -> one bounded SMP try-call over the selected target pCPU mask
  *       -> remote callbacks publish odd/even-versioned per-pCPU mailboxes
  *       -> copy stable matching generations -> virtio snapshot
  *       -> checksum -> write barrier -> publish valid
@@ -212,7 +213,8 @@ struct hwtdbg_live_request {
  * Recovery never waits for the shell. The shell copies one valid event while
  * holding hwtdbg_lock, then formats the private readback without any lock.
  * A late callback can update only its mailbox, never a reused or published
- * event slot.
+ * event slot. Legacy or invalid empty stalled masks select every created vCPU,
+ * preventing a malformed per-vCPU timeout from publishing an empty minidump.
  */
 static struct hwtdbg_event hwtdbg_events[HWTDBG_VM_NUM][HWTDBG_EVENT_SLOTS];
 static uint8_t hwtdbg_next_slot[HWTDBG_VM_NUM];
@@ -834,8 +836,32 @@ static void hwtdbg_capture_virtio(uint16_t vm_id,
 	}
 }
 
+static uint64_t hwtdbg_build_vcpu_capture_mask(const struct hwtdbg_event *event)
+{
+	uint64_t valid_mask;
+	uint64_t stalled_mask;
+
+	if (event->vcpu_count == 0U) {
+		valid_mask = 0UL;
+	} else if (event->vcpu_count >= 64U) {
+		valid_mask = UINT64_MAX;
+	} else {
+		valid_mask = (1UL << event->vcpu_count) - 1UL;
+	}
+	stalled_mask = event->timeout.stalled_vcpu_mask & valid_mask;
+
+	return event->timeout.per_vcpu_mode && (stalled_mask != 0UL) ?
+		stalled_mask : valid_mask;
+}
+
+static bool hwtdbg_vcpu_selected(uint64_t capture_vcpu_mask, uint16_t vcpu_id)
+{
+	return (vcpu_id < 64U) &&
+		((capture_vcpu_mask & (1UL << vcpu_id)) != 0UL);
+}
+
 static uint64_t hwtdbg_build_live_mask(struct acrn_vm *vm,
-	const struct hwtdbg_event *event)
+	const struct hwtdbg_event *event, uint64_t capture_vcpu_mask)
 {
 	uint64_t mask = 0UL;
 	uint16_t vcpu_id;
@@ -844,7 +870,8 @@ static uint64_t hwtdbg_build_live_mask(struct acrn_vm *vm,
 		struct acrn_vcpu *vcpu = vcpu_from_vid(vm, vcpu_id);
 		uint16_t pcpu_id = vcpu->thread_obj.pcpu_id;
 
-		if (is_vcpu_running(vcpu) && (pcpu_id < MAX_PCPU_NUM) &&
+		if (hwtdbg_vcpu_selected(capture_vcpu_mask, vcpu_id) &&
+			is_vcpu_running(vcpu) && (pcpu_id < MAX_PCPU_NUM) &&
 			(sched_get_current(pcpu_id) == &vcpu->thread_obj)) {
 			mask |= 1UL << pcpu_id;
 		}
@@ -856,6 +883,7 @@ static uint64_t hwtdbg_build_live_mask(struct acrn_vm *vm,
 static void hwtdbg_copy_live_results(struct hwtdbg_event *event)
 {
 	struct hwtdbg_vcpu_snapshot result;
+	uint64_t capture_vcpu_mask = hwtdbg_build_vcpu_capture_mask(event);
 	uint16_t pcpu_id;
 
 	for (pcpu_id = 0U; pcpu_id < MAX_PCPU_NUM; pcpu_id++) {
@@ -886,6 +914,7 @@ static void hwtdbg_copy_live_results(struct hwtdbg_event *event)
 			continue;
 		}
 		if ((result.vcpu_id < event->vcpu_count) &&
+			hwtdbg_vcpu_selected(capture_vcpu_mask, result.vcpu_id) &&
 			(result.pcpu_id == pcpu_id)) {
 			(void)memcpy_s(&event->vcpu[result.vcpu_id],
 				sizeof(event->vcpu[result.vcpu_id]),
@@ -992,6 +1021,7 @@ uint64_t hwtdbg_capture_timeout(uint16_t vm_id,
 {
 	struct hwtdbg_event *event;
 	struct acrn_vm *vm;
+	uint64_t capture_vcpu_mask;
 	uint64_t remote_mask;
 	uint64_t sequence;
 	uint16_t vcpu_id;
@@ -1020,13 +1050,17 @@ uint64_t hwtdbg_capture_timeout(uint16_t vm_id,
 	event->recovery = timeout->restart_enabled &&
 		(timeout->restart_count >= CONFIG_VM_WDT_RESTART_MAX) ?
 		HWTDBG_RECOVERY_EXHAUSTED : HWTDBG_RECOVERY_NOT_REQUESTED;
+	capture_vcpu_mask = hwtdbg_build_vcpu_capture_mask(event);
 
 	for (vcpu_id = 0U; vcpu_id < event->vcpu_count; vcpu_id++) {
-		hwtdbg_capture_vcpu_durable(vcpu_from_vid(vm, vcpu_id),
-			&event->vcpu[vcpu_id]);
+		if (hwtdbg_vcpu_selected(capture_vcpu_mask, vcpu_id)) {
+			hwtdbg_capture_vcpu_durable(vcpu_from_vid(vm, vcpu_id),
+				&event->vcpu[vcpu_id]);
+		}
 	}
 
-	event->live_requested_mask = hwtdbg_build_live_mask(vm, event);
+	event->live_requested_mask = hwtdbg_build_live_mask(vm, event,
+		capture_vcpu_mask);
 	__atomic_store_n(&hwtdbg_live_request.vm_id, vm_id, __ATOMIC_RELEASE);
 	__atomic_store_n(&hwtdbg_live_request.sequence, sequence, __ATOMIC_RELEASE);
 	if ((event->live_requested_mask & (1UL << get_pcpu_id())) != 0UL) {
@@ -1137,6 +1171,9 @@ static const char *hwtdbg_cause_str(enum vm_wdt_cause cause)
 		break;
 	case VM_WDT_CAUSE_VIRTIO_STUCK:
 		str = "virtio";
+		break;
+	case VM_WDT_CAUSE_GUEST_VCPU_STALL:
+		str = "guestvcpu";
 		break;
 	case VM_WDT_CAUSE_NONE:
 	default:
@@ -1489,6 +1526,7 @@ static bool hwtdbg_copy_latest(uint16_t vm_id,
 
 static void hwtdbg_print_event(const struct hwtdbg_event *event)
 {
+	uint64_t capture_vcpu_mask = hwtdbg_build_vcpu_capture_mask(event);
 	uint16_t vcpu_id;
 
 	shell_item_begin("HWTDBG (vm%hu seq:%lu)", event->vm_id, event->sequence);
@@ -1501,6 +1539,21 @@ static void hwtdbg_print_event(const struct hwtdbg_event *event)
 		event->timeout.timeout_count,
 		event->timeout.last_token, event->timeout.restart_count,
 		event->timeout.restart_fail_count);
+	shell_item_line("heartbeat:mode:%s expected:0x%016lx started:0x%016lx stalled:0x%016lx",
+		event->timeout.per_vcpu_mode ? "per-vcpu" : "legacy",
+		event->timeout.expected_vcpu_mask, event->timeout.started_vcpu_mask,
+		event->timeout.stalled_vcpu_mask);
+	if (event->timeout.per_vcpu_mode) {
+		for (vcpu_id = 0U; vcpu_id < MAX_VCPUS_PER_VM; vcpu_id++) {
+			if ((event->timeout.expected_vcpu_mask & (1UL << vcpu_id)) != 0UL) {
+				shell_item_line("heartbeat:vcpu%hu age:%5lums token:0x%016lx%s",
+					vcpu_id, event->timeout.vcpu_age_ms[vcpu_id],
+					event->timeout.vcpu_last_token[vcpu_id],
+					(event->timeout.stalled_vcpu_mask & (1UL << vcpu_id)) != 0UL ?
+					" STALLED" : "");
+			}
+		}
+	}
 	shell_item_line("capture:valid flags:0x%08x tsc:0x%016lx",
 		event->capture_flags, event->captured_tsc);
 	shell_item_line("live:req:0x%016lx captured:0x%016lx timeout:0x%016lx budget:%uus",
@@ -1516,12 +1569,14 @@ static void hwtdbg_print_event(const struct hwtdbg_event *event)
 	shell_item_line("format:%u scope:bounded-regs-context-stacks-sched-irq-virtio guest-memory:not-captured",
 		event->version);
 	shell_item_section("vm/vcpu");
-	shell_item_line("vm:%s state:%s vcpus:%hu",
+	shell_item_line("vm:%s state:%s vcpus:%hu captured:0x%016lx",
 		event->vm_name, hwtdbg_vm_state_str(event->vm_state),
-		event->vcpu_count);
+		event->vcpu_count, capture_vcpu_mask);
 	for (vcpu_id = 0U; vcpu_id < event->vcpu_count; vcpu_id++) {
-		hwtdbg_print_vcpu(&event->vcpu[vcpu_id]);
-		shell_output_checkpoint();
+		if (hwtdbg_vcpu_selected(capture_vcpu_mask, vcpu_id)) {
+			hwtdbg_print_vcpu(&event->vcpu[vcpu_id]);
+			shell_output_checkpoint();
+		}
 	}
 	shell_item_section("irq/virtio");
 	shell_item_line("irq:total:%lu delta:%lu", event->timeout.irq_total,

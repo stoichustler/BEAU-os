@@ -37,9 +37,16 @@ static long beau_hcall2(unsigned long hcall_id, unsigned long param1,
 
 long beau_hcall_vm_wdt_kick(unsigned long token)
 {
-	return beau_hcall1(HC_VM_WDT_KICK, token);
+	return beau_hcall2(HC_VM_WDT_KICK, token, 0UL);
 }
 EXPORT_SYMBOL_GPL(beau_hcall_vm_wdt_kick);
+
+long beau_hcall_vm_wdt_kick_vcpu(unsigned long token)
+{
+	return beau_hcall2(HC_VM_WDT_KICK, token,
+		BEAU_VM_WDT_KICK_F_PER_VCPU_V1);
+}
+EXPORT_SYMBOL_GPL(beau_hcall_vm_wdt_kick_vcpu);
 
 long beau_hcall_vm_crash_report(const struct beau_vm_crash_report *report)
 {
