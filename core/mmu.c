@@ -810,8 +810,8 @@ int32_t pgtable_add_map_deferred(uint64_t *pgtl3_page,
 	}
 	vaddr_end = vaddr + map_size;
 
-	dev_dbg(DBG_LEVEL_MMU, "MAP:    PA:0x%016lx VA:0x%016lx (size:0x%08lx)\n",
-		request->paddr_base, request->vaddr_base, request->size);
+	dev_dbg(DBG_LEVEL_MMU, "MAP:    PA:0x%016lx VA:[0x%016lx - 0x%016lx]\n",
+		request->paddr_base, request->vaddr_base, request->vaddr_base + request->size);
 
 	while (vaddr < vaddr_end) {
 		vaddr_next = (vaddr & PGTL3_MASK) + PGTL3_SIZE;
