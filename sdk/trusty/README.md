@@ -14,7 +14,8 @@ Build the firmware after building the BEAU raw image:
 
 ```sh
 make ARCH=arm64 PLATFORM=qemu CROSS_COMPILE=aarch64-none-elf- -j"$(getconf _NPROCESSORS_ONLN)"
-make -C sdk/trusty CROSS_COMPILE=aarch64-none-elf- firmware
+make -C sdk/trusty CROSS_COMPILE=aarch64-none-elf- \
+  -j"$(getconf _NPROCESSORS_ONLN)" firmware
 ```
 
 Launch BEAU OS with Trusty TEE:
@@ -22,6 +23,10 @@ Launch BEAU OS with Trusty TEE:
 ```sh
 python3 scripts/kick.py --build --tee
 ```
+
+The launcher removes all previous Trusty and TF-A outputs before rebuilding.
+Its top-level parallel make jobserver is inherited by the LK and TF-A builds;
+the BL32 dependency still keeps those two stages ordered.
 
 The resulting 'out/qemu/tf-a/qemu_fw.bios' is coupled to the specified BEAU
 raw BL33 image. Rebuild TF-A when the BL33 image changes.

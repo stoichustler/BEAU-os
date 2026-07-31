@@ -203,6 +203,7 @@ def tee_firmware_cmd(args):
         "make",
         "-C",
         str(ROOT / "sdk/trusty"),
+        f"-j{os.cpu_count() or 1}",
         "firmware",
         f"BEAU_BL33={args.tee_bl33}",
     ]
