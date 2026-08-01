@@ -22,6 +22,7 @@ STACK_PROTECTOR := 1
 MAKEFLAGS += -rR --no-print-directory
 
 BASEDIR := $(shell pwd)
+BEAU_ROOT := $(abspath $(dir $(firstword $(MAKEFILE_LIST))))
 GIT_TOPDIR := $(shell git rev-parse --show-toplevel 2>/dev/null)
 LICENSE_FILE ?= $(or $(firstword $(wildcard $(GIT_TOPDIR)/LICENSE LICENSE ../LICENSE)),/dev/null)
 ARCH ?= arm64
@@ -624,6 +625,10 @@ $(HV_OBJDIR)/$(HV_DEBUG_FILE).out: $(MODULES) $(HV_OBJDIR)/symtab.o $(ARM64_LINK
 .PHONY: tags
 tags:
 	$(Q)ctags --languages=Asm,c,c++ -R
+
+.PHONY: clean-all-out
+clean-all-out:
+	@rm -rf -- "$(BEAU_ROOT)/out" "$(BEAU_ROOT)/sdk/trusty/out"
 
 .PHONY: clean
 clean:
