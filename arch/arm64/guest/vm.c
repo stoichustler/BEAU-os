@@ -15,7 +15,6 @@
 #include <mmu.h>
 #include <pgtable.h>
 #include <per_cpu.h>
-#include <notify.h>
 #include <bsp/vfdt.h>
 #include <bsp/vpci.h>
 #include <logmsg.h>
@@ -154,49 +153,32 @@ uint64_t arm64_stage2_vttbr(const struct acrn_vm *vm)
 		(arm64_stage2_vmid(vm) << ARM64_STAGE2_VMID_SHIFT);
 }
 
-static void arm64_stage2_flush_vttbr(void *data)
-{
-	uint64_t target_vttbr = *(uint64_t *)data;
-	uint64_t old_vttbr = read_vttbr_el2();
-
-	write_vttbr_el2(target_vttbr);
-	flush_stage2_tlb_local();
-	write_vttbr_el2(old_vttbr);
-}
-
-static int32_t arm64_stage2_flush_vm_tlb(struct acrn_vm *vm)
+int32_t arm64_stage2_invalidate_vm_tlb(struct acrn_vm *vm)
 {
 	uint64_t target_vttbr;
-	uint64_t mask;
-	uint32_t retry;
-	int32_t status = 0;
+	uint64_t old_vttbr;
 
 	if ((vm == NULL) || (vm->root_stg2ptp == NULL) || (vm->hw.cpu_affinity == 0UL)) {
-		return 0;
+		return -EINVAL;
 	}
 
 	target_vttbr = arm64_stage2_vttbr(vm);
-	mask = vm->hw.cpu_affinity & ALL_CPUS_MASK;
-	if (mask != 0UL) {
-		for (retry = 0U; retry < ARM64_STAGE2_OWNER_RETRIES; retry++) {
-			status = smp_try_call_function_timeout(mask,
-				arm64_stage2_flush_vttbr, &target_vttbr,
-				ARM64_STAGE2_SYNC_TIMEOUT_US);
-			if (status != -EBUSY) {
-				break;
-			}
-			udelay(ARM64_STAGE2_OWNER_RETRY_US);
-		}
-	}
+	old_vttbr = read_vttbr_el2();
+	write_vttbr_el2(target_vttbr);
+	arm64_dsb_ishst();
+	arm64_tlbi(vmalls12e1is);
+	arm64_dsb_ish();
+	arm64_isb();
+	write_vttbr_el2(old_vttbr);
 
-	return status;
+	return 0;
 }
 
 static int32_t arm64_stage2_sync_translation(struct acrn_vm *vm)
 {
 	int32_t status;
 
-	status = arm64_stage2_flush_vm_tlb(vm);
+	status = arm64_stage2_invalidate_vm_tlb(vm);
 	if (status == 0) {
 		status = arm_smmu_sync_vm_stage2(vm->vm_id,
 			hva2hpa(vm->root_stg2ptp));
@@ -1106,15 +1088,21 @@ int32_t arch_reset_vm(struct acrn_vm *vm)
 	uint16_t i;
 	struct acrn_vcpu *vcpu = NULL;
 	struct acrn_vm_config *vm_config = get_vm_config(vm->vm_id);
+	int32_t ret;
 
-	/* [20260708] ARM64 VM warm-reset boundary:
+	/* [20260801] ARM64 VM reset coherency boundary
 	 *
-	 * A VM reset must clear both per-vCPU execution state and per-VM device
-	 * state. Otherwise the new boot may inherit stale pending interrupts,
-	 * virtqueue indices, or outstanding IO request slots from the previous
-	 * kernel instance.
+	 * A VM reset must retire translations from the previous VMID instance before
+	 * clearing per-vCPU execution state and per-VM device state. Otherwise a new
+	 * kernel can inherit stale EL1 translations, pending interrupts, virtqueue
+	 * indices, or outstanding IO request slots.
 	 *
 	 *   pause all vCPUs (common)
+	 *          |
+	 *          v
+	 *   broadcast invalidation for the old VMID translation regime
+	 *          |
+	 *          +--> failure: keep VM stopped
 	 *          |
 	 *          v
 	 *   reset ioreq + vGIC + virtio transport state
@@ -1124,8 +1112,19 @@ int32_t arch_reset_vm(struct acrn_vm *vm)
 	 *          |
 	 *          v
 	 *   start_vm() prepares and wakes BSP
+	 *
+	 * Key rule:
+	 *   - the VM lifecycle lock owns the reset while every vCPU is quiesced;
+	 *   - old EL1/Stage-2 translations retire before reset state is published;
+	 *   - the inner-shareable broadcast completes without waiting for a target
+	 *     pCPU callback that may itself be running another guest.
 	 */
 	(void)ramlog_capture_vm_pstore(vm);
+	ret = arm64_stage2_invalidate_vm_tlb(vm);
+	if (ret != 0) {
+		LOG_ERR("VM%u: reset TLB invalidation failed ret=%d", vm->vm_id, ret);
+		return ret;
+	}
 	virtio_proxy_release_vm(vm);
 	reset_vm_ioreqs(vm);
 	arm64_vgicv3_init_vm(vm, vm_config->cpu_affinity);

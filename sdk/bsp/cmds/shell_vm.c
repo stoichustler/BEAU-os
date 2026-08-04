@@ -1046,6 +1046,9 @@ static void shell_vmstat_collect_timer_summary(const struct acrn_vm *vm,
 	}
 }
 
+static void shell_vmstat_vcon_phase(char *buf, size_t size, bool reached,
+	uint64_t elapsed_us);
+
 static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *vm_config,
 	const struct acrn_vm *vm)
 {
@@ -1157,9 +1160,24 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 			vu->txfifo.num, vu->ier, vu->lsr);
 	}
 	if (vhost_console_get_stats(vm_id, &vcon)) {
+		char feature_ok[24U];
+		char rx_ready[24U];
+		char tx_ready[24U];
+		char driver_ok[24U];
+
+		shell_vmstat_vcon_phase(feature_ok, sizeof(feature_ok),
+			vcon.boot.feature_ok, vcon.boot.feature_ok_us);
+		shell_vmstat_vcon_phase(rx_ready, sizeof(rx_ready),
+			vcon.boot.rx_ready, vcon.boot.rx_ready_us);
+		shell_vmstat_vcon_phase(tx_ready, sizeof(tx_ready),
+			vcon.boot.tx_ready, vcon.boot.tx_ready_us);
+		shell_vmstat_vcon_phase(driver_ok, sizeof(driver_ok),
+			vcon.boot.driver_ok, vcon.boot.driver_ok_us);
 		shell_item_line("        virtio-console:active:%s irq:%u status:0x%02x isr:0x%02x tx:%lu rx:%lu",
 			shell_yes_no(vcon.active), vcon.irq, vcon.status,
 			vcon.interrupt_status, vcon.tx_count, vcon.rx_count);
+		shell_item_line("        vcon.boot feature:%s rx-ready:%s tx-ready:%s driver-ok:%s",
+			feature_ok, rx_ready, tx_ready, driver_ok);
 		shell_item_line("        vcon.stat tx:%luB/s rx:%luB/s notify:%lu/%lu irq:%lu/%lu",
 			vcon.tx_byte_rate, vcon.rx_byte_rate,
 			vcon.tx_notify_count, vcon.rx_notify_count,
@@ -1194,6 +1212,16 @@ static void shell_vmstat_append_flag(char *flags, size_t flags_len, const char *
 		(void)strncat_s(flags, flags_len, ",", 1U);
 	}
 	(void)strncat_s(flags, flags_len, flag, strnlen_s(flag, flags_len));
+}
+
+static void shell_vmstat_vcon_phase(char *buf, size_t size, bool reached,
+	uint64_t elapsed_us)
+{
+	if (reached) {
+		(void)snprintf(buf, size, "%luus", elapsed_us);
+	} else {
+		(void)strncpy_s(buf, size, "-", 1U);
+	}
 }
 
 static void shell_vmstat_vcpu_diag(const struct acrn_vcpu *vcpu,

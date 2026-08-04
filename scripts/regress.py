@@ -18,17 +18,17 @@ CWD = Path.cwd()
 PROMPT = "console:\\>"
 LINUX_PROMPT = "uos ~"
 LK_PROMPT = "uos ~"
-RTTHREAD_PROMPT = "RT />"
 ZEPHYR_PROMPT = "sos ~ "
 HELP_STRESS_TARGETS = (
     (0, ZEPHYR_PROMPT, "VM0 Zephyr", 30.0),
-    (1, RTTHREAD_PROMPT, "VM1 RT-Thread", 60.0),
+    (1, LINUX_PROMPT, "VM1 Linux", 60.0),
     (2, LINUX_PROMPT, "VM2 Linux", 60.0),
     (3, LINUX_PROMPT, "VM3 Linux", 60.0),
 )
 ENTER = "\r"
 CTRL_D = b"\x04"
 LINUX_INITRAMFS_STAGE_ADDR = "0x74000000"
+LINUX_VM1_IMAGE_STAGE_ADDR = "0x70000000"
 LINUX_VM2_IMAGE_STAGE_ADDR = "0x76000000"
 LINUX_VM3_IMAGE_STAGE_ADDR = "0x7c000000"
 FATAL_PATTERNS = (
@@ -44,6 +44,9 @@ FATAL_PATTERNS = (
     "assertion failed",
     "stack check fails",
     "fatal error",
+    "panic:",
+    "stage-2 unmap sync failed",
+    "beau ddb",
 )
 FATAL_DRAIN_TIMEOUT = 1.0
 STR_FREEZE_MARKERS = ("PM_GUESTS_FROZEN", "PM_VM_SUSPENDED")
@@ -98,7 +101,7 @@ def parse_args():
     parser.add_argument("--smp", default=getenv("BEAU_QEMU_SMP", "8"))
     parser.add_argument("-m", "--memory", default=getenv("BEAU_QEMU_MEM", "1536M"))
     parser.add_argument("--linux-image", default=None, type=relpath)
-    parser.add_argument("--linux-vm1-image", default=None, type=relpath, help=argparse.SUPPRESS)
+    parser.add_argument("--linux-vm1-image", default=ROOT / "sdk/imgs/linux/Image", type=relpath)
     parser.add_argument("--linux-vm2-image", default=ROOT / "sdk/imgs/linux/Image", type=relpath)
     parser.add_argument("--linux-vm3-image", default=ROOT / "sdk/imgs/linux/Image", type=relpath)
     parser.add_argument(
@@ -133,12 +136,12 @@ def parse_args():
     parser.add_argument(
         "--smmu-passthrough-smoke",
         action="store_true",
-        help="Verify VM2 EDU and virtio-net PCI passthrough behind SMMUv3 Stage-2.",
+        help="Verify VM1 EDU and virtio-net PCI passthrough behind SMMUv3 Stage-2.",
     )
     parser.add_argument(
         "--wdt-restart-smoke",
         action="store_true",
-        help="Trigger one VM3 missed heartbeat and verify bounded cold watchdog recovery.",
+        help="Trigger concurrent VM1/VM3 missed heartbeats and verify cold recovery.",
     )
     parser.add_argument(
         "--stress-vsh-switch",
@@ -163,9 +166,8 @@ def parse_args():
     if extra[:1] == ["--"]:
         extra = extra[1:]
     args.extra = extra
-    if args.linux_vm1_image is not None:
-        parser.error("--linux-vm1-image was removed because VM1 runs RT-Thread")
     if args.linux_image is not None:
+        args.linux_vm1_image = args.linux_image
         args.linux_vm2_image = args.linux_image
         args.linux_vm3_image = args.linux_image
     if args.str_cycles < 0:
@@ -257,6 +259,8 @@ def qemu_cmd(args):
         "-kernel",
         str(args.kernel),
         "-device",
+        f"loader,file={args.linux_vm1_image},addr={LINUX_VM1_IMAGE_STAGE_ADDR},force-raw=on",
+        "-device",
         f"loader,file={args.linux_vm2_image},addr={LINUX_VM2_IMAGE_STAGE_ADDR},force-raw=on",
         "-device",
         f"loader,file={args.linux_vm3_image},addr={LINUX_VM3_IMAGE_STAGE_ADDR},force-raw=on",
@@ -265,9 +269,9 @@ def qemu_cmd(args):
         "-device",
         "edu,addr=0x1",
         "-netdev",
-        "user,id=beau_vm2_net",
+        "user,id=beau_vm1_net",
         "-device",
-        "virtio-net-pci-non-transitional,netdev=beau_vm2_net,addr=0x2,mac=52:54:00:be:02:00",
+        "virtio-net-pci-non-transitional,netdev=beau_vm1_net,addr=0x2,mac=52:54:00:be:01:00",
         *args.extra,
     ]
 
@@ -575,7 +579,7 @@ class QemuSession:
         try:
             self.send(CTRL_D)
             self.expect(PROMPT, f"return to BEAU shell for {label}", timeout=5.0, keepalive=ENTER)
-            for line in ("vcpus", "schedstat", "vmstat", "irqstat", "hwtdbg"):
+            for line in ("vcpus", "schedstat", "vmstat", "irqstat", f"hwtdbg {vmid}"):
                 self.send(line + ENTER)
                 self.expect(PROMPT, f"{line} diagnostics", timeout=15.0, keepalive=ENTER)
         except Exception as err:
@@ -604,50 +608,117 @@ def vcon_return(qemu, name, vmid=None):
 
 
 def run_wdt_restart_smoke(qemu):
-    """Delay VM3's next kick and verify the watchdog recovers it end to end."""
-    vcon_enter(qemu, 3, LINUX_PROMPT, "WDT smoke: VM3 Linux shell", timeout=60.0)
-    vm3_command(
-        qemu,
-        "test -w /sys/module/vwdt/parameters/period_ms && echo 60000 > /sys/module/vwdt/parameters/period_ms",
-        "WDT smoke: delay VM3 heartbeat",
+    """Delay VM1/VM3 kicks and verify concurrent watchdog cold recovery."""
+    restart_offset = len(qemu.output)
+    delay_command = (
+        "p=/sys/module/vwdt/parameters/period_ms; "
+        "old=$(cat \"$p\"); "
+        "if test -w \"$p\" && test \"$old\" = 5000; then "
+        "echo 60000 > \"$p\"; "
+        "{ sleep 10; echo \"$old\" > \"$p\"; } </dev/null >/dev/null 2>&1 & "
+        "test \"$(cat \"$p\")\" = 60000; "
+        "else false; fi"
     )
-    vcon_return(qemu, "WDT smoke: return from VM3", vmid=3)
 
-    qemu.expect("HWT: VM3 restart cause:timeout", "WDT smoke: timeout detected", timeout=45.0)
-    qemu.expect("HWT: VM3 quiesced; cold restart", "WDT smoke: vCPUs quiesced", timeout=5.0)
-    qemu.expect("VM3: load KERNEL", "WDT smoke: kernel reloaded", timeout=5.0)
-    qemu.expect("HWT: VM3 restart launched", "WDT smoke: restart launched", timeout=10.0)
-    qemu.expect("HWT: VM3 restart verified", "WDT smoke: restart verified", timeout=45.0)
-    vcon_enter(qemu, 3, LINUX_PROMPT, "WDT smoke: VM3 shell after recovery", timeout=60.0)
-    vcon_return(qemu, "WDT smoke: return from recovered VM3", vmid=3)
-    qemu.command_retry(
-        "hwtdbg",
-        [
-            "┌─  HWTDBG (vm3 seq:",
-            "timeout:runtime",
-            "capture:",
-            "live:req:",
-            "recovery:verified",
-            "├─  vm/vcpu",
-            "guest regs:",
-            "elr:0x",
-            "guest stack:",
-            "host stack:",
-            "├─  irq/virtio",
-            "irq:total:",
-            "virtio:devices:",
-        ],
-        [
-            "checksum:invalid",
-            "capture:corrupt",
-            "guest exit trace:",
-            "vgic/vtimer",
-            "irq/console/virtio",
-            "console:buffered:",
-            "console tail:",
-        ],
+    for vmid in (1, 3):
+        vcon_enter(qemu, vmid, LINUX_PROMPT,
+                   f"WDT smoke: VM{vmid} Linux shell", timeout=60.0)
+        vm_command(qemu, vmid, delay_command,
+                   f"WDT smoke: delay VM{vmid} heartbeat")
+        vcon_return(qemu, f"WDT smoke: return from VM{vmid}", vmid=vmid)
+
+    qemu.expect_all(
+        (
+            "VM1 restart cause:",
+            "VM3 restart cause:",
+            "VM1 quiesced; cold restart",
+            "VM3 quiesced; cold restart",
+            "VM1:    Load KERNEL",
+            "VM3:    Load KERNEL",
+            "VM1 restart launched",
+            "VM3 restart launched",
+            "VM1 restart verified",
+            "VM3 restart verified",
+        ),
+        "WDT smoke: concurrent VM1/VM3 cold recovery",
+        start_offset=restart_offset,
+        timeout=120.0,
     )
-    print("[pass] watchdog cold-restart smoke complete", flush=True)
+    qemu.drain_for(30.0)
+
+    for vmid in (1, 3):
+        vcon_enter(qemu, vmid, LINUX_PROMPT,
+                   f"WDT smoke: VM{vmid} shell after recovery", timeout=60.0)
+        expect_linux_id(qemu, vmid, f"WDT smoke: VM{vmid} root identity")
+        vm_command(
+            qemu,
+            vmid,
+            "p=/sys/module/vwdt/parameters/period_ms; "
+            "test \"$(cat \"$p\")\" = 5000 && "
+            "echo period_ms=$(cat \"$p\")",
+            f"WDT smoke: VM{vmid} heartbeat period after recovery",
+            patterns=["period_ms=5000"],
+        )
+        if vmid == 1:
+            vm_command(
+                qemu,
+                1,
+                "vpci",
+                "WDT smoke: VM1 EDU PCI BAR after recovery",
+                patterns=["vendor:0x1234 device:0x11e8", "mmio: alive", "PASS"],
+                timeout=30.0,
+            )
+        vcon_return(qemu, f"WDT smoke: return from recovered VM{vmid}", vmid=vmid)
+
+    qemu.command_retry("pcistat", [
+        "stream:0x0008 smmu:owned",
+        "stream:0x0010 smmu:owned",
+        "owner:vm1 ipa:44",
+    ])
+    expect_smmu_contract(qemu, False)
+    for vmid in (1, 3):
+        qemu.command_retry(
+            f"hwtdbg {vmid}",
+            [
+                f"HWTDBG (vm{vmid} seq:",
+                "timeout:runtime",
+                "capture:valid",
+                "live:req:",
+                "recovery:verified",
+                "vm/vcpu",
+                "minidump guest regs",
+                "elr:0x",
+                "minidump guest stack",
+                "minidump host stack",
+                "irq/virtio",
+                "irq:total:",
+                "virtio:devices:",
+            ],
+            [
+                "checksum:invalid",
+                "capture:corrupt",
+                "guest exit trace:",
+                "vgic/vtimer",
+                "irq/console/virtio",
+                "console:buffered:",
+                "console tail:",
+            ],
+        )
+
+    recovery_text = qemu.output[restart_offset:]
+    for vmid in (1, 3):
+        for marker in (f"VM{vmid} restart cause:",
+                       f"VM{vmid} restart verified"):
+            count = recovery_text.count(marker)
+            if count != 1:
+                raise RuntimeError(
+                    f"WDT smoke: expected one {marker!r}, observed {count}"
+                )
+    for marker in ("attempt:2/5", "restart failed cause:",
+                   "verify-timeout"):
+        if marker in recovery_text:
+            raise RuntimeError(f"WDT smoke: unexpected recovery output {marker!r}")
+    print("[pass] concurrent VM1/VM3 watchdog cold-restart smoke complete", flush=True)
 
 
 def send_enter_burst(qemu, count, delay, name, vmid=None):
@@ -684,13 +755,9 @@ def expect_linux_id(qemu, vmid, name):
         raise
 
 
-def expect_vm2_id(qemu, name):
-    expect_linux_id(qemu, 2, name)
-
-
 def expect_linux_stress_ng(qemu, vmid, name):
     command = (
-        "test -x /tmp/stress-ng && "
+        "command -v stress-ng >/dev/null && "
         "stress-ng --version >/tmp/beau-stress-ng-version && "
         "stress-ng --cpu 1 --timeout 1s --metrics-brief"
     )
@@ -702,17 +769,17 @@ def expect_linux_stress_ng(qemu, vmid, name):
         raise
 
 
-def expect_vm2_kbe_backends(qemu, name):
+def expect_vm1_kbe_backends(qemu, name):
     checks = (
-        "dmesg | grep -q 'BEAU virtio-fs backend started'",
-        "dmesg | grep -q 'BEAU virtio-rng backend started'",
-        "dmesg | grep -q 'BEAU virtio-blk backend started'",
-        "dmesg | grep -q 'BEAU virtio-i2c backend started'",
+        "dmesg | grep -q 'BEAU virtio-fs backends started'",
+        "dmesg | grep -q 'BEAU virtio-rng backends started'",
+        "dmesg | grep -q 'BEAU virtio-blk backends started'",
+        "dmesg | grep -q 'BEAU virtio-i2c backends started'",
     )
     try:
-        vm_command(qemu, 2, " && ".join(checks), name, timeout=30.0)
+        vm_command(qemu, 1, " && ".join(checks), name, timeout=30.0)
     except Exception:
-        qemu.capture_vm_diagnostics(name, 2)
+        qemu.capture_vm_diagnostics(name, 1)
         raise
 
 
@@ -720,19 +787,19 @@ def run_smmu_passthrough_smoke(qemu):
     qemu.command_retry("pcistat", [
         "stream:0x0008 smmu:owned",
         "stream:0x0010 smmu:owned",
-        "owner:vm2 ipa:44",
+        "owner:vm1 ipa:44",
     ])
     net_watchdog = False
-    qemu.send("vsh 2" + ENTER)
+    qemu.send("vsh 1" + ENTER)
     try:
-        qemu.expect(LINUX_PROMPT, "VM2 passthrough Linux shell", timeout=60.0,
+        qemu.expect(LINUX_PROMPT, "VM1 passthrough Linux shell", timeout=60.0,
                     keepalive=ENTER)
-        expect_vm2_id(qemu, "VM2 passthrough root identity")
+        expect_linux_id(qemu, 1, "VM1 passthrough root identity")
         vm_command(
             qemu,
-            2,
-			"vpci",
-            "VM2 EDU PCI BAR passthrough",
+            1,
+            "vpci",
+            "VM1 EDU PCI BAR passthrough",
             patterns=[
                 "vendor:0x1234 device:0x11e8",
                 "mmio: alive",
@@ -742,36 +809,36 @@ def run_smmu_passthrough_smoke(qemu):
         )
         vm_command(
             qemu,
-            2,
+            1,
             "p=/sys/bus/pci/devices/0000:00:02.0; "
             "echo vendor=$(cat $p/vendor 2>/dev/null); "
             "echo driver=$(basename $(readlink $p/driver) 2>/dev/null); "
             "echo netdev=$(readlink -f /sys/class/net/eth0/device); "
             "test \"$(cat $p/vendor)\" = 0x1af4 && "
             "readlink -f /sys/class/net/eth0/device | grep -q '0000:00:02.0'",
-            "VM2 virtio-net PCI passthrough",
+            "VM1 virtio-net PCI passthrough",
             patterns=["vendor=0x1af4", "driver=virtio-pci", "0000:00:02.0/virtio"],
             timeout=30.0,
         )
         net_text = vm_command(
             qemu,
-            2,
+            1,
             "sleep 7; dmesg | tail -n 80",
-            "VM2 virtio-net TX watchdog sample",
+            "VM1 virtio-net TX watchdog sample",
             timeout=20.0,
         )
         net_watchdog = "NETDEV WATCHDOG" in net_text
     except Exception:
-        qemu.capture_vm_diagnostics("VM2 SMMU passthrough smoke", 2)
+        qemu.capture_vm_diagnostics("VM1 SMMU passthrough smoke", 1)
         raise
     qemu.send(CTRL_D)
-    qemu.expect(PROMPT, "return from VM2 passthrough shell")
+    qemu.expect(PROMPT, "return from VM1 passthrough shell")
     smmu_patterns = ["smmustat:"]
     if not net_watchdog:
         smmu_patterns.extend([
             "events:0 err:0 overflow:0 quarantine:0",
-            "stream[0x0008] sw-owner:vm2 ste-vm:vm2 assigned:Y quarantine:N",
-            "stream[0x0010] sw-owner:vm2 ste-vm:vm2 assigned:Y quarantine:N",
+            "stream[0x0008] sw-owner:vm1 ste-vm:vm1 assigned:Y quarantine:N",
+            "stream[0x0010] sw-owner:vm1 ste-vm:vm1 assigned:Y quarantine:N",
             "s2:ipa:44",
             "ste:valid:Y cfg:s2(6)",
         ])
@@ -783,10 +850,10 @@ def run_smmu_passthrough_smoke(qemu):
             if ("evtq" in line) or ("stream[" in line) or ("fault:" in line)
         )
         raise RuntimeError(
-            "VM2 virtio-net TX watchdog observed; physical SMMU snapshot:\n" +
+            "VM1 virtio-net TX watchdog observed; physical SMMU snapshot:\n" +
             diagnostic
         )
-    print("[pass] VM2 SMMUv3 EDU/virtio-net passthrough smoke", flush=True)
+    print("[pass] VM1 SMMUv3 EDU/virtio-net passthrough smoke", flush=True)
 
 
 def vm_command(qemu, vmid, command, name, patterns=None, timeout=20.0, expect_rc=0):
@@ -808,98 +875,100 @@ def vm_command(qemu, vmid, command, name, patterns=None, timeout=20.0, expect_rc
     return text
 
 
-def vm3_command(qemu, command, name, patterns=None, timeout=20.0, expect_rc=0):
-    return vm_command(qemu, 3, command, name, patterns=patterns,
-                      timeout=timeout, expect_rc=expect_rc)
-
-
-def expect_vm3_virtiofs(qemu, name):
+def expect_virtiofs(qemu, vmid, name):
     try:
-        vm3_command(qemu, "mkdir -p /mnt/beau /tmp",
-                    f"{name}: mount dirs")
-        vm3_command(qemu, "umount /mnt/beau 2>/dev/null || true",
-                    f"{name}: cleanup old mount")
-        vm3_command(qemu, "mount -t virtiofs -o rw proxy-fs /mnt/beau",
-                    f"{name}: mount proxy-fs", timeout=30.0)
-        vm3_command(qemu, "printf BEAU-FS-OK >/mnt/beau/proxy-regress.txt",
-                    f"{name}: write file")
-        vm3_command(qemu, "cat /mnt/beau/proxy-regress.txt",
-                    f"{name}: read file", patterns=["BEAU-FS-OK"])
-        vm3_command(qemu, "umount /mnt/beau",
-                    f"{name}: unmount", timeout=30.0)
+        vm_command(qemu, vmid, "mkdir -p /mnt/beau /tmp",
+                   f"{name}: mount dirs")
+        vm_command(qemu, vmid, "umount /mnt/beau 2>/dev/null || true",
+                   f"{name}: cleanup old mount")
+        vm_command(qemu, vmid, "mount -t virtiofs -o rw proxy-fs /mnt/beau",
+                   f"{name}: mount proxy-fs", timeout=30.0)
+        vm_command(qemu, vmid, "printf BEAU-FS-OK >/mnt/beau/proxy-regress.txt",
+                   f"{name}: write file")
+        vm_command(qemu, vmid, "cat /mnt/beau/proxy-regress.txt",
+                   f"{name}: read file", patterns=["BEAU-FS-OK"])
+        vm_command(qemu, vmid, "umount /mnt/beau",
+                   f"{name}: unmount", timeout=30.0)
     except Exception:
-        qemu.capture_vm_diagnostics(name, 3)
+        qemu.capture_vm_diagnostics(name, vmid)
         raise
 
 
-def expect_vm3_virtiorng(qemu, name):
+def expect_virtiorng(qemu, vmid, name):
     try:
-        vm3_command(qemu, "test -c /dev/hwrng",
-                    f"{name}: hwrng node")
-        vm3_command(qemu, "grep -q virtio /sys/class/misc/hw_random/rng_current",
-                    f"{name}: virtio rng selected")
-        vm3_command(qemu, "dd if=/dev/hwrng of=/tmp/beau-rng.bin bs=32 count=1 2>/dev/null",
-                    f"{name}: read hwrng")
-        vm3_command(qemu, "test $(wc -c </tmp/beau-rng.bin) -eq 32",
-                    f"{name}: hwrng size")
-        vm3_command(qemu, "dd if=/dev/zero of=/tmp/beau-rng-zero.bin bs=32 count=1 2>/dev/null; ! cmp -s /tmp/beau-rng.bin /tmp/beau-rng-zero.bin",
-                    f"{name}: hwrng nonzero")
+        vm_command(qemu, vmid, "test -c /dev/hwrng",
+                   f"{name}: hwrng node")
+        vm_command(qemu, vmid, "grep -q virtio /sys/class/misc/hw_random/rng_current",
+                   f"{name}: virtio rng selected")
+        vm_command(qemu, vmid,
+                   "dd if=/dev/hwrng of=/tmp/beau-rng.bin bs=32 count=1 2>/dev/null",
+                   f"{name}: read hwrng")
+        vm_command(qemu, vmid, "test $(wc -c </tmp/beau-rng.bin) -eq 32",
+                   f"{name}: hwrng size")
+        vm_command(qemu, vmid,
+                   "dd if=/dev/zero of=/tmp/beau-rng-zero.bin bs=32 count=1 "
+                   "2>/dev/null; ! cmp -s /tmp/beau-rng.bin /tmp/beau-rng-zero.bin",
+                   f"{name}: hwrng nonzero")
     except Exception:
-        qemu.capture_vm_diagnostics(name, 3)
+        qemu.capture_vm_diagnostics(name, vmid)
         raise
 
 
-def expect_vm3_virtioblk(qemu, name):
+def expect_virtioblk(qemu, vmid, name):
     try:
-        vm3_command(qemu, "test -b /dev/vda",
-                    f"{name}: block node")
-        vm3_command(qemu, "grep -q 2048 /sys/block/vda/size",
-                    f"{name}: sector count")
-        vm3_command(qemu, "mkdir -p /tmp",
-                    f"{name}: temp dir")
-        vm3_command(qemu, "rm -f /tmp/beau-blk.w /tmp/beau-blk.r",
-                    f"{name}: cleanup")
-        vm3_command(qemu, "printf BEAU-BLK-OK >/tmp/beau-blk.w",
-                    f"{name}: marker")
-        vm3_command(qemu, "dd if=/dev/zero bs=4085 count=1 >>/tmp/beau-blk.w 2>/dev/null",
-                    f"{name}: pad")
-        vm3_command(qemu, "dd if=/tmp/beau-blk.w of=/dev/vda bs=4096 count=1 2>/dev/null",
-                    f"{name}: write")
-        vm3_command(qemu, "dd if=/dev/vda of=/tmp/beau-blk.r bs=4096 count=1 2>/dev/null",
-                    f"{name}: read")
-        vm3_command(qemu, "cmp /tmp/beau-blk.w /tmp/beau-blk.r",
-                    name)
+        vm_command(qemu, vmid, "test -b /dev/vda",
+                   f"{name}: block node")
+        vm_command(qemu, vmid, "grep -q 2048 /sys/block/vda/size",
+                   f"{name}: sector count")
+        vm_command(qemu, vmid, "mkdir -p /tmp",
+                   f"{name}: temp dir")
+        vm_command(qemu, vmid, "rm -f /tmp/beau-blk.w /tmp/beau-blk.r",
+                   f"{name}: cleanup")
+        vm_command(qemu, vmid, "printf BEAU-BLK-OK >/tmp/beau-blk.w",
+                   f"{name}: marker")
+        vm_command(qemu, vmid,
+                   "dd if=/dev/zero bs=4085 count=1 >>/tmp/beau-blk.w 2>/dev/null",
+                   f"{name}: pad")
+        vm_command(qemu, vmid,
+                   "dd if=/tmp/beau-blk.w of=/dev/vda bs=4096 count=1 2>/dev/null",
+                   f"{name}: write")
+        vm_command(qemu, vmid,
+                   "dd if=/dev/vda of=/tmp/beau-blk.r bs=4096 count=1 2>/dev/null",
+                   f"{name}: read")
+        vm_command(qemu, vmid, "cmp /tmp/beau-blk.w /tmp/beau-blk.r", name)
     except Exception:
-        qemu.capture_vm_diagnostics(name, 3)
+        qemu.capture_vm_diagnostics(name, vmid)
         raise
 
 
-def expect_vm3_virtioi2c(qemu, name):
+def expect_virtioi2c(qemu, vmid, name):
     try:
-        vm3_command(qemu, "test -c /dev/i2c-0",
-                    f"{name}: i2c dev node")
-        vm3_command(qemu, "i2cdetect -y 0",
-                    f"{name}: detect 0x50", patterns=["50"], timeout=30.0)
-        vm3_command(qemu, "i2ctransfer -y 0 w1@0x50 0x00 r16 >/tmp/beau-i2c-prefix.txt",
-                    f"{name}: read EEPROM prefix", timeout=30.0)
-        vm3_command(qemu, "test $(wc -w </tmp/beau-i2c-prefix.txt) -eq 16",
-                    f"{name}: read EEPROM prefix size")
-        vm3_command(qemu, "i2ctransfer -y 0 w3@0x50 0x10 0xab 0xcd",
-                    f"{name}: write EEPROM bytes", timeout=30.0)
-        vm3_command(qemu, "i2ctransfer -y 0 w1@0x50 0x10 r2 >/tmp/beau-i2c-readback.txt",
-                    f"{name}: read EEPROM bytes", timeout=30.0)
-        vm3_command(qemu, "test $(wc -w </tmp/beau-i2c-readback.txt) -eq 2",
-                    f"{name}: read EEPROM byte count")
+        vm_command(qemu, vmid, "test -c /dev/i2c-0",
+                   f"{name}: i2c dev node")
+        vm_command(qemu, vmid, "i2cdetect -y 0",
+                   f"{name}: detect 0x50", patterns=["50"], timeout=30.0)
+        vm_command(qemu, vmid,
+                   "i2ctransfer -y 0 w1@0x50 0x00 r16 >/tmp/beau-i2c-prefix.txt",
+                   f"{name}: read EEPROM prefix", timeout=30.0)
+        vm_command(qemu, vmid, "test $(wc -w </tmp/beau-i2c-prefix.txt) -eq 16",
+                   f"{name}: read EEPROM prefix size")
+        vm_command(qemu, vmid, "i2ctransfer -y 0 w3@0x50 0x10 0xab 0xcd",
+                   f"{name}: write EEPROM bytes", timeout=30.0)
+        vm_command(qemu, vmid,
+                   "i2ctransfer -y 0 w1@0x50 0x10 r2 >/tmp/beau-i2c-readback.txt",
+                   f"{name}: read EEPROM bytes", timeout=30.0)
+        vm_command(qemu, vmid, "test $(wc -w </tmp/beau-i2c-readback.txt) -eq 2",
+                   f"{name}: read EEPROM byte count")
     except Exception:
-        qemu.capture_vm_diagnostics(name, 3)
+        qemu.capture_vm_diagnostics(name, vmid)
         raise
 
 
-def expect_vm3_virtio_proxy_smoke(qemu):
-    expect_vm3_virtiofs(qemu, "VM3 virtio-fs mount/write/read")
-    expect_vm3_virtiorng(qemu, "VM3 virtio-rng read")
-    expect_vm3_virtioblk(qemu, "VM3 virtio-blk 4K write/read")
-    expect_vm3_virtioi2c(qemu, "VM3 virtio-i2c detect/transfer")
+def expect_virtio_proxy_smoke(qemu, vmid):
+    expect_virtiofs(qemu, vmid, f"VM{vmid} virtio-fs mount/write/read")
+    expect_virtiorng(qemu, vmid, f"VM{vmid} virtio-rng read")
+    expect_virtioblk(qemu, vmid, f"VM{vmid} virtio-blk 4K write/read")
+    expect_virtioi2c(qemu, vmid, f"VM{vmid} virtio-i2c detect/transfer")
 
 
 def expect_rttest(qemu, command, pcpu_count):
@@ -1077,11 +1146,12 @@ def run_vsh_switch_stress(qemu, args):
 
     vcon_enter(qemu, 2, LINUX_PROMPT, "stress VM2 Linux shell", timeout=30.0)
     send_enter_burst(qemu, args.stress_enters, args.stress_enter_delay, "VM2 initial", vmid=2)
-    expect_vm2_id(qemu, "VM2 Linux identity after initial Enter burst")
+    expect_linux_id(qemu, 2, "VM2 Linux identity after initial Enter burst")
     vcon_return(qemu, "return from stress VM2 initial", vmid=2)
 
-    vcon_enter(qemu, 1, RTTHREAD_PROMPT, "stress VM1 RT-Thread shell", timeout=30.0)
-    send_enter_burst(qemu, args.stress_enters, args.stress_enter_delay, "VM1 RT-Thread", vmid=1)
+    vcon_enter(qemu, 1, LINUX_PROMPT, "stress VM1 Linux shell", timeout=30.0)
+    send_enter_burst(qemu, args.stress_enters, args.stress_enter_delay, "VM1 Linux", vmid=1)
+    expect_linux_id(qemu, 1, "VM1 Linux identity after initial Enter burst")
     vcon_return(qemu, "return from stress VM1", vmid=1)
 
     for idx in range(args.stress_rounds):
@@ -1091,17 +1161,18 @@ def run_vsh_switch_stress(qemu, args):
             args.stress_enter_delay, f"round {label} VM0", vmid=0)
         vcon_return(qemu, f"stress round {label}: return from VM0", vmid=0)
 
-        vcon_enter(qemu, 1, RTTHREAD_PROMPT, f"stress round {label}: VM1 RT-Thread shell",
+        vcon_enter(qemu, 1, LINUX_PROMPT, f"stress round {label}: VM1 Linux shell",
             timeout=30.0)
         send_enter_burst(qemu, max(1, args.stress_enters // 4),
             args.stress_enter_delay, f"round {label} VM1", vmid=1)
+        expect_linux_id(qemu, 1, f"stress round {label}: VM1 identity after switch")
         vcon_return(qemu, f"stress round {label}: return from VM1", vmid=1)
 
         vcon_enter(qemu, 2, LINUX_PROMPT, f"stress round {label}: VM2 Linux shell",
             timeout=30.0)
         send_enter_burst(qemu, args.stress_enters, args.stress_enter_delay,
             f"round {label} VM2", vmid=2)
-        expect_vm2_id(qemu, f"stress round {label}: VM2 identity after switch")
+        expect_linux_id(qemu, 2, f"stress round {label}: VM2 identity after switch")
         vcon_return(qemu, f"stress round {label}: return from VM2", vmid=2)
 
         vcon_enter(qemu, 3, LINUX_PROMPT, f"stress round {label}: VM3 Linux shell",
@@ -1128,8 +1199,8 @@ def check_str_guest_heartbeats(qemu, cycle):
     check_zephyr_thread_list(qemu, f"{label}: VM0 SMP runtime stats")
     vcon_return(qemu, f"{label}: return from VM0", vmid=0)
 
-    vcon_enter(qemu, 1, RTTHREAD_PROMPT, f"{label}: VM1 heartbeat", timeout=30.0)
-    run_guest_help(qemu, 1, RTTHREAD_PROMPT, f"{label}: VM1", 15.0)
+    vcon_enter(qemu, 1, LINUX_PROMPT, f"{label}: VM1 heartbeat", timeout=30.0)
+    expect_linux_id(qemu, 1, f"{label}: VM1 identity")
     vcon_return(qemu, f"{label}: return from VM1", vmid=1)
 
     vcon_enter(qemu, 2, LINUX_PROMPT, f"{label}: VM2 heartbeat", timeout=30.0)
@@ -1269,7 +1340,7 @@ def validate_smmu_contract(snapshot, no_s2):
                 missing.append(f"stream[0x{stream_id:04x}]")
                 continue
             for pattern in (
-                "sw-owner:vm2 ste-vm:vm2",
+                "sw-owner:vm1 ste-vm:vm1",
                 "assigned:Y",
                 "cfg:s2(6)",
             ):
@@ -1316,9 +1387,9 @@ def expect_smmu_contract(qemu, no_s2, attempts=8, delay=1.0):
 def expect_coredump_shell(qemu):
     qemu.command_retry(
         "coredump print",
-        ["coredump: no valid stored snapshot"],
+        ["COREDUMP: no valid stored snapshot"],
     )
-    qemu.command_retry("coredump erase", ["coredump: erased"])
+    qemu.command_retry("coredump erase", ["COREDUMP: erased"])
     print("[pass] ARM64 coredump shell print/erase", flush=True)
 
 
@@ -1330,6 +1401,8 @@ def finish_qemu_regression(args):
 def run_qemu(args, cmd):
     if not args.kernel.is_file():
         raise SystemExit(f"Kernel image not found: {args.kernel}")
+    if not args.linux_vm1_image.is_file():
+        raise SystemExit(f"Linux VM1 Image not found: {args.linux_vm1_image}")
     if not args.linux_vm2_image.is_file():
         raise SystemExit(f"Linux VM2 Image not found: {args.linux_vm2_image}")
     if not args.linux_vm3_image.is_file():
@@ -1363,11 +1436,12 @@ def run_qemu(args, cmd):
             return
         if args.wdt_restart_smoke:
             run_wdt_restart_smoke(qemu)
+            finish_qemu_regression(args)
             return
         qemu.command_retry("pm status", [
             "pm epoch:0",
             "phase:running",
-            "controller:vm2",
+            "controller:vm0",
             "enabled:Y",
             "mode:simulated",
             "masks:policy:0x000000000000000f",
@@ -1376,7 +1450,7 @@ def run_qemu(args, cmd):
         qemu.command_retry("pmstat", [
             "pm epoch:0",
             "phase:running",
-            "controller:vm2",
+            "controller:vm0",
             "mode:simulated",
         ])
         qemu.command_retry("vcpus", [
@@ -1387,6 +1461,7 @@ def run_qemu(args, cmd):
             "switches",
             "since.us",
             "vm0:vcpu0",
+            "vm1:vcpu3",
             "vm2:vcpu2",
             "vm3:vcpu0",
         ])
@@ -1420,7 +1495,7 @@ def run_qemu(args, cmd):
             "vmstat",
             [
                 "┌─  vmstat vm0:Zephyr",
-                "┌─  vmstat vm1:RT-Thread",
+                "┌─  vmstat vm1:Linux-1",
                 "┌─  vmstat vm2:Linux-2",
                 "┌─  vmstat vm3:Linux-3",
                 "vcpus:configured:4 created:4",
@@ -1430,8 +1505,7 @@ def run_qemu(args, cmd):
                 "gic:initialized:",
                 "its:enabled:",
                 "timer:cntv:Y ppi:",
-                "console:selected:",
-                "ring:",
+                "vcon:selected:",
                 "├─  vcpu state",
                 "sched",
                 "diag",
@@ -1441,16 +1515,23 @@ def run_qemu(args, cmd):
             ],
             ["assertion failed", "stack check fails", "fatal error"],
         )
-        qemu.command_retry("devmap", ["arm64 memory mappings", "vm-0 s2", "vm-1 s2", "vm-2 s2", "vm-3 s2"])
+        qemu.command_retry(
+            "devmap",
+            ["memory mappings:", "VM-0 s2", "VM-1 s2", "VM-2 s2", "VM-3 s2"],
+        )
         qemu.command_retry(
             "memstat",
-            ["Page-table pools", "hv-s1", "vm-s2", "Stage-2 ownership", "accounted:"],
+            ["Page-table pools", "HV-s1", "VM-s2", "Stage-2 ownership", "accounted:"],
         )
         expect_health_vcpu_usage(qemu)
         qemu.command_retry("irqstat", ["host pirq:", "guest virq:"])
         qemu.command_retry(
             "virtiostat",
             [
+                "virtio-fs vm2:0",
+                "virtio-rng vm2:1",
+                "virtio-blk vm2:2",
+                "virtio-i2c vm2:3",
                 "virtio-fs vm3:0",
                 "device:",
                 "proxy-fs",
@@ -1464,11 +1545,12 @@ def run_qemu(args, cmd):
                 "proxy-i2c",
             ],
         )
-        qemu.command_retry(
-            "hwtdbg",
-            ["hwtdbg: no watchdog timeout events"],
-            ["checksum:invalid", "capture:corrupt"],
-        )
+        for vmid in range(4):
+            qemu.command_retry(
+                f"hwtdbg {vmid}",
+                [f"HWTDBG: VM{vmid}:no retained HWT event"],
+                ["checksum:invalid", "capture:corrupt"],
+            )
 
         qemu.send("vsh 0" + ENTER)
         qemu.expect(ZEPHYR_PROMPT, "VM0 Zephyr shell", keepalive=ENTER)
@@ -1478,8 +1560,11 @@ def run_qemu(args, cmd):
         qemu.expect(PROMPT, "return from VM0 shell")
 
         qemu.send("vsh 1" + ENTER)
-        qemu.expect(RTTHREAD_PROMPT, "VM1 RT-Thread shell", timeout=60.0, keepalive=ENTER)
-        run_guest_help(qemu, 1, RTTHREAD_PROMPT, "VM1 RT-Thread", 15.0)
+        qemu.expect(LINUX_PROMPT, "VM1 Linux initramfs shell", timeout=60.0,
+                    keepalive=ENTER)
+        expect_linux_id(qemu, 1, "VM1 Linux root identity")
+        expect_linux_stress_ng(qemu, 1, "VM1 stress-ng CPU smoke")
+        expect_vm1_kbe_backends(qemu, "VM1 BEAU KBE backend startup")
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM1 shell")
 
@@ -1489,9 +1574,9 @@ def run_qemu(args, cmd):
         except Exception:
             qemu.capture_vm_diagnostics("VM2 Linux initramfs shell timeout", 2)
             raise
-        expect_vm2_id(qemu, "VM2 Linux root identity")
+        expect_linux_id(qemu, 2, "VM2 Linux root identity")
         expect_linux_stress_ng(qemu, 2, "VM2 stress-ng CPU smoke")
-        expect_vm2_kbe_backends(qemu, "VM2 BEAU KBE backend startup")
+        expect_virtio_proxy_smoke(qemu, 2)
         expect_vm2_cpu1_lifecycle(qemu)
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM2 shell")
@@ -1504,7 +1589,7 @@ def run_qemu(args, cmd):
             raise
         expect_linux_id(qemu, 3, "VM3 Linux root identity")
         expect_linux_stress_ng(qemu, 3, "VM3 stress-ng CPU smoke")
-        expect_vm3_virtio_proxy_smoke(qemu)
+        expect_virtio_proxy_smoke(qemu, 3)
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM3 shell")
 
@@ -1526,17 +1611,17 @@ def main():
         if not args.no_build:
             print(render(build, args.toolchains))
         print(quote(qemu))
-        checks = "prompt, vcpus, ps, schedstat, vmstat, health, hwtdbg empty, devmap, irqstat, virtiostat, vsh 0, ctrl-d, vsh 1, RT-Thread shell, ctrl-d, vsh 2, Linux-2 backend shell, ctrl-d, vsh 3, Linux-3 frontend shell"
+        checks = "prompt, vcpus, ps, schedstat, vmstat, health, hwtdbg empty, devmap, irqstat, virtiostat, vsh 0, Zephyr, vsh 1, Linux-1 backend/PCI, vsh 2, Linux-2 frontend, vsh 3, Linux-3 frontend"
         if args.stress_vsh_switch:
             checks += ", VM console switch/Enter stress"
         if args.stress_vsh_help:
             checks += f", VM console help stress x{args.stress_help_rounds}"
         if args.wdt_restart_smoke:
-            checks = "VM3 watchdog timeout, retained hwtdbg evidence, quiesce, cold restart, verification kick, VM3 shell"
+            checks = "concurrent VM1/VM3 watchdog timeout, cold restart, VM1 PCI/SMMU recovery, both Linux shells"
         if args.smmu_no_s2_smoke:
             checks = "SMMUv3 no-S2 fail-closed state"
         if args.smmu_passthrough_smoke:
-            checks = "SMMUv3 Stage-2, VM2 EDU BAR and virtio-net PCI passthrough"
+            checks = "SMMUv3 Stage-2, VM1 EDU BAR and virtio-net PCI passthrough"
         print(f"checks: {checks}")
         return 0
 

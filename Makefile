@@ -130,13 +130,15 @@ SCENARIO := $(patsubst "%",%,$(CONFIG_SCENARIO))
 CONFIG_ENABLE_VM1_LK_DTS := $(if $(filter y,$(CONFIG_ENABLE_VM1_LK)),1,0)
 ARM64_PLATFORM_CFG_STAMP := $(HV_CONFIG_DIR)/config-vm1-lk-$(CONFIG_ENABLE_VM1_LK_DTS).stamp
 ARM64_PLATFORM_DTB := $(HV_OBJDIR)/platform.dtb
+ZEPHYR_IMAGE   ?= sdk/imgs/zephyr.bin
 LINUX_IMAGE     := sdk/imgs/linux/Image
+LINUX_VM1_IMAGE ?= $(LINUX_IMAGE)
 LINUX_VM2_IMAGE ?= $(LINUX_IMAGE)
 LINUX_VM3_IMAGE ?= $(LINUX_IMAGE)
-LINUX_INITRAMFS := sdk/imgs/linux/Initramfs.cpio.gz
-RTTHREAD_IMAGE := sdk/imgs/rtthread.bin
+LINUX_INITRAMFS ?= sdk/imgs/linux/Initramfs.cpio.gz
 CFLAGS += -include $(HV_CONFIG_H)
 ASFLAGS += -DARM64_PLATFORM_DTB_PATH=\"$(ARM64_PLATFORM_DTB)\"
+ASFLAGS += -DBEAU_QEMU_ZEPHYR_IMAGE_PATH=\"$(ZEPHYR_IMAGE)\"
 else
 $(error Unsupported build configuration: ARCH=$(ARCH) PLATFORM=$(PLATFORM). Use ARCH=arm64 PLATFORM=qemu or PLATFORM=rk356x)
 endif
@@ -524,15 +526,17 @@ menuconfig: | $(HV_CONFIG_DIR) $(HV_KCONFIG_DEPS_DIR) $(HV_OBJDIR)/include/gener
 	$(Q)$(MAKE) syncconfig ARCH=$(ARCH) PLATFORM=$(PLATFORM) HV_OBJDIR=$(HV_OBJDIR)
 
 ifneq ($(BIMAGE_H),)
-$(BIMAGE_H): Makefile $(LINUX_VM2_IMAGE) $(LINUX_VM3_IMAGE) $(LINUX_INITRAMFS) | $(HV_OBJDIR)/include
+$(BIMAGE_H): Makefile $(LINUX_VM1_IMAGE) $(LINUX_VM2_IMAGE) $(LINUX_VM3_IMAGE) $(LINUX_INITRAMFS) | $(HV_OBJDIR)/include
 	@echo "IMGS               $(notdir $@)"
 	@{ \
+		vm1_image_size=$$(stat -c %s $(LINUX_VM1_IMAGE)); \
 		vm2_image_size=$$(stat -c %s $(LINUX_VM2_IMAGE)); \
 		vm3_image_size=$$(stat -c %s $(LINUX_VM3_IMAGE)); \
 		initramfs_size=$$(stat -c %s $(LINUX_INITRAMFS)); \
 		echo "/* Auto-generated from sdk/imgs. */"; \
 		echo "#ifndef BIMAGE_H"; \
 		echo "#define BIMAGE_H"; \
+		echo "#define BEAU_LINUX_VM1_IMAGE_SIZE $${vm1_image_size}U"; \
 		echo "#define BEAU_LINUX_VM2_IMAGE_SIZE $${vm2_image_size}U"; \
 		echo "#define BEAU_LINUX_VM3_IMAGE_SIZE $${vm3_image_size}U"; \
 		echo "#define BEAU_LINUX_INITRAMFS_SIZE $${initramfs_size}U"; \
@@ -695,6 +699,10 @@ $(VM_CFG_C_OBJS): $(HV_OBJDIR)/%.o: %.c $(HEADERS) $(ARCH_PRE_BUILD_TARGETS)
 	$(CC) $(patsubst %, -I%, $(INCLUDE_PATH)) -I. -c $(CFLAGS) $(ARCH_CFLAGS) $< -o $@ -MMD -MT $@
 
 ifeq ($(ARCH),arm64)
+sdk/imgs/linux/vm1/beau-linux.dtb: sdk/imgs/linux/vm1/beau-linux.dts
+	$(Q)echo "DTC                $@"
+	$(Q)$(DTC) -I dts -O dtb -o $@ $<
+
 sdk/imgs/linux/vm2/beau-linux.dtb: sdk/imgs/linux/vm2/beau-linux.dts
 	$(Q)echo "DTC                $@"
 	$(Q)$(DTC) -I dts -O dtb -o $@ $<
@@ -703,12 +711,9 @@ sdk/imgs/linux/vm3/beau-linux.dtb: sdk/imgs/linux/vm3/beau-linux.dts
 	$(Q)echo "DTC                $@"
 	$(Q)$(DTC) -I dts -O dtb -o $@ $<
 
-sdk/imgs/rtthread/beau-rtthread.dtb: sdk/imgs/rtthread/beau-rtthread.dts
-	$(Q)echo "DTC                $@"
-	$(Q)$(DTC) -I dts -O dtb -o $@ $<
-
-$(HV_OBJDIR)/arch/arm64/platform/$(PLATFORM)/platform.o: sdk/imgs/lk.bin sdk/imgs/zephyr.bin $(ARM64_PLATFORM_DTB)
-$(HV_OBJDIR)/arch/arm64/platform/qemu/platform.o: $(RTTHREAD_IMAGE) sdk/imgs/rtthread/beau-rtthread.dtb sdk/imgs/linux/vm2/beau-linux.dtb sdk/imgs/linux/vm3/beau-linux.dtb
+$(HV_OBJDIR)/arch/arm64/platform/$(PLATFORM)/platform.o: sdk/imgs/lk.bin $(ARM64_PLATFORM_DTB)
+$(HV_OBJDIR)/arch/arm64/platform/qemu/platform.o: $(ZEPHYR_IMAGE) sdk/imgs/linux/vm1/beau-linux.dtb sdk/imgs/linux/vm2/beau-linux.dtb sdk/imgs/linux/vm3/beau-linux.dtb
+$(HV_OBJDIR)/arch/arm64/platform/rk356x/platform.o: sdk/imgs/zephyr.bin
 endif
 
 $(HV_OBJDIR)/%.o: %.S $(HEADERS) $(ARCH_PRE_BUILD_TARGETS)

@@ -85,17 +85,17 @@ pCPU2  exclusive  VM2:vcpu0
 pCPU3  exclusive  VM3:vcpu0
 
 pCPU4  shared     VM0:vcpu1, VM2:vcpu1
-pCPU5  shared     VM1:vcpu1, VM3:vcpu1
-pCPU6  shared     VM2:vcpu2, VM3:vcpu2
-pCPU7  shared     VM2:vcpu3, VM3:vcpu3
+pCPU5  shared     VM1:vcpu1, VM2:vcpu2, VM3:vcpu1
+pCPU6  shared     VM1:vcpu2, VM2:vcpu3, VM3:vcpu2
+pCPU7  shared     VM1:vcpu3, VM3:vcpu3
 ```
 
 对应 DTS：
 
 ```dts
 vm@0 { cpu-affinity = <0 4>; };
-vm@1 { cpu-affinity = <1 5>; };
-vm@2 { cpu-affinity = <2 4 6 7>; };
+vm@1 { cpu-affinity = <1 5 6 7>; };
+vm@2 { cpu-affinity = <2 4 5 6>; };
 vm@3 { cpu-affinity = <3 5 6 7>; };
 ```
 
@@ -108,7 +108,12 @@ VM BSP/vcpu0 latency
 
 Linux SMP throughput
     -> secondary vCPU 分散到 CBS+ shared pool
-    -> 每个 shared pCPU fan-in <= 2，低于上限 3
+    -> 每个 shared pCPU fan-in <= 3
+
+CBS admission
+    -> VM0 Q/T = 800/2000 us
+    -> VM1/VM2/VM3 Q/T = 600/2000 us
+    -> pCPU4/5/6/7 utilization = 70%/90%/90%/60%
 
 Admission/debug
     -> DTS 解析阶段先校验

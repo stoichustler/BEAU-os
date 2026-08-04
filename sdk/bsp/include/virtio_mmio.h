@@ -23,10 +23,15 @@
 #define VIRTIO_RING_F_NEXT		1U
 #define VIRTIO_RING_F_WRITE		2U
 #define VIRTIO_MMIO_INT_USED_RING	1U
+#define VIRTIO_STATUS_DRIVER_OK		4U
 #define VIRTIO_STATUS_FEATURES_OK	8U
 #define VIRTIO_F_VERSION_1		32U
 
 #define VIRTIO_MMIO_MAX_QUEUES		4U
+
+#define VIRTIO_MMIO_ACCESS_QUEUE_CONFIG	(1U << 0U)
+#define VIRTIO_MMIO_ACCESS_IRQ_ACK		(1U << 1U)
+#define VIRTIO_MMIO_ACCESS_RESET		(1U << 2U)
 
 struct acrn_vm;
 struct io_request;
@@ -103,6 +108,8 @@ void virtio_mmio_init(struct virtio_mmio_dev *dev,
 void virtio_mmio_reset_dev(struct virtio_mmio_dev *dev);
 int32_t virtio_mmio_handler(struct io_request *io_req,
 	void *handler_private_data);
+uint32_t virtio_mmio_access_flags(const struct io_request *io_req,
+	const struct virtio_mmio_dev *dev);
 void virtio_mmio_raise_used_irq(struct virtio_mmio_dev *dev);
 struct virtio_mmio_queue *virtio_mmio_get_queue(struct virtio_mmio_dev *dev,
 	uint16_t queue_id);

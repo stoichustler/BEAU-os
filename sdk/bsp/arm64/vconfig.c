@@ -18,10 +18,8 @@ extern const uint8_t arm64_lk_image_size[];
 extern const uint8_t arm64_zephyr_image_start[];
 extern const uint8_t arm64_zephyr_image_size[];
 #ifdef CONFIG_STATIC_QEMU_PLATFORM
-extern const uint8_t arm64_rtthread_image_start[];
-extern const uint8_t arm64_rtthread_image_size[];
-extern const uint8_t arm64_beau_rtthread_dtb_start[];
-extern const uint8_t arm64_beau_rtthread_dtb_size[];
+extern const uint8_t arm64_beau_linux_vm1_dtb_start[];
+extern const uint8_t arm64_beau_linux_vm1_dtb_size[];
 extern const uint8_t arm64_beau_linux_vm2_dtb_start[];
 extern const uint8_t arm64_beau_linux_vm2_dtb_size[];
 extern const uint8_t arm64_beau_linux_vm3_dtb_start[];
@@ -58,12 +56,9 @@ static const uint8_t *arm64_dts_module_addr(const char *symbol)
 		addr = arm64_lk_image_start;
 	}
 #ifdef CONFIG_STATIC_QEMU_PLATFORM
-	else if (arm64_symbol_matches(symbol, "arm64_rtthread_image_start",
-		"qemu_rtthread_image_start", NULL)) {
-		addr = arm64_rtthread_image_start;
-	} else if (arm64_symbol_matches(symbol, "arm64_beau_rtthread_dtb_start",
-		"qemu_beau_rtthread_dtb_start", NULL)) {
-		addr = arm64_beau_rtthread_dtb_start;
+	else if (arm64_symbol_matches(symbol, "arm64_beau_linux_vm1_dtb_start",
+		"qemu_beau_linux_vm1_dtb_start", NULL)) {
+		addr = arm64_beau_linux_vm1_dtb_start;
 	} else if (arm64_symbol_matches(symbol, "arm64_beau_linux_vm2_dtb_start",
 		"qemu_beau_linux_vm2_dtb_start", NULL) ||
 		arm64_symbol_matches(symbol, "arm64_beau_linux_dtb_start",
@@ -93,12 +88,9 @@ static uint64_t arm64_dts_module_size(const char *symbol)
 		size = (uint64_t)arm64_lk_image_size;
 	}
 #ifdef CONFIG_STATIC_QEMU_PLATFORM
-	else if (arm64_symbol_matches(symbol, "arm64_rtthread_image_size",
-		"qemu_rtthread_image_size", NULL)) {
-		size = (uint64_t)arm64_rtthread_image_size;
-	} else if (arm64_symbol_matches(symbol, "arm64_beau_rtthread_dtb_size",
-		"qemu_beau_rtthread_dtb_size", NULL)) {
-		size = (uint64_t)arm64_beau_rtthread_dtb_size;
+	else if (arm64_symbol_matches(symbol, "arm64_beau_linux_vm1_dtb_size",
+		"qemu_beau_linux_vm1_dtb_size", NULL)) {
+		size = (uint64_t)arm64_beau_linux_vm1_dtb_size;
 	} else if (arm64_symbol_matches(symbol, "arm64_beau_linux_vm2_dtb_size",
 		"qemu_beau_linux_vm2_dtb_size", NULL) ||
 		arm64_symbol_matches(symbol, "arm64_beau_linux_dtb_size",
@@ -109,7 +101,9 @@ static uint64_t arm64_dts_module_size(const char *symbol)
 		size = (uint64_t)arm64_beau_linux_vm3_dtb_size;
 	}
 #endif
-	else if (strcmp(symbol, "BEAU_LINUX_VM2_IMAGE_SIZE") == 0) {
+	else if (strcmp(symbol, "BEAU_LINUX_VM1_IMAGE_SIZE") == 0) {
+		size = BEAU_LINUX_VM1_IMAGE_SIZE;
+	} else if (strcmp(symbol, "BEAU_LINUX_VM2_IMAGE_SIZE") == 0) {
 		size = BEAU_LINUX_VM2_IMAGE_SIZE;
 	} else if (strcmp(symbol, "BEAU_LINUX_VM3_IMAGE_SIZE") == 0) {
 		size = BEAU_LINUX_VM3_IMAGE_SIZE;

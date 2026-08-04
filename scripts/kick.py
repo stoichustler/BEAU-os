@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CWD = Path.cwd()
 LINUX_INITRAMFS_STAGE_ADDR = "0x74000000"
+LINUX_VM1_IMAGE_STAGE_ADDR = "0x70000000"
 LINUX_VM2_IMAGE_STAGE_ADDR = "0x76000000"
 LINUX_VM3_IMAGE_STAGE_ADDR = "0x7c000000"
 DEFAULT_LINUX_INITRAMFS = ROOT / "sdk/imgs/linux/Initramfs.cpio.gz"
@@ -55,9 +56,10 @@ def parse_args():
         "--linux-image",
         default=None,
         type=relpath,
-        help="legacy: use one Linux Image for both Linux VM2 and Linux VM3",
+        help="use one Linux Image for Linux VM1, VM2, and VM3",
     )
-    parser.add_argument("--linux-vm1-image", default=None, type=relpath, help=argparse.SUPPRESS)
+    parser.add_argument("--zephyr-image", default=ROOT / "sdk/imgs/zephyr.bin", type=relpath)
+    parser.add_argument("--linux-vm1-image", default=ROOT / "sdk/imgs/linux/Image", type=relpath)
     parser.add_argument("--linux-vm2-image", default=ROOT / "sdk/imgs/linux/Image", type=relpath)
     parser.add_argument("--linux-vm3-image", default=ROOT / "sdk/imgs/linux/Image", type=relpath)
     parser.add_argument(
@@ -100,25 +102,32 @@ def parse_args():
     parser.add_argument(
         "--pcie-net-backend",
         action="store_true",
-        help="legacy no-op: the VM2 QEMU PCI net endpoint is attached by default",
+        help="legacy no-op: the VM1 QEMU PCI net endpoint is attached by default",
     )
     parser.add_argument(
         "--no-pcie-net-backend",
         action="store_true",
-        help="do not attach the default QEMU PCI net endpoint for the VM2 backend",
+        help="do not attach the default QEMU PCI net endpoint for the VM1 backend",
     )
     parser.add_argument(
+        "--vm1-netdev",
         "--vm2-netdev",
-        default=getenv("BEAU_VM2_NETDEV", "user,id=beau_vm2_net"),
-        help="QEMU -netdev argument used for the VM2 PCI net endpoint",
+        dest="vm1_netdev",
+        default=getenv("BEAU_VM1_NETDEV", getenv("BEAU_VM2_NETDEV", "user,id=beau_vm1_net")),
+        help="QEMU -netdev argument used for the VM1 PCI net endpoint",
     )
     parser.add_argument(
+        "--vm1-net-device",
         "--vm2-net-device",
+        dest="vm1_net_device",
         default=getenv(
-            "BEAU_VM2_NET_DEVICE",
-            "virtio-net-pci-non-transitional,netdev=beau_vm2_net,addr=0x2,mac=52:54:00:be:02:00",
+            "BEAU_VM1_NET_DEVICE",
+            getenv(
+                "BEAU_VM2_NET_DEVICE",
+                "virtio-net-pci-non-transitional,netdev=beau_vm1_net,addr=0x2,mac=52:54:00:be:01:00",
+            ),
         ),
-        help="QEMU -device argument used for the VM2 PCI net endpoint",
+        help="QEMU -device argument used for the VM1 PCI net endpoint",
     )
     parser.add_argument(
         "--repack-initramfs",
@@ -130,9 +139,8 @@ def parse_args():
     if extra[:1] == ["--"]:
         extra = extra[1:]
     args.extra = extra
-    if args.linux_vm1_image is not None:
-        parser.error("--linux-vm1-image was removed because VM1 runs RT-Thread")
     if args.linux_image is not None:
+        args.linux_vm1_image = args.linux_image
         args.linux_vm2_image = args.linux_image
         args.linux_vm3_image = args.linux_image
     if args.tee and args.smp != "8":
@@ -141,13 +149,18 @@ def parse_args():
 
 
 def print_image_plan(args):
-    print("[kick] VM1 RT-Thread Image: embedded sdk/imgs/rtthread.bin", flush=True)
+    print(f"[kick] VM0 Zephyr Image: {args.zephyr_image}", flush=True)
+    print(f"[kick] VM1 Linux Image: {args.linux_vm1_image}", flush=True)
     print(f"[kick] VM2 Linux Image: {args.linux_vm2_image}", flush=True)
     print(f"[kick] VM3 Linux Image: {args.linux_vm3_image}", flush=True)
     print(f"[kick] shared Linux initramfs: {args.linux_initramfs}", flush=True)
 
 
 def verify_guest_images(args):
+    if not args.zephyr_image.is_file():
+        raise SystemExit(f"Zephyr VM0 Image not found: {args.zephyr_image}")
+    if not args.linux_vm1_image.is_file():
+        raise SystemExit(f"Linux VM1 Image not found: {args.linux_vm1_image}")
     if not args.linux_vm2_image.is_file():
         raise SystemExit(f"Linux VM2 Image not found: {args.linux_vm2_image}")
     if not args.linux_vm3_image.is_file():
@@ -183,6 +196,11 @@ def make_cmd(args, *targets, jobs=False):
         "ARCH=arm64",
         "PLATFORM=qemu",
         f"CROSS_COMPILE={args.cross_prefix}",
+        f"ZEPHYR_IMAGE={args.zephyr_image}",
+        f"LINUX_VM1_IMAGE={args.linux_vm1_image}",
+        f"LINUX_VM2_IMAGE={args.linux_vm2_image}",
+        f"LINUX_VM3_IMAGE={args.linux_vm3_image}",
+        f"LINUX_INITRAMFS={args.linux_initramfs}",
     ]
     if jobs:
         cmd.append(f"-j{os.cpu_count() or 1}")
@@ -244,6 +262,8 @@ def main():
         "-net",
         "none",
         "-device",
+        f"loader,file={args.linux_vm1_image},addr={LINUX_VM1_IMAGE_STAGE_ADDR},force-raw=on",
+        "-device",
         f"loader,file={args.linux_vm2_image},addr={LINUX_VM2_IMAGE_STAGE_ADDR},force-raw=on",
         "-device",
         f"loader,file={args.linux_vm3_image},addr={LINUX_VM3_IMAGE_STAGE_ADDR},force-raw=on",
@@ -267,7 +287,7 @@ def main():
     if not args.no_pcie_test:
         qemu_cmd.extend(["-device", "edu,addr=0x1"])
     if not args.no_pcie_net_backend:
-        qemu_cmd.extend(["-netdev", args.vm2_netdev, "-device", args.vm2_net_device])
+        qemu_cmd.extend(["-netdev", args.vm1_netdev, "-device", args.vm1_net_device])
     qemu_cmd.extend(args.extra)
 
     if args.dry_run:

@@ -88,6 +88,68 @@ static uint64_t virtio_mmio_resize_value(uint64_t value, uint64_t size)
 	return ret;
 }
 
+/* [20260804] virtio-mmio access ownership classifier
+ *
+ * guest MMIO write
+ *       |
+ *       +--> Queue setup -> queue shadow ownership
+ *       +--> IRQ ACK     -> used IRQ ownership
+ *       +--> STATUS=0    -> full transport reset ownership
+ *       +--> other       -> register/pending ownership only
+ *
+ * Key rule:
+ *   - this transport layer owns register offsets and decodes them once;
+ *   - device models use the returned flags to acquire only state needed by the
+ *     access before they call virtio_mmio_handler();
+ *   - reset and queue reconfiguration cannot race payload service, while a
+ *     QueueNotify need not serialize unrelated RX and TX descriptor copies.
+ */
+uint32_t virtio_mmio_access_flags(const struct io_request *io_req,
+	const struct virtio_mmio_dev *dev)
+{
+	const struct acrn_mmio_request *mmio;
+	uint32_t offset;
+	uint32_t value;
+	uint32_t flags = 0U;
+
+	if ((io_req == NULL) || (dev == NULL)) {
+		return 0U;
+	}
+
+	mmio = &io_req->reqs.mmio_request;
+	if ((mmio->direction != ACRN_IOREQ_DIR_WRITE) ||
+		((mmio->size != 1UL) && (mmio->size != 2UL) && (mmio->size != 4UL))) {
+		return 0U;
+	}
+
+	offset = (uint32_t)(mmio->address - dev->base);
+	value = (uint32_t)virtio_mmio_resize_value(mmio->value, mmio->size);
+	switch (offset) {
+	case VIRTIO_MMIO_QUEUE_NUM:
+	case VIRTIO_MMIO_QUEUE_READY:
+	case VIRTIO_MMIO_QUEUE_DESC_LOW:
+	case VIRTIO_MMIO_QUEUE_DESC_HIGH:
+	case VIRTIO_MMIO_QUEUE_AVAIL_LOW:
+	case VIRTIO_MMIO_QUEUE_AVAIL_HIGH:
+	case VIRTIO_MMIO_QUEUE_USED_LOW:
+	case VIRTIO_MMIO_QUEUE_USED_HIGH:
+		flags = VIRTIO_MMIO_ACCESS_QUEUE_CONFIG;
+		break;
+	case VIRTIO_MMIO_INTERRUPT_ACK:
+		flags = VIRTIO_MMIO_ACCESS_IRQ_ACK;
+		break;
+	case VIRTIO_MMIO_STATUS:
+		if (value == 0U) {
+			flags = VIRTIO_MMIO_ACCESS_RESET;
+		}
+		break;
+	default:
+		break;
+	}
+
+	return flags;
+}
+
 static bool virtio_mmio_read_u16(struct virtio_mmio_dev *dev, uint64_t gpa,
 	uint16_t *value)
 {

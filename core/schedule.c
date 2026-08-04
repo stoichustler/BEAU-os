@@ -581,6 +581,46 @@ void init_thread_data(struct thread_object *obj, struct sched_params *params)
 	release_schedule_lock(obj->pcpu_id, rflag);
 }
 
+/* [20260801] Scheduler state at a VM generation boundary
+ *
+ * quiesced vCPU -> verify blocked ownership -> rebuild policy-private state
+ *                                               |
+ *                                               v
+ *                               fresh budget/deadline for the new VM instance
+ *
+ * Key rule:
+ *   - the target pCPU scheduler lock owns runqueue and private policy state;
+ *   - only a blocked, non-current thread may be reinitialized;
+ *   - the registered thread object and host stack keep their original owner;
+ *   - stale CBS/BFP/RTDS deadlines cannot delay the first run of a reset vCPU.
+ */
+int32_t reset_thread_data(struct thread_object *obj, struct sched_params *params)
+{
+	struct acrn_scheduler *scheduler;
+	uint64_t rflag;
+	int32_t ret = 0;
+
+	if ((obj == NULL) || (params == NULL) || (obj->sched_ctl == NULL) ||
+		(obj->pcpu_id >= get_pcpu_nums())) {
+		return -EINVAL;
+	}
+	scheduler = get_scheduler(obj->pcpu_id);
+	obtain_schedule_lock(obj->pcpu_id, &rflag);
+	if (!is_blocked(obj) || obj->be_blocking ||
+		(obj->sched_ctl->curr_obj == obj) || (obj->freeze_epoch != 0UL)) {
+		ret = -EBUSY;
+	} else {
+		if (scheduler->init_data != NULL) {
+			scheduler->init_data(obj, params);
+		}
+		obj->priority_pending = false;
+		obj->deferred_wake = false;
+	}
+	release_schedule_lock(obj->pcpu_id, rflag);
+
+	return ret;
+}
+
 void deinit_thread_data(struct thread_object *obj)
 {
 	struct acrn_scheduler *scheduler = get_scheduler(obj->pcpu_id);

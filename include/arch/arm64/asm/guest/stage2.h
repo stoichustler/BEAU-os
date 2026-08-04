@@ -60,6 +60,7 @@ struct arm64_stage2_walk {
 #define ARM64_STAGE2_MAP_NORMAL		(1U << 3U)
 
 uint64_t arm64_stage2_vttbr(const struct acrn_vm *vm);
+int32_t arm64_stage2_invalidate_vm_tlb(struct acrn_vm *vm);
 void arm64_get_stage2_page_pool_stats(struct page_pool_stats *stats);
 bool arm64_get_stage2_vm_stats(struct acrn_vm *vm,
 	struct arm64_stage2_vm_stats *stats);

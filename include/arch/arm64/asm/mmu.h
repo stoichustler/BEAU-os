@@ -55,6 +55,7 @@ void flush_invalidate_all_cache(void);
 void clean_cacheline(const volatile void *p);
 void clean_cache_range(const volatile void *p, uint64_t size);
 void invalidate_cache_range(const volatile void *p, uint64_t size);
+void sync_instruction_cache_range(const volatile void *p, uint64_t size);
 void arm64_nullop(void);
 void arm64_dcache_wb_range(const volatile void *p, uint64_t size);
 void arm64_dcache_wbinv_range(const volatile void *p, uint64_t size);

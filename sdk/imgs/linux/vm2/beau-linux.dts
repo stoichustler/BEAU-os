@@ -132,25 +132,6 @@
 		reg = <0x0 0x08080000 0x0 0x00020000>;
 	};
 
-	pcie@e0000000 {
-		compatible = "pci-host-ecam-generic";
-		device_type = "pci";
-		#address-cells = <3>;
-		#size-cells = <2>;
-		#interrupt-cells = <1>;
-		reg = <0x0 0xe0000000 0x0 0x10000000>;
-		bus-range = <0x0 0xff>;
-		msi-map = <0x0 &its 0x0 0x10000>;
-		interrupt-map-mask = <0x0 0x0 0x0 0x7>;
-		interrupt-map = <0x0 0x0 0x0 0x1 &gic 0x0 0x0 0x0 0x30 0x4>,
-				<0x0 0x0 0x0 0x2 &gic 0x0 0x0 0x0 0x31 0x4>,
-				<0x0 0x0 0x0 0x3 &gic 0x0 0x0 0x0 0x32 0x4>,
-				<0x0 0x0 0x0 0x4 &gic 0x0 0x0 0x0 0x33 0x4>;
-		dma-coherent;
-		ranges = <0x02000000 0x0 0xa0000000 0x0 0xa0000000 0x0 0x40000000>;
-		status = "okay";
-	};
-
 	timer {
 		compatible = "arm,armv8-timer", "arm,armv7-timer";
 		always-on;
@@ -164,6 +145,41 @@
 		compatible = "virtio,mmio";
 		reg = <0x0 0x0a000000 0x0 0x00000200>;
 		interrupts = <0 16 4>;
+		status = "okay";
+	};
+
+	virtio_mmio@a001200 {
+		compatible = "virtio,mmio";
+		reg = <0x0 0x0a001200 0x0 0x00000200>;
+		interrupts = <0 17 4>;
+		status = "okay";
+	};
+
+	virtio_mmio@a001400 {
+		compatible = "virtio,mmio";
+		reg = <0x0 0x0a001400 0x0 0x00000200>;
+		interrupts = <0 18 4>;
+		status = "okay";
+	};
+
+	virtio_mmio@a001600 {
+		compatible = "virtio,mmio";
+		reg = <0x0 0x0a001600 0x0 0x00000200>;
+		interrupts = <0 19 4>;
+		status = "okay";
+	};
+
+	virtio_mmio@a001800 {
+		compatible = "virtio,mmio";
+		reg = <0x0 0x0a001800 0x0 0x00000200>;
+		interrupts = <0 20 4>;
+		status = "okay";
+	};
+
+	virtio_mmio@a001a00 {
+		compatible = "virtio,mmio";
+		reg = <0x0 0x0a001a00 0x0 0x00000200>;
+		interrupts = <0 21 4>;
 		status = "okay";
 	};
 

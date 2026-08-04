@@ -44,6 +44,7 @@ struct arm64_virtio_proxy_config {
 	uint32_t irq;
 	uint32_t device_id;
 	uint16_t frontend_vmid;
+	uint16_t backend_vmid;
 	uint16_t queue_num;
 	uint16_t queue_size;
 	uint16_t pending_num;

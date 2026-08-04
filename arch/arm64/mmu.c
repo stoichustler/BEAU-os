@@ -29,6 +29,9 @@ static uint64_t phys_mem_size;
 static struct mem_region rsvd_regions[MAX_FDT_RSVD_REGIONS];
 static int nr_rsvd_regions;
 
+#define ARM64_CTR_EL0_IDC	(1UL << 28U)
+#define ARM64_CTR_EL0_DIC	(1UL << 29U)
+
 /*
  * ARM64 uses separate translation regimes for the host and guests:
  * - EL2 stage-1 maps hypervisor virtual addresses to host physical addresses.
@@ -475,7 +478,7 @@ void flush_invalidate_all_cache(void)
 	arm64_isb();
 }
 
-/* [20260723] ARM64 cache ownership transfer
+/* [20260801] ARM64 cache ownership and executable publication
  *
  * EL2 producer writes normal cacheable memory
  *     |
@@ -493,9 +496,18 @@ void flush_invalidate_all_cache(void)
  *     v
  * EL2 consumes the device-owned data
  *
+ * image loader writes executable guest memory
+ *     |
+ *     v
+ * CTR.IDC/DIC-selected clean + inner-shareable I-cache invalidation
+ *     |
+ *     v
+ * guest entry may fetch the new image
+ *
  * Key rule:
  *   - clean is the producer publication operation and retains local cache;
  *   - invalidate is valid only after the caller has stopped writing the range;
+ *   - executable bytes are published after the copy and before guest entry;
  *   - callers publish hardware ownership only after the matching operation
  *     completes, preventing stale or partially initialized descriptors.
  */
@@ -513,4 +525,23 @@ void clean_cache_range(const volatile void *p, uint64_t size)
 void invalidate_cache_range(const volatile void *p, uint64_t size)
 {
 	arm64_dcache_inv_range(p, size);
+}
+
+void sync_instruction_cache_range(const volatile void *p, uint64_t size)
+{
+	uint64_t ctr;
+
+	if ((p == NULL) || (size == 0UL)) {
+		return;
+	}
+	ctr = read_ctr_el0();
+	if ((ctr & (ARM64_CTR_EL0_IDC | ARM64_CTR_EL0_DIC)) ==
+		(ARM64_CTR_EL0_IDC | ARM64_CTR_EL0_DIC)) {
+		arm64_dic_idc_icache_sync_range(p, size);
+	} else if ((ctr & ARM64_CTR_EL0_IDC) != 0UL) {
+		arm64_idc_aliasing_icache_sync_range(p, size);
+	} else {
+		/* An extra I-cache invalidation is safe when DIC is set without IDC. */
+		arm64_aliasing_icache_sync_range(p, size);
+	}
 }

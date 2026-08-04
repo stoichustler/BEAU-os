@@ -252,6 +252,15 @@ static void timer_softirq(uint16_t pcpu_id)
 
 			run_timer(timer);
 
+			/*
+			 * A callback can install a new local deadline for itself. That list
+			 * membership owns the new timeout; recycling the callback's old
+			 * one-shot state would otherwise clear the newly armed deadline.
+			 */
+			if (timer_is_started(timer)) {
+				continue;
+			}
+
 			if (timer->mode == TICK_MODE_PERIODIC) {
 				/*
 				 * Periodic timers are wall-clock ticks, not a backlog queue.

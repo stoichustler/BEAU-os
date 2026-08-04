@@ -589,6 +589,26 @@ static void cbs_timer_handler(void *param)
 	cbs_refresh_queues(ctl, now);
 	make_reschedule_request(pcpu_id);
 
+	/* [20260803] CBS deferred-reschedule timer liveness
+	 *
+	 * budget deadline expires
+	 *        |
+	 *        v
+	 * account current server -> request schedule()
+	 *        |
+	 *        +--> guest IRQ/request progress defers schedule()
+	 *        |
+	 *        v
+	 * rearm local CBS deadline -> bounded retry on the owning pCPU
+	 *
+	 * Key rule:
+	 *   - the pCPU-local CBS control owns its one-shot timer;
+	 *   - an expired deadline must be replaced before leaving the callback;
+	 *   - a deferred guest-return path cannot strand runnable peers until an
+	 *     unrelated guest interrupt enters EL2.
+	 */
+	cbs_program_local_timer(ctl, current);
+
 	release_schedule_lock(pcpu_id, rflags);
 }
 
