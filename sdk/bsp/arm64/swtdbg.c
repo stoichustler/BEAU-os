@@ -22,7 +22,7 @@
 #include <vcpu.h>
 #include <vm.h>
 #include <virtio_proxy.h>
-#include <hwtdbg.h>
+#include <swtdbg.h>
 #include <vm_crash.h>
 #include <debug/symbol.h>
 #include <asm/boot/ld_sym.h>
@@ -32,55 +32,55 @@
 #include <asm/trap.h>
 #include "../shell_priv.h"
 
-#define HWTDBG_MAGIC			0x48575444U
-#define HWTDBG_VERSION			4U
-#define HWTDBG_EVENT_SLOTS		4U
-#define HWTDBG_RAS_MAGIC		0x48575241U
-#define HWTDBG_RAS_EVENT_SLOTS		4U
-#define HWTDBG_FAULT_MAGIC		0x48574654U
-#define HWTDBG_FAULT_VERSION		3U
-#define HWTDBG_FAULT_EVENT_SLOTS	2U
-#define HWTDBG_INVALID_ID		0xffffU
-#define HWTDBG_RAS_RECORD_GPA_VALID	(1U << 2U)
-#define HWTDBG_STACK_DEPTH		16U
-#define HWTDBG_LIVE_TIMEOUT_US		1000U
-#define HWTDBG_REGS_PER_LINE_MAX	4U
-#define HWTDBG_REG_KEY_FMT		"%5s:0x%016lx"
-#define HWTDBG_CAPTURE_LIVE_BUSY	(1U << 0U)
-#define HWTDBG_CAPTURE_LIVE_TIMEOUT	(1U << 1U)
-#define HWTDBG_VM_NUM			((CONFIG_VM_WDT_MONITOR_VM_NUM < CONFIG_MAX_VM_NUM) ? \
+#define SWTDBG_MAGIC			0x48575444U
+#define SWTDBG_VERSION			4U
+#define SWTDBG_EVENT_SLOTS		4U
+#define SWTDBG_RAS_MAGIC		0x48575241U
+#define SWTDBG_RAS_EVENT_SLOTS		4U
+#define SWTDBG_FAULT_MAGIC		0x48574654U
+#define SWTDBG_FAULT_VERSION		3U
+#define SWTDBG_FAULT_EVENT_SLOTS	2U
+#define SWTDBG_INVALID_ID		0xffffU
+#define SWTDBG_RAS_RECORD_GPA_VALID	(1U << 2U)
+#define SWTDBG_STACK_DEPTH		16U
+#define SWTDBG_LIVE_TIMEOUT_US		1000U
+#define SWTDBG_REGS_PER_LINE_MAX	4U
+#define SWTDBG_REG_KEY_FMT		"%5s:0x%016lx"
+#define SWTDBG_CAPTURE_LIVE_BUSY	(1U << 0U)
+#define SWTDBG_CAPTURE_LIVE_TIMEOUT	(1U << 1U)
+#define SWTDBG_VM_NUM			((CONFIG_VM_WDT_MONITOR_VM_NUM < CONFIG_MAX_VM_NUM) ? \
 	CONFIG_VM_WDT_MONITOR_VM_NUM : CONFIG_MAX_VM_NUM)
 
-enum hwtdbg_stack_stop {
-	HWTDBG_STACK_COMPLETE = 0U,
-	HWTDBG_STACK_EMPTY,
-	HWTDBG_STACK_MISALIGNED,
-	HWTDBG_STACK_TRANSLATE_FAILED,
-	HWTDBG_STACK_COPY_FAILED,
-	HWTDBG_STACK_OUTSIDE,
-	HWTDBG_STACK_ORDER,
-	HWTDBG_STACK_LR_OUTSIDE,
-	HWTDBG_STACK_DEPTH_LIMIT,
+enum swtdbg_stack_stop {
+	SWTDBG_STACK_COMPLETE = 0U,
+	SWTDBG_STACK_EMPTY,
+	SWTDBG_STACK_MISALIGNED,
+	SWTDBG_STACK_TRANSLATE_FAILED,
+	SWTDBG_STACK_COPY_FAILED,
+	SWTDBG_STACK_OUTSIDE,
+	SWTDBG_STACK_ORDER,
+	SWTDBG_STACK_LR_OUTSIDE,
+	SWTDBG_STACK_DEPTH_LIMIT,
 };
 
-struct hwtdbg_frame {
+struct swtdbg_frame {
 	uint64_t fp;
 	uint64_t lr;
 };
 
-struct hwtdbg_stack_snapshot {
-	struct hwtdbg_frame frame[HWTDBG_STACK_DEPTH];
+struct swtdbg_stack_snapshot {
+	struct swtdbg_frame frame[SWTDBG_STACK_DEPTH];
 	uint32_t count;
-	enum hwtdbg_stack_stop stop;
+	enum swtdbg_stack_stop stop;
 	bool live;
 };
 
-struct hwtdbg_vcpu_snapshot {
+struct swtdbg_vcpu_snapshot {
 	struct cpu_regs regs;
 	struct arm64_vcpu_guest_ctx gctx;
 	struct sched_latency_stats latency;
-	struct hwtdbg_stack_snapshot guest_stack;
-	struct hwtdbg_stack_snapshot host_stack;
+	struct swtdbg_stack_snapshot guest_stack;
+	struct swtdbg_stack_snapshot host_stack;
 	uint64_t pending_req;
 	uint64_t irqs_pending;
 	uint64_t irqs_pending_mask;
@@ -100,7 +100,7 @@ struct hwtdbg_vcpu_snapshot {
 	bool pcpu_need_reschedule;
 };
 
-struct hwtdbg_virtio_snapshot {
+struct swtdbg_virtio_snapshot {
 	uint64_t timeout_count;
 	uint64_t completed_count;
 	uint64_t notify_count;
@@ -111,7 +111,7 @@ struct hwtdbg_virtio_snapshot {
 	uint16_t unhealthy_count;
 };
 
-struct hwtdbg_event {
+struct swtdbg_event {
 	uint32_t magic;
 	uint16_t version;
 	uint16_t vm_id;
@@ -119,8 +119,8 @@ struct hwtdbg_event {
 	bool valid;
 	uint64_t sequence;
 	uint64_t captured_tsc;
-	struct hwtdbg_timeout_context timeout;
-	enum hwtdbg_recovery_result recovery;
+	struct swtdbg_timeout_context timeout;
+	enum swtdbg_recovery_result recovery;
 	uint64_t recovery_attempt;
 	uint64_t recovery_updated_tsc;
 	uint64_t recovery_wait_vcpus;
@@ -132,11 +132,11 @@ struct hwtdbg_event {
 	enum vm_state vm_state;
 	uint16_t vcpu_count;
 	char vm_name[MAX_VM_NAME_LEN];
-	struct hwtdbg_virtio_snapshot virtio;
-	struct hwtdbg_vcpu_snapshot vcpu[MAX_VCPUS_PER_VM];
+	struct swtdbg_virtio_snapshot virtio;
+	struct swtdbg_vcpu_snapshot vcpu[MAX_VCPUS_PER_VM];
 };
 
-struct hwtdbg_ras_record {
+struct swtdbg_ras_record {
 	uint64_t status;
 	uint64_t pa;
 	uint64_t gpa;
@@ -145,7 +145,7 @@ struct hwtdbg_ras_record {
 	uint16_t flags;
 };
 
-struct hwtdbg_ras_event {
+struct swtdbg_ras_event {
 	uint32_t magic;
 	uint16_t version;
 	uint16_t pcpu_id;
@@ -164,11 +164,11 @@ struct hwtdbg_ras_event {
 	uint32_t ras_flags;
 	uint32_t record_count;
 	uint16_t valid_count;
-	struct hwtdbg_ras_record record[ARM64_RAS_MAX_RECORDS];
-	struct hwtdbg_vcpu_snapshot vcpu;
+	struct swtdbg_ras_record record[ARM64_RAS_MAX_RECORDS];
+	struct swtdbg_vcpu_snapshot vcpu;
 };
 
-struct hwtdbg_fault_event {
+struct swtdbg_fault_event {
 	uint32_t magic;
 	uint16_t version;
 	uint16_t vm_id;
@@ -176,7 +176,7 @@ struct hwtdbg_fault_event {
 	bool valid;
 	uint16_t vcpu_id;
 	uint16_t pcpu_id;
-	enum hwtdbg_guest_fault_reason reason;
+	enum swtdbg_guest_fault_reason reason;
 	int32_t exit_ret;
 	uint64_t sequence;
 	uint64_t captured_tsc;
@@ -189,13 +189,13 @@ struct hwtdbg_fault_event {
 	struct arm64_vcpu_guest_ctx gctx;
 };
 
-struct hwtdbg_live_mailbox {
+struct swtdbg_live_mailbox {
 	uint64_t publish_version;
-	struct hwtdbg_vcpu_snapshot result;
+	struct swtdbg_vcpu_snapshot result;
 	uint64_t completed_sequence;
 } __aligned(64);
 
-struct hwtdbg_live_request {
+struct swtdbg_live_request {
 	uint16_t vm_id;
 	uint64_t sequence;
 };
@@ -211,44 +211,44 @@ struct hwtdbg_live_request {
  *       -> checksum -> write barrier -> publish valid
  *
  * Recovery never waits for the shell. The shell copies one valid event while
- * holding hwtdbg_lock, then formats the private readback without any lock.
+ * holding swtdbg_lock, then formats the private readback without any lock.
  * A late callback can update only its mailbox, never a reused or published
  * event slot. Legacy or invalid empty stalled masks select every created vCPU,
  * preventing a malformed per-vCPU timeout from publishing an empty minidump.
  */
-static struct hwtdbg_event hwtdbg_events[HWTDBG_VM_NUM][HWTDBG_EVENT_SLOTS];
-static uint8_t hwtdbg_next_slot[HWTDBG_VM_NUM];
-static uint64_t hwtdbg_next_sequence;
-static spinlock_t hwtdbg_lock = { .head = 0U, .tail = 0U, };
-static struct hwtdbg_live_mailbox hwtdbg_mailbox[MAX_PCPU_NUM];
-static struct hwtdbg_live_request hwtdbg_live_request;
-static struct hwtdbg_event hwtdbg_readback;
-static struct hwtdbg_ras_event
-	hwtdbg_ras_events[MAX_PCPU_NUM][HWTDBG_RAS_EVENT_SLOTS];
-static uint8_t hwtdbg_ras_next_slot[MAX_PCPU_NUM];
-static uint64_t hwtdbg_ras_next_sequence;
-static struct hwtdbg_ras_event hwtdbg_ras_readback;
-static struct hwtdbg_fault_event
-	hwtdbg_fault_events[CONFIG_MAX_VM_NUM][HWTDBG_FAULT_EVENT_SLOTS];
-static uint8_t hwtdbg_fault_next_slot[CONFIG_MAX_VM_NUM];
-static spinlock_t hwtdbg_fault_locks[CONFIG_MAX_VM_NUM];
-static uint64_t hwtdbg_fault_next_sequence;
-static struct hwtdbg_fault_event hwtdbg_fault_readback;
+static struct swtdbg_event swtdbg_events[SWTDBG_VM_NUM][SWTDBG_EVENT_SLOTS];
+static uint8_t swtdbg_next_slot[SWTDBG_VM_NUM];
+static uint64_t swtdbg_next_sequence;
+static spinlock_t swtdbg_lock = { .head = 0U, .tail = 0U, };
+static struct swtdbg_live_mailbox swtdbg_mailbox[MAX_PCPU_NUM];
+static struct swtdbg_live_request swtdbg_live_request;
+static struct swtdbg_event swtdbg_readback;
+static struct swtdbg_ras_event
+	swtdbg_ras_events[MAX_PCPU_NUM][SWTDBG_RAS_EVENT_SLOTS];
+static uint8_t swtdbg_ras_next_slot[MAX_PCPU_NUM];
+static uint64_t swtdbg_ras_next_sequence;
+static struct swtdbg_ras_event swtdbg_ras_readback;
+static struct swtdbg_fault_event
+	swtdbg_fault_events[CONFIG_MAX_VM_NUM][SWTDBG_FAULT_EVENT_SLOTS];
+static uint8_t swtdbg_fault_next_slot[CONFIG_MAX_VM_NUM];
+static spinlock_t swtdbg_fault_locks[CONFIG_MAX_VM_NUM];
+static uint64_t swtdbg_fault_next_sequence;
+static struct swtdbg_fault_event swtdbg_fault_readback;
 static struct vm_crash_record vm_crash_readback[BEAU_VM_CRASH_HISTORY_SLOTS];
 
-static bool hwtdbg_range_contains(uint64_t start, uint64_t end,
+static bool swtdbg_range_contains(uint64_t start, uint64_t end,
 	uint64_t address, uint64_t bytes)
 {
 	return (address >= start) && (address < end) && (bytes <= (end - address));
 }
 
-static bool hwtdbg_text_address(uint64_t address)
+static bool swtdbg_text_address(uint64_t address)
 {
 	return (address >= (uint64_t)&_text_start) &&
 		(address < (uint64_t)&_text_end);
 }
 
-/* [20260721] HWTDBG stack unwind stop contract
+/* [20260721] SWTDBG stack unwind stop contract
  *
  * captured frame -> validate alignment and readable range -> read next frame
  *       |                         |                         |
@@ -265,43 +265,43 @@ static bool hwtdbg_text_address(uint64_t address)
  *   - outside: SP or FP is outside the recorded host stack bounds;
  *   - nonmonotonic: the next FP would revisit or move below a prior frame;
  *   - lr-outside: a nonzero host LR is not in BEAU text;
- *   - depth-limit: the bounded snapshot reached HWTDBG_STACK_DEPTH.
+ *   - depth-limit: the bounded snapshot reached SWTDBG_STACK_DEPTH.
  *
  * Key rule:
  *   - the snapshot owns only copies of validated frame records;
  *   - a failed validation keeps earlier evidence but never dereferences the
  *     failing frame, preventing an invalid guest or host stack read.
  */
-static const char *hwtdbg_stack_stop_str(enum hwtdbg_stack_stop stop)
+static const char *swtdbg_stack_stop_str(enum swtdbg_stack_stop stop)
 {
 	const char *str;
 
 	switch (stop) {
-	case HWTDBG_STACK_COMPLETE:
+	case SWTDBG_STACK_COMPLETE:
 		str = "complete";
 		break;
-	case HWTDBG_STACK_EMPTY:
+	case SWTDBG_STACK_EMPTY:
 		str = "empty";
 		break;
-	case HWTDBG_STACK_MISALIGNED:
+	case SWTDBG_STACK_MISALIGNED:
 		str = "misaligned";
 		break;
-	case HWTDBG_STACK_TRANSLATE_FAILED:
+	case SWTDBG_STACK_TRANSLATE_FAILED:
 		str = "gva-unavailable";
 		break;
-	case HWTDBG_STACK_COPY_FAILED:
+	case SWTDBG_STACK_COPY_FAILED:
 		str = "copy-failed";
 		break;
-	case HWTDBG_STACK_OUTSIDE:
+	case SWTDBG_STACK_OUTSIDE:
 		str = "outside";
 		break;
-	case HWTDBG_STACK_ORDER:
+	case SWTDBG_STACK_ORDER:
 		str = "nonmonotonic";
 		break;
-	case HWTDBG_STACK_LR_OUTSIDE:
+	case SWTDBG_STACK_LR_OUTSIDE:
 		str = "lr-outside";
 		break;
-	case HWTDBG_STACK_DEPTH_LIMIT:
+	case SWTDBG_STACK_DEPTH_LIMIT:
 		str = "depth-limit";
 		break;
 	default:
@@ -312,7 +312,7 @@ static const char *hwtdbg_stack_stop_str(enum hwtdbg_stack_stop stop)
 	return str;
 }
 
-static int32_t hwtdbg_translate_live_gva(struct acrn_vcpu *vcpu,
+static int32_t swtdbg_translate_live_gva(struct acrn_vcpu *vcpu,
 	uint64_t gva, uint64_t *gpa)
 {
 	uint64_t old_par;
@@ -336,119 +336,119 @@ static int32_t hwtdbg_translate_live_gva(struct acrn_vcpu *vcpu,
 	return ret;
 }
 
-static void hwtdbg_capture_guest_stack(struct acrn_vcpu *vcpu,
-	const struct cpu_regs *regs, bool live, struct hwtdbg_stack_snapshot *stack)
+static void swtdbg_capture_guest_stack(struct acrn_vcpu *vcpu,
+	const struct cpu_regs *regs, bool live, struct swtdbg_stack_snapshot *stack)
 {
-	struct hwtdbg_frame frame;
+	struct swtdbg_frame frame;
 	uint64_t fp = regs->x29;
 	uint64_t lr = regs->lr;
 	uint32_t index;
 
 	stack->live = live;
-	stack->stop = HWTDBG_STACK_EMPTY;
+	stack->stop = SWTDBG_STACK_EMPTY;
 	if ((fp == 0UL) && (lr == 0UL)) {
 		return;
 	}
 
-	for (index = 0U; index < HWTDBG_STACK_DEPTH; index++) {
+	for (index = 0U; index < SWTDBG_STACK_DEPTH; index++) {
 		uint64_t gpa = fp;
 
 		stack->frame[stack->count].fp = fp;
 		stack->frame[stack->count].lr = lr;
 		stack->count++;
 		if (fp == 0UL) {
-			stack->stop = HWTDBG_STACK_COMPLETE;
+			stack->stop = SWTDBG_STACK_COMPLETE;
 			return;
 		}
 		if ((fp & (CPU_STACK_ALIGN - 1UL)) != 0UL) {
-			stack->stop = HWTDBG_STACK_MISALIGNED;
+			stack->stop = SWTDBG_STACK_MISALIGNED;
 			return;
 		}
 		if (live) {
-			if (hwtdbg_translate_live_gva(vcpu, fp, &gpa) != 0) {
-				stack->stop = HWTDBG_STACK_TRANSLATE_FAILED;
+			if (swtdbg_translate_live_gva(vcpu, fp, &gpa) != 0) {
+				stack->stop = SWTDBG_STACK_TRANSLATE_FAILED;
 				return;
 			}
 		} else if (!arm64_guest_gpa_range_valid(vcpu->vm, fp, sizeof(frame))) {
-			stack->stop = HWTDBG_STACK_TRANSLATE_FAILED;
+			stack->stop = SWTDBG_STACK_TRANSLATE_FAILED;
 			return;
 		}
 		if (copy_from_gpa(vcpu->vm, &frame, gpa, sizeof(frame)) != 0) {
-			stack->stop = HWTDBG_STACK_COPY_FAILED;
+			stack->stop = SWTDBG_STACK_COPY_FAILED;
 			return;
 		}
 		if (frame.fp == 0UL) {
-			stack->stop = HWTDBG_STACK_COMPLETE;
+			stack->stop = SWTDBG_STACK_COMPLETE;
 			return;
 		}
 		if (frame.fp <= fp) {
-			stack->stop = HWTDBG_STACK_ORDER;
+			stack->stop = SWTDBG_STACK_ORDER;
 			return;
 		}
 		fp = frame.fp;
 		lr = frame.lr;
 	}
-	stack->stop = HWTDBG_STACK_DEPTH_LIMIT;
+	stack->stop = SWTDBG_STACK_DEPTH_LIMIT;
 }
 
-static void hwtdbg_unwind_host_stack(uint64_t sp, uint64_t fp, uint64_t lr,
+static void swtdbg_unwind_host_stack(uint64_t sp, uint64_t fp, uint64_t lr,
 	uint64_t stack_start, uint64_t stack_end, bool live,
-	struct hwtdbg_stack_snapshot *stack)
+	struct swtdbg_stack_snapshot *stack)
 {
 	uint32_t index;
 
 	stack->live = live;
-	stack->stop = HWTDBG_STACK_OUTSIDE;
-	if (!hwtdbg_range_contains(stack_start, stack_end, sp, sizeof(uint64_t))) {
+	stack->stop = SWTDBG_STACK_OUTSIDE;
+	if (!swtdbg_range_contains(stack_start, stack_end, sp, sizeof(uint64_t))) {
 		return;
 	}
 	if ((fp == 0UL) && (lr == 0UL)) {
-		stack->stop = HWTDBG_STACK_EMPTY;
+		stack->stop = SWTDBG_STACK_EMPTY;
 		return;
 	}
 
-	for (index = 0U; index < HWTDBG_STACK_DEPTH; index++) {
-		const struct hwtdbg_frame *frame;
+	for (index = 0U; index < SWTDBG_STACK_DEPTH; index++) {
+		const struct swtdbg_frame *frame;
 		uint64_t next_fp;
 
 		stack->frame[stack->count].fp = fp;
 		stack->frame[stack->count].lr = lr;
 		stack->count++;
-		if ((lr != 0UL) && !hwtdbg_text_address(lr)) {
-			stack->stop = HWTDBG_STACK_LR_OUTSIDE;
+		if ((lr != 0UL) && !swtdbg_text_address(lr)) {
+			stack->stop = SWTDBG_STACK_LR_OUTSIDE;
 			return;
 		}
 		if (fp == 0UL) {
-			stack->stop = HWTDBG_STACK_COMPLETE;
+			stack->stop = SWTDBG_STACK_COMPLETE;
 			return;
 		}
 		if ((fp & (CPU_STACK_ALIGN - 1UL)) != 0UL) {
-			stack->stop = HWTDBG_STACK_MISALIGNED;
+			stack->stop = SWTDBG_STACK_MISALIGNED;
 			return;
 		}
-		if ((fp < sp) || !hwtdbg_range_contains(stack_start, stack_end,
+		if ((fp < sp) || !swtdbg_range_contains(stack_start, stack_end,
 			fp, sizeof(*frame))) {
-			stack->stop = HWTDBG_STACK_OUTSIDE;
+			stack->stop = SWTDBG_STACK_OUTSIDE;
 			return;
 		}
-		frame = (const struct hwtdbg_frame *)fp;
+		frame = (const struct swtdbg_frame *)fp;
 		next_fp = frame->fp;
 		lr = frame->lr;
 		if ((next_fp == 0UL) || (next_fp == SP_BOTTOM_MAGIC)) {
-			stack->stop = HWTDBG_STACK_COMPLETE;
+			stack->stop = SWTDBG_STACK_COMPLETE;
 			return;
 		}
 		if (next_fp <= fp) {
-			stack->stop = HWTDBG_STACK_ORDER;
+			stack->stop = SWTDBG_STACK_ORDER;
 			return;
 		}
 		fp = next_fp;
 	}
-	stack->stop = HWTDBG_STACK_DEPTH_LIMIT;
+	stack->stop = SWTDBG_STACK_DEPTH_LIMIT;
 }
 
-static void hwtdbg_capture_saved_host_stack(const struct acrn_vcpu *vcpu,
-	struct hwtdbg_stack_snapshot *stack)
+static void swtdbg_capture_saved_host_stack(const struct acrn_vcpu *vcpu,
+	struct swtdbg_stack_snapshot *stack)
 {
 	const struct stack_frame *frame;
 	uint64_t stack_start = vcpu->thread_obj.host_stack_base;
@@ -458,18 +458,18 @@ static void hwtdbg_capture_saved_host_stack(const struct acrn_vcpu *vcpu,
 		stack_start = (uint64_t)&vcpu->stack[0];
 		stack_end = (uint64_t)&vcpu->stack[CONFIG_STACK_SIZE];
 	}
-	if (!hwtdbg_range_contains(stack_start, stack_end,
+	if (!swtdbg_range_contains(stack_start, stack_end,
 		vcpu->thread_obj.host_sp, sizeof(*frame))) {
-		stack->stop = HWTDBG_STACK_OUTSIDE;
+		stack->stop = SWTDBG_STACK_OUTSIDE;
 		return;
 	}
 	frame = (const struct stack_frame *)vcpu->thread_obj.host_sp;
-	hwtdbg_unwind_host_stack(vcpu->thread_obj.host_sp, frame->x29,
+	swtdbg_unwind_host_stack(vcpu->thread_obj.host_sp, frame->x29,
 		frame->lr, stack_start, stack_end, false, stack);
 }
 
-static void hwtdbg_capture_live_host_stack(const struct acrn_vcpu *vcpu,
-	struct hwtdbg_stack_snapshot *stack)
+static void swtdbg_capture_live_host_stack(const struct acrn_vcpu *vcpu,
+	struct swtdbg_stack_snapshot *stack)
 {
 	uint64_t stack_start = vcpu->thread_obj.host_stack_base;
 	uint64_t stack_end = stack_start + vcpu->thread_obj.host_stack_size;
@@ -484,11 +484,11 @@ static void hwtdbg_capture_live_host_stack(const struct acrn_vcpu *vcpu,
 	asm volatile ("mov %0, sp" : "=r" (sp));
 	asm volatile ("mov %0, x29" : "=r" (fp));
 	asm volatile ("mov %0, x30" : "=r" (lr));
-	hwtdbg_unwind_host_stack(sp, fp, lr, stack_start, stack_end, true, stack);
+	swtdbg_unwind_host_stack(sp, fp, lr, stack_start, stack_end, true, stack);
 }
 
-static void hwtdbg_snapshot_pcpu_owner(const struct acrn_vcpu *vcpu,
-	struct hwtdbg_vcpu_snapshot *snapshot)
+static void swtdbg_snapshot_pcpu_owner(const struct acrn_vcpu *vcpu,
+	struct swtdbg_vcpu_snapshot *snapshot)
 {
 	struct thread_object *owner;
 
@@ -516,15 +516,15 @@ static void hwtdbg_snapshot_pcpu_owner(const struct acrn_vcpu *vcpu,
 		(owner == &vcpu->thread_obj);
 }
 
-static void hwtdbg_capture_vcpu_durable(struct acrn_vcpu *vcpu,
-	struct hwtdbg_vcpu_snapshot *snapshot)
+static void swtdbg_capture_vcpu_durable(struct acrn_vcpu *vcpu,
+	struct swtdbg_vcpu_snapshot *snapshot)
 {
 	(void)memset(snapshot, 0U, sizeof(*snapshot));
 	snapshot->vcpu_id = vcpu->vcpu_id;
 	snapshot->pcpu_id = vcpu->thread_obj.pcpu_id;
 	snapshot->vcpu_state = vcpu_get_state(vcpu);
 	snapshot->thread_state = vcpu->thread_obj.status;
-	hwtdbg_snapshot_pcpu_owner(vcpu, snapshot);
+	swtdbg_snapshot_pcpu_owner(vcpu, snapshot);
 	sched_get_latency(&vcpu->thread_obj, &snapshot->latency);
 	(void)memcpy_s(&snapshot->regs, sizeof(snapshot->regs),
 		&vcpu->arch.regs, sizeof(vcpu->arch.regs));
@@ -534,28 +534,28 @@ static void hwtdbg_capture_vcpu_durable(struct acrn_vcpu *vcpu,
 	snapshot->irqs_pending = vcpu->arch.irqs_pending;
 	snapshot->irqs_pending_mask = vcpu->arch.irqs_pending_mask;
 	if (snapshot->vcpu_state != VCPU_OFFLINE) {
-		hwtdbg_capture_guest_stack(vcpu, &snapshot->regs, false,
+		swtdbg_capture_guest_stack(vcpu, &snapshot->regs, false,
 			&snapshot->guest_stack);
-		hwtdbg_capture_saved_host_stack(vcpu, &snapshot->host_stack);
+		swtdbg_capture_saved_host_stack(vcpu, &snapshot->host_stack);
 	}
 }
 
-static void hwtdbg_capture_vcpu_live(struct acrn_vcpu *vcpu,
-	struct hwtdbg_vcpu_snapshot *snapshot)
+static void swtdbg_capture_vcpu_live(struct acrn_vcpu *vcpu,
+	struct swtdbg_vcpu_snapshot *snapshot)
 {
-	hwtdbg_capture_vcpu_durable(vcpu, snapshot);
+	swtdbg_capture_vcpu_durable(vcpu, snapshot);
 	(void)memset(&snapshot->guest_stack, 0U, sizeof(snapshot->guest_stack));
 	(void)memset(&snapshot->host_stack, 0U, sizeof(snapshot->host_stack));
-	hwtdbg_capture_guest_stack(vcpu, &snapshot->regs, true,
+	swtdbg_capture_guest_stack(vcpu, &snapshot->regs, true,
 		&snapshot->guest_stack);
-	hwtdbg_capture_live_host_stack(vcpu, &snapshot->host_stack);
+	swtdbg_capture_live_host_stack(vcpu, &snapshot->host_stack);
 	snapshot->live = true;
 }
 
-static void hwtdbg_live_capture_callback(__unused void *data)
+static void swtdbg_live_capture_callback(__unused void *data)
 {
 	uint16_t pcpu_id = get_pcpu_id();
-	struct hwtdbg_live_mailbox *mailbox;
+	struct swtdbg_live_mailbox *mailbox;
 	struct acrn_vcpu *vcpu;
 	uint64_t publish_version;
 	uint64_t sequence;
@@ -564,10 +564,10 @@ static void hwtdbg_live_capture_callback(__unused void *data)
 	if (pcpu_id >= MAX_PCPU_NUM) {
 		return;
 	}
-	sequence = __atomic_load_n(&hwtdbg_live_request.sequence, __ATOMIC_ACQUIRE);
-	vm_id = __atomic_load_n(&hwtdbg_live_request.vm_id, __ATOMIC_ACQUIRE);
+	sequence = __atomic_load_n(&swtdbg_live_request.sequence, __ATOMIC_ACQUIRE);
+	vm_id = __atomic_load_n(&swtdbg_live_request.vm_id, __ATOMIC_ACQUIRE);
 	if ((sequence == 0UL) ||
-		(sequence != __atomic_load_n(&hwtdbg_live_request.sequence,
+		(sequence != __atomic_load_n(&swtdbg_live_request.sequence,
 			__ATOMIC_ACQUIRE))) {
 		return;
 	}
@@ -577,13 +577,13 @@ static void hwtdbg_live_capture_callback(__unused void *data)
 		return;
 	}
 
-	mailbox = &hwtdbg_mailbox[pcpu_id];
+	mailbox = &swtdbg_mailbox[pcpu_id];
 	publish_version = (__atomic_load_n(&mailbox->publish_version,
 		__ATOMIC_RELAXED) + 1UL) | 1UL;
 	__atomic_store_n(&mailbox->publish_version, publish_version,
 		__ATOMIC_RELEASE);
 	cpu_write_memory_barrier();
-	hwtdbg_capture_vcpu_live(vcpu, &mailbox->result);
+	swtdbg_capture_vcpu_live(vcpu, &mailbox->result);
 	cpu_write_memory_barrier();
 	__atomic_store_n(&mailbox->completed_sequence, sequence, __ATOMIC_RELEASE);
 	cpu_write_memory_barrier();
@@ -591,18 +591,18 @@ static void hwtdbg_live_capture_callback(__unused void *data)
 		__ATOMIC_RELEASE);
 }
 
-static uint32_t hwtdbg_checksum(const struct hwtdbg_event *event)
+static uint32_t swtdbg_checksum(const struct swtdbg_event *event)
 {
 	const uint8_t *bytes = (const uint8_t *)event;
 	uint32_t checksum = 2166136261U;
 	uint32_t index;
 
 	for (index = 0U; index < sizeof(*event); index++) {
-		bool checksum_byte = (index >= offsetof(struct hwtdbg_event, checksum)) &&
-			(index < (offsetof(struct hwtdbg_event, checksum) +
+		bool checksum_byte = (index >= offsetof(struct swtdbg_event, checksum)) &&
+			(index < (offsetof(struct swtdbg_event, checksum) +
 			 sizeof(event->checksum)));
-		bool valid_byte = (index >= offsetof(struct hwtdbg_event, valid)) &&
-			(index < (offsetof(struct hwtdbg_event, valid) +
+		bool valid_byte = (index >= offsetof(struct swtdbg_event, valid)) &&
+			(index < (offsetof(struct swtdbg_event, valid) +
 			 sizeof(event->valid)));
 
 		if (!checksum_byte && !valid_byte) {
@@ -614,18 +614,18 @@ static uint32_t hwtdbg_checksum(const struct hwtdbg_event *event)
 	return checksum;
 }
 
-static uint32_t hwtdbg_ras_checksum(const struct hwtdbg_ras_event *event)
+static uint32_t swtdbg_ras_checksum(const struct swtdbg_ras_event *event)
 {
 	const uint8_t *bytes = (const uint8_t *)event;
 	uint32_t checksum = 2166136261U;
 	uint32_t index;
 
 	for (index = 0U; index < sizeof(*event); index++) {
-		bool checksum_byte = (index >= offsetof(struct hwtdbg_ras_event, checksum)) &&
-			(index < (offsetof(struct hwtdbg_ras_event, checksum) +
+		bool checksum_byte = (index >= offsetof(struct swtdbg_ras_event, checksum)) &&
+			(index < (offsetof(struct swtdbg_ras_event, checksum) +
 			 sizeof(event->checksum)));
-		bool valid_byte = (index >= offsetof(struct hwtdbg_ras_event, valid)) &&
-			(index < (offsetof(struct hwtdbg_ras_event, valid) +
+		bool valid_byte = (index >= offsetof(struct swtdbg_ras_event, valid)) &&
+			(index < (offsetof(struct swtdbg_ras_event, valid) +
 			 sizeof(event->valid)));
 
 		if (!checksum_byte && !valid_byte) {
@@ -637,18 +637,18 @@ static uint32_t hwtdbg_ras_checksum(const struct hwtdbg_ras_event *event)
 	return checksum;
 }
 
-static uint32_t hwtdbg_fault_checksum(const struct hwtdbg_fault_event *event)
+static uint32_t swtdbg_fault_checksum(const struct swtdbg_fault_event *event)
 {
 	const uint8_t *bytes = (const uint8_t *)event;
 	uint32_t checksum = 2166136261U;
 	uint32_t index;
 
 	for (index = 0U; index < sizeof(*event); index++) {
-		bool checksum_byte = (index >= offsetof(struct hwtdbg_fault_event, checksum)) &&
-			(index < (offsetof(struct hwtdbg_fault_event, checksum) +
+		bool checksum_byte = (index >= offsetof(struct swtdbg_fault_event, checksum)) &&
+			(index < (offsetof(struct swtdbg_fault_event, checksum) +
 			 sizeof(event->checksum)));
-		bool valid_byte = (index >= offsetof(struct hwtdbg_fault_event, valid)) &&
-			(index < (offsetof(struct hwtdbg_fault_event, valid) +
+		bool valid_byte = (index >= offsetof(struct swtdbg_fault_event, valid)) &&
+			(index < (offsetof(struct swtdbg_fault_event, valid) +
 			 sizeof(event->valid)));
 
 		if (!checksum_byte && !valid_byte) {
@@ -660,83 +660,83 @@ static uint32_t hwtdbg_fault_checksum(const struct hwtdbg_fault_event *event)
 	return checksum;
 }
 
-static struct hwtdbg_ras_event *hwtdbg_reserve_ras_event(uint16_t pcpu_id,
+static struct swtdbg_ras_event *swtdbg_reserve_ras_event(uint16_t pcpu_id,
 	uint64_t *sequence)
 {
-	struct hwtdbg_ras_event *event;
+	struct swtdbg_ras_event *event;
 	uint8_t slot;
 
 	if ((pcpu_id >= MAX_PCPU_NUM) || (sequence == NULL)) {
 		return NULL;
 	}
-	slot = hwtdbg_ras_next_slot[pcpu_id];
-	hwtdbg_ras_next_slot[pcpu_id] = (uint8_t)((slot + 1U) %
-		HWTDBG_RAS_EVENT_SLOTS);
-	*sequence = __atomic_add_fetch(&hwtdbg_ras_next_sequence, 1UL,
+	slot = swtdbg_ras_next_slot[pcpu_id];
+	swtdbg_ras_next_slot[pcpu_id] = (uint8_t)((slot + 1U) %
+		SWTDBG_RAS_EVENT_SLOTS);
+	*sequence = __atomic_add_fetch(&swtdbg_ras_next_sequence, 1UL,
 		__ATOMIC_RELAXED);
 	if (*sequence == 0UL) {
-		*sequence = __atomic_add_fetch(&hwtdbg_ras_next_sequence, 1UL,
+		*sequence = __atomic_add_fetch(&swtdbg_ras_next_sequence, 1UL,
 			__ATOMIC_RELAXED);
 	}
-	event = &hwtdbg_ras_events[pcpu_id][slot];
+	event = &swtdbg_ras_events[pcpu_id][slot];
 	__atomic_store_n(&event->valid, false, __ATOMIC_RELEASE);
 	cpu_write_memory_barrier();
 	(void)memset(event, 0U, sizeof(*event));
 	return event;
 }
 
-static void hwtdbg_publish_ras_event(struct hwtdbg_ras_event *event)
+static void swtdbg_publish_ras_event(struct swtdbg_ras_event *event)
 {
 	event->checksum = 0U;
-	event->checksum = hwtdbg_ras_checksum(event);
+	event->checksum = swtdbg_ras_checksum(event);
 	cpu_write_memory_barrier();
 	__atomic_store_n(&event->valid, true, __ATOMIC_RELEASE);
 }
 
-static struct hwtdbg_event *hwtdbg_reserve_event(uint16_t vm_id,
+static struct swtdbg_event *swtdbg_reserve_event(uint16_t vm_id,
 	uint64_t *sequence)
 {
-	struct hwtdbg_event *event;
+	struct swtdbg_event *event;
 	uint64_t rflags;
 	uint8_t slot;
 
-	spinlock_irqsave_obtain(&hwtdbg_lock, &rflags);
-	slot = hwtdbg_next_slot[vm_id];
-	hwtdbg_next_slot[vm_id] = (uint8_t)((slot + 1U) % HWTDBG_EVENT_SLOTS);
-	hwtdbg_next_sequence++;
-	if (hwtdbg_next_sequence == 0UL) {
-		hwtdbg_next_sequence++;
+	spinlock_irqsave_obtain(&swtdbg_lock, &rflags);
+	slot = swtdbg_next_slot[vm_id];
+	swtdbg_next_slot[vm_id] = (uint8_t)((slot + 1U) % SWTDBG_EVENT_SLOTS);
+	swtdbg_next_sequence++;
+	if (swtdbg_next_sequence == 0UL) {
+		swtdbg_next_sequence++;
 	}
-	*sequence = hwtdbg_next_sequence;
-	event = &hwtdbg_events[vm_id][slot];
+	*sequence = swtdbg_next_sequence;
+	event = &swtdbg_events[vm_id][slot];
 	event->valid = false;
 	cpu_write_memory_barrier();
-	spinlock_irqrestore_release(&hwtdbg_lock, rflags);
+	spinlock_irqrestore_release(&swtdbg_lock, rflags);
 
 	(void)memset(event, 0U, sizeof(*event));
 	return event;
 }
 
-static struct hwtdbg_fault_event *hwtdbg_reserve_fault_event(uint16_t vm_id,
+static struct swtdbg_fault_event *swtdbg_reserve_fault_event(uint16_t vm_id,
 	uint64_t *sequence)
 {
-	struct hwtdbg_fault_event *event;
+	struct swtdbg_fault_event *event;
 	uint8_t slot;
 
 	if ((vm_id >= CONFIG_MAX_VM_NUM) || (sequence == NULL)) {
 		return NULL;
 	}
 
-	slot = hwtdbg_fault_next_slot[vm_id];
-	hwtdbg_fault_next_slot[vm_id] = (uint8_t)((slot + 1U) %
-		HWTDBG_FAULT_EVENT_SLOTS);
-	*sequence = __atomic_add_fetch(&hwtdbg_fault_next_sequence, 1UL,
+	slot = swtdbg_fault_next_slot[vm_id];
+	swtdbg_fault_next_slot[vm_id] = (uint8_t)((slot + 1U) %
+		SWTDBG_FAULT_EVENT_SLOTS);
+	*sequence = __atomic_add_fetch(&swtdbg_fault_next_sequence, 1UL,
 		__ATOMIC_RELAXED);
 	if (*sequence == 0UL) {
-		*sequence = __atomic_add_fetch(&hwtdbg_fault_next_sequence, 1UL,
+		*sequence = __atomic_add_fetch(&swtdbg_fault_next_sequence, 1UL,
 			__ATOMIC_RELAXED);
 	}
-	event = &hwtdbg_fault_events[vm_id][slot];
+	event = &swtdbg_fault_events[vm_id][slot];
 	__atomic_store_n(&event->valid, false, __ATOMIC_RELEASE);
 	cpu_write_memory_barrier();
 
@@ -762,10 +762,10 @@ static struct hwtdbg_fault_event *hwtdbg_reserve_fault_event(uint16_t vm_id,
  *   - the fault ring is diagnostic-only and never changes watchdog ownership
  *     or VM restart policy.
  */
-void hwtdbg_capture_guest_fault(struct acrn_vcpu *vcpu,
-	enum hwtdbg_guest_fault_reason reason, int32_t exit_ret)
+void swtdbg_capture_guest_fault(struct acrn_vcpu *vcpu,
+	enum swtdbg_guest_fault_reason reason, int32_t exit_ret)
 {
-	struct hwtdbg_fault_event *event;
+	struct swtdbg_fault_event *event;
 	uint64_t sequence;
 	uint64_t rflags;
 	uint16_t vm_id;
@@ -778,15 +778,15 @@ void hwtdbg_capture_guest_fault(struct acrn_vcpu *vcpu,
 	if (vm_id >= CONFIG_MAX_VM_NUM) {
 		return;
 	}
-	spinlock_irqsave_obtain(&hwtdbg_fault_locks[vm_id], &rflags);
-	event = hwtdbg_reserve_fault_event(vm_id, &sequence);
+	spinlock_irqsave_obtain(&swtdbg_fault_locks[vm_id], &rflags);
+	event = swtdbg_reserve_fault_event(vm_id, &sequence);
 	if (event == NULL) {
-		spinlock_irqrestore_release(&hwtdbg_fault_locks[vm_id], rflags);
+		spinlock_irqrestore_release(&swtdbg_fault_locks[vm_id], rflags);
 		return;
 	}
 
-	event->magic = HWTDBG_FAULT_MAGIC;
-	event->version = HWTDBG_FAULT_VERSION;
+	event->magic = SWTDBG_FAULT_MAGIC;
+	event->version = SWTDBG_FAULT_VERSION;
 	event->vm_id = vcpu->vm->vm_id;
 	event->vcpu_id = vcpu->vcpu_id;
 	event->pcpu_id = get_pcpu_id();
@@ -803,14 +803,14 @@ void hwtdbg_capture_guest_fault(struct acrn_vcpu *vcpu,
 	(void)memcpy_s(&event->gctx, sizeof(event->gctx),
 		&vcpu->arch.gctx, sizeof(vcpu->arch.gctx));
 
-	event->checksum = hwtdbg_fault_checksum(event);
+	event->checksum = swtdbg_fault_checksum(event);
 	cpu_write_memory_barrier();
 	__atomic_store_n(&event->valid, true, __ATOMIC_RELEASE);
-	spinlock_irqrestore_release(&hwtdbg_fault_locks[vm_id], rflags);
+	spinlock_irqrestore_release(&swtdbg_fault_locks[vm_id], rflags);
 }
 
-static void hwtdbg_capture_virtio(uint16_t vm_id,
-	struct hwtdbg_virtio_snapshot *snapshot)
+static void swtdbg_capture_virtio(uint16_t vm_id,
+	struct swtdbg_virtio_snapshot *snapshot)
 {
 	uint16_t count = virtio_proxy_device_count(vm_id);
 	uint16_t index;
@@ -836,7 +836,7 @@ static void hwtdbg_capture_virtio(uint16_t vm_id,
 	}
 }
 
-static uint64_t hwtdbg_build_vcpu_capture_mask(const struct hwtdbg_event *event)
+static uint64_t swtdbg_build_vcpu_capture_mask(const struct swtdbg_event *event)
 {
 	uint64_t valid_mask;
 	uint64_t stalled_mask;
@@ -854,14 +854,14 @@ static uint64_t hwtdbg_build_vcpu_capture_mask(const struct hwtdbg_event *event)
 		stalled_mask : valid_mask;
 }
 
-static bool hwtdbg_vcpu_selected(uint64_t capture_vcpu_mask, uint16_t vcpu_id)
+static bool swtdbg_vcpu_selected(uint64_t capture_vcpu_mask, uint16_t vcpu_id)
 {
 	return (vcpu_id < 64U) &&
 		((capture_vcpu_mask & (1UL << vcpu_id)) != 0UL);
 }
 
-static uint64_t hwtdbg_build_live_mask(struct acrn_vm *vm,
-	const struct hwtdbg_event *event, uint64_t capture_vcpu_mask)
+static uint64_t swtdbg_build_live_mask(struct acrn_vm *vm,
+	const struct swtdbg_event *event, uint64_t capture_vcpu_mask)
 {
 	uint64_t mask = 0UL;
 	uint16_t vcpu_id;
@@ -870,7 +870,7 @@ static uint64_t hwtdbg_build_live_mask(struct acrn_vm *vm,
 		struct acrn_vcpu *vcpu = vcpu_from_vid(vm, vcpu_id);
 		uint16_t pcpu_id = vcpu->thread_obj.pcpu_id;
 
-		if (hwtdbg_vcpu_selected(capture_vcpu_mask, vcpu_id) &&
+		if (swtdbg_vcpu_selected(capture_vcpu_mask, vcpu_id) &&
 			is_vcpu_running(vcpu) && (pcpu_id < MAX_PCPU_NUM) &&
 			(sched_get_current(pcpu_id) == &vcpu->thread_obj)) {
 			mask |= 1UL << pcpu_id;
@@ -880,14 +880,14 @@ static uint64_t hwtdbg_build_live_mask(struct acrn_vm *vm,
 	return mask;
 }
 
-static void hwtdbg_copy_live_results(struct hwtdbg_event *event)
+static void swtdbg_copy_live_results(struct swtdbg_event *event)
 {
-	struct hwtdbg_vcpu_snapshot result;
-	uint64_t capture_vcpu_mask = hwtdbg_build_vcpu_capture_mask(event);
+	struct swtdbg_vcpu_snapshot result;
+	uint64_t capture_vcpu_mask = swtdbg_build_vcpu_capture_mask(event);
 	uint16_t pcpu_id;
 
 	for (pcpu_id = 0U; pcpu_id < MAX_PCPU_NUM; pcpu_id++) {
-		struct hwtdbg_live_mailbox *mailbox = &hwtdbg_mailbox[pcpu_id];
+		struct swtdbg_live_mailbox *mailbox = &swtdbg_mailbox[pcpu_id];
 		uint64_t bit = 1UL << pcpu_id;
 		uint64_t version_before;
 		uint64_t version_after;
@@ -914,7 +914,7 @@ static void hwtdbg_copy_live_results(struct hwtdbg_event *event)
 			continue;
 		}
 		if ((result.vcpu_id < event->vcpu_count) &&
-			hwtdbg_vcpu_selected(capture_vcpu_mask, result.vcpu_id) &&
+			swtdbg_vcpu_selected(capture_vcpu_mask, result.vcpu_id) &&
 			(result.pcpu_id == pcpu_id)) {
 			(void)memcpy_s(&event->vcpu[result.vcpu_id],
 				sizeof(event->vcpu[result.vcpu_id]),
@@ -926,16 +926,16 @@ static void hwtdbg_copy_live_results(struct hwtdbg_event *event)
 		~event->live_captured_mask;
 }
 
-static void hwtdbg_publish_event(struct hwtdbg_event *event)
+static void swtdbg_publish_event(struct swtdbg_event *event)
 {
 	uint64_t rflags;
 
 	event->checksum = 0U;
-	event->checksum = hwtdbg_checksum(event);
-	spinlock_irqsave_obtain(&hwtdbg_lock, &rflags);
+	event->checksum = swtdbg_checksum(event);
+	spinlock_irqsave_obtain(&swtdbg_lock, &rflags);
 	cpu_write_memory_barrier();
 	event->valid = true;
-	spinlock_irqrestore_release(&hwtdbg_lock, rflags);
+	spinlock_irqrestore_release(&swtdbg_lock, rflags);
 }
 
 /* [20260721] RAS evidence publication
@@ -953,10 +953,10 @@ static void hwtdbg_publish_event(struct hwtdbg_event *event)
  *   - VMID and GPA are published only after current-vCPU and reversible RAM
  *     mapping validation, preventing host addresses from being blamed on a VM.
  */
-void hwtdbg_capture_ras(struct acrn_vcpu *vcpu, const struct cpu_regs *regs,
+void swtdbg_capture_ras(struct acrn_vcpu *vcpu, const struct cpu_regs *regs,
 	const struct arm64_ras_snapshot *snapshot)
 {
-	struct hwtdbg_ras_event *event;
+	struct swtdbg_ras_event *event;
 	uint16_t pcpu_id = get_pcpu_id();
 	uint64_t sequence;
 	uint32_t index;
@@ -965,16 +965,16 @@ void hwtdbg_capture_ras(struct acrn_vcpu *vcpu, const struct cpu_regs *regs,
 		((snapshot->flags & ARM64_RAS_SNAPSHOT_SUPPORTED) == 0U)) {
 		return;
 	}
-	event = hwtdbg_reserve_ras_event(pcpu_id, &sequence);
+	event = swtdbg_reserve_ras_event(pcpu_id, &sequence);
 	if (event == NULL) {
 		return;
 	}
-	event->magic = HWTDBG_RAS_MAGIC;
-	event->version = HWTDBG_VERSION;
+	event->magic = SWTDBG_RAS_MAGIC;
+	event->version = SWTDBG_VERSION;
 	event->pcpu_id = pcpu_id;
-	event->vm_id = HWTDBG_INVALID_ID;
-	event->vcpu_id = HWTDBG_INVALID_ID;
-	event->hw_vmid = HWTDBG_INVALID_ID;
+	event->vm_id = SWTDBG_INVALID_ID;
+	event->vcpu_id = SWTDBG_INVALID_ID;
+	event->hw_vmid = SWTDBG_INVALID_ID;
 	event->sequence = sequence;
 	event->captured_tsc = cpu_ticks();
 	event->erridr = snapshot->erridr;
@@ -994,13 +994,13 @@ void hwtdbg_capture_ras(struct acrn_vcpu *vcpu, const struct cpu_regs *regs,
 			event->vcpu_id = vcpu->vcpu_id;
 			event->hw_vmid = (uint16_t)((event->vttbr >>
 				ARM64_STAGE2_VMID_SHIFT) & ARM64_STAGE2_VMID_MASK);
-			hwtdbg_capture_vcpu_live(vcpu, &event->vcpu);
+			swtdbg_capture_vcpu_live(vcpu, &event->vcpu);
 		}
 	}
 
 	for (index = 0U; index < snapshot->valid_count; index++) {
 		const struct arm64_ras_record *record = &snapshot->record[index];
-		struct hwtdbg_ras_record *saved = &event->record[index];
+		struct swtdbg_ras_record *saved = &event->record[index];
 
 		saved->status = record->status;
 		saved->pa = record->address;
@@ -1010,16 +1010,16 @@ void hwtdbg_capture_ras(struct acrn_vcpu *vcpu, const struct cpu_regs *regs,
 		if (event->guest_context &&
 			((record->flags & ARM64_RAS_RECORD_ADDRESS_VALID) != 0U) &&
 			arm64_guest_hpa_to_gpa(vcpu->vm, record->address, &saved->gpa)) {
-			saved->flags |= HWTDBG_RAS_RECORD_GPA_VALID;
+			saved->flags |= SWTDBG_RAS_RECORD_GPA_VALID;
 		}
 	}
-	hwtdbg_publish_ras_event(event);
+	swtdbg_publish_ras_event(event);
 }
 
-uint64_t hwtdbg_capture_timeout(uint16_t vm_id,
-	const struct hwtdbg_timeout_context *timeout)
+uint64_t swtdbg_capture_timeout(uint16_t vm_id,
+	const struct swtdbg_timeout_context *timeout)
 {
-	struct hwtdbg_event *event;
+	struct swtdbg_event *event;
 	struct acrn_vm *vm;
 	uint64_t capture_vcpu_mask;
 	uint64_t remote_mask;
@@ -1027,7 +1027,7 @@ uint64_t hwtdbg_capture_timeout(uint16_t vm_id,
 	uint16_t vcpu_id;
 	int32_t live_status = 0;
 
-	if ((timeout == NULL) || (vm_id >= HWTDBG_VM_NUM)) {
+	if ((timeout == NULL) || (vm_id >= SWTDBG_VM_NUM)) {
 		return 0UL;
 	}
 	vm = get_vm_from_vmid(vm_id);
@@ -1035,9 +1035,9 @@ uint64_t hwtdbg_capture_timeout(uint16_t vm_id,
 		return 0UL;
 	}
 
-	event = hwtdbg_reserve_event(vm_id, &sequence);
-	event->magic = HWTDBG_MAGIC;
-	event->version = HWTDBG_VERSION;
+	event = swtdbg_reserve_event(vm_id, &sequence);
+	event->magic = SWTDBG_MAGIC;
+	event->version = SWTDBG_VERSION;
 	event->vm_id = vm_id;
 	event->sequence = sequence;
 	event->captured_tsc = cpu_ticks();
@@ -1049,57 +1049,57 @@ uint64_t hwtdbg_capture_timeout(uint16_t vm_id,
 		sizeof(event->vm_name));
 	event->recovery = timeout->restart_enabled &&
 		(timeout->restart_count >= CONFIG_VM_WDT_RESTART_MAX) ?
-		HWTDBG_RECOVERY_EXHAUSTED : HWTDBG_RECOVERY_NOT_REQUESTED;
-	capture_vcpu_mask = hwtdbg_build_vcpu_capture_mask(event);
+		SWTDBG_RECOVERY_EXHAUSTED : SWTDBG_RECOVERY_NOT_REQUESTED;
+	capture_vcpu_mask = swtdbg_build_vcpu_capture_mask(event);
 
 	for (vcpu_id = 0U; vcpu_id < event->vcpu_count; vcpu_id++) {
-		if (hwtdbg_vcpu_selected(capture_vcpu_mask, vcpu_id)) {
-			hwtdbg_capture_vcpu_durable(vcpu_from_vid(vm, vcpu_id),
+		if (swtdbg_vcpu_selected(capture_vcpu_mask, vcpu_id)) {
+			swtdbg_capture_vcpu_durable(vcpu_from_vid(vm, vcpu_id),
 				&event->vcpu[vcpu_id]);
 		}
 	}
 
-	event->live_requested_mask = hwtdbg_build_live_mask(vm, event,
+	event->live_requested_mask = swtdbg_build_live_mask(vm, event,
 		capture_vcpu_mask);
-	__atomic_store_n(&hwtdbg_live_request.vm_id, vm_id, __ATOMIC_RELEASE);
-	__atomic_store_n(&hwtdbg_live_request.sequence, sequence, __ATOMIC_RELEASE);
+	__atomic_store_n(&swtdbg_live_request.vm_id, vm_id, __ATOMIC_RELEASE);
+	__atomic_store_n(&swtdbg_live_request.sequence, sequence, __ATOMIC_RELEASE);
 	if ((event->live_requested_mask & (1UL << get_pcpu_id())) != 0UL) {
-		hwtdbg_live_capture_callback(NULL);
+		swtdbg_live_capture_callback(NULL);
 	}
 	remote_mask = event->live_requested_mask & ~(1UL << get_pcpu_id());
 	if (remote_mask != 0UL) {
 		live_status = smp_try_call_function_timeout(remote_mask,
-			hwtdbg_live_capture_callback, NULL, HWTDBG_LIVE_TIMEOUT_US);
+			swtdbg_live_capture_callback, NULL, SWTDBG_LIVE_TIMEOUT_US);
 		if (live_status == -EBUSY) {
-			event->capture_flags |= HWTDBG_CAPTURE_LIVE_BUSY;
+			event->capture_flags |= SWTDBG_CAPTURE_LIVE_BUSY;
 		} else if (live_status == -ETIMEDOUT) {
-			event->capture_flags |= HWTDBG_CAPTURE_LIVE_TIMEOUT;
+			event->capture_flags |= SWTDBG_CAPTURE_LIVE_TIMEOUT;
 		}
 	}
-	hwtdbg_copy_live_results(event);
+	swtdbg_copy_live_results(event);
 
-	hwtdbg_capture_virtio(vm_id, &event->virtio);
-	hwtdbg_publish_event(event);
+	swtdbg_capture_virtio(vm_id, &event->virtio);
+	swtdbg_publish_event(event);
 
 	return sequence;
 }
 
-void hwtdbg_update_recovery(uint16_t vm_id, uint64_t sequence,
-	enum hwtdbg_recovery_result result, uint64_t attempt,
+void swtdbg_update_recovery(uint16_t vm_id, uint64_t sequence,
+	enum swtdbg_recovery_result result, uint64_t attempt,
 	uint64_t wait_vcpus, int32_t reset_ret)
 {
 	uint64_t rflags;
 	uint32_t slot;
 
-	if ((vm_id >= HWTDBG_VM_NUM) || (sequence == 0UL)) {
+	if ((vm_id >= SWTDBG_VM_NUM) || (sequence == 0UL)) {
 		return;
 	}
 
-	spinlock_irqsave_obtain(&hwtdbg_lock, &rflags);
-	for (slot = 0U; slot < HWTDBG_EVENT_SLOTS; slot++) {
-		struct hwtdbg_event *event = &hwtdbg_events[vm_id][slot];
+	spinlock_irqsave_obtain(&swtdbg_lock, &rflags);
+	for (slot = 0U; slot < SWTDBG_EVENT_SLOTS; slot++) {
+		struct swtdbg_event *event = &swtdbg_events[vm_id][slot];
 
-		if (event->valid && (event->magic == HWTDBG_MAGIC) &&
+		if (event->valid && (event->magic == SWTDBG_MAGIC) &&
 			(event->sequence == sequence)) {
 			event->valid = false;
 			cpu_write_memory_barrier();
@@ -1111,28 +1111,28 @@ void hwtdbg_update_recovery(uint16_t vm_id, uint64_t sequence,
 			event->reset_ret = reset_ret;
 			event->recovery_updated_tsc = cpu_ticks();
 			event->checksum = 0U;
-			event->checksum = hwtdbg_checksum(event);
+			event->checksum = swtdbg_checksum(event);
 			cpu_write_memory_barrier();
 			event->valid = true;
 			break;
 		}
 	}
-	spinlock_irqrestore_release(&hwtdbg_lock, rflags);
+	spinlock_irqrestore_release(&swtdbg_lock, rflags);
 }
 
-static const char *hwtdbg_yes_no(bool value)
+static const char *swtdbg_yes_no(bool value)
 {
 	return value ? "Y" : "N";
 }
 
-static const char *hwtdbg_timeout_kind_str(enum hwtdbg_timeout_kind kind)
+static const char *swtdbg_timeout_kind_str(enum swtdbg_timeout_kind kind)
 {
-	return (kind == HWTDBG_TIMEOUT_FIRST_KICK) ? "1st-kick" : "runtime";
+	return (kind == SWTDBG_TIMEOUT_FIRST_KICK) ? "1st-kick" : "runtime";
 }
 
-/* [20260721] HWTDBG watchdog cause contract
+/* [20260721] SWTDBG watchdog cause contract
  *
- * watchdog samples -> classify the timeout transition -> freeze HWTDBG event
+ * watchdog samples -> classify the timeout transition -> freeze SWTDBG event
  *       |                       |
  *       |                       +--> cause is diagnostic evidence only
  *       v
@@ -1146,10 +1146,10 @@ static const char *hwtdbg_timeout_kind_str(enum hwtdbg_timeout_kind kind)
  *
  * Key rule:
  *   - core/vm_wdt.c owns sampling and recovery decisions;
- *   - HWTDBG records the selected cause without deriving a new policy, so
+ *   - SWTDBG records the selected cause without deriving a new policy, so
  *     shell diagnostics cannot alter timeout or VM recovery behavior.
  */
-static const char *hwtdbg_cause_str(enum vm_wdt_cause cause)
+static const char *swtdbg_cause_str(enum vm_wdt_cause cause)
 {
 	const char *str;
 
@@ -1184,7 +1184,7 @@ static const char *hwtdbg_cause_str(enum vm_wdt_cause cause)
 	return str;
 }
 
-/* [20260721] HWTDBG recovery result contract
+/* [20260721] SWTDBG recovery result contract
  *
  * timeout event -> quiescing -> resetting -> launched -> verified
  *                    |             |           |           |
@@ -1199,45 +1199,45 @@ static const char *hwtdbg_cause_str(enum vm_wdt_cause cause)
  *
  * Key rule:
  *   - core/vm_wdt.c owns recovery state and updates this event by sequence;
- *   - HWTDBG publishes each result only after its durable event exists, so a
+ *   - SWTDBG publishes each result only after its durable event exists, so a
  *     delayed recovery update cannot create or modify unrelated timeout data.
  */
-static const char *hwtdbg_recovery_str(enum hwtdbg_recovery_result result)
+static const char *swtdbg_recovery_str(enum swtdbg_recovery_result result)
 {
 	const char *str;
 
 	switch (result) {
-	case HWTDBG_RECOVERY_QUIESCING:
+	case SWTDBG_RECOVERY_QUIESCING:
 		str = "quiescing";
 		break;
-	case HWTDBG_RECOVERY_RESETTING:
+	case SWTDBG_RECOVERY_RESETTING:
 		str = "resetting";
 		break;
-	case HWTDBG_RECOVERY_LAUNCHED:
+	case SWTDBG_RECOVERY_LAUNCHED:
 		str = "launched";
 		break;
-	case HWTDBG_RECOVERY_VERIFIED:
+	case SWTDBG_RECOVERY_VERIFIED:
 		str = "verified";
 		break;
-	case HWTDBG_RECOVERY_LATE_KICK:
+	case SWTDBG_RECOVERY_LATE_KICK:
 		str = "late-kick";
 		break;
-	case HWTDBG_RECOVERY_EXHAUSTED:
+	case SWTDBG_RECOVERY_EXHAUSTED:
 		str = "exhausted";
 		break;
-	case HWTDBG_RECOVERY_INVALID_STATE:
+	case SWTDBG_RECOVERY_INVALID_STATE:
 		str = "invalid-state";
 		break;
-	case HWTDBG_RECOVERY_RESET_FAILED:
+	case SWTDBG_RECOVERY_RESET_FAILED:
 		str = "reset-failed";
 		break;
-	case HWTDBG_RECOVERY_QUIESCE_TIMEOUT:
+	case SWTDBG_RECOVERY_QUIESCE_TIMEOUT:
 		str = "quiesce-timeout";
 		break;
-	case HWTDBG_RECOVERY_VERIFY_TIMEOUT:
+	case SWTDBG_RECOVERY_VERIFY_TIMEOUT:
 		str = "verify-timeout";
 		break;
-	case HWTDBG_RECOVERY_NOT_REQUESTED:
+	case SWTDBG_RECOVERY_NOT_REQUESTED:
 	default:
 		str = "not-requested";
 		break;
@@ -1246,7 +1246,7 @@ static const char *hwtdbg_recovery_str(enum hwtdbg_recovery_result result)
 	return str;
 }
 
-static const char *hwtdbg_thread_state_str(enum thread_object_state state)
+static const char *swtdbg_thread_state_str(enum thread_object_state state)
 {
 	const char *str;
 
@@ -1268,7 +1268,7 @@ static const char *hwtdbg_thread_state_str(enum thread_object_state state)
 	return str;
 }
 
-static const char *hwtdbg_vm_state_str(enum vm_state state)
+static const char *swtdbg_vm_state_str(enum vm_state state)
 {
 	const char *str;
 
@@ -1296,19 +1296,19 @@ static const char *hwtdbg_vm_state_str(enum vm_state state)
 	return str;
 }
 
-static void hwtdbg_format_reg(char *buf, size_t size, const char *name,
+static void swtdbg_format_reg(char *buf, size_t size, const char *name,
 	uint64_t value)
 {
-	(void)snprintf(buf, size, HWTDBG_REG_KEY_FMT, name, value);
+	(void)snprintf(buf, size, SWTDBG_REG_KEY_FMT, name, value);
 }
 
-static void hwtdbg_reg_line(uint32_t count, ...)
+static void swtdbg_reg_line(uint32_t count, ...)
 {
-	char reg[HWTDBG_REGS_PER_LINE_MAX][32U];
+	char reg[SWTDBG_REGS_PER_LINE_MAX][32U];
 	va_list args;
 	uint32_t index;
 
-	if ((count == 0U) || (count > HWTDBG_REGS_PER_LINE_MAX)) {
+	if ((count == 0U) || (count > SWTDBG_REGS_PER_LINE_MAX)) {
 		return;
 	}
 	va_start(args, count);
@@ -1316,7 +1316,7 @@ static void hwtdbg_reg_line(uint32_t count, ...)
 		const char *name = __builtin_va_arg(args, const char *);
 		uint64_t value = __builtin_va_arg(args, uint64_t);
 
-		hwtdbg_format_reg(reg[index], sizeof(reg[index]), name, value);
+		swtdbg_format_reg(reg[index], sizeof(reg[index]), name, value);
 	}
 	va_end(args);
 
@@ -1332,30 +1332,30 @@ static void hwtdbg_reg_line(uint32_t count, ...)
 	shell_output_checkpoint();
 }
 
-static void hwtdbg_print_regs(const struct cpu_regs *regs)
+static void swtdbg_print_regs(const struct cpu_regs *regs)
 {
-	hwtdbg_reg_line(3U, "elr", regs->elr, "spsr", regs->spsr,
+	swtdbg_reg_line(3U, "elr", regs->elr, "spsr", regs->spsr,
 		"esr", regs->esr);
-	hwtdbg_reg_line(2U, "far", regs->far, "hpfar", regs->hpfar);
-	hwtdbg_reg_line(4U, "x00", regs->x0, "x01", regs->x1,
+	swtdbg_reg_line(2U, "far", regs->far, "hpfar", regs->hpfar);
+	swtdbg_reg_line(4U, "x00", regs->x0, "x01", regs->x1,
 		"x02", regs->x2, "x03", regs->x3);
-	hwtdbg_reg_line(4U, "x04", regs->x4, "x05", regs->x5,
+	swtdbg_reg_line(4U, "x04", regs->x4, "x05", regs->x5,
 		"x06", regs->x6, "x07", regs->x7);
-	hwtdbg_reg_line(4U, "x08", regs->x8, "x09", regs->x9,
+	swtdbg_reg_line(4U, "x08", regs->x8, "x09", regs->x9,
 		"x10", regs->x10, "x11", regs->x11);
-	hwtdbg_reg_line(4U, "x12", regs->x12, "x13", regs->x13,
+	swtdbg_reg_line(4U, "x12", regs->x12, "x13", regs->x13,
 		"x14", regs->x14, "x15", regs->x15);
-	hwtdbg_reg_line(4U, "x16", regs->x16, "x17", regs->x17,
+	swtdbg_reg_line(4U, "x16", regs->x16, "x17", regs->x17,
 		"x18", regs->x18, "x19", regs->x19);
-	hwtdbg_reg_line(4U, "x20", regs->x20, "x21", regs->x21,
+	swtdbg_reg_line(4U, "x20", regs->x20, "x21", regs->x21,
 		"x22", regs->x22, "x23", regs->x23);
-	hwtdbg_reg_line(4U, "x24", regs->x24, "x25", regs->x25,
+	swtdbg_reg_line(4U, "x24", regs->x24, "x25", regs->x25,
 		"x26", regs->x26, "x27", regs->x27);
-	hwtdbg_reg_line(4U, "x28", regs->x28, "x29", regs->x29,
+	swtdbg_reg_line(4U, "x28", regs->x28, "x29", regs->x29,
 		"lr", regs->lr, "sp", regs->sp);
 }
 
-/* [20260722] HWT minidump guest-context boundary
+/* [20260722] SWT minidump guest-context boundary
  *
  * vCPU durable register image + saved EL1/EL2 context
  *     |
@@ -1370,62 +1370,62 @@ static void hwtdbg_print_regs(const struct cpu_regs *regs)
  *   - bounded register-only capture avoids guest-memory reads in the timeout
  *     path, so diagnostics cannot delay or compromise WDT recovery.
  */
-static void hwtdbg_print_minidump_text(const char *label, const char *value)
+static void swtdbg_print_minidump_text(const char *label, const char *value)
 {
 	shell_item_line("%-18s : %s", label, value);
 }
 
-static void hwtdbg_print_minidump_u64(const char *label, uint64_t value)
+static void swtdbg_print_minidump_u64(const char *label, uint64_t value)
 {
 	shell_item_line("%-18s : 0x%016lx", label, value);
 }
 
-static void hwtdbg_print_minidump_u32(const char *label, uint32_t value)
+static void swtdbg_print_minidump_u32(const char *label, uint32_t value)
 {
 	shell_item_line("%-18s : 0x%08x", label, value);
 }
 
-static void hwtdbg_print_gctx(const struct arm64_vcpu_guest_ctx *gctx)
+static void swtdbg_print_gctx(const struct arm64_vcpu_guest_ctx *gctx)
 {
-	hwtdbg_print_minidump_text("SOURCE", "saved-vcpu-context");
-	hwtdbg_print_minidump_u64("EL2.VTTBR", gctx->vttbr_el2);
-	hwtdbg_print_minidump_u64("EL2.VTCR", gctx->vtcr_el2);
-	hwtdbg_print_minidump_u64("EL2.HCR", gctx->hcr_el2);
-	hwtdbg_print_minidump_u64("EL2.CNTVOFF", gctx->cntvoff_el2);
-	hwtdbg_print_minidump_u64("TIMER.CNTP_CVAL", gctx->cntp_cval_el0);
-	hwtdbg_print_minidump_u32("TIMER.CNTP_CTL", gctx->cntp_ctl_el0);
-	hwtdbg_print_minidump_u64("TIMER.CNTV_CVAL", gctx->cntv_cval_el0);
-	hwtdbg_print_minidump_u32("TIMER.CNTV_CTL", gctx->cntv_ctl_el0);
-	hwtdbg_print_minidump_u32("TIMER.VIRQ", gctx->timer_virq);
-	hwtdbg_print_minidump_text("TIMER.CNTV_MASKED",
-		hwtdbg_yes_no(gctx->cntv_el2_masked));
-	hwtdbg_print_minidump_u64("EL1.SCTLR", gctx->sctlr_el1);
-	hwtdbg_print_minidump_u64("EL1.TTBR0", gctx->ttbr0_el1);
-	hwtdbg_print_minidump_u64("EL1.TTBR1", gctx->ttbr1_el1);
-	hwtdbg_print_minidump_u64("EL1.TCR", gctx->tcr_el1);
-	hwtdbg_print_minidump_u64("EL1.MAIR", gctx->mair_el1);
-	hwtdbg_print_minidump_u64("EL1.AMAIR", gctx->amair_el1);
-	hwtdbg_print_minidump_u64("EL1.VBAR", gctx->vbar_el1);
-	hwtdbg_print_minidump_u64("EL1.CONTEXTIDR", gctx->contextidr_el1);
-	hwtdbg_print_minidump_u64("EL1.CPACR", gctx->cpacr_el1);
-	hwtdbg_print_minidump_u64("EL1.TPIDR_EL0", gctx->tpidr_el0);
-	hwtdbg_print_minidump_u64("EL1.TPIDRRO_EL0", gctx->tpidrro_el0);
-	hwtdbg_print_minidump_u64("EL1.TPIDR_EL1", gctx->tpidr_el1);
-	hwtdbg_print_minidump_u64("EL1.SP_EL0", gctx->sp_el0);
-	hwtdbg_print_minidump_u64("EL1.ELR", gctx->elr_el1);
-	hwtdbg_print_minidump_u64("EL1.SPSR", gctx->spsr_el1);
-	hwtdbg_print_minidump_u64("EL1.ESR", gctx->esr_el1);
-	hwtdbg_print_minidump_u64("EL1.FAR", gctx->far_el1);
+	swtdbg_print_minidump_text("SOURCE", "saved-vcpu-context");
+	swtdbg_print_minidump_u64("EL2.VTTBR", gctx->vttbr_el2);
+	swtdbg_print_minidump_u64("EL2.VTCR", gctx->vtcr_el2);
+	swtdbg_print_minidump_u64("EL2.HCR", gctx->hcr_el2);
+	swtdbg_print_minidump_u64("EL2.CNTVOFF", gctx->cntvoff_el2);
+	swtdbg_print_minidump_u64("TIMER.CNTP_CVAL", gctx->cntp_cval_el0);
+	swtdbg_print_minidump_u32("TIMER.CNTP_CTL", gctx->cntp_ctl_el0);
+	swtdbg_print_minidump_u64("TIMER.CNTV_CVAL", gctx->cntv_cval_el0);
+	swtdbg_print_minidump_u32("TIMER.CNTV_CTL", gctx->cntv_ctl_el0);
+	swtdbg_print_minidump_u32("TIMER.VIRQ", gctx->timer_virq);
+	swtdbg_print_minidump_text("TIMER.CNTV_MASKED",
+		swtdbg_yes_no(gctx->cntv_el2_masked));
+	swtdbg_print_minidump_u64("EL1.SCTLR", gctx->sctlr_el1);
+	swtdbg_print_minidump_u64("EL1.TTBR0", gctx->ttbr0_el1);
+	swtdbg_print_minidump_u64("EL1.TTBR1", gctx->ttbr1_el1);
+	swtdbg_print_minidump_u64("EL1.TCR", gctx->tcr_el1);
+	swtdbg_print_minidump_u64("EL1.MAIR", gctx->mair_el1);
+	swtdbg_print_minidump_u64("EL1.AMAIR", gctx->amair_el1);
+	swtdbg_print_minidump_u64("EL1.VBAR", gctx->vbar_el1);
+	swtdbg_print_minidump_u64("EL1.CONTEXTIDR", gctx->contextidr_el1);
+	swtdbg_print_minidump_u64("EL1.CPACR", gctx->cpacr_el1);
+	swtdbg_print_minidump_u64("EL1.TPIDR_EL0", gctx->tpidr_el0);
+	swtdbg_print_minidump_u64("EL1.TPIDRRO_EL0", gctx->tpidrro_el0);
+	swtdbg_print_minidump_u64("EL1.TPIDR_EL1", gctx->tpidr_el1);
+	swtdbg_print_minidump_u64("EL1.SP_EL0", gctx->sp_el0);
+	swtdbg_print_minidump_u64("EL1.ELR", gctx->elr_el1);
+	swtdbg_print_minidump_u64("EL1.SPSR", gctx->spsr_el1);
+	swtdbg_print_minidump_u64("EL1.ESR", gctx->esr_el1);
+	swtdbg_print_minidump_u64("EL1.FAR", gctx->far_el1);
 }
 
-static void hwtdbg_print_stack(const struct hwtdbg_stack_snapshot *stack,
+static void swtdbg_print_stack(const struct swtdbg_stack_snapshot *stack,
 	bool symbolize)
 {
 	uint32_t index;
 
 	shell_item_line("source:%s count:%u stop:%s",
 		stack->live ? "live" : "durable", stack->count,
-		hwtdbg_stack_stop_str(stack->stop));
+		swtdbg_stack_stop_str(stack->stop));
 	for (index = 0U; index < stack->count; index++) {
 		if (symbolize) {
 			char symbol[96U];
@@ -1443,30 +1443,30 @@ static void hwtdbg_print_stack(const struct hwtdbg_stack_snapshot *stack,
 	}
 }
 
-static void hwtdbg_print_vcpu(const struct hwtdbg_vcpu_snapshot *snapshot)
+static void swtdbg_print_vcpu(const struct swtdbg_vcpu_snapshot *snapshot)
 {
 	shell_item_section("✔  DUMP vcpu %hu", snapshot->vcpu_id);
 	shell_item_line("pcpu:%hu lifecycle:%8s thread:%s current:%s live:%s",
 		snapshot->pcpu_id,
 		vcpu_state_to_str(snapshot->vcpu_state),
-		hwtdbg_thread_state_str(snapshot->thread_state),
-		hwtdbg_yes_no(snapshot->current), hwtdbg_yes_no(snapshot->live));
+		swtdbg_thread_state_str(snapshot->thread_state),
+		swtdbg_yes_no(snapshot->current), swtdbg_yes_no(snapshot->live));
 	if (!snapshot->pcpu_valid) {
 		shell_item_line("pcpu-owner:invalid-pcpu state:N/A vm:N/A vcpu:N/A resched:N");
 	} else if (!snapshot->pcpu_owner_present) {
 		shell_item_line("pcpu-owner:none state:N/A vm:N/A vcpu:N/A resched:%s",
-			hwtdbg_yes_no(snapshot->pcpu_need_reschedule));
+			swtdbg_yes_no(snapshot->pcpu_need_reschedule));
 	} else if (snapshot->pcpu_owner_is_vcpu) {
 		shell_item_line("pcpu-owner:%s state:%s vm:%hu vcpu:%hu resched:%s",
 			snapshot->pcpu_owner_name,
-			hwtdbg_thread_state_str(snapshot->pcpu_owner_state),
+			swtdbg_thread_state_str(snapshot->pcpu_owner_state),
 			snapshot->pcpu_owner_vm_id, snapshot->pcpu_owner_vcpu_id,
-			hwtdbg_yes_no(snapshot->pcpu_need_reschedule));
+			swtdbg_yes_no(snapshot->pcpu_need_reschedule));
 	} else {
 		shell_item_line("pcpu-owner:%s state:%s vm:N/A vcpu:N/A resched:%s",
 			snapshot->pcpu_owner_name,
-			hwtdbg_thread_state_str(snapshot->pcpu_owner_state),
-			hwtdbg_yes_no(snapshot->pcpu_need_reschedule));
+			swtdbg_thread_state_str(snapshot->pcpu_owner_state),
+			swtdbg_yes_no(snapshot->pcpu_need_reschedule));
 	}
 	shell_item_line("sched:switches:%lu runtime.us:%lu wait.us:last:%lu max:%lu runnable-since:%lu",
 		snapshot->latency.switches,
@@ -1478,29 +1478,29 @@ static void hwtdbg_print_vcpu(const struct hwtdbg_vcpu_snapshot *snapshot)
 		snapshot->pending_req, snapshot->irqs_pending,
 		snapshot->irqs_pending_mask);
 	shell_item_section("minidump EL1/EL2 context");
-	hwtdbg_print_gctx(&snapshot->gctx);
+	swtdbg_print_gctx(&snapshot->gctx);
 	shell_item_section("minidump guest regs");
-	hwtdbg_print_regs(&snapshot->regs);
+	swtdbg_print_regs(&snapshot->regs);
 	shell_item_section("minidump guest stack");
-	hwtdbg_print_stack(&snapshot->guest_stack, false);
+	swtdbg_print_stack(&snapshot->guest_stack, false);
 	shell_item_section("minidump host stack");
-	hwtdbg_print_stack(&snapshot->host_stack, true);
+	swtdbg_print_stack(&snapshot->host_stack, true);
 }
 
-static bool hwtdbg_copy_latest(uint16_t vm_id,
-	struct hwtdbg_event *event, bool *corrupt)
+static bool swtdbg_copy_latest(uint16_t vm_id,
+	struct swtdbg_event *event, bool *corrupt)
 {
-	const struct hwtdbg_event *selected = NULL;
+	const struct swtdbg_event *selected = NULL;
 	uint64_t rflags;
 	uint32_t slot;
 
-	if ((event == NULL) || (corrupt == NULL) || (vm_id >= HWTDBG_VM_NUM)) {
+	if ((event == NULL) || (corrupt == NULL) || (vm_id >= SWTDBG_VM_NUM)) {
 		return false;
 	}
 	*corrupt = false;
-	spinlock_irqsave_obtain(&hwtdbg_lock, &rflags);
-	for (slot = 0U; slot < HWTDBG_EVENT_SLOTS; slot++) {
-		const struct hwtdbg_event *candidate = &hwtdbg_events[vm_id][slot];
+	spinlock_irqsave_obtain(&swtdbg_lock, &rflags);
+	for (slot = 0U; slot < SWTDBG_EVENT_SLOTS; slot++) {
+		const struct swtdbg_event *candidate = &swtdbg_events[vm_id][slot];
 
 		if (candidate->valid &&
 			((selected == NULL) ||
@@ -1511,28 +1511,28 @@ static bool hwtdbg_copy_latest(uint16_t vm_id,
 	if (selected != NULL) {
 		(void)memcpy_s(event, sizeof(*event), selected, sizeof(*selected));
 	}
-	spinlock_irqrestore_release(&hwtdbg_lock, rflags);
+	spinlock_irqrestore_release(&swtdbg_lock, rflags);
 
 	if (selected == NULL) {
 		return false;
 	}
-	if ((event->magic != HWTDBG_MAGIC) || (event->version != HWTDBG_VERSION) ||
-		(event->checksum != hwtdbg_checksum(event))) {
+	if ((event->magic != SWTDBG_MAGIC) || (event->version != SWTDBG_VERSION) ||
+		(event->checksum != swtdbg_checksum(event))) {
 		*corrupt = true;
 	}
 
 	return true;
 }
 
-static void hwtdbg_print_event(const struct hwtdbg_event *event)
+static void swtdbg_print_event(const struct swtdbg_event *event)
 {
-	uint64_t capture_vcpu_mask = hwtdbg_build_vcpu_capture_mask(event);
+	uint64_t capture_vcpu_mask = swtdbg_build_vcpu_capture_mask(event);
 	uint16_t vcpu_id;
 
-	shell_item_begin("HWTDBG (vm%hu seq:%lu)", event->vm_id, event->sequence);
+	shell_item_begin("SWTDBG (vm%hu seq:%lu)", event->vm_id, event->sequence);
 	shell_item_line("timeout:%s cause:%s threshold:%ums age:%lums detected:0x%016lx heartbeat:0x%016lx",
-		hwtdbg_timeout_kind_str(event->timeout.kind),
-		hwtdbg_cause_str(event->timeout.cause), event->timeout.timeout_ms,
+		swtdbg_timeout_kind_str(event->timeout.kind),
+		swtdbg_cause_str(event->timeout.cause), event->timeout.timeout_ms,
 		event->timeout.age_ms, event->timeout.detected_tsc,
 		event->timeout.heartbeat_tsc);
 	shell_item_line("wdt:timeouts:%lu token:0x%016lx restarts:%lu failed:%lu",
@@ -1558,10 +1558,10 @@ static void hwtdbg_print_event(const struct hwtdbg_event *event)
 		event->capture_flags, event->captured_tsc);
 	shell_item_line("live:req:0x%016lx captured:0x%016lx timeout:0x%016lx budget:%uus",
 		event->live_requested_mask, event->live_captured_mask,
-		event->live_timeout_mask, HWTDBG_LIVE_TIMEOUT_US);
+		event->live_timeout_mask, SWTDBG_LIVE_TIMEOUT_US);
 	shell_item_line("recovery:%s enabled:%s attempt:%lu/%u wait:0x%016lx reset-ret:%d updated:0x%016lx",
-		hwtdbg_recovery_str(event->recovery),
-		hwtdbg_yes_no(event->timeout.restart_enabled),
+		swtdbg_recovery_str(event->recovery),
+		swtdbg_yes_no(event->timeout.restart_enabled),
 		event->recovery_attempt, CONFIG_VM_WDT_RESTART_MAX,
 		event->recovery_wait_vcpus, event->reset_ret,
 		event->recovery_updated_tsc);
@@ -1570,11 +1570,11 @@ static void hwtdbg_print_event(const struct hwtdbg_event *event)
 		event->version);
 	shell_item_section("vm/vcpu");
 	shell_item_line("vm:%s state:%s vcpus:%hu captured:0x%016lx",
-		event->vm_name, hwtdbg_vm_state_str(event->vm_state),
+		event->vm_name, swtdbg_vm_state_str(event->vm_state),
 		event->vcpu_count, capture_vcpu_mask);
 	for (vcpu_id = 0U; vcpu_id < event->vcpu_count; vcpu_id++) {
-		if (hwtdbg_vcpu_selected(capture_vcpu_mask, vcpu_id)) {
-			hwtdbg_print_vcpu(&event->vcpu[vcpu_id]);
+		if (swtdbg_vcpu_selected(capture_vcpu_mask, vcpu_id)) {
+			swtdbg_print_vcpu(&event->vcpu[vcpu_id]);
 			shell_output_checkpoint();
 		}
 	}
@@ -1589,22 +1589,22 @@ static void hwtdbg_print_event(const struct hwtdbg_event *event)
 	shell_item_end();
 }
 
-static const char *hwtdbg_fault_reason_str(enum hwtdbg_guest_fault_reason reason)
+static const char *swtdbg_fault_reason_str(enum swtdbg_guest_fault_reason reason)
 {
 	switch (reason) {
-	case HWTDBG_GUEST_FAULT_IABT:
+	case SWTDBG_GUEST_FAULT_IABT:
 		return "instruction-abort";
-	case HWTDBG_GUEST_FAULT_SERROR:
+	case SWTDBG_GUEST_FAULT_SERROR:
 		return "serror";
 	default:
 		return "unhandled-exit";
 	}
 }
 
-static bool hwtdbg_copy_latest_fault(uint16_t vm_id,
-	struct hwtdbg_fault_event *event, bool *corrupt)
+static bool swtdbg_copy_latest_fault(uint16_t vm_id,
+	struct swtdbg_fault_event *event, bool *corrupt)
 {
-	const struct hwtdbg_fault_event *selected = NULL;
+	const struct swtdbg_fault_event *selected = NULL;
 	uint64_t rflags;
 	uint32_t slot;
 
@@ -1612,10 +1612,10 @@ static bool hwtdbg_copy_latest_fault(uint16_t vm_id,
 		return false;
 	}
 	*corrupt = false;
-	spinlock_irqsave_obtain(&hwtdbg_fault_locks[vm_id], &rflags);
-	for (slot = 0U; slot < HWTDBG_FAULT_EVENT_SLOTS; slot++) {
-		const struct hwtdbg_fault_event *candidate =
-			&hwtdbg_fault_events[vm_id][slot];
+	spinlock_irqsave_obtain(&swtdbg_fault_locks[vm_id], &rflags);
+	for (slot = 0U; slot < SWTDBG_FAULT_EVENT_SLOTS; slot++) {
+		const struct swtdbg_fault_event *candidate =
+			&swtdbg_fault_events[vm_id][slot];
 
 		if (__atomic_load_n(&candidate->valid, __ATOMIC_ACQUIRE) &&
 			((selected == NULL) || (candidate->sequence > selected->sequence))) {
@@ -1625,19 +1625,19 @@ static bool hwtdbg_copy_latest_fault(uint16_t vm_id,
 	if (selected != NULL) {
 		(void)memcpy_s(event, sizeof(*event), selected, sizeof(*selected));
 	}
-	spinlock_irqrestore_release(&hwtdbg_fault_locks[vm_id], rflags);
+	spinlock_irqrestore_release(&swtdbg_fault_locks[vm_id], rflags);
 	if (selected == NULL) {
 		return false;
 	}
-	if ((event->magic != HWTDBG_FAULT_MAGIC) ||
-		(event->version != HWTDBG_FAULT_VERSION) || (event->vm_id != vm_id) ||
-		(event->checksum != hwtdbg_fault_checksum(event))) {
+	if ((event->magic != SWTDBG_FAULT_MAGIC) ||
+		(event->version != SWTDBG_FAULT_VERSION) || (event->vm_id != vm_id) ||
+		(event->checksum != swtdbg_fault_checksum(event))) {
 		*corrupt = true;
 	}
 	return true;
 }
 
-static void hwtdbg_erase_fault(uint16_t vm_id)
+static void swtdbg_erase_fault(uint16_t vm_id)
 {
 	uint64_t rflags;
 	uint32_t slot;
@@ -1645,24 +1645,24 @@ static void hwtdbg_erase_fault(uint16_t vm_id)
 	if (vm_id >= CONFIG_MAX_VM_NUM) {
 		return;
 	}
-	spinlock_irqsave_obtain(&hwtdbg_fault_locks[vm_id], &rflags);
-	for (slot = 0U; slot < HWTDBG_FAULT_EVENT_SLOTS; slot++) {
-		__atomic_store_n(&hwtdbg_fault_events[vm_id][slot].valid, false,
+	spinlock_irqsave_obtain(&swtdbg_fault_locks[vm_id], &rflags);
+	for (slot = 0U; slot < SWTDBG_FAULT_EVENT_SLOTS; slot++) {
+		__atomic_store_n(&swtdbg_fault_events[vm_id][slot].valid, false,
 			__ATOMIC_RELEASE);
 	}
-	spinlock_irqrestore_release(&hwtdbg_fault_locks[vm_id], rflags);
+	spinlock_irqrestore_release(&swtdbg_fault_locks[vm_id], rflags);
 }
 
-static void hwtdbg_print_fault_event(const struct hwtdbg_fault_event *event)
+static void swtdbg_print_fault_event(const struct swtdbg_fault_event *event)
 {
 	shell_item_begin("CRASH (vm%hu seq:%lu)", event->vm_id, event->sequence);
 	shell_item_line("reason:%s exit-ret:%d captured:0x%016lx pcpu:%hu",
-		hwtdbg_fault_reason_str(event->reason), event->exit_ret,
+		swtdbg_fault_reason_str(event->reason), event->exit_ret,
 		event->captured_tsc, event->pcpu_id);
 	shell_item_line("state:vm:%s vcpu%hu:%s thread:%s",
-		hwtdbg_vm_state_str(event->vm_state), event->vcpu_id,
+		swtdbg_vm_state_str(event->vm_state), event->vcpu_id,
 		vcpu_state_to_str(event->vcpu_state),
-		hwtdbg_thread_state_str(event->thread_state));
+		swtdbg_thread_state_str(event->thread_state));
 	shell_item_line("exit:ec:0x%02lx esr:0x%016lx elr:0x%016lx far:0x%016lx hpfar:0x%016lx",
 		ESR_EL2_EC(event->regs.esr), event->regs.esr, event->regs.elr,
 		event->regs.far, event->regs.hpfar);
@@ -1670,42 +1670,42 @@ static void hwtdbg_print_fault_event(const struct hwtdbg_fault_event *event)
 		shell_item_line("wdt:status:%u cause:%u timeout:%lu restart:%lu pending:%s",
 			event->wdt.status, event->wdt.cause,
 			event->wdt.timeout_count, event->wdt.restart_count,
-			hwtdbg_yes_no(event->wdt.restart_pending));
+			swtdbg_yes_no(event->wdt.restart_pending));
 	} else {
 		shell_item_line("wdt:unavailable");
 	}
 	shell_item_section("GUEST CONTEXT");
-	hwtdbg_print_gctx(&event->gctx);
-	hwtdbg_print_regs(&event->regs);
+	swtdbg_print_gctx(&event->gctx);
+	swtdbg_print_regs(&event->regs);
 	shell_item_end();
 }
 
-static bool hwtdbg_copy_ras_event(uint16_t pcpu_id, uint32_t slot,
-	struct hwtdbg_ras_event *event)
+static bool swtdbg_copy_ras_event(uint16_t pcpu_id, uint32_t slot,
+	struct swtdbg_ras_event *event)
 {
-	const struct hwtdbg_ras_event *source;
+	const struct swtdbg_ras_event *source;
 
-	if ((pcpu_id >= MAX_PCPU_NUM) || (slot >= HWTDBG_RAS_EVENT_SLOTS) ||
+	if ((pcpu_id >= MAX_PCPU_NUM) || (slot >= SWTDBG_RAS_EVENT_SLOTS) ||
 		(event == NULL)) {
 		return false;
 	}
-	source = &hwtdbg_ras_events[pcpu_id][slot];
+	source = &swtdbg_ras_events[pcpu_id][slot];
 	if (!__atomic_load_n(&source->valid, __ATOMIC_ACQUIRE)) {
 		return false;
 	}
 	(void)memcpy_s(event, sizeof(*event), source, sizeof(*source));
 	cpu_read_memory_barrier();
 	return __atomic_load_n(&source->valid, __ATOMIC_ACQUIRE) &&
-		(event->magic == HWTDBG_RAS_MAGIC) &&
-		(event->version == HWTDBG_VERSION) &&
-		(event->checksum == hwtdbg_ras_checksum(event));
+		(event->magic == SWTDBG_RAS_MAGIC) &&
+		(event->version == SWTDBG_VERSION) &&
+		(event->checksum == swtdbg_ras_checksum(event));
 }
 
-static void hwtdbg_print_ras_event(const struct hwtdbg_ras_event *event)
+static void swtdbg_print_ras_event(const struct swtdbg_ras_event *event)
 {
 	uint16_t index;
 
-	shell_item_begin("HWTDBG RAS (pcpu%hu seq:%lu)", event->pcpu_id,
+	shell_item_begin("SWTDBG RAS (pcpu%hu seq:%lu)", event->pcpu_id,
 		event->sequence);
 	shell_item_line("ras:erridr:0x%016lx disr:0x%016lx flags:0x%08x records:%u valid:%hu",
 		event->erridr, event->disr, event->ras_flags, event->record_count,
@@ -1714,20 +1714,20 @@ static void hwtdbg_print_ras_event(const struct hwtdbg_ras_event *event)
 		shell_item_line("guest:vm:%hu vcpu:%hu vmid:%hu vttbr:0x%016lx",
 			event->vm_id, event->vcpu_id, event->hw_vmid, event->vttbr);
 		shell_item_section("vm/vcpu");
-		hwtdbg_print_vcpu(&event->vcpu);
+		swtdbg_print_vcpu(&event->vcpu);
 	} else {
 		shell_item_line("guest:unavailable vm:N/A vcpu:N/A vmid:N/A");
 		shell_item_line("exception regs:");
-		hwtdbg_print_regs(&event->regs);
+		swtdbg_print_regs(&event->regs);
 	}
 	shell_item_section("ras records");
 	for (index = 0U; index < event->valid_count; index++) {
-		const struct hwtdbg_ras_record *record = &event->record[index];
+		const struct swtdbg_ras_record *record = &event->record[index];
 
 		if ((record->flags & ARM64_RAS_RECORD_ADDRESS_VALID) == 0U) {
 			shell_item_line("err%hu:status:0x%016lx pa:N/A gpa:N/A misc0:0x%016lx",
 				record->index, record->status, record->misc0);
-		} else if ((record->flags & HWTDBG_RAS_RECORD_GPA_VALID) == 0U) {
+		} else if ((record->flags & SWTDBG_RAS_RECORD_GPA_VALID) == 0U) {
 			shell_item_line("err%hu:status:0x%016lx pa:0x%016lx gpa:N/A misc0:0x%016lx",
 				record->index, record->status, record->pa, record->misc0);
 		} else {
@@ -1739,7 +1739,7 @@ static void hwtdbg_print_ras_event(const struct hwtdbg_ras_event *event)
 	shell_item_end();
 }
 
-static bool hwtdbg_parse_vmid(const char *text, uint16_t limit, uint16_t *vm_id)
+static bool swtdbg_parse_vmid(const char *text, uint16_t limit, uint16_t *vm_id)
 {
 	uint32_t value = 0U;
 	uint32_t index;
@@ -1764,21 +1764,21 @@ static bool hwtdbg_parse_vmid(const char *text, uint16_t limit, uint16_t *vm_id)
 	return true;
 }
 
-int32_t shell_hwtdbg(int32_t argc, char **argv)
+int32_t shell_swtdbg(int32_t argc, char **argv)
 {
 	uint16_t vm_id;
 	uint16_t pcpu_id;
 	bool corrupt;
 
-	if ((argc != 2) || !hwtdbg_parse_vmid(argv[1], HWTDBG_VM_NUM, &vm_id)) {
-		shell_puts("usage: hwtdbg <vmid>\r\n");
+	if ((argc != 2) || !swtdbg_parse_vmid(argv[1], SWTDBG_VM_NUM, &vm_id)) {
+		shell_puts("usage: swtdbg <vmid>\r\n");
 		return -EINVAL;
 	}
-	if (!hwtdbg_copy_latest(vm_id, &hwtdbg_readback, &corrupt)) {
+	if (!swtdbg_copy_latest(vm_id, &swtdbg_readback, &corrupt)) {
 		char line[MAX_STR_SIZE];
 
 		(void)snprintf(line, sizeof(line),
-			"HWTDBG: VM%hu:no retained HWT event\r\n", vm_id);
+			"SWTDBG: VM%hu:no retained SWT event\r\n", vm_id);
 		shell_puts(line);
 		return 0;
 	}
@@ -1786,20 +1786,20 @@ int32_t shell_hwtdbg(int32_t argc, char **argv)
 		char line[MAX_STR_SIZE];
 
 		(void)snprintf(line, sizeof(line),
-			"HWTDBG: vm%hu latest event is checksum-invalid\r\n", vm_id);
+			"SWTDBG: vm%hu latest event is checksum-invalid\r\n", vm_id);
 		shell_puts(line);
 		return -EIO;
 	}
-	hwtdbg_print_event(&hwtdbg_readback);
+	swtdbg_print_event(&swtdbg_readback);
 
 	for (pcpu_id = 0U; pcpu_id < MAX_PCPU_NUM; pcpu_id++) {
 		uint32_t slot;
 
-		for (slot = 0U; slot < HWTDBG_RAS_EVENT_SLOTS; slot++) {
-			if (hwtdbg_copy_ras_event(pcpu_id, slot,
-				&hwtdbg_ras_readback) && hwtdbg_ras_readback.guest_context &&
-				(hwtdbg_ras_readback.vm_id == vm_id)) {
-				hwtdbg_print_ras_event(&hwtdbg_ras_readback);
+		for (slot = 0U; slot < SWTDBG_RAS_EVENT_SLOTS; slot++) {
+			if (swtdbg_copy_ras_event(pcpu_id, slot,
+				&swtdbg_ras_readback) && swtdbg_ras_readback.guest_context &&
+				(swtdbg_ras_readback.vm_id == vm_id)) {
+				swtdbg_print_ras_event(&swtdbg_ras_readback);
 			}
 		}
 	}
@@ -1816,14 +1816,14 @@ int32_t shell_crash(int32_t argc, char **argv)
 	uint32_t index;
 
 	if (((argc != 2) && (argc != 3)) ||
-		!hwtdbg_parse_vmid(argv[1], CONFIG_MAX_VM_NUM, &vm_id) ||
+		!swtdbg_parse_vmid(argv[1], CONFIG_MAX_VM_NUM, &vm_id) ||
 		((argc == 3) && (strcmp(argv[2], "erase") != 0))) {
 		shell_puts("usage: crash <vmid> [erase]\r\n");
 		return -EINVAL;
 	}
 	if (argc == 3) {
 		vm_crash_erase(vm_id);
-		hwtdbg_erase_fault(vm_id);
+		swtdbg_erase_fault(vm_id);
 		shell_puts("CRASH: erased\r\n");
 		return 0;
 	}
@@ -1836,7 +1836,7 @@ int32_t shell_crash(int32_t argc, char **argv)
 	if (guest_corrupt) {
 		shell_puts("CRASH: checksum-invalid guest history entries skipped\r\n");
 	}
-	if (!hwtdbg_copy_latest_fault(vm_id, &hwtdbg_fault_readback, &fault_corrupt)) {
+	if (!swtdbg_copy_latest_fault(vm_id, &swtdbg_fault_readback, &fault_corrupt)) {
 		char line[MAX_STR_SIZE];
 
 		if (!printed) {
@@ -1850,6 +1850,6 @@ int32_t shell_crash(int32_t argc, char **argv)
 		shell_puts("CRASH: latest event is checksum-invalid\r\n");
 		return -EIO;
 	}
-	hwtdbg_print_fault_event(&hwtdbg_fault_readback);
+	swtdbg_print_fault_event(&swtdbg_fault_readback);
 	return guest_corrupt ? -EIO : 0;
 }

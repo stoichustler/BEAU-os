@@ -579,7 +579,7 @@ class QemuSession:
         try:
             self.send(CTRL_D)
             self.expect(PROMPT, f"return to BEAU shell for {label}", timeout=5.0, keepalive=ENTER)
-            for line in ("vcpus", "schedstat", "vmstat", "irqstat", f"hwtdbg {vmid}"):
+            for line in ("vcpus", "schedstat", "vmstat", "irqstat", f"swtdbg {vmid}"):
                 self.send(line + ENTER)
                 self.expect(PROMPT, f"{line} diagnostics", timeout=15.0, keepalive=ENTER)
         except Exception as err:
@@ -678,9 +678,9 @@ def run_wdt_restart_smoke(qemu):
     expect_smmu_contract(qemu, False)
     for vmid in (1, 3):
         qemu.command_retry(
-            f"hwtdbg {vmid}",
+            f"swtdbg {vmid}",
             [
-                f"HWTDBG (vm{vmid} seq:",
+                f"SWTDBG (vm{vmid} seq:",
                 "timeout:runtime",
                 "capture:valid",
                 "live:req:",
@@ -1461,7 +1461,7 @@ def run_qemu(args, cmd):
             "switches",
             "since.us",
             "vm0:vcpu0",
-            "vm1:vcpu3",
+            "vm1:vcpu1",
             "vm2:vcpu2",
             "vm3:vcpu0",
         ])
@@ -1516,6 +1516,17 @@ def run_qemu(args, cmd):
             ["assertion failed", "stack check fails", "fatal error"],
         )
         qemu.command_retry(
+            "vmexitstat",
+            [
+                "VMEXITSTAT vm0:Zephyr",
+                "VMEXITSTAT vm1:Linux-1",
+                "synchronous handler wall-time",
+                "vcpu",
+                "class",
+                "hvc",
+            ],
+        )
+        qemu.command_retry(
             "devmap",
             ["memory mappings:", "VM-0 s2", "VM-1 s2", "VM-2 s2", "VM-3 s2"],
         )
@@ -1547,8 +1558,8 @@ def run_qemu(args, cmd):
         )
         for vmid in range(4):
             qemu.command_retry(
-                f"hwtdbg {vmid}",
-                [f"HWTDBG: VM{vmid}:no retained HWT event"],
+                f"swtdbg {vmid}",
+                [f"SWTDBG: VM{vmid}:no retained SWT event"],
                 ["checksum:invalid", "capture:corrupt"],
             )
 
@@ -1611,7 +1622,7 @@ def main():
         if not args.no_build:
             print(render(build, args.toolchains))
         print(quote(qemu))
-        checks = "prompt, vcpus, ps, schedstat, vmstat, health, hwtdbg empty, devmap, irqstat, virtiostat, vsh 0, Zephyr, vsh 1, Linux-1 backend/PCI, vsh 2, Linux-2 frontend, vsh 3, Linux-3 frontend"
+        checks = "prompt, vcpus, ps, schedstat, vmstat, health, swtdbg empty, devmap, irqstat, virtiostat, vsh 0, Zephyr, vsh 1, Linux-1 backend/PCI, vsh 2, Linux-2 frontend, vsh 3, Linux-3 frontend"
         if args.stress_vsh_switch:
             checks += ", VM console switch/Enter stress"
         if args.stress_vsh_help:

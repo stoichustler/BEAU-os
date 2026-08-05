@@ -551,7 +551,7 @@ endif
 # Escape the banner character-by-character; awk gsub backslash handling varies.
 # BANNER-03
 # BANNER-05
-$(BANNER_H): sdk/tag/BANNER-04 Makefile | $(HV_OBJDIR)/include
+$(BANNER_H): sdk/tag/BANNER-03 Makefile | $(HV_OBJDIR)/include
 	@echo "BANNER             $(notdir $@)"
 	@{ \
 		echo "/* Auto-generated from sdk/BANNER. */"; \

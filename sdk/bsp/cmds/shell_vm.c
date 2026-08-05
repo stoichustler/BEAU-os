@@ -60,7 +60,7 @@ int32_t shell_coredump(int32_t argc, char **argv)
 
 /* [20260630] vmstat monitor:
  *
- * vmstat is the broad health summary before using retained hwtdbg evidence. It
+ * vmstat is the broad health summary before using retained swtdbg evidence. It
  * keeps one VM visible at a time: configured resources, runtime state,
  * watchdog and console status, scheduler diagnostics, and the guest timer/vGIC
  * delivery summary.
@@ -1076,7 +1076,7 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 	 * topology, console backlog, and boot image placement.
 	 */
 	/* vcpus compares configuration with runtime objects; GIC/ITS/vITS expose
-	 * interrupt state; timer/HWT are status and counters; vcon/virtio are
+	 * interrupt state; timer/SWT are status and counters; vcon/virtio are
 	 * diagnostic snapshots. Rendering does not modify VM state.
 	 */
 	shell_item_line("vcpus:configured:%u created:%hu state:%s flags:0x%08lx load:%u",
@@ -1126,7 +1126,7 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 		uint64_t last_msec = wdt.last_ms % 1000UL;
 		uint16_t vcpu_id;
 
-		shell_item_line("HWT:status:%7s cause:%12s (%02lu.%03lu) timeout:%02lu restart:%02lu fail:%02lu recovery:%10s wait:0x%02lx token:0x%016lx daemon:%s merge:%lu drop:%lu",
+		shell_item_line("SWT:status:%7s cause:%12s (%02lu.%03lu) timeout:%02lu restart:%02lu fail:%02lu recovery:%10s wait:0x%02lx token:0x%016lx daemon:%s merge:%lu drop:%lu",
 			shell_vmstat_wdt_status_to_str(wdt.status),
 			shell_vmstat_wdt_cause_to_str(wdt.cause), last_sec, last_msec,
 			wdt.timeout_count, wdt.restart_count, wdt.restart_fail_count,
@@ -1134,7 +1134,7 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 			wdt.recovery_wait_vcpus, wdt.last_token,
 			shell_yes_no(wdt.daemon_pending), wdt.daemon_merged,
 			wdt.daemon_dropped);
-		shell_item_line("HWT:heartbeat mode:%s expected:0x%02lx started:0x%02lx stalled:0x%02lx",
+		shell_item_line("SWT:heartbeat mode:%s expected:0x%02lx started:0x%02lx stalled:0x%02lx",
 			wdt.per_vcpu_mode ? "per-vcpu" : "legacy",
 			wdt.expected_vcpu_mask, wdt.started_vcpu_mask,
 			wdt.stalled_vcpu_mask);
@@ -1458,6 +1458,75 @@ int32_t shell_vmstat(int32_t argc, __unused char **argv)
 			(vm->name[0] != '\0') ? vm->name : vm_config->name);
 		shell_vmstat_vm_config(vm_id, vm_config, vm);
 		shell_vmstat_vcpus(vm);
+		shell_item_end();
+		shell_output_checkpoint();
+	}
+
+	return 0;
+}
+
+/* [20260805] VM-exit diagnostic snapshot
+ *
+ * per-vCPU atomic exit counters -> shell-owned local copy -> formatted rows
+ *
+ * Key rule:
+ *   - the vCPU exit path remains the only counter writer;
+ *   - shell obtains no VM or scheduler lock and does not alter the counters;
+ *   - rows classify synchronous exits only; physical IRQ exits are not
+ *     counted and post-handler scheduling remains attributable to irqstat/
+ *     schedstat.
+ */
+int32_t shell_vmexitstat(int32_t argc, __unused char **argv)
+{
+	uint16_t vm_id;
+
+	if (argc != 1) {
+		return -EINVAL;
+	}
+
+	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
+		struct acrn_vm_config *vm_config = get_vm_config(vm_id);
+		struct acrn_vm *vm = get_vm_from_vmid(vm_id);
+		uint16_t vcpu_id;
+
+		if (!shell_vm_config_present(vm_config) &&
+			(vm->hw.created_vcpus == 0U) && is_poweroff_vm(vm)) {
+			continue;
+		}
+
+		shell_item_begin("VMEXITSTAT vm%hu:%s", vm_id,
+			(vm->name[0] != '\0') ? vm->name : vm_config->name);
+		shell_item_line("synchronous handler wall-time; cumulative since vCPU reset; physical IRQ exits not counted");
+		shell_item_line("vcpu  pcpu  class     count       total.us    avg.us      max.us");
+		shell_item_line("────  ────  ────────  ──────────  ──────────  ──────────  ──────────");
+
+		for (vcpu_id = 0U; vcpu_id < vm->hw.created_vcpus; vcpu_id++) {
+			const struct acrn_vcpu *vcpu = vcpu_from_vid(vm, vcpu_id);
+			struct arm64_vcpu_exit_stats stats = { 0U };
+			uint32_t exit_class;
+
+			if (!arm64_vcpu_exit_stats_snapshot(vcpu, &stats)) {
+				continue;
+			}
+			for (exit_class = 0U; exit_class < ARM64_VCPU_EXIT_CLASS_NUM;
+				exit_class++) {
+				const struct arm64_vcpu_exit_class_stats *class_stats =
+					&stats.class[exit_class];
+				uint64_t average_ticks;
+
+				if (class_stats->count == 0UL) {
+					continue;
+				}
+				average_ticks = class_stats->total_ticks / class_stats->count;
+				shell_item_line("%-5hu %-5hu %-9s %-11lu %-11lu %-11lu %-11lu",
+					vcpu_id, pcpuid_from_vcpu(vcpu),
+					arm64_vcpu_exit_class_name(
+						(enum arm64_vcpu_exit_class)exit_class),
+					class_stats->count, ticks_to_us(class_stats->total_ticks),
+					ticks_to_us(average_ticks), ticks_to_us(class_stats->max_ticks));
+				shell_output_checkpoint();
+			}
+		}
 		shell_item_end();
 		shell_output_checkpoint();
 	}

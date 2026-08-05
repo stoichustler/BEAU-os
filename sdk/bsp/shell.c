@@ -82,6 +82,7 @@
 #define SHELL_BVT_UNWARP_PERIOD	4U
 #define SHELL_ITEM_STR_SIZE	(MAX_STR_SIZE * 2U)
 #define SHELL_SENSITIVE_MASK	'*'
+#define SHELL_COMPLETION_MAX_TOKENS	((SHELL_CMD_MAX_LEN + 1U) >> 1U)
 
 char shell_log_buf[SHELL_LOG_BUF_SIZE];
 
@@ -612,10 +613,23 @@ static void shell_redraw_input_line(void)
 	spinlock_irqrestore_release(&shell_tx_lock, rflags);
 }
 
+struct shell_completion_token {
+	const char *start;
+	uint32_t len;
+};
+
 static bool shell_cmd_matches_prefix(const struct shell_cmd *p_cmd, const char *prefix, uint32_t prefix_len)
 {
 	return (strnlen_s(p_cmd->str, SHELL_CMD_MAX_LEN) >= prefix_len) &&
 		(strncmp(p_cmd->str, prefix, prefix_len) == 0);
+}
+
+static bool shell_completion_matches_prefix(const struct shell_completion *completion,
+	const char *prefix, uint32_t prefix_len)
+{
+	return (completion->str != NULL) &&
+		(strnlen_s(completion->str, SHELL_CMD_MAX_LEN) >= prefix_len) &&
+		(strncmp(completion->str, prefix, prefix_len) == 0);
 }
 
 static uint32_t shell_common_prefix_len(const char *a, const char *b, uint32_t min_len)
@@ -657,6 +671,39 @@ static uint32_t shell_find_cmd_matches(const char *prefix, uint32_t prefix_len,
 	return count;
 }
 
+static uint32_t shell_find_completion_matches(const struct shell_completion_set *completions,
+	const char *prefix, uint32_t prefix_len,
+	const struct shell_completion **first_match, uint32_t *common_len)
+{
+	const struct shell_completion *completion;
+	uint32_t count = 0U;
+	uint32_t idx;
+
+	*first_match = NULL;
+	*common_len = 0U;
+	if ((completions == NULL) || (completions->entries == NULL) ||
+		(completions->count == 0U)) {
+		return 0U;
+	}
+	for (idx = 0U; idx < completions->count; idx++) {
+		completion = &completions->entries[idx];
+		if (!shell_completion_matches_prefix(completion, prefix, prefix_len)) {
+			continue;
+		}
+
+		if (count == 0U) {
+			*first_match = completion;
+			*common_len = (uint32_t)strnlen_s(completion->str, SHELL_CMD_MAX_LEN);
+		} else {
+			*common_len = shell_common_prefix_len((*first_match)->str,
+				completion->str, *common_len);
+		}
+		count++;
+	}
+
+	return count;
+}
+
 static void shell_append_completion(const char *completion, uint32_t completion_len)
 {
 	char *line = p_shell->buffered_line[p_shell->input_line_active];
@@ -672,6 +719,32 @@ static void shell_append_completion(const char *completion, uint32_t completion_
 	}
 	line[p_shell->input_line_len] = '\0';
 	(void)console_write(completion, appended);
+}
+
+static bool shell_apply_completion_match(const char *first_match,
+	uint32_t match_count, uint32_t common_len, uint32_t prefix_len)
+{
+	uint32_t first_len;
+
+	if (match_count == 0U) {
+		return false;
+	}
+	if (match_count == 1U) {
+		first_len = (uint32_t)strnlen_s(first_match, SHELL_CMD_MAX_LEN);
+		if (first_len > prefix_len) {
+			shell_append_completion(&first_match[prefix_len], first_len - prefix_len);
+		}
+		if (p_shell->input_line_len < SHELL_CMD_MAX_LEN) {
+			shell_append_completion(" ", 1U);
+		}
+		return false;
+	}
+	if (common_len > prefix_len) {
+		shell_append_completion(&first_match[prefix_len], common_len - prefix_len);
+		return false;
+	}
+
+	return true;
 }
 
 static void shell_print_cmd_matches(const char *prefix, uint32_t prefix_len)
@@ -691,71 +764,215 @@ static void shell_print_cmd_matches(const char *prefix, uint32_t prefix_len)
 	shell_restore_input_line();
 }
 
-static bool shell_cursor_on_command_tail(uint32_t *cmd_start, uint32_t *prefix_len)
+static void shell_print_completion_matches(const struct shell_completion_set *completions,
+	const char *prefix, uint32_t prefix_len)
 {
-	char *line = p_shell->buffered_line[p_shell->input_line_active];
-	uint32_t idx = 0U;
+	uint32_t idx;
 
-	/*
-	 * Completion is intentionally limited to the command token. Parameter
-	 * completion would need command-specific parsers, while the command token can
-	 * be completed safely from the common command tables.
-	 */
-	if (p_shell->cursor_offset != p_shell->input_line_len) {
+	shell_puts("\r\n");
+	for (idx = 0U; idx < completions->count; idx++) {
+		const struct shell_completion *completion = &completions->entries[idx];
+
+		if (shell_completion_matches_prefix(completion, prefix, prefix_len)) {
+			shell_puts("  ");
+			shell_puts(completion->str);
+			shell_puts("\r\n");
+		}
+	}
+	shell_restore_input_line();
+}
+
+static bool shell_completion_is_delimiter(char ch)
+{
+	return (ch == ' ') || (ch == ',');
+}
+
+static bool shell_completion_tokenize(const char *line, uint32_t line_len,
+	struct shell_completion_token tokens[SHELL_COMPLETION_MAX_TOKENS],
+	uint32_t *token_count, bool *has_partial)
+{
+	uint32_t index = 0U;
+	uint32_t count = 0U;
+
+	if ((line == NULL) || (token_count == NULL) || (has_partial == NULL)) {
 		return false;
 	}
 
-	while ((idx < p_shell->input_line_len) && (line[idx] == ' ')) {
-		idx++;
-	}
-	*cmd_start = idx;
-	while (idx < p_shell->cursor_offset) {
-		if ((line[idx] == ' ') || (line[idx] == ',')) {
+	while (index < line_len) {
+		while ((index < line_len) && shell_completion_is_delimiter(line[index])) {
+			index++;
+		}
+		if (index == line_len) {
+			break;
+		}
+		if (count >= SHELL_COMPLETION_MAX_TOKENS) {
 			return false;
 		}
-		idx++;
+		tokens[count].start = &line[index];
+		while ((index < line_len) && !shell_completion_is_delimiter(line[index])) {
+			index++;
+		}
+		tokens[count].len = index - (uint32_t)(tokens[count].start - line);
+		count++;
 	}
-	*prefix_len = p_shell->cursor_offset - *cmd_start;
 
+	*token_count = count;
+	*has_partial = (line_len != 0U) && !shell_completion_is_delimiter(line[line_len - 1U]);
 	return true;
+}
+
+static struct shell_cmd *shell_find_cmd_token(const struct shell_completion_token *token)
+{
+	struct shell_cmd *cmd;
+	uint32_t index;
+
+	for (index = 0U; index < shell_cmd_total(); index++) {
+		cmd = shell_cmd_at(index);
+		if ((strnlen_s(cmd->str, SHELL_CMD_MAX_LEN) == token->len) &&
+			(strncmp(cmd->str, token->start, token->len) == 0)) {
+			return cmd;
+		}
+	}
+
+	return NULL;
+}
+
+static const struct shell_completion *shell_find_completion_token(
+	const struct shell_completion_set *completions,
+	const struct shell_completion_token *token)
+{
+	const struct shell_completion *value_completion = NULL;
+	uint32_t index;
+
+	for (index = 0U; index < completions->count; index++) {
+		const struct shell_completion *completion = &completions->entries[index];
+
+		if ((completion->str != NULL) &&
+			(strnlen_s(completion->str, SHELL_CMD_MAX_LEN) == token->len) &&
+			(strncmp(completion->str, token->start, token->len) == 0)) {
+			return completion;
+		}
+		if ((completion->str == NULL) &&
+			((completion->flags & SHELL_COMPLETION_FLAG_VALUE) != 0U)) {
+			value_completion = completion;
+		}
+	}
+
+	return value_completion;
+}
+
+/* [20260805] Static shell completion traversal
+ *
+ * shell-owned input -> bounded token view -> immutable registry grammar
+ *                                               |
+ *                                               +--> invalid path: preserve input
+ *                                               |
+ *                                               v
+ *                                      append or list named candidates
+ *
+ * Key rule:
+ *   - the shell thread alone owns the mutable input row and cursor;
+ *   - registry completion trees are immutable after shell_init() publication;
+ *   - values and sensitive arguments never become completion output, preventing
+ *     an invalid grammar path or private input from changing terminal state.
+ */
+static bool shell_completion_candidates(const struct shell_cmd *cmd,
+	const struct shell_completion_token *tokens, uint32_t completed_count,
+	const struct shell_completion_set **completions)
+{
+	const struct shell_completion *current;
+	const struct shell_completion *repeat_parent = NULL;
+	uint32_t index;
+
+	*completions = cmd->completion;
+	for (index = 0U; index < completed_count; index++) {
+		if (*completions == NULL) {
+			return false;
+		}
+		current = shell_find_completion_token(*completions, &tokens[index]);
+		if (current == NULL) {
+			return false;
+		}
+		if (current->children != NULL) {
+			*completions = current->children;
+			repeat_parent = ((current->flags & SHELL_COMPLETION_FLAG_REPEAT) != 0U) ?
+				current : NULL;
+		} else if (repeat_parent != NULL) {
+			*completions = repeat_parent->children;
+		} else {
+			*completions = NULL;
+		}
+	}
+
+	return (*completions != NULL) && ((*completions)->entries != NULL) &&
+		((*completions)->count != 0U);
+}
+
+static void shell_complete_candidates(const struct shell_completion_set *completions,
+	const char *prefix, uint32_t prefix_len)
+{
+	const struct shell_completion *first_match;
+	uint32_t common_len;
+	uint32_t match_count;
+
+	match_count = shell_find_completion_matches(completions, prefix, prefix_len,
+		&first_match, &common_len);
+	if (shell_apply_completion_match((first_match != NULL) ? first_match->str : NULL,
+		match_count, common_len, prefix_len)) {
+		shell_print_completion_matches(completions, prefix, prefix_len);
+	}
 }
 
 static void shell_handle_tab_key(void)
 {
-	const struct shell_cmd *first_match;
 	char *line = p_shell->buffered_line[p_shell->input_line_active];
-	uint32_t cmd_start;
-	uint32_t prefix_len;
-	uint32_t common_len;
-	uint32_t match_count;
-	uint32_t first_len;
+	struct shell_completion_token tokens[SHELL_COMPLETION_MAX_TOKENS];
+	const struct shell_completion_set *completions;
+	struct shell_cmd *cmd;
+	uint32_t token_count;
+	uint32_t completed_count;
+	bool has_partial;
 
-	if (!shell_cursor_on_command_tail(&cmd_start, &prefix_len)) {
+	if ((p_shell->cursor_offset != p_shell->input_line_len) ||
+		shell_current_input_sensitive() ||
+		!shell_completion_tokenize(line, p_shell->input_line_len, tokens,
+			&token_count, &has_partial)) {
 		return;
 	}
-	if (prefix_len == 0U) {
+	if (token_count == 0U) {
 		shell_print_registered_commands();
 		shell_restore_input_line();
 		return;
 	}
+	if ((token_count == 1U) && has_partial) {
+		const struct shell_cmd *first_match;
+		uint32_t common_len;
+		uint32_t match_count = shell_find_cmd_matches(tokens[0].start, tokens[0].len,
+			&first_match, &common_len);
 
-	match_count = shell_find_cmd_matches(&line[cmd_start], prefix_len, &first_match, &common_len);
-	if (match_count == 0U) {
+		if (shell_apply_completion_match((first_match != NULL) ? first_match->str : NULL,
+			match_count, common_len, tokens[0].len)) {
+			shell_print_cmd_matches(tokens[0].start, tokens[0].len);
+		}
 		return;
 	}
 
-	if (match_count == 1U) {
-		first_len = (uint32_t)strnlen_s(first_match->str, SHELL_CMD_MAX_LEN);
-		if (first_len > prefix_len) {
-			shell_append_completion(&first_match->str[prefix_len], first_len - prefix_len);
-		}
-		if (p_shell->input_line_len < SHELL_CMD_MAX_LEN) {
-			shell_append_completion(" ", 1U);
-		}
-	} else if (common_len > prefix_len) {
-		shell_append_completion(&first_match->str[prefix_len], common_len - prefix_len);
+	cmd = shell_find_cmd_token(&tokens[0]);
+	if ((cmd == NULL) || ((cmd->flags & SHELL_CMD_FLAG_SENSITIVE_ARGS) != 0U)) {
+		return;
+	}
+	completed_count = token_count - 1U;
+	if (has_partial) {
+		completed_count--;
+	}
+	if (!shell_completion_candidates(cmd, &tokens[1], completed_count, &completions)) {
+		return;
+	}
+	if (has_partial) {
+		shell_complete_candidates(completions,
+			tokens[token_count - 1U].start, tokens[token_count - 1U].len);
 	} else {
-		shell_print_cmd_matches(&line[cmd_start], prefix_len);
+		shell_complete_candidates(completions, "", 0U);
 	}
 }
 

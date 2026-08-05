@@ -227,7 +227,7 @@ watchdog and observability
     -> BEAU watchdog state
     -> timeout capture: durable state + bounded live pCPU sample
     -> async cold reset on the VM BSP pCPU, then heartbeat verification
-    -> shell commands: hwtdbg, vmstat, vcpus, schedstat, irqstat, pcistat
+    -> shell commands: swtdbg, vmstat, vcpus, schedstat, irqstat, pcistat
 ```
 
 ## Core Invariants

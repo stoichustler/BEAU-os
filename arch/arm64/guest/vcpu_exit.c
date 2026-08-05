@@ -20,7 +20,7 @@
 #include <ticks.h>
 #include <trace.h>
 #include <vconfig.h>
-#include <hwtdbg.h>
+#include <swtdbg.h>
 #include <asm/platform.h>
 #include <asm/cpu.h>
 #include <asm/esr.h>
@@ -93,6 +93,150 @@
 #define PSCI_0_2_TOS_MP		2L
 #define TRUSTY_SMC_FC_API_VERSION	0xbc00000bU
 #define SMC_UNK				UINT64_MAX
+
+static struct arm64_vcpu_exit_stats
+	arm64_vcpu_exit_stats[CONFIG_MAX_VM_NUM][MAX_VCPUS_PER_VM];
+
+/* [20260805] VM-exit profile ownership
+ *
+ * current vCPU synchronous exit -> local class update -> shell atomic snapshot
+ *
+ * Key rule:
+ *   - one running vCPU is the sole writer for its VM/vCPU statistics slot;
+ *   - vCPU reset occurs only after the vCPU has stopped and starts a fresh
+ *     cumulative generation;
+ *   - shell readers use atomic field snapshots and never lock or delay a
+ *     guest exit, preventing diagnostics from changing scheduling behavior.
+ */
+static struct arm64_vcpu_exit_stats *arm64_vcpu_exit_stats_slot(
+	const struct acrn_vcpu *vcpu)
+{
+	if ((vcpu == NULL) || (vcpu->vm == NULL) ||
+		(vcpu->vm->vm_id >= CONFIG_MAX_VM_NUM) ||
+		(vcpu->vcpu_id >= MAX_VCPUS_PER_VM)) {
+		return NULL;
+	}
+
+	return &arm64_vcpu_exit_stats[vcpu->vm->vm_id][vcpu->vcpu_id];
+}
+
+static void arm64_vcpu_exit_stats_add_saturating(uint64_t *value, uint64_t addend)
+{
+	uint64_t current = __atomic_load_n(value, __ATOMIC_RELAXED);
+
+	if (current != UINT64_MAX) {
+		__atomic_store_n(value, (addend > (UINT64_MAX - current)) ?
+			UINT64_MAX : current + addend, __ATOMIC_RELAXED);
+	}
+}
+
+static enum arm64_vcpu_exit_class arm64_vcpu_exit_class(uint64_t ec)
+{
+	enum arm64_vcpu_exit_class exit_class;
+
+	switch (ec) {
+	case ESR_EL2_EC_IABT_LOW:
+		exit_class = ARM64_VCPU_EXIT_IABT;
+		break;
+	case ESR_EL2_EC_SERROR:
+		exit_class = ARM64_VCPU_EXIT_SERROR;
+		break;
+	case ESR_EL2_EC_DABT_LOW:
+		exit_class = ARM64_VCPU_EXIT_DABT;
+		break;
+	case ESR_EL2_EC_HVC64:
+		exit_class = ARM64_VCPU_EXIT_HVC;
+		break;
+	case ESR_EL2_EC_SMC64:
+		exit_class = ARM64_VCPU_EXIT_SMC;
+		break;
+	case ESR_EL2_EC_SYSREG:
+		exit_class = ARM64_VCPU_EXIT_SYSREG;
+		break;
+	case ESR_EL2_EC_SVE:
+		exit_class = ARM64_VCPU_EXIT_SVE;
+		break;
+	case ESR_EL2_EC_WFI_WFE:
+		exit_class = ARM64_VCPU_EXIT_WFI_WFE;
+		break;
+	default:
+		exit_class = ARM64_VCPU_EXIT_UNKNOWN;
+		break;
+	}
+
+	return exit_class;
+}
+
+static void arm64_vcpu_exit_stats_record(struct acrn_vcpu *vcpu, uint64_t ec,
+	uint64_t start_ticks)
+{
+	struct arm64_vcpu_exit_stats *stats = arm64_vcpu_exit_stats_slot(vcpu);
+	struct arm64_vcpu_exit_class_stats *class_stats;
+	uint64_t end_ticks = cpu_ticks();
+	uint64_t duration = (end_ticks >= start_ticks) ? end_ticks - start_ticks : 0UL;
+	enum arm64_vcpu_exit_class exit_class = arm64_vcpu_exit_class(ec);
+	uint64_t max_ticks;
+
+	if (stats == NULL) {
+		return;
+	}
+
+	class_stats = &stats->class[exit_class];
+	arm64_vcpu_exit_stats_add_saturating(&class_stats->count, 1UL);
+	arm64_vcpu_exit_stats_add_saturating(&class_stats->total_ticks, duration);
+	max_ticks = __atomic_load_n(&class_stats->max_ticks, __ATOMIC_RELAXED);
+	if (duration > max_ticks) {
+		__atomic_store_n(&class_stats->max_ticks, duration, __ATOMIC_RELAXED);
+	}
+}
+
+void arm64_vcpu_exit_stats_reset(const struct acrn_vcpu *vcpu)
+{
+	struct arm64_vcpu_exit_stats *stats = arm64_vcpu_exit_stats_slot(vcpu);
+	uint32_t index;
+
+	if (stats == NULL) {
+		return;
+	}
+
+	for (index = 0U; index < ARM64_VCPU_EXIT_CLASS_NUM; index++) {
+		__atomic_store_n(&stats->class[index].count, 0UL, __ATOMIC_RELEASE);
+		__atomic_store_n(&stats->class[index].total_ticks, 0UL, __ATOMIC_RELEASE);
+		__atomic_store_n(&stats->class[index].max_ticks, 0UL, __ATOMIC_RELEASE);
+	}
+}
+
+bool arm64_vcpu_exit_stats_snapshot(const struct acrn_vcpu *vcpu,
+	struct arm64_vcpu_exit_stats *stats)
+{
+	const struct arm64_vcpu_exit_stats *source = arm64_vcpu_exit_stats_slot(vcpu);
+	uint32_t index;
+
+	if ((source == NULL) || (stats == NULL)) {
+		return false;
+	}
+
+	for (index = 0U; index < ARM64_VCPU_EXIT_CLASS_NUM; index++) {
+		stats->class[index].count = __atomic_load_n(&source->class[index].count,
+			__ATOMIC_ACQUIRE);
+		stats->class[index].total_ticks = __atomic_load_n(
+			&source->class[index].total_ticks, __ATOMIC_ACQUIRE);
+		stats->class[index].max_ticks = __atomic_load_n(&source->class[index].max_ticks,
+			__ATOMIC_ACQUIRE);
+	}
+
+	return true;
+}
+
+const char *arm64_vcpu_exit_class_name(enum arm64_vcpu_exit_class exit_class)
+{
+	static const char * const names[ARM64_VCPU_EXIT_CLASS_NUM] = {
+		"iabt", "serror", "dabt", "hvc", "smc", "sysreg", "sve",
+		"wfi-wfe", "unknown",
+	};
+
+	return (exit_class < ARM64_VCPU_EXIT_CLASS_NUM) ? names[exit_class] : "invalid";
+}
 
 #define PSCI_RET_SUCCESS		0L
 #define PSCI_RET_NOT_SUPPORTED		(-1L)
@@ -618,7 +762,7 @@ static int32_t handle_serror(struct acrn_vcpu *vcpu)
 	 * interrupted, which is usually the best handoff point for manual triage.
 	 */
 	if (arm64_ras_capture(&ras)) {
-		hwtdbg_capture_ras(vcpu, regs, &ras);
+		swtdbg_capture_ras(vcpu, regs, &ras);
 	}
 	LOG_ERR("arm64 serror vm%u:vcpu%u esr=0x%lx elr=0x%lx far=0x%lx hpfar=0x%lx",
 		vcpu->vm->vm_id, vcpu->vcpu_id, regs->esr, regs->elr, regs->far,
@@ -1007,20 +1151,21 @@ static int32_t handle_wfx(struct acrn_vcpu *vcpu)
 	return 0;
 }
 
-static enum hwtdbg_guest_fault_reason vcpu_exit_fault_reason(uint64_t ec)
+static enum swtdbg_guest_fault_reason vcpu_exit_fault_reason(uint64_t ec)
 {
 	if (ec == ESR_EL2_EC_IABT_LOW) {
-		return HWTDBG_GUEST_FAULT_IABT;
+		return SWTDBG_GUEST_FAULT_IABT;
 	}
 	if (ec == ESR_EL2_EC_SERROR) {
-		return HWTDBG_GUEST_FAULT_SERROR;
+		return SWTDBG_GUEST_FAULT_SERROR;
 	}
-	return HWTDBG_GUEST_FAULT_UNHANDLED_EXIT;
+	return SWTDBG_GUEST_FAULT_UNHANDLED_EXIT;
 }
 
 int32_t vcpu_exit_handler(struct acrn_vcpu *vcpu)
 {
 	uint64_t ec = ESR_EL2_EC(vcpu->arch.regs.esr);
+	uint64_t start_ticks = cpu_ticks();
 	int32_t ret = -EINVAL;
 
 	/*
@@ -1056,6 +1201,7 @@ int32_t vcpu_exit_handler(struct acrn_vcpu *vcpu)
 	default:
 		break;
 	}
+	arm64_vcpu_exit_stats_record(vcpu, ec, start_ticks);
 
 	TRACE_4I(TRACE_VM_EXIT, vcpu->vm->vm_id, vcpu->vcpu_id,
 		ARM64_TRACE_EXIT_SYNC,
@@ -1069,7 +1215,7 @@ int32_t vcpu_exit_handler(struct acrn_vcpu *vcpu)
 		vcpu->vm->vm_id, vcpu->vcpu_id, ec, vcpu->arch.regs.esr,
 		vcpu->arch.regs.elr, vcpu->arch.regs.far, vcpu->arch.regs.hpfar);
 	arm64_esr_log(LOG_ERROR, "vm.esr", vcpu->arch.regs.esr);
-	hwtdbg_capture_guest_fault(vcpu, vcpu_exit_fault_reason(ec), ret);
+	swtdbg_capture_guest_fault(vcpu, vcpu_exit_fault_reason(ec), ret);
 	return -EINVAL;
 }
 

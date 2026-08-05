@@ -28,7 +28,7 @@ for mixed RTOS and Linux guests.
 ### Quick Run
 
 ```sh
-./scripts/kick.sh --build
+./scripts/kick.sh --build --tee
 ```
 
 ## Learning Path

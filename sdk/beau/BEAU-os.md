@@ -1410,7 +1410,7 @@ vCPU 不会被新纳入。system/VM STR 分别冻结每个 expected vCPU 的剩�
 
 ### 15.2 超时现场保留
 
-`sdk/bsp/arm64/hwtdbg.c` 在每次 heartbeat timeout 转换发生时、VM quiesce/restart
+`sdk/bsp/arm64/swtdbg.c` 在每次 heartbeat timeout 转换发生时、VM quiesce/restart
 之前冻结现场。首次启动一直未 kick 和运行后长期未 kick 使用同一采集路径：
 
 ```text
@@ -1426,10 +1426,10 @@ timeout false -> true
 ```
 
 每个受监控 VM 在 BSS 中保留 4 个事件，写满后覆盖最老事件。远端回调只写
-per-pCPU generation mailbox；超时后的晚到回调不能修改事件槽。`hwtdbg` 无参数，
+per-pCPU generation mailbox；超时后的晚到回调不能修改事件槽。`swtdbg <vmid>`
 按 VM 分组并按 sequence 从旧到新打印所有 checksum 有效事件；读取不清除数据，
 但 Hypervisor 重启后数据不保留。没有超时事件时输出
-`hwtdbg: no watchdog timeout events`。
+`swtdbg: no watchdog timeout events`。
 
 为避免超时报告被高频轨迹和底层寄存器细节淹没，事件不保留 guest exit、vGIC
 或 vtimer trace，也不冻结 vGIC/vtimer context。per-vCPU 模式只为 stalled mask 中的
@@ -1572,7 +1572,10 @@ performance policy，并选最大 P-state。QEMU 和 rk356x platform backend 目
 host shell 无输入时保持 blocked。首次输入发现延迟由 2 ms timer 周期限定；唤醒后
 最多连续处理 64 字节，再重新经过 scheduler，以限制单次 console service 时间。
 
-`sdk/bsp/shell.c` 提供行编辑、历史、Tab completion、异步输出保护和命令分发；
+`sdk/bsp/shell.c` 提供行编辑、历史、Tab completion、异步输出保护和命令分发。Tab
+completion 由命令注册表中的静态语法树驱动：可枚举的命名子命令可按层级补全，唯一候选
+自动追加空格，多个候选补至公共前缀或列出候选。VMID、计数、地址、文本和敏感参数不作为
+候选；未声明命名子命令的命令保持无参数补全行为。
 `sdk/bsp/cmds/` 按功能提供 common 和架构诊断命令。
 
 `core/logmsg.c` 在输出到 console、memory 或 NPK 前写入独立的 host dmesg record
@@ -1612,9 +1615,10 @@ WDT recovery 与 failure 事件继续使用 `LOG_*` 保留为故障证据。
 | `memstat` | 页表池和 Stage-2 ownership |
 | `walkpt <vmid> <ipa>` | 只读输出指定 IPA 的逐级 Stage-2 descriptor、映射与属性 |
 | `health` | host/VM 运行健康摘要与 findings |
-| `hwtdbg` | 打印所有已保留 WDT 超时现场，读取不清除 |
+| `swtdbg` | 打印所有已保留 WDT 超时现场，读取不清除 |
 | `coredump <print\|erase>` | 查看或清除最近一次 ARM64 panic/异常快照 |
 | `vmstat` | VM 配置、状态、affinity、boot、timer、WDT |
+| `vmexitstat` | VM/vCPU 同步 VM-exit handler 的 EC 分类次数与 wall-time；物理 IRQ exit 不单独计入，且不含后续调度 |
 | `cachestat` | cache topology 和 LLC domain |
 | `ipcstat` | HVC IPC channel、ring、notify/ack/drop，以及 static remoteproc/rpmsg channel、doorbell、vIRQ 和拒绝计数 |
 | `virtiostat` | proxy device、queue、backend、吞吐和延迟 |
@@ -1640,6 +1644,13 @@ heartbeat 对 guest forward progress 的判断。
 时显示 `--`。执行 `schedstat` 不会改变 `ps` 的采样窗口。`schedstat` 只保留 pCPU
 busy%、policy 和 BVT/RTDS/CBS 诊断，不再重复 per-thread CPU usage。
 
+`vmexitstat` 的计时范围从 `vcpu_exit_handler()` 入口到对应 EC handler 返回，只用于比较
+MMIO、HVC、sysreg 等同步 exit 在同一 VM/vCPU 上的 EL2 handler cost。物理 IRQ exit 不会
+按 EC 分类或计入表中；`wall-time` 不应解读为完整 EL1/EL2 往返时间，vector save/restore、
+后续 scheduler 和 ERET 不在计时范围内。trace、irqstat、schedstat 和 pmustat 可辅助归因。
+统计在 vCPU reset 后清零；shell 读取的是无锁的单调快照，因而相邻字段可跨一次正在进行的
+exit，但不会改变 guest 执行。
+
 ### 18.3 Trace 与符号化
 
 `core/trace.c` 为每 pCPU 分配固定 32-byte record ring，默认 256 条，满后覆盖最老
@@ -1657,7 +1668,7 @@ ARM64 build 保留 frame pointer；debug image 由 `gen_symtab.py` 生成地址�
 `arch/arm64/coredump.c` 只在已登记的 thread、per-pCPU 或 boot stack 边界内读取
 frame record，并限制原始栈快照和回溯深度；panic 与同步异常共用该 fail-closed
 host 栈回溯路径。每个 pCPU 保留一个带版本和校验和的内存快照，shell 可通过
-`coredump print` 查看最新快照或通过 `coredump erase` 清除；`hwtdbg` 提供重启前
+`coredump print` 查看最新快照或通过 `coredump erase` 清除；`swtdbg` 提供重启前
 冻结的 guest/vCPU WDT 超时证据。
 
 ### 18.4 Perf
@@ -1765,7 +1776,7 @@ python3 scripts/regress.py
 - PM policy、`vcpus`、hybrid `schedstat`、`rttest`。
 - `vmstat`、`devmap`、`memstat`、`health`、`irqstat`。
 - `virtiostat` 的 VM2/VM3 fs/rng/blk/i2c/net proxy。
-- 正常启动时 `hwtdbg` 无事件；WDT smoke 后保留 guest regs、栈和恢复结果。
+- 正常启动时 `swtdbg` 无事件；WDT smoke 后保留 guest regs、栈和恢复结果。
 - VM0 Zephyr、VM1 Linux KBE、VM2/VM3 Linux frontend shell。
 - VM1 KBE startup、VM2/VM3 virtio-proxy 与跨 frontend 隔离。
 - 可选 VM console stress、help stress、WDT recovery、STR cycles 和故障注入。
@@ -1850,7 +1861,7 @@ host banner/pCPU all running
     -> boot kernel/load/entry/FDT address
     -> devmap: RAM Stage-2 exists
     -> vcpus: BSP runnable/running
-    -> hwtdbg: 若已发生 WDT timeout，检查重启前 ELR/ESR/FAR/HPFAR
+    -> swtdbg: 若已发生 WDT timeout，检查重启前 ELR/ESR/FAR/HPFAR
 ```
 
 常见原因：image staging 地址错误、load range 越界、FDT overlap、entry 未对齐、
@@ -1861,13 +1872,13 @@ affinity 指向未初始化 scheduler。
 查看：
 
 ```text
-hwtdbg
+swtdbg
 irqstat
 vmstat
 schedstat
 ```
 
-`hwtdbg` 重点查看超时前 GPR/异常寄存器、guest/host stack、`pcpu-owner`、pending
+`swtdbg` 重点查看超时前 GPR/异常寄存器、guest/host stack、`pcpu-owner`、pending
 request/IRQ 和 vCPU wait latency；`vmstat` 查看 CNTV ctl/cval、PPI descriptor、
 backup/poll/PPI count、EL2 mask 和 pre-ERET flush 聚合；`irqstat` 核对 host/guest
 IRQ 是否持续推进。Linux 有 arch_timer IRQ 不代表 softirq 一定推进，需要结合三类
@@ -2003,7 +2014,7 @@ sdk/bsp/pm.c
 sdk/bsp/cmds/shell_pm.c
 ```
 
-目标：能用 `schedstat/hwtdbg/health/pmstat` 给出有代码证据的故障判断。
+目标：能用 `schedstat/swtdbg/health/pmstat` 给出有代码证据的故障判断。
 
 ## 25. 关键结构速查
 
