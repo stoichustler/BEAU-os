@@ -1125,6 +1125,48 @@ def check_zephyr_thread_list(qemu, label):
                 keepalive=ENTER)
 
 
+def expect_zephyr_dev_shell(qemu):
+    qemu.send("demo getopt -a -b -c vm0" + ENTER)
+    qemu.expect("aflag = 1, bflag = 1", "VM0 getopt command", timeout=20.0)
+    qemu.expect(ZEPHYR_PROMPT, "VM0 getopt command returns", timeout=20.0,
+                keepalive=ENTER)
+
+    qemu.send("history" + ENTER)
+    history = qemu.expect(ZEPHYR_PROMPT, "VM0 shell history returns", timeout=20.0,
+                          keepalive=ENTER)
+    if "command not found" in history.lower():
+        raise RuntimeError("VM0 shell history command is unavailable")
+
+    qemu.send("help" + ENTER)
+    help_text = qemu.expect(ZEPHYR_PROMPT, "VM0 shell select help returns", timeout=20.0,
+                            keepalive=ENTER)
+    if "select" not in help_text:
+        raise RuntimeError("VM0 shell select command is unavailable")
+
+    qemu.send("kernel reboot warm" + ENTER)
+    qemu.expect("kernel reboot warm", "VM0 warm reboot command echo", timeout=20.0)
+    qemu.expect(ZEPHYR_PROMPT, "VM0 warm reboot returns", timeout=60.0,
+                keepalive=ENTER)
+    qemu.send("version" + ENTER)
+    qemu.expect("Zephyr version", "VM0 version after warm reboot", timeout=20.0)
+    qemu.expect(ZEPHYR_PROMPT, "VM0 version command returns", timeout=20.0,
+                keepalive=ENTER)
+
+
+def expect_zephyr_safety_monitor(qemu):
+    start_offset = len(qemu.output)
+
+    qemu.send("safety status" + ENTER)
+    qemu.expect("SAFETY state:healthy", "VM0 safety monitor is healthy", timeout=20.0)
+    qemu.expect("peer-vm:", "VM0 safety monitor reports dynamic peer", timeout=20.0)
+    qemu.expect(ZEPHYR_PROMPT, "VM0 safety monitor status returns", timeout=20.0,
+                keepalive=ENTER)
+    qemu.drain_for(2.5)
+    if qemu.output[start_offset:].count("safety-v1:") > 1:
+        raise RuntimeError("VM0 safety monitor sent periodic IPC after status")
+    print("[pass] VM0 safety monitor performs no periodic IPC", flush=True)
+
+
 def run_vsh_help_stress(qemu, args):
     if args.stress_help_rounds < 1:
         return
@@ -1567,6 +1609,8 @@ def run_qemu(args, cmd):
         qemu.expect(ZEPHYR_PROMPT, "VM0 Zephyr shell", keepalive=ENTER)
         run_guest_help(qemu, 0, ZEPHYR_PROMPT, "VM0 Zephyr", 15.0)
         check_zephyr_thread_list(qemu, "VM0 Zephyr SMP runtime stats")
+        expect_zephyr_dev_shell(qemu)
+        expect_zephyr_safety_monitor(qemu)
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM0 shell")
 

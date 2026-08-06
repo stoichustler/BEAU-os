@@ -111,22 +111,41 @@ static void shell_print_irq_cpu_counts(const struct irqstat_snapshot *snapshot,
 }
 
 #if defined(CONFIG_ARM64) && CONFIG_IRQSTAT_LATENCY
+static void shell_irqstat_format_vgic_latency_value(char *buf, size_t size,
+	uint64_t latency_us)
+{
+	uint64_t centi_ms;
+
+	if (latency_us > 999990UL) {
+		snprintf(buf, size, "OVF   ");
+		return;
+	}
+
+	centi_ms = (latency_us + 5UL) / 10UL;
+	snprintf(buf, size, "%03lu.%02lu",
+		(unsigned long)(centi_ms / 100UL),
+		(unsigned long)(centi_ms % 100UL));
+}
+
 static void shell_irqstat_format_vgic_latency(char *buf, size_t size,
 	const struct arm64_vgic_irq_latency_stats *latency)
 {
+	char min_buf[7U];
+	char avg_buf[7U];
+	char max_buf[7U];
+
 	if ((latency == NULL) || (latency->count == 0UL)) {
 		snprintf(buf, size, "-");
-	} else {
-		uint64_t min_ms = latency->min_us / 1000UL;
-		uint64_t avg_ms = latency->avg_us / 1000UL;
-		uint64_t max_ms = latency->max_us / 1000UL;
-		uint64_t min_frac = latency->min_us % 1000UL;
-		uint64_t avg_frac = latency->avg_us % 1000UL;
-		uint64_t max_frac = latency->max_us % 1000UL;
-
-		snprintf(buf, size, "%lu.%03lums/%lu.%03lums/%lu.%03lums",
-			min_ms, min_frac, avg_ms, avg_frac, max_ms, max_frac);
+		return;
 	}
+
+	shell_irqstat_format_vgic_latency_value(min_buf, sizeof(min_buf),
+		latency->min_us);
+	shell_irqstat_format_vgic_latency_value(avg_buf, sizeof(avg_buf),
+		latency->avg_us);
+	shell_irqstat_format_vgic_latency_value(max_buf, sizeof(max_buf),
+		latency->max_us);
+	snprintf(buf, size, "%s/%s/%sms", min_buf, avg_buf, max_buf);
 }
 #endif
 
