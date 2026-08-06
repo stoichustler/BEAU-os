@@ -1,10 +1,13 @@
-# BEAU Linux Vsock Frontend
+# BEAU Linux Frontend
+
+
+## vsock Frontend
 
 This directory retains the complete Linux virtio-vsock frontend source used by
 BEAU VM2 and VM3.  It is intentionally separate from `sdk/kbe`, which owns the
 VM1 HVC backend.
 
-## Files
+### Files
 
 - `virtio_transport.c`: complete virtio-vsock frontend, including deferred
   AF_VSOCK core registration at virtio device probe time.
@@ -13,7 +16,7 @@ VM1 HVC backend.
 - `beau-vsock-test.c`: static userspace echo server/client used by the
   initramfs validation command.
 
-## Porting To A Linux Tree
+### Porting To A Linux Tree
 
 1. Copy `sdk/kbe/beau_transport.c` and `sdk/kbe/beau_vsock.h` to
    `net/vmw_vsock`.
@@ -27,3 +30,33 @@ VM1 HVC backend.
 VM1 selects the BEAU HVC backend from its DTB.  VM2 and VM3 have virtio-vsock
 devices, so the retained frontend registers the normal AF_VSOCK transport when
 each device probes.  One Linux Image can therefore serve all three roles.
+
+### Initramfs Test
+
+The BEAU initramfs installs the static `vsock` test program at
+`/usr/local/bin/vsock`.  Start an echo server in VM1, which owns CID 3:
+
+```sh
+vsock server 5000 >/tmp/vsock.log 2>&1 &
+```
+
+Then run one client from each frontend VM:
+
+```sh
+# VM2 (CID 4)
+vsock client 3 5000 vm2
+# expected: vsock: cid=3 port=5000 echo=vm2
+
+# VM3 (CID 5)
+vsock client 3 5000 vm3
+# expected: vsock: cid=3 port=5000 echo=vm3
+```
+
+The client sends its payload, half-closes the connection, verifies the echoed
+bytes and the server EOF, and returns nonzero on connect, I/O, or data-compare
+failure.  The same VM1 server accepts both frontend clients sequentially.
+
+`vsock cid` currently binds with `VMADDR_CID_ANY` and prints that bound
+wildcard value (`4294967295`); it is a socket setup check, not a query of the
+DT-configured local CID.  Use the fixed topology above when selecting the
+client destination CID.

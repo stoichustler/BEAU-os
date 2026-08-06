@@ -1,6 +1,6 @@
 # BEAU OS 整体框架与源码学习指南
 
-> 文档基线：2026-08-06，BEAU OS [VERSION](../../VERSION)的两个 QEMU 4OS 开发分支：
+> 文档基线：2026-08-07，BEAU OS [VERSION](../../VERSION)的两个 QEMU 4OS 开发分支：
 > `4os-zephyr+3linux` 与 `4os-zephyr+rtthread+2linux`。
 >
 > 本文以 [`sdk/sdk.md`](sdk/sdk.md) 为最高约束，并以各分支的源码、
@@ -198,6 +198,7 @@ VMID、vCPUID、StreamID、BDF、IRQ 或地址等对象身份。
 | `sdk/bsp` | 平台解析、设备模型、shell、console、vPCI、virtio | `libbsp.a` |
 | `sdk/imgs` | 稳定的 Zephyr、RT-Thread、LK、Linux、DTB、initramfs | 链接或 QEMU loader |
 | `sdk/kbe` | Linux 客体 KBE 驱动保留副本 | 移植进 Linux 内核树 |
+| `sdk/kfe` | Linux 客体 KFE 前端保留副本 | 移植进 Linux `net/vmw_vsock` |
 | `sdk/zsh` | Zephyr shell/HVC/WDT/IPC 验证代码 | 移植进 Zephyr sample |
 | `sdk/ube` | ACRN userspace device model 保留副本 | 当前 BEAU 不使用 |
 | `scripts` | 配置生成、链接、符号、QEMU 启动和回归 | 开发/验证工具 |
@@ -296,9 +297,9 @@ console:\>
 | 分支 | VM | 角色 | RAM | vCPU 到 pCPU | 客体入口 | 控制台/设备 |
 |---|---|---|---|---|---|---|
 | Z3L | VM0 Zephyr | service VM | `0x42000000`, 128 MiB | `0->0`, `1->4` | `0x42000000` | vPL011、IPC、WDT |
-| Z3L | VM1 Linux-1 | secure/KBE backend | `0x60000000`, 256 MiB | `0->1`, `1->5` | `0x60200000` | Trusty client、KBE、vPCI 直通 |
-| Z3L | VM2 Linux-2 | prelaunch frontend | `0x80000000`, 256 MiB | `0->2`, `1->4`, `2->6`, `3->7` | `0x80200000` | virtio-console、proxy 前端 |
-| Z3L | VM3 Linux-3 | prelaunch frontend | `0x90000000`, 256 MiB | `0->3`, `1->5`, `2->6`, `3->7` | `0x90200000` | virtio-console、proxy 前端 |
+| Z3L | VM1 Linux-1 | secure/KBE backend | `0x60000000`, 256 MiB | `0->1`, `1->5` | `0x60200000` | Trusty client、KBE、vPCI、vsock backend (CID 3) |
+| Z3L | VM2 Linux-2 | prelaunch frontend | `0x80000000`, 256 MiB | `0->2`, `1->4`, `2->6`, `3->7` | `0x80200000` | virtio-console、proxy、vsock frontend (CID 4) |
+| Z3L | VM3 Linux-3 | prelaunch frontend | `0x90000000`, 256 MiB | `0->3`, `1->5`, `2->6`, `3->7` | `0x90200000` | virtio-console、proxy、vsock frontend (CID 5) |
 | ZR2L | VM0 Zephyr | service VM | `0x42000000`, 96 MiB | `0->0`, `1->4` | `0x42000000` | vPL011、IPC、WDT |
 | ZR2L | VM1 RT-Thread | prelaunch RTOS | `0x60000000`, 128 MiB | `0->1`, `1->5` | `0x60080000` | vPL011、WDT |
 | ZR2L | VM2 Linux-2 | prelaunch/KBE backend | `0x80000000`, 256 MiB | `0->2`, `1->4`, `2->6`, `3->7` | `0x80200000` | virtio-console、Trusty client、KBE、vPCI 直通 |
@@ -338,6 +339,18 @@ BEAU virtio-proxy transport
 | Z3L | blk/rng/fs/i2c | 2/4/26/34 | VM2 `0x0a001600..0x0a001200` / VM3 `0x0a000600..0x0a000200` | 64 entries | VM1，每 frontend 独立状态 |
 | ZR2L | net | 1 | VM3 `0x0a000a00` | RX/TX, 256 entries | VM2 uplink netdev |
 | ZR2L | blk/rng/fs/i2c | 2/4/26/34 | VM3 `0x0a000600..0x0a000200` | 64 entries | VM2，单 frontend 状态 |
+
+Z3L 另有独立的 virtio-vsock 链路。它不使用 `virtio_proxy.c` 的通用 ABI，而是以
+device ID 19、3 个 virtqueue 和固定 CID 策略传送标准 virtio-vsock packet：
+
+| 所有者 | 角色 | MMIO / CID | 约束 |
+|---|---|---|---|
+| VM1 | KBE HVC backend | CID 3 | DT 含 `beau,vsock-backend`；只接受 VM2/VM3 |
+| VM2 | KFE virtio frontend | `0x0a001c00` / CID 4 | `beau,backend-vmid = <1>`，3 queues |
+| VM3 | KFE virtio frontend | `0x0a000c00` / CID 5 | `beau,backend-vmid = <1>`，3 queues |
+
+ZR2L 和 rk356x 当前未配置这条 vsock 拓扑。CID、backend VMID、queue 数或 packet
+长度不符合静态策略时，DTS 解析或 HVC 处理会拒绝请求。
 
 | 职责 | Z3L | ZR2L |
 |---|---|---|
@@ -1068,6 +1081,36 @@ BEAU 不解析 FUSE、block、I2C 或 Ethernet 协议。协议语义位于 Linux
 
 更多virtio前后端驱动信息，参考[virtio.md](virtio.md).
 
+### 12.6 virtio-vsock proxy
+
+**定位**：`sdk/bsp/virtio/vsock_proxy.c`、`sdk/kbe/beau_transport.c` 和
+`sdk/kfe/virtio_transport.c`。
+
+VM1 是 AF_VSOCK backend，不向它模拟 virtio-mmio 设备；VM2/VM3 使用标准 Linux
+virtio-vsock frontend。共享 Linux Image 通过 DT 选择角色：VM1 的
+`beau,vsock-backend` 节点启动 HVC transport，VM2/VM3 的 device ID 19 在 probe 时注册
+标准 virtio transport。这样同一 Image 不会为 VM1 和 frontend 同时注册相互冲突的
+AF_VSOCK transport。
+
+```text
+VM2/VM3 virtio-vsock TX descriptor
+    -> QueueNotify -> vsock_proxy MMIO model
+    -> validate CID, stream header, descriptor bounds, packet <= 64 KiB + header
+    -> bounded copy into VM1 HVC buffer
+    -> VM1 KBE POLL_TX -> AF_VSOCK backend
+
+VM1 AF_VSOCK reply
+    -> KBE SEND_RX HVC
+    -> copy only into a frontend writable RX descriptor
+    -> used ring update + virtual IRQ -> VM2/VM3 frontend
+```
+
+HVC `HC_VIRTIO_VSOCK_BACKEND` 使用 ABI v1 的 56-byte IOC。每次 HVC 只借用调用方的
+buffer GPA；EL2 不保留该 GPA。`REGISTER`、`POLL_TX`、`SEND_RX` 和 `HEARTBEAT` 都检查
+ABI 版本、IOC 大小、caller VMID、CID 对和 packet 边界。当前策略仅支持 VM1 CID 3 与
+VM2/VM3 CID 4/5 的 stream socket；无描述符、空队列和短暂 backpressure 会返回可重试
+错误，越权或格式错误则 fail closed。
+
 
 ## 13. Hypercall 与 IPC
 
@@ -1748,6 +1791,7 @@ QEMU 只能验证控制流、SMP ring ownership 和回溯边界，不能作为�
 | `virtio-blk-backend.c` | 每 frontend 1 MiB 非持久 RAM disk，有限单段请求 |
 | `virtio-i2c-backend.c` | 每 frontend 独立 0x50、256-byte 内存 EEPROM |
 | `virtio-net-backend.c` | Linux backend uplink 转发，关闭 offload/MQ/RSS |
+| `beau_transport.c`、`beau_vsock.h` | VM1 CID 3 HVC vsock backend；移植到 `net/vmw_vsock` |
 | `vwdt.c` | 早期、hotplug-aware per-vCPU scheduling-progress heartbeat |
 | `edu-test.c` | QEMU edu 直通与 IRQ 验证 |
 | `ipc-test.c` | Linux IPC query/ring/notify/ack endpoint |
@@ -1755,7 +1799,22 @@ QEMU 只能验证控制流、SMP ring ownership 和回溯边界，不能作为�
 所有 proxy backend 只在 DT model 表明自己是 backend VM 时启动：Z3L 为 VM1，并为
 VM2/VM3 分配独立实例；ZR2L 为 VM2，frontend 固定为 VM3。
 
-### 19.3 `sdk/zsh`
+### 19.3 `sdk/kfe`
+
+`sdk/kfe` 保留 Z3L 的完整 virtio-vsock frontend：
+
+- `virtio_transport.c`：VM2/VM3 标准 virtio-vsock frontend，延迟到设备 probe 时注册
+  AF_VSOCK core，供共享 Image 的 DT 角色选择使用。
+- `Kconfig`、`Makefile`：`net/vmw_vsock` 的完整集成文件，包含
+  `CONFIG_BEAU_VSOCKETS`。
+- `beau-vsock-test.c`：打包到 initramfs 的静态 echo server/client。
+
+移植时，把 `sdk/kbe/beau_transport.c`、`sdk/kbe/beau_vsock.h`、上述 KFE 文件复制到
+Linux `net/vmw_vsock`，并启用 `CONFIG_VSOCKETS`、`CONFIG_VIRTIO_VSOCKETS` 与
+`CONFIG_BEAU_VSOCKETS`。不要把这组文件复制到 `drivers/virt/beau`，因为它依赖
+vsock 子系统内部的 transport helpers。
+
+### 19.4 `sdk/zsh`
 
 - `hcall.*`：Zephyr HVC、IPC 与 AI scheduler advisor ABI。
 - `beau_wdt.c`：heartbeat thread。
@@ -1765,15 +1824,13 @@ VM2/VM3 分配独立实例；ZR2L 为 VM2，frontend 固定为 VM3。
 
 移植到 Zephyr shell sample 时，把三个 C 文件加入 application `target_sources()`。
 
-### 19.4 `sdk/ube`
+### 19.5 `sdk/ube`
 
 这是继承自 ACRN 的 userspace device model，覆盖 PCI、virtio、ACPI、USB、TPM、
 图形等大量设备。`sdk/sdk.md` 明确标记为“not used yet”，顶层 BEAU `Makefile` 也不
 编译它。学习当前 BEAU 数据面时应先忽略，只有设计 future userspace backend 时再读。
 
-## 20. 回归与验证
-
-### 19.5 AI-assisted scheduling SDK
+### 19.6 AI-assisted scheduling SDK
 
 `sdk/ai-sched` retains emlearn and a host-side training/export flow for an
 experimental scheduler advisor. It is not part of the EL2 image. The
@@ -1790,7 +1847,7 @@ minimum update interval. No proposal changes a reservation in this revision.
 All future apply paths must reuse the same validation before touching scheduler
 state.
 
-### 19.6 Arm SPE
+### 19.7 Arm SPE
 
 `CONFIG_ARM64_SPE` builds an EL2-owned Arm Statistical Profiling Extension
 collector. The feature is disabled by default and requires a platform
@@ -1798,6 +1855,8 @@ collector. The feature is disabled by default and requires a platform
 registers and static buffers; guest SPE identification and sysreg accesses are
 hidden. `spestat` reports state and provides bounded capture control. The
 current QEMU configuration has no SPE PPI and reports the unavailable path.
+
+## 20. 回归与验证
 
 ### 20.1 自动回归
 
@@ -1811,6 +1870,7 @@ python3 scripts/regress.py
 - PM policy、`vcpus`、hybrid `schedstat`、`rttest`。
 - `vmstat`、`devmap`、`memstat`、`health`、`irqstat`。
 - Z3L 的 VM2/VM3 fs/rng/blk/i2c/net proxy，或 ZR2L 的 VM3 对应 proxy。
+- Z3L VM1 vsock backend 与 VM2/VM3 standard virtio-vsock frontend 的 echo 链路。
 - 正常启动时 Z3L `swtdbg <vmid>` 或 ZR2L `hwtdbg` 无事件；WDT smoke 后保留 guest
   regs、栈和恢复结果。
 - Z3L 的 VM0 Zephyr、VM1 Linux KBE、VM2/VM3 Linux frontend shell，或 ZR2L 的
@@ -1847,6 +1907,25 @@ uos ~ dmesg | grep -i 'BEAU virtio-'
 console:\> vsh 3          # Linux frontend
 uos ~ dmesg | grep -i virtio
 ```
+
+Z3L virtio-vsock 基础链路使用同一 initramfs 中的 `vsock` 工具：
+
+```text
+console:\> vsh 1
+uos ~ vsock server 5000 >/tmp/vsock.log 2>&1 &
+<Ctrl-D>
+console:\> vsh 2
+uos ~ vsock client 3 5000 vm2
+vsock: cid=3 port=5000 echo=vm2
+<Ctrl-D>
+console:\> vsh 3
+uos ~ vsock client 3 5000 vm3
+vsock: cid=3 port=5000 echo=vm3
+```
+
+VM1 的 echo server 可顺序接受两个 frontend client。`vsock cid` 绑定
+`VMADDR_CID_ANY` 后输出 `4294967295`，仅用于确认 socket setup，不是 DT 配置 CID 的
+查询接口；测试目标 CID 固定为 VM1 的 3。
 
 ## 21. 常见扩展操作
 
@@ -1981,6 +2060,8 @@ smmustat
 10. KBE fs/blk/i2c/net 都是验证级 backend，不是完整生产设备服务。
 11. `sdk/ube` 尚未接入。
 12. 自动回归集中在 QEMU；rk356x 需要硬件验证。
+13. virtio-vsock 已完成 VM1 <-> VM2/VM3 基础 echo 链路；尚未完成长期压力、并发连接、
+    大包吞吐、backpressure 和 VM reset/reconnect 验证。
 
 ## 24. 推荐源码学习顺序
 
