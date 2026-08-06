@@ -4,7 +4,17 @@
 
 API_MAJOR_VERSION=1
 API_MINOR_VERSION=0
-BEAU_OS_VERSION ?= 0.1.1
+BEAU_ROOT := $(abspath $(dir $(firstword $(MAKEFILE_LIST))))
+BEAU_VERSION_FILE ?= $(BEAU_ROOT)/VERSION
+
+ifeq ($(origin BEAU_OS_VERSION), undefined)
+BEAU_OS_VERSION := $(strip $(shell cat "$(BEAU_VERSION_FILE)" 2>/dev/null))
+BEAU_VERSION_DEP := $(BEAU_VERSION_FILE)
+endif
+
+ifeq ($(strip $(BEAU_OS_VERSION)),)
+$(error BEAU_OS_VERSION is empty: set it explicitly or provide a non-empty $(BEAU_VERSION_FILE))
+endif
 
 ifneq ($(filter command line,$(origin RELEASE)),)
 $(error RELEASE is no longer supported; BEAU always builds the full image)
@@ -22,7 +32,6 @@ STACK_PROTECTOR := 1
 MAKEFLAGS += -rR --no-print-directory
 
 BASEDIR := $(shell pwd)
-BEAU_ROOT := $(abspath $(dir $(firstword $(MAKEFILE_LIST))))
 GIT_TOPDIR := $(shell git rev-parse --show-toplevel 2>/dev/null)
 LICENSE_FILE ?= $(or $(firstword $(wildcard $(GIT_TOPDIR)/LICENSE LICENSE ../LICENSE)),/dev/null)
 ARCH ?= arm64
@@ -647,7 +656,7 @@ distclean:
 	@rm -f tags TAGS cscope.files cscope.in.out cscope.out cscope.po.out GTAGS GPATH GRTAGS GSYMS
 
 PHONY: (VERSION)
-$(VERSION): $(HV_CONFIG_H) Makefile
+$(VERSION): $(HV_CONFIG_H) Makefile $(BEAU_VERSION_DEP)
 	@mkdir -p $(dir $(VERSION))
 	@touch $(VERSION)
 	@if [ "$(BUILD_VERSION)"x = x ];then \
