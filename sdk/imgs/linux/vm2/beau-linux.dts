@@ -190,4 +190,11 @@
 		status = "okay";
 	};
 
+	beau-ipc@b020000 {
+		compatible = "beau,ipc-ring";
+		reg = <0x0 0x0b020000 0x0 0x00020000>;
+		interrupts = <0 51 4>;
+		beau,channel-id = <1>;
+	};
+
 };

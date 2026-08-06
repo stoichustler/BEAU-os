@@ -111,6 +111,25 @@
 				endpoint-vms = <0 1>;
 				gpa-base = <0x0 0x0b000000>;
 				ring-size = <0x00010000>;
+				notify-virq = <82>;
+			};
+
+			channel@1 {
+				compatible = "beau,ipc-channel";
+				reg = <1>;
+				endpoint-vms = <1 2>;
+				gpa-base = <0x0 0x0b020000>;
+				ring-size = <0x00010000>;
+				notify-virq = <83>;
+			};
+
+			channel@2 {
+				compatible = "beau,ipc-channel";
+				reg = <2>;
+				endpoint-vms = <1 3>;
+				gpa-base = <0x0 0x0b040000>;
+				ring-size = <0x00010000>;
+				notify-virq = <84>;
 			};
 		};
 

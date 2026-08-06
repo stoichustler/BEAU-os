@@ -21,6 +21,9 @@ Linux kernel tree so they can be ported to multiple Linux versions.
   Ethernet validation through BEAU virtio-proxy.
 - `beau_transport.c`, `beau_vsock.h`: VM1 AF_VSOCK HVC transport for
   virtio-vsock peers in VM2 and VM3.
+- `ipc-ring.c`: static shared-memory SPSC channel driver. Each DT channel is
+  exposed as `/dev/beau-ipc-<channel>` and its HVC notification is delivered
+  through a virtual IRQ.
 - `vwdt.c`: hotplug-aware, per-CPU BEAU VM watchdog heartbeat driver.
 - `crash.c`: Linux panic and ARM64 oops notifier that reports a bounded crash
   record to the BEAU Host through HVC.
@@ -51,6 +54,33 @@ upstream AF_VSOCK core and virtio transport helpers.  Copy
 `beau_transport.c` and `beau_vsock.h` from this directory to that subsystem.
 The matching VM2/VM3 frontend and all integration files are retained in
 `sdk/kfe/`.
+
+## Shared-Memory IPC Test
+
+The shared Linux initramfs contains `/usr/local/bin/ipc`. Start one VM1 echo
+server per channel, then run the matching frontend client:
+
+```sh
+# VM1: one server for VM0, VM2, and VM3 respectively.
+ipc server 0 >/tmp/ipc0.log 2>&1 &
+ipc server 1 >/tmp/ipc1.log 2>&1 &
+ipc server 2 >/tmp/ipc2.log 2>&1 &
+
+# VM2: VM1 <-> VM2 channel.
+ipc client 1 vm2
+# expected: ipc: channel=1 echo=vm2
+
+# VM3: VM1 <-> VM3 channel.
+ipc client 2 vm3
+# expected: ipc: channel=2 echo=vm3
+```
+
+Channel 0 is VM0 <-> VM1 HIPC and is exercised from VM0 with `hipc send
+<payload>`. Channels 1 and 2 are isolated: VM2 receives only
+`/dev/beau-ipc-1`, VM3 receives only `/dev/beau-ipc-2`, while VM1 receives all
+three. The old polling `ipc-test.c` endpoint was removed because its automatic
+acknowledgements could form an echo loop when multiple Linux VMs shared IPC
+channels.
 
 ## Notes
 

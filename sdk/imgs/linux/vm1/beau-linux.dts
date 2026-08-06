@@ -165,6 +165,27 @@
 		beau,vsock-cid = <3>;
 	};
 
+	beau-ipc@b000000 {
+		compatible = "beau,ipc-ring";
+		reg = <0x0 0x0b000000 0x0 0x00020000>;
+		interrupts = <0 50 4>;
+		beau,channel-id = <0>;
+	};
+
+	beau-ipc@b020000 {
+		compatible = "beau,ipc-ring";
+		reg = <0x0 0x0b020000 0x0 0x00020000>;
+		interrupts = <0 51 4>;
+		beau,channel-id = <1>;
+	};
+
+	beau-ipc@b040000 {
+		compatible = "beau,ipc-ring";
+		reg = <0x0 0x0b040000 0x0 0x00020000>;
+		interrupts = <0 52 4>;
+		beau,channel-id = <2>;
+	};
+
 	virtio_mmio@a000000 {
 		compatible = "virtio,mmio";
 		reg = <0x0 0x0a000000 0x0 0x00000200>;
