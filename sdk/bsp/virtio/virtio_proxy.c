@@ -723,7 +723,8 @@ void virtio_proxy_init_vm(struct acrn_vm *vm)
 		struct virtio_proxy_dev *dev = virtio_proxy_get_dev(vm, i);
 		struct virtio_mmio_init init;
 
-		if (dev == NULL) {
+		if ((dev == NULL) ||
+			(proxy_config->device_id == VIRTIO_DEVICE_ID_VSOCK)) {
 			continue;
 		}
 
@@ -788,7 +789,7 @@ void virtio_proxy_reset_vm(struct acrn_vm *vm)
 	for (uint16_t i = 0U; i < vm_config->arch.guest_virtio_proxy_num; i++) {
 		struct virtio_proxy_dev *dev = virtio_proxy_get_dev(vm, i);
 
-		if (dev != NULL) {
+		if ((dev != NULL) && (dev->device_id != VIRTIO_DEVICE_ID_VSOCK)) {
 			virtio_mmio_reset_dev(&dev->mmio);
 		}
 	}

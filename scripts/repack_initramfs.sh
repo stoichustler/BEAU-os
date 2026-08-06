@@ -7,6 +7,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 ARCHIVE=${1:-"$ROOT/sdk/imgs/linux/Initramfs.cpio.gz"}
 EDU_TEST_SRC="$ROOT/sdk/imgs/linux/tools/beau-edu-test.c"
 RPMSG_TEST_SRC="$ROOT/sdk/imgs/linux/tools/beau-rpmsg-test.c"
+VSOCK_TEST_SRC="$ROOT/sdk/imgs/linux/tools/beau-vsock-test.c"
 EDU_TEST_CC=${EDU_TEST_CC:-aarch64-linux-gnu-gcc}
 RT_TESTS_SRC=${RT_TESTS_SRC:-"$ROOT/../rt-tests-2.10"}
 RT_TESTS_VERSION=2.10
@@ -328,13 +329,15 @@ exec /bin/sh -i
 EOF
 chmod 0755 "$WORKDIR/usr/local/bin/beau-console-shell"
 rm -f "$WORKDIR/usr/local/bin/beau-edu-test" \
-	"$WORKDIR/usr/local/bin/beau-rpmsg-test"
+	"$WORKDIR/usr/local/bin/beau-rpmsg-test" \
+	"$WORKDIR/usr/local/bin/beau-vsock-test"
 if ! command -v "$EDU_TEST_CC" >/dev/null 2>&1; then
 	echo "$EDU_TEST_CC is required to build initramfs test tools" >&2
 	exit 1
 fi
 "$EDU_TEST_CC" -Os -static -s -Wall -Wextra -o "$WORKDIR/usr/local/bin/vpci" "$EDU_TEST_SRC"
 "$EDU_TEST_CC" -Os -static -s -Wall -Wextra -o "$WORKDIR/usr/local/bin/rpmsg" "$RPMSG_TEST_SRC"
+"$EDU_TEST_CC" -Os -static -s -Wall -Wextra -o "$WORKDIR/usr/local/bin/vsock" "$VSOCK_TEST_SRC"
 install_rt_tests
 install_stress_ng_package
 install_debug_tools

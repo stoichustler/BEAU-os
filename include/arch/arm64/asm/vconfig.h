@@ -48,6 +48,8 @@ struct arm64_virtio_proxy_config {
 	uint16_t queue_num;
 	uint16_t queue_size;
 	uint16_t pending_num;
+	uint16_t reserved0;
+	uint64_t vsock_cid;
 	uint32_t access;
 	uint32_t throughput;
 	char tag[ARM64_VIRTIO_PROXY_TAG_MAX];

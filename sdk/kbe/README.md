@@ -19,6 +19,8 @@ Linux kernel tree so they can be ported to multiple Linux versions.
   frontend I2C validation through BEAU virtio-proxy.
 - `virtio-net-backend.c`: VM2 virtio-net uplink backend for VM3 frontend
   Ethernet validation through BEAU virtio-proxy.
+- `beau_transport.c`, `beau_vsock.h`: VM1 AF_VSOCK HVC transport for
+  virtio-vsock peers in VM2 and VM3.
 - `vwdt.c`: hotplug-aware, per-CPU BEAU VM watchdog heartbeat driver.
 - `crash.c`: Linux panic and ARM64 oops notifier that reports a bounded crash
   record to the BEAU Host through HVC.
@@ -41,6 +43,14 @@ Linux kernel tree so they can be ported to multiple Linux versions.
      `CONFIG_BEAU_VIRTIONET_BACKEND`
 6. Build the target kernel image and install it into the BEAU Linux image slot
    used by the VM that should run the driver.
+
+## BEAU virtio-vsock Backend
+
+The VM1 backend is built in Linux `net/vmw_vsock` because it shares the
+upstream AF_VSOCK core and virtio transport helpers.  Copy
+`beau_transport.c` and `beau_vsock.h` from this directory to that subsystem.
+The matching VM2/VM3 frontend and all integration files are retained in
+`sdk/kfe/`.
 
 ## Notes
 

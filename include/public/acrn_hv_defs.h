@@ -85,6 +85,7 @@
 #define HC_IPC                      BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x06UL)
 #define HC_AI_SCHED                 BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x07UL)
 #define HC_VM_CRASH_REPORT          BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x08UL)
+#define HC_VIRTIO_VSOCK_BACKEND     BASE_HC_ID(HC_ID, HC_ID_DBG_BASE + 0x09UL)
 
 /* Exact param2 selector; legacy SMCCC wrappers did not initialize x2. */
 #define ACRN_VM_WDT_KICK_F_PER_VCPU_V1  0x4257445400000001UL
@@ -419,6 +420,38 @@ struct acrn_virtio_proxy_ioc {
 	uint32_t batch_flags;
 	struct acrn_virtio_proxy_desc desc[ACRN_VIRTIO_PROXY_DESC_MAX];
 } __aligned(8);
+
+/*
+ * BEAU virtio-vsock backend ABI.  VM1 owns the data buffer named by
+ * buffer_gpa for the duration of one HVC only; EL2 never retains that GPA.
+ */
+#define ACRN_VSOCK_ABI_VERSION		1U
+#define ACRN_VSOCK_OP_REGISTER		0U
+#define ACRN_VSOCK_OP_POLL_TX		1U
+#define ACRN_VSOCK_OP_SEND_RX		2U
+#define ACRN_VSOCK_OP_HEARTBEAT	3U
+#define ACRN_VSOCK_STATUS_OK		0U
+#define ACRN_VSOCK_STATUS_EMPTY		1U
+#define ACRN_VSOCK_STATUS_BACKPRESSURE	2U
+#define ACRN_VSOCK_PKT_MAX		(64U * 1024U + 64U)
+
+struct acrn_virtio_vsock_ioc {
+	uint32_t op;
+	uint32_t status;
+	uint32_t abi_version;
+	uint32_t ioc_size;
+	uint32_t local_cid;
+	uint32_t peer_cid;
+	uint32_t packet_len;
+	uint32_t buffer_len;
+	uint64_t buffer_gpa;
+	uint64_t heartbeat_seq;
+	uint32_t wait_us;
+	uint32_t flags;
+} __aligned(8);
+
+_Static_assert(sizeof(struct acrn_virtio_vsock_ioc) == 56U,
+	"virtio-vsock HVC ABI layout mismatch");
 
 /**
  * Gpa to hpa translation parameter, used for HC_VM_GPA2HPA hypercall

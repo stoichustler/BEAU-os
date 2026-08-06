@@ -9,6 +9,7 @@
 #include <logmsg.h>
 #include <vm.h>
 #include <vconfig.h>
+#include <virtio_mmio.h>
 #include <bsp/vfdt.h>
 #include <bsp/pm.h>
 #include <acrn_hv_defs.h>
@@ -204,6 +205,24 @@ static bool fdt_vm_uses_virtio_proxy(const struct acrn_vm_config *vm_config)
 {
 	return (vm_config->os_config.os_family == VM_OS_LINUX) &&
 		(vm_config->arch.guest_virtio_proxy_num != 0U);
+}
+
+static bool fdt_vm_is_vsock_backend(const struct acrn_vm *vm)
+{
+	for (uint16_t vmid = 0U; vmid < CONFIG_MAX_VM_NUM; vmid++) {
+		const struct acrn_vm_config *vm_config = get_vm_config(vmid);
+
+		for (uint16_t i = 0U; i < vm_config->arch.guest_virtio_proxy_num; i++) {
+			const struct arm64_virtio_proxy_config *proxy =
+				&vm_config->arch.guest_virtio_proxy[i];
+
+			if ((proxy->device_id == VIRTIO_DEVICE_ID_VSOCK) &&
+				(proxy->backend_vmid == vm->vm_id)) {
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
 static void fdt_begin_cpu_node(void *fdt, uint32_t vcpu_id)
@@ -499,11 +518,24 @@ static void fdt_add_virtio_proxy(void *fdt, struct acrn_vm *vm, uint16_t index)
 		"virtio compatible");
 	fdt_property_reg64(fdt, "reg", base, proxy_config->size);
 	fdt_property_irq(fdt, "interrupts", interrupts, ARRAY_SIZE(interrupts));
+	if (proxy_config->device_id == VIRTIO_DEVICE_ID_VSOCK) {
+		fdt_check_ret(fdt_property_u64(fdt, "beau,vsock-cid",
+			proxy_config->vsock_cid), "virtio-vsock cid");
+	}
 	fdt_check_ret(fdt_property_string(fdt, "status", "okay"), "virtio proxy status");
 	fdt_check_ret(fdt_property_u32(fdt, "phandle",
 		ARM64_FDT_PHANDLE_VIRTIO_PROXY_BASE + index),
 		"virtio proxy phandle");
 	fdt_check_ret(fdt_end_node(fdt), "virtio proxy end");
+}
+
+static void fdt_add_vsock_backend(void *fdt)
+{
+	fdt_check_ret(fdt_begin_node(fdt, "beau-vsock-backend"), "vsock backend");
+	fdt_check_ret(fdt_property_string(fdt, "compatible", "beau,vsock-backend"),
+		"vsock backend compatible");
+	fdt_check_ret(fdt_property_u32(fdt, "beau,vsock-cid", 3U), "vsock backend cid");
+	fdt_check_ret(fdt_end_node(fdt), "vsock backend end");
 }
 
 void arch_init_service_vm_vfdt(struct acrn_vm *vm)
@@ -540,6 +572,9 @@ void arch_init_service_vm_vfdt(struct acrn_vm *vm)
 			i < get_vm_config(vm->vm_id)->arch.guest_virtio_proxy_num; i++) {
 			fdt_add_virtio_proxy(fdt, vm, i);
 		}
+	}
+	if (fdt_vm_is_vsock_backend(vm)) {
+		fdt_add_vsock_backend(fdt);
 	}
 
 	fdt_check_ret(fdt_end_node(fdt), "root end");

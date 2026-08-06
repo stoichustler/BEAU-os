@@ -2066,6 +2066,8 @@ static void dts_parse_arch(const void *fdt, int32_t generic, int32_t vm_node,
 		proxy_config->irq = fdt32_to_cpu(irq_prop[1]) + 32U;
 		proxy_config->device_id = dts_u32_prop(fdt, virtio_proxy,
 			"beau,device-id", VIRTIO_DEVICE_ID_FS);
+		proxy_config->vsock_cid = dts_u64_prop(fdt, virtio_proxy,
+			"beau,vsock-cid", 0UL);
 		proxy_config->frontend_vmid =
 			(uint16_t)((frontend_vmid == ACRN_INVALID_VMID) ? vm_id :
 			frontend_vmid);
@@ -2102,6 +2104,12 @@ static void dts_parse_arch(const void *fdt, int32_t generic, int32_t vm_node,
 				(proxy_config->queue_size == 0U) ||
 				(proxy_config->pending_num > VIRTIO_PROXY_PENDING_MAX)) {
 				arm64_dts_panic("virtio-proxy queue", -EINVAL);
+			}
+			if ((proxy_config->device_id == VIRTIO_DEVICE_ID_VSOCK) &&
+				((proxy_config->queue_num != 3U) ||
+				(proxy_config->backend_vmid != 1U) ||
+				(proxy_config->vsock_cid != ((uint64_t)proxy_config->frontend_vmid + 2UL)))) {
+				arm64_dts_panic("virtio-vsock config", -EINVAL);
 			}
 		proxy_count++;
 	}

@@ -32,6 +32,7 @@
 #include <asm/vtd.h>
 #include <vhost_console.h>
 #include <virtio_proxy.h>
+#include <vsock_proxy.h>
 #include <debug/ramlog.h>
 
 /* [20260630] VM/stage-2 principle:
@@ -1004,12 +1005,20 @@ static void register_arm64_vio_mmio(struct acrn_vm *vm)
 	}
 	if (arm64_vm_uses_virtio_proxy(get_vm_config(vm->vm_id))) {
 		for (uint16_t i = 0U; i < arch_config->guest_virtio_proxy_num; i++) {
-			struct virtio_proxy_dev *proxy = virtio_proxy_get_dev(vm, i);
+			void *proxy;
 			uint64_t base = arch_config->guest_virtio_proxy[i].base;
 			uint64_t size = arch_config->guest_virtio_proxy[i].size;
 
-			register_mmio_emul_handler(vm, virtio_proxy_mmio_handler,
-				base, base + size, proxy, false);
+			if (arch_config->guest_virtio_proxy[i].device_id ==
+				VIRTIO_DEVICE_ID_VSOCK) {
+				proxy = vsock_proxy_get_dev(vm);
+				register_mmio_emul_handler(vm, vsock_proxy_mmio_handler,
+					base, base + size, proxy, false);
+			} else {
+				proxy = virtio_proxy_get_dev(vm, i);
+				register_mmio_emul_handler(vm, virtio_proxy_mmio_handler,
+					base, base + size, proxy, false);
+			}
 		}
 	}
 }
@@ -1057,6 +1066,7 @@ int32_t arch_init_vm(struct acrn_vm *vm, struct acrn_vm_config *vm_config)
 	}
 	if (arm64_vm_uses_virtio_proxy(vm_config)) {
 		virtio_proxy_init_vm(vm);
+		vsock_proxy_init_vm(vm);
 	}
 	if (arm64_vm_uses_vpci(vm_config) && (init_vpci(vm) != 0)) {
 		panic("failed to initialize arm64 vPCI for vm%u", vm->vm_id);
@@ -1080,6 +1090,7 @@ int32_t arch_deinit_vm(struct acrn_vm *vm)
 		deinit_vpci(vm);
 	}
 	virtio_proxy_release_vm(vm);
+	vsock_proxy_release_vm(vm);
 	return 0;
 }
 
@@ -1126,6 +1137,7 @@ int32_t arch_reset_vm(struct acrn_vm *vm)
 		return ret;
 	}
 	virtio_proxy_release_vm(vm);
+	vsock_proxy_release_vm(vm);
 	reset_vm_ioreqs(vm);
 	arm64_vgicv3_init_vm(vm, vm_config->cpu_affinity);
 	if ((vm_config->arch.guest_smmu_size == 0UL) ||
@@ -1141,6 +1153,7 @@ int32_t arch_reset_vm(struct acrn_vm *vm)
 	}
 	if (arm64_vm_uses_virtio_proxy(vm_config)) {
 		virtio_proxy_reset_vm(vm);
+		vsock_proxy_reset_vm(vm);
 	}
 	vm->arch_vm.time_delta = -(int64_t)cpu_ticks();
 

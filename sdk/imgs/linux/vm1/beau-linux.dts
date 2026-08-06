@@ -160,6 +160,11 @@
 			     <1 10 4>;
 	};
 
+	beau-vsock-backend {
+		compatible = "beau,vsock-backend";
+		beau,vsock-cid = <3>;
+	};
+
 	virtio_mmio@a000000 {
 		compatible = "virtio,mmio";
 		reg = <0x0 0x0a000000 0x0 0x00000200>;

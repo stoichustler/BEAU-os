@@ -17,6 +17,7 @@
 #include <logmsg.h>
 #include <trace.h>
 #include <virtio_proxy.h>
+#include <vsock_proxy.h>
 #include <vm_crash.h>
 #include <asm/guest/vipc.h>
 
@@ -114,6 +115,13 @@ static int32_t hcall_arm64_virtio_proxy_backend(struct acrn_vcpu *vcpu,
 	return virtio_proxy_backend_hcall(vcpu, param1);
 }
 
+static int32_t hcall_arm64_vsock_proxy_backend(struct acrn_vcpu *vcpu,
+	__unused struct acrn_vm *target_vm, uint64_t param1,
+	__unused uint64_t param2)
+{
+	return vsock_proxy_backend_hcall(vcpu, param1);
+}
+
 static int32_t hcall_arm64_ipc(struct acrn_vcpu *vcpu,
 	__unused struct acrn_vm *target_vm, uint64_t param1,
 	__unused uint64_t param2)
@@ -171,6 +179,10 @@ static const struct hcall_dispatch_entry arm64_hc_dispatch_table[] = {
 	},
 	[HC_IDX(HC_VIRTIO_PROXY_BACKEND)] = {
 		.handler = hcall_arm64_virtio_proxy_backend,
+		.permission_flags = GUEST_FLAG_STATIC_VM,
+	},
+	[HC_IDX(HC_VIRTIO_VSOCK_BACKEND)] = {
+		.handler = hcall_arm64_vsock_proxy_backend,
 		.permission_flags = GUEST_FLAG_STATIC_VM,
 	},
 	[HC_IDX(HC_IPC)] = {
@@ -239,7 +251,8 @@ int32_t arm64_dispatch_hypercall(struct acrn_vcpu *vcpu)
 	}
 
 	vcpu->arch.regs.x0 = (uint64_t)ret;
-	if ((ret < 0) && !((hcall_id == HC_VIRTIO_PROXY_BACKEND) &&
+	if ((ret < 0) && !(((hcall_id == HC_VIRTIO_PROXY_BACKEND) ||
+		(hcall_id == HC_VIRTIO_VSOCK_BACKEND)) &&
 		((ret == -EBUSY) || (ret == -ENODEV) || (ret == -ENODATA)))) {
 		LOG_DBG("HCALL:  0x%lx ret:%d", hcall_id, ret);
 	}
