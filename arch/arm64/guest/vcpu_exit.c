@@ -27,6 +27,7 @@
 #include <asm/irq.h>
 #include <asm/page.h>
 #include <asm/pmu.h>
+#include <asm/psci.h>
 #if CONFIG_ARM64_SPE
 #include <asm/spe.h>
 #endif
@@ -84,7 +85,7 @@
 #define PSCI_0_2_FN_SYSTEM_RESET	0x84000009U
 #define PSCI_1_0_FN_PSCI_FEATURES	0x8400000aU
 #define PSCI_1_0_FN_SYSTEM_SUSPEND	0x8400000eU
-#define PSCI_1_1_FN_SYSTEM_RESET2	0x84000012U
+#define PSCI_1_1_FN64_SYSTEM_RESET2	0xc4000012U
 #define ARM_SMCCC_VERSION_FUNC_ID	0x80000000U
 #define PSCI_0_2_FN64_CPU_SUSPEND	0xc4000001U
 #define PSCI_0_2_FN64_CPU_ON		0xc4000003U
@@ -777,7 +778,7 @@ static int64_t handle_psci_cpu_on(struct acrn_vcpu *vcpu)
 	return ret;
 }
 
-static int64_t handle_psci_features(uint32_t fn)
+static int64_t handle_psci_features(const struct acrn_vcpu *vcpu, uint32_t fn)
 {
 	switch (fn) {
 	case PSCI_0_2_FN_PSCI_VERSION:
@@ -793,9 +794,20 @@ static int64_t handle_psci_features(uint32_t fn)
 	case PSCI_0_2_FN64_CPU_ON:
 	case PSCI_0_2_FN64_AFFINITY_INFO:
 		return PSCI_RET_SUCCESS;
+	case PSCI_1_1_FN64_SYSTEM_RESET2:
+		return ((vcpu != NULL) && (vcpu->vm != NULL) &&
+			is_service_vm(vcpu->vm) && psci_system_reset2_is_supported()) ?
+			PSCI_RET_SUCCESS : PSCI_RET_NOT_SUPPORTED;
 	default:
 		return PSCI_RET_NOT_SUPPORTED;
 	}
+}
+
+static int64_t handle_psci_version(const struct acrn_vcpu *vcpu)
+{
+	return ((vcpu != NULL) && (vcpu->vm != NULL) &&
+		is_service_vm(vcpu->vm) && psci_system_reset2_is_supported()) ?
+		0x00010001L : 0x00010000L;
 }
 
 static int32_t handle_psci64(struct acrn_vcpu *vcpu, bool advance_elr)
@@ -815,10 +827,10 @@ static int32_t handle_psci64(struct acrn_vcpu *vcpu, bool advance_elr)
 	 */
 	switch (fn) {
 	case PSCI_0_2_FN_PSCI_VERSION:
-		ret = 0x00010000L;
+		ret = handle_psci_version(vcpu);
 		break;
 	case PSCI_1_0_FN_PSCI_FEATURES:
-		ret = handle_psci_features((uint32_t)vcpu->arch.regs.x1);
+		ret = handle_psci_features(vcpu, (uint32_t)vcpu->arch.regs.x1);
 		break;
 	case PSCI_0_2_FN_MIGRATE_INFO_TYPE:
 		ret = PSCI_0_2_TOS_MP;
@@ -858,6 +870,10 @@ static int32_t handle_psci64(struct acrn_vcpu *vcpu, bool advance_elr)
 	case PSCI_0_2_FN_SYSTEM_RESET:
 		ret = arm64_vpsci_system_reset(vcpu);
 		break;
+	case PSCI_1_1_FN64_SYSTEM_RESET2:
+		ret = arm64_vpsci_system_reset2(vcpu, vcpu->arch.regs.x1,
+			vcpu->arch.regs.x2);
+		break;
 	case PSCI_1_0_FN_SYSTEM_SUSPEND:
 	case PSCI_1_0_FN64_SYSTEM_SUSPEND:
 		entry_point = (fn == PSCI_1_0_FN64_SYSTEM_SUSPEND) ?
@@ -894,6 +910,7 @@ static bool is_local_psci_smc(uint64_t function_id)
 	case PSCI_0_2_FN_MIGRATE_INFO_TYPE:
 	case PSCI_0_2_FN_SYSTEM_OFF:
 	case PSCI_0_2_FN_SYSTEM_RESET:
+	case PSCI_1_1_FN64_SYSTEM_RESET2:
 	case PSCI_1_0_FN_PSCI_FEATURES:
 	case PSCI_1_0_FN_SYSTEM_SUSPEND:
 	case PSCI_1_0_FN64_SYSTEM_SUSPEND:

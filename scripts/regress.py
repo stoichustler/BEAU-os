@@ -1040,8 +1040,9 @@ def expect_ps_cpu_usage(qemu):
     print("[pass] ps: independent baseline and per-thread CPU usage", flush=True)
 
 
-def expect_health_vcpu_usage(qemu):
+def expect_vmstat_summary_vcpu_usage(qemu):
     common = [
+        "vmstat summary",
         "overall:",
         "Host",
         "Virtual machines",
@@ -1059,37 +1060,23 @@ def expect_health_vcpu_usage(qemu):
         "vm2",
         "vm3",
     ]
-    baseline = qemu.command_retry("health", common + ["window:baseline"])
-    header = next(
-        (line for line in baseline.splitlines() if "vmid" in line and "vcpu0" in line),
-        None,
-    )
-    if header is None:
-        raise RuntimeError("health output missing vCPU utilization header")
-    if "vcpu4" in header:
-        raise RuntimeError(f"health output has a non-topology vCPU column: {header!r}")
-    vm0_baseline = shell_table_row(baseline, 0)
-    if vm0_baseline.count("NC") != 2:
-        raise RuntimeError(
-            f"health VM0 row does not mark two unconfigured vCPUs as NC: {vm0_baseline!r}"
-        )
 
     qemu.drain_for(0.2)
     output = qemu.command_retry(
-        "health",
+        "vmstat",
         common,
         ["vCPU utilization window:baseline"],
     )
     window = re.search(r"vCPU utilization window:(\d+)ms", output)
     if (window is None) or (int(window.group(1)) == 0):
-        raise RuntimeError("second health output does not contain a non-zero sampling window")
+        raise RuntimeError("second vmstat summary output lacks a non-zero utilization window")
     vm0_row = shell_table_row(output, 0)
     if re.search(r"\d+\.\d%", vm0_row) is None:
         raise RuntimeError(
-            f"second health VM0 row lacks numeric running-vCPU utilization: {vm0_row!r}"
+            f"second vmstat summary VM0 row lacks numeric vCPU utilization: {vm0_row!r}"
         )
 
-    print("[pass] health: dynamic vCPU columns and utilization history", flush=True)
+    print("[pass] vmstat summary: dynamic vCPU columns and utilization history", flush=True)
 
 
 def expect_vm2_cpu1_lifecycle(qemu):
@@ -1294,8 +1281,8 @@ def run_str_cycle(qemu, args, cycle):
         "wake:reason:0",
     ])
     qemu.command_retry(
-        "health",
-        ["overall:", "Host", "Virtual machines", "vm0", "vm1", "vm2", "vm3"],
+        "vmstat",
+        ["vmstat summary", "overall:", "Host", "Virtual machines", "vm0", "vm1", "vm2", "vm3"],
     )
     qemu.command_retry("irqstat", ["host pirq:", "guest virq:"])
     qemu.command_retry("virtiostat", ["virtio-fs vm3:0", "virtio-rng vm3:1"])
@@ -1533,7 +1520,7 @@ def run_qemu(args, cmd):
         )
         pcpu_count = int(args.smp)
         expect_rttest(qemu, "rttest", pcpu_count)
-        qemu.command_retry(
+        vmstat_baseline = qemu.command_retry(
             "vmstat",
             [
                 "┌─  vmstat vm0:Zephyr",
@@ -1554,9 +1541,35 @@ def run_qemu(args, cmd):
                 "bvt:weight:",
                 "timer:PPI27",
                 "vgic:PPI27",
+                "vmstat summary",
+                "overall:",
+                "Virtual machines",
+                "vCPU utilization window:baseline",
+                "vmid",
+                "vcpu0",
+                "vcpu1",
+                "vcpu2",
+                "vcpu3",
+                "total",
             ],
             ["assertion failed", "stack check fails", "fatal error"],
         )
+        header = next(
+            (line for line in vmstat_baseline.splitlines() if "vmid" in line and "vcpu0" in line),
+            None,
+        )
+        if header is None:
+            raise RuntimeError("vmstat summary output missing vCPU utilization header")
+        if "vcpu4" in header:
+            raise RuntimeError(
+                f"vmstat summary has a non-topology vCPU column: {header!r}"
+            )
+        vm0_baseline = shell_table_row(vmstat_baseline, 0)
+        if vm0_baseline.count("NC") != 2:
+            raise RuntimeError(
+                "vmstat summary VM0 row does not mark two unconfigured vCPUs as NC: "
+                f"{vm0_baseline!r}"
+            )
         qemu.command_retry(
             "vmexitstat",
             [
@@ -1576,7 +1589,7 @@ def run_qemu(args, cmd):
             "memstat",
             ["Page-table pools", "HV-s1", "VM-s2", "Stage-2 ownership", "accounted:"],
         )
-        expect_health_vcpu_usage(qemu)
+        expect_vmstat_summary_vcpu_usage(qemu)
         qemu.command_retry("irqstat", ["host pirq:", "guest virq:"])
         qemu.command_retry(
             "virtiostat",
@@ -1666,7 +1679,7 @@ def main():
         if not args.no_build:
             print(render(build, args.toolchains))
         print(quote(qemu))
-        checks = "prompt, vcpus, ps, schedstat, vmstat, health, swtdbg empty, devmap, irqstat, virtiostat, vsh 0, Zephyr, vsh 1, Linux-1 backend/PCI, vsh 2, Linux-2 frontend, vsh 3, Linux-3 frontend"
+        checks = "prompt, vcpus, ps, schedstat, vmstat summary, swtdbg empty, devmap, irqstat, virtiostat, vsh 0, Zephyr, vsh 1, Linux-1 backend/PCI, vsh 2, Linux-2 frontend, vsh 3, Linux-3 frontend"
         if args.stress_vsh_switch:
             checks += ", VM console switch/Enter stress"
         if args.stress_vsh_help:

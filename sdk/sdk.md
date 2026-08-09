@@ -12,10 +12,13 @@
 ├── lib
 ├── scripts
 └── sdk
+    ├── ai-sched         // AI scheduler assistent
     ├── beau             // Documentation
     ├── bsp              // BEAU dev/vdev drivers
-    ├── image
-    ├── kbe              // BEAU general-purpose Linux drivers
+    ├── imgs
+    ├── kbe              // BEAU general-purpose Linux backend drivers
+    ├── kfe              // BEAU general-purpose Linux frontend drivers
+    ├── trusty           // BEAU Trusty TEE
     ├── ube              // Userspace backend (not used yet)
     └── zsh              // BEAU general-purpose Zephyr applications
 ```

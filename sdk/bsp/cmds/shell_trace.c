@@ -10,6 +10,7 @@
 #include <ticks.h>
 #include <trace.h>
 #include <util.h>
+#include <asm/vconfig.h>
 #ifdef CONFIG_PERF
 #include <asm/perf.h>
 #endif
@@ -17,6 +18,7 @@
 #include "shell_cmds.h"
 
 #define TRACE_DUMP_DEFAULT_COUNT	64U
+#define TRACE_SUMMARY_DELAY_ALERT_US	500U
 #ifdef CONFIG_PERF
 #define PERF_DUMP_DEFAULT_COUNT	32U
 #endif
@@ -25,6 +27,29 @@ struct shell_trace_cursor {
 	struct trace_record record;
 	uint32_t index;
 	bool valid;
+};
+
+struct shell_trace_summary {
+	uint64_t first_tsc;
+	uint64_t last_tsc;
+	uint64_t overwritten;
+	uint64_t timer_delay_min_us;
+	uint64_t timer_delay_max_us;
+	uint64_t timer_delay_sum_us;
+	uint32_t record_count;
+	uint32_t timer_arm_count;
+	uint32_t timer_dispatch_count;
+	uint32_t timer_delay_count;
+	uint32_t timer_delay_alert_count;
+	uint32_t timer_dispatch_invalid_count;
+	uint32_t switch_count;
+	uint32_t hcall_count;
+	uint32_t virq_count;
+	uint32_t active_pcpu_count;
+	uint32_t vm_exit_count[CONFIG_MAX_VM_NUM];
+	uint16_t timer_delay_max_pcpu;
+	bool timer_delay_sum_saturated;
+	bool active_pcpu[MAX_PCPU_NUM];
 };
 
 static const char *shell_trace_state_name(enum trace_capture_state state)
@@ -167,6 +192,35 @@ static void shell_trace_format_sched_thread(uint32_t token, char *buf, size_t si
 	}
 }
 
+/* [20260809] Timer timeout presentation
+ *
+ * trace record timestamp + absolute timeout tick
+ *                 |
+ *                 v
+ * expires/expired interval at record publication
+ *
+ * Key rule:
+ *   - trace records retain their ABI-stable raw tick payload;
+ *   - dump formatting derives only a bounded, human-readable interval;
+ *   - a zero timeout is reported as unavailable rather than as a false duration.
+ */
+static void shell_trace_format_timer_timeout(const struct trace_record *record,
+	char *buf, size_t size)
+{
+	uint64_t timeout = record->payload.fields_64.e;
+	uint64_t interval_us;
+
+	if (timeout == 0UL) {
+		(void)snprintf(buf, size, "timeout:%9s", "N/A");
+	} else if (timeout >= record->tsc) {
+		interval_us = ticks_to_us(timeout - record->tsc);
+		(void)snprintf(buf, size, "expires:%9luus", interval_us);
+	} else {
+		interval_us = ticks_to_us(record->tsc - timeout);
+		(void)snprintf(buf, size, "expired:%9luus", interval_us);
+	}
+}
+
 static void shell_trace_print_record(uint32_t sequence, uint64_t base_tsc,
 	const struct trace_record *record)
 {
@@ -183,10 +237,14 @@ static void shell_trace_print_record(uint32_t sequence, uint64_t base_tsc,
 	case TRACE_TIMER_ACTION_PCKUP:
 	case TRACE_TIMER_ACTION_UPDAT:
 	case TRACE_TIMER_IRQ:
-		shell_item_line("[%04u] +%8luus cpu:%u %-12s deadline:0x%016lx data:0x%016lx",
-			sequence, delta_us, record->cpu, name,
-			record->payload.fields_64.e, record->payload.fields_64.f);
+	{
+		char timeout[32U];
+
+		shell_trace_format_timer_timeout(record, timeout, sizeof(timeout));
+		shell_item_line("[%04u] +%8luus cpu:%u %-12s %-20s",
+			sequence, delta_us, record->cpu, name, timeout);
 		break;
+	}
 	case TRACE_SCHED_NEXT:
 	{
 		char prev[16U];
@@ -224,6 +282,148 @@ static void shell_trace_print_record(uint32_t sequence, uint64_t base_tsc,
 			record->payload.fields_64.e, record->payload.fields_64.f);
 		break;
 	}
+}
+
+/* [20260809] Immutable trace snapshot summary
+ *
+ * stopped trace rings -> chronological merge -> bounded local aggregation
+ *                                                  |
+ *                                                  v
+ *                                           diagnostic summary
+ *
+ * Key rule:
+ *   - summary data is derived only after the trace snapshot is ready;
+ *   - timer delay uses the immutable dispatch deadline, never live timer state;
+ *   - saturation and invalid payloads remain explicit instead of producing a
+ *     misleading average or health conclusion.
+ */
+static void shell_trace_summary_add(struct shell_trace_summary *summary,
+	const struct trace_record *record)
+{
+	uint32_t event_id = (uint32_t)record->id;
+
+	if (summary->record_count == 0U) {
+		summary->first_tsc = record->tsc;
+		summary->last_tsc = record->tsc;
+	} else {
+		summary->first_tsc = min(summary->first_tsc, record->tsc);
+		summary->last_tsc = max(summary->last_tsc, record->tsc);
+	}
+	summary->record_count++;
+
+	if ((record->cpu < MAX_PCPU_NUM) && !summary->active_pcpu[record->cpu]) {
+		summary->active_pcpu[record->cpu] = true;
+		summary->active_pcpu_count++;
+	}
+
+	switch (event_id) {
+	case TRACE_TIMER_ACTION_ADDED:
+		summary->timer_arm_count++;
+		break;
+	case TRACE_TIMER_ACTION_PCKUP:
+	{
+		uint64_t timeout = record->payload.fields_64.e;
+		uint64_t delay_us;
+
+		summary->timer_dispatch_count++;
+		if ((timeout == 0UL) || (timeout > record->tsc)) {
+			summary->timer_dispatch_invalid_count++;
+			break;
+		}
+
+		delay_us = ticks_to_us(record->tsc - timeout);
+		if (summary->timer_delay_count == 0U) {
+			summary->timer_delay_min_us = delay_us;
+			summary->timer_delay_max_us = delay_us;
+			summary->timer_delay_max_pcpu = record->cpu;
+		} else {
+			summary->timer_delay_min_us = min(summary->timer_delay_min_us, delay_us);
+			if (delay_us > summary->timer_delay_max_us) {
+				summary->timer_delay_max_us = delay_us;
+				summary->timer_delay_max_pcpu = record->cpu;
+			}
+		}
+		if (summary->timer_delay_sum_us > (UINT64_MAX - delay_us)) {
+			summary->timer_delay_sum_us = UINT64_MAX;
+			summary->timer_delay_sum_saturated = true;
+		} else {
+			summary->timer_delay_sum_us += delay_us;
+		}
+		summary->timer_delay_count++;
+		if (delay_us > TRACE_SUMMARY_DELAY_ALERT_US) {
+			summary->timer_delay_alert_count++;
+		}
+		break;
+	}
+	case TRACE_SCHED_NEXT:
+		summary->switch_count++;
+		break;
+	case TRACE_VMEXIT_VMCALL:
+		summary->hcall_count++;
+		break;
+	case TRACE_VIRQ_INJECT:
+		summary->virq_count++;
+		break;
+	case TRACE_VM_EXIT:
+		if (record->payload.fields_32.a < CONFIG_MAX_VM_NUM) {
+			summary->vm_exit_count[record->payload.fields_32.a]++;
+		}
+		break;
+	default:
+		break;
+	}
+}
+
+static void shell_trace_summary_print(const struct shell_trace_summary *summary,
+	uint32_t shown)
+{
+	uint64_t window_us = summary->record_count > 1U ?
+		ticks_to_us(summary->last_tsc - summary->first_tsc) : 0UL;
+	uint16_t vm_id;
+
+	shell_item_section("TRACE SUMMARY");
+	shell_item_line("Capture: window:%luus records:%u shown:%u overwritten:%lu pcpus:%u",
+		window_us, summary->record_count, shown, summary->overwritten,
+		summary->active_pcpu_count);
+	shell_item_section("Timing");
+	shell_item_line("timer arm:%u dispatch:%u", summary->timer_arm_count,
+		summary->timer_dispatch_count);
+	if (summary->timer_delay_count == 0U) {
+		shell_item_line("expiry delay:N/A");
+	} else if (summary->timer_delay_sum_saturated) {
+		shell_item_line("expiry delay: min:%luus avg:N/A max:%luus",
+			summary->timer_delay_min_us, summary->timer_delay_max_us);
+	} else {
+		shell_item_line("expiry delay: min:%luus avg:%luus max:%luus",
+			summary->timer_delay_min_us,
+			summary->timer_delay_sum_us / summary->timer_delay_count,
+			summary->timer_delay_max_us);
+	}
+	shell_item_line("delayed >%uus:%u", TRACE_SUMMARY_DELAY_ALERT_US,
+		summary->timer_delay_alert_count);
+	shell_item_section("Scheduling");
+	shell_item_line("switches:%u active-pcpus:%u", summary->switch_count,
+		summary->active_pcpu_count);
+	shell_item_section("Guest activity");
+	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
+		if (summary->vm_exit_count[vm_id] != 0U) {
+			shell_item_line("vm%u exits:%u", vm_id, summary->vm_exit_count[vm_id]);
+		}
+	}
+	shell_item_line("hcalls:%u virq injections:%u", summary->hcall_count,
+		summary->virq_count);
+	shell_item_section("Attention");
+	if (summary->timer_delay_count == 0U) {
+		shell_item_line("max expiry delay:N/A");
+	} else {
+		shell_item_line("max expiry delay: cpu%hu %luus",
+			summary->timer_delay_max_pcpu, summary->timer_delay_max_us);
+	}
+	shell_item_line("invalid timer dispatch:%u",
+		summary->timer_dispatch_invalid_count);
+	shell_item_line("functional validation:%s",
+		(summary->record_count != 0U) &&
+		(summary->timer_dispatch_invalid_count == 0U) ? "PASS" : "FAIL");
 }
 
 static void shell_trace_status(void)
@@ -281,6 +481,7 @@ static int32_t shell_trace_start(int32_t argc, char **argv)
 static int32_t shell_trace_dump(int32_t argc, char **argv)
 {
 	struct shell_trace_cursor cursors[MAX_PCPU_NUM];
+	struct shell_trace_summary summary;
 	struct trace_status trace_status;
 	uint32_t total = 0U;
 	uint32_t requested = TRACE_DUMP_DEFAULT_COUNT;
@@ -310,6 +511,7 @@ static int32_t shell_trace_dump(int32_t argc, char **argv)
 	}
 
 	(void)memset(cursors, 0U, sizeof(cursors));
+	(void)memset(&summary, 0U, sizeof(summary));
 	for (pcpu_id = 0U; pcpu_id < get_pcpu_nums(); pcpu_id++) {
 		struct trace_cpu_status status;
 
@@ -317,13 +519,16 @@ static int32_t shell_trace_dump(int32_t argc, char **argv)
 		cursors[pcpu_id].valid = trace_get_record(pcpu_id, 0U,
 			&cursors[pcpu_id].record);
 		total += status.count;
+		summary.overwritten += status.overwritten;
 	}
 	if (requested > total) {
 		requested = total;
 	}
 	skipped = total - requested;
 
-	shell_item_begin("TRACE DUMP");
+	shell_item_begin("TRACE");
+	shell_item_line("Diagnose timing, scheduling, and guest activity correlations.");
+	shell_item_section("TRACE DUMP");
 	shell_item_line("records:%u shown:%u", total, requested);
 	while (consumed < total) {
 		uint16_t best = INVALID_CPU_ID;
@@ -339,6 +544,7 @@ static int32_t shell_trace_dump(int32_t argc, char **argv)
 			break;
 		}
 
+		shell_trace_summary_add(&summary, &cursors[best].record);
 		if (consumed >= skipped) {
 			if (printed == 0U) {
 				base_tsc = cursors[best].record.tsc;
@@ -352,6 +558,7 @@ static int32_t shell_trace_dump(int32_t argc, char **argv)
 			&cursors[best].record);
 		shell_output_checkpoint();
 	}
+	shell_trace_summary_print(&summary, requested);
 	shell_item_end();
 
 	return 0;

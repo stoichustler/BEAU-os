@@ -119,7 +119,19 @@ static uint64_t arm64_vm_range_end(uint64_t base, uint64_t size)
 
 static bool stage2_large_page_support(enum _page_table_level level, __unused uint64_t prot)
 {
-	return level == PGT_LVL1;
+	/* [20260807] Stage-2 static RAM leaf selection
+	 *
+	 * validated identity RAM -> aligned 1 GiB range -> L2 block leaf
+	 *                                  |
+	 *                                  +--> otherwise use existing L1/L0 leaves
+	 *
+	 * Key rule:
+	 *   - static RAM validation owns the HPA/IPA identity guarantee;
+	 *   - the generic walker must prove complete block alignment before publish;
+	 *   - dynamic maps remain limited to L1/L0 so BAR and MSI-X trap boundaries
+	 *     retain their required isolation granularity.
+	 */
+	return (level == PGT_LVL2) || (level == PGT_LVL1);
 }
 
 static void stage2_flush_cache_pagewalk(const void *entry)

@@ -1514,7 +1514,7 @@ vCPU 保留完整 GPR/异常寄存器、guest/host stack、调度延迟、pCPU �
 request/IRQ；多个 stalled bit 全部采集，legacy 或空/无效 stalled mask 回退为全量采集。
 VM 级仍保留 WDT/recovery、全部 expected vCPU 的 heartbeat mask/age/token、IRQ 和 virtio
 信息。架构持续态只维护
-`vmstat/health` 使用的
+`vmstat summary` 使用的
 `vtimer_diag` 聚合计数，不维护 trace ring。
 
 ### 15.3 客体驱动
@@ -1691,10 +1691,9 @@ WDT recovery 与 failure 事件继续使用 `LOG_*` 保留为故障证据。
 | `devmap` | host Stage-1 与每 VM Stage-2 map |
 | `memstat` | 页表池和 Stage-2 ownership |
 | `walkpt <vmid> <ipa>` | 只读输出指定 IPA 的逐级 Stage-2 descriptor、映射与属性 |
-| `health` | host/VM 运行健康摘要与 findings |
 | `swtdbg <vmid>`（Z3L）/ `hwtdbg`（ZR2L） | 打印所有已保留 WDT 超时现场，读取不清除 |
 | `coredump <print\|erase>` | 查看或清除最近一次 ARM64 panic/异常快照 |
-| `vmstat` | VM 配置、状态、affinity、boot、timer、WDT |
+| `vmstat` | VM 配置、状态、affinity、boot、timer、WDT，以及末尾的 host/VM summary 与 findings |
 | `vmexitstat` | VM/vCPU 同步 VM-exit handler 的 EC 分类次数与 wall-time；物理 IRQ exit 不单独计入，且不含后续调度 |
 | `cachestat` | cache topology 和 LLC domain |
 | `ipcstat` | HVC IPC channel、ring、notify/ack/drop，以及 static remoteproc/rpmsg channel、doorbell、vIRQ 和拒绝计数 |
@@ -1709,17 +1708,25 @@ WDT recovery 与 failure 事件继续使用 `LOG_*` 保留为故障证据。
 | `pm reboot <vmid>` | 异步 cold restart 非 service VM |
 | `pm ...` / `pmstat` | VM STR/reboot 控制与 transaction 诊断 |
 
-`health` 的 vCPU utilization 表使用相邻两次命令之间的 scheduler runtime 差值。
+`vmstat summary` 的 vCPU utilization 表使用相邻两次 `vmstat` 命令之间的 scheduler runtime 差值。
 列数取所有已配置 VM 中最大的 vCPU 数；某 VM 未配置的列显示 `NC`，已配置但 VM
 或 vCPU 不处于 running 生命周期时显示 `NA`。首次命令只建立基线并以 `--` 表示
 running vCPU；后续命令仅对当前快照为 running 的 vCPU 显示百分比。`total` 是该 VM
 各 running vCPU 百分比之和，可能超过 100%。利用率表示调度时间，不替代 WDT
-heartbeat 对 guest forward progress 的判断。
+heartbeat 对 guest forward progress 的判断。summary 的 VM 表是紧凑总览：`console.q`
+只显示当前 console 排队字节数；容量与累计 drop 保留在对应 VM 详情中的 `vcon` 行。
+逐 VM 的正常 SWT 诊断压缩为 status 与 per-vCPU age 两行；token、队列与 recovery wait
+仅在 WDT 非 alive、stalled、recovery、restart failure 或 daemon pending 时显示，完整现场使用
+`swtdbg`。
 
 `ps` 把 idle、shell、helper 和 vCPU thread 放在同一张表中，`cpu%/run.us` 使用相邻
 两次 `ps` 的独立 runtime 快照；首次采样、线程首次出现、计数回退或快照容量不足
 时显示 `--`。执行 `schedstat` 不会改变 `ps` 的采样窗口。`schedstat` 只保留 pCPU
-busy%、policy 和 BVT/RTDS/CBS 诊断，不再重复 per-thread CPU usage。
+busy%、policy 和 BVT/RTDS/CBS 诊断，不再重复 per-thread CPU usage。CBS latency
+histogram 首次输出是 vCPU 创建以来的累计计数，`window.us:--`；后续输出是相对前一次
+`schedstat` 的增量，`window.us` 给出该采样窗口。`samples` 是八个等待桶之和，
+`tail>=5ms`/`tail%` 是落入 `>=5ms` 桶的样本数及占比，`max.us (TTL)` 始终是生命周期
+最大等待，不能当作当前窗口最大值。
 
 `vmexitstat` 的计时范围从 `vcpu_exit_handler()` 入口到对应 EC handler 返回，只用于比较
 MMIO、HVC、sysreg 等同步 exit 在同一 VM/vCPU 上的 EL2 handler cost。物理 IRQ exit 不会
@@ -1868,7 +1875,7 @@ python3 scripts/regress.py
 
 - BEAU prompt 和 fatal pattern。
 - PM policy、`vcpus`、hybrid `schedstat`、`rttest`。
-- `vmstat`、`devmap`、`memstat`、`health`、`irqstat`。
+- `vmstat`（含 summary）、`devmap`、`memstat`、`irqstat`。
 - Z3L 的 VM2/VM3 fs/rng/blk/i2c/net proxy，或 ZR2L 的 VM3 对应 proxy。
 - Z3L VM1 vsock backend 与 VM2/VM3 standard virtio-vsock frontend 的 echo 链路。
 - 正常启动时 Z3L `swtdbg <vmid>` 或 ZR2L `hwtdbg` 无事件；WDT smoke 后保留 guest
@@ -1893,7 +1900,6 @@ python3 scripts/regress.py --dry-run
 ### 20.2 手工最小 smoke
 
 ```text
-console:\> health
 console:\> vmstat
 console:\> schedstat
 console:\> irqstat
@@ -2139,7 +2145,7 @@ sdk/bsp/pm.c
 sdk/bsp/cmds/shell_pm.c
 ```
 
-目标：能用 `schedstat`、当前分支的 WDT 现场命令、`health` 和 `pmstat` 给出有代码
+目标：能用 `schedstat`、当前分支的 WDT 现场命令、`vmstat summary` 和 `pmstat` 给出有代码
 证据的故障判断。
 
 ## 25. 关键结构速查

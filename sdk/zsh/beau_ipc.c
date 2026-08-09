@@ -37,6 +37,7 @@ static struct beau_ipc_channel beau_ipc = {
 
 static struct beau_ipc_ioc beau_ipc_hcall_ioc __aligned(64);
 K_MUTEX_DEFINE(beau_ipc_hcall_lock);
+K_MUTEX_DEFINE(beau_ipc_send_lock);
 
 static int beau_ipc_call(uint32_t op, struct beau_ipc_ioc *ioc)
 {
@@ -268,6 +269,48 @@ static int beau_ipc_drain_rx(void)
 	return 0;
 }
 
+/* [20260809] One-way HIPC shell publication
+ *
+ * shell sender -> send lock -> validate/map -> drain stale RX -> publish TX -> notify peer
+ *
+ * Key rule:
+ *   - one shell send owns the ring publication until its doorbell completes;
+ *   - success means the local producer published a bounded payload, not peer consumption;
+ *   - stale replies are acknowledged before the next one-way message is written.
+ */
+static int beau_ipc_send(const uint8_t *payload, uint16_t payload_len,
+	uint16_t *peer_vmid)
+{
+	int ret;
+
+	if ((payload == NULL) || (payload_len == 0U) ||
+		(payload_len > BEAU_IPC_MSG_MAX) || (peer_vmid == NULL)) {
+		return -EINVAL;
+	}
+
+	*peer_vmid = UINT16_MAX;
+	k_mutex_lock(&beau_ipc_send_lock, K_FOREVER);
+	ret = beau_ipc_query_and_map();
+	if (ret != 0) {
+		goto out;
+	}
+	ret = beau_ipc_drain_rx();
+	if (ret != 0) {
+		goto out;
+	}
+	ret = beau_ipc_ring_write_msg(beau_ipc.tx, payload, payload_len);
+	if (ret != 0) {
+		goto out;
+	}
+	ret = beau_ipc_notify();
+	if (ret == 0) {
+		*peer_vmid = beau_ipc.peer_vmid;
+	}
+out:
+	k_mutex_unlock(&beau_ipc_send_lock);
+	return ret;
+}
+
 static int cmd_hipc_status(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc);
@@ -291,9 +334,8 @@ static int cmd_hipc_send(const struct shell *sh, size_t argc, char **argv)
 {
 	const char *payload;
 	size_t payload_len;
-	uint8_t reply[BEAU_IPC_MSG_MAX + 1U];
+	uint16_t peer_vmid;
 	int ret;
-	int64_t deadline;
 
 	if (argc != 2U) {
 		shell_error(sh, "usage: hipc send <payload>");
@@ -307,49 +349,14 @@ static int cmd_hipc_send(const struct shell *sh, size_t argc, char **argv)
 		return -EMSGSIZE;
 	}
 
-	ret = beau_ipc_query_and_map();
-
+	ret = beau_ipc_send((const uint8_t *)payload, (uint16_t)payload_len,
+		&peer_vmid);
 	if (ret != 0) {
-		shell_error(sh, "query failed: %d", ret);
+		shell_error(sh, "send failed: %d", ret);
 		return ret;
 	}
-
-	ret = beau_ipc_drain_rx();
-	if (ret != 0) {
-		shell_error(sh, "drain failed: %d", ret);
-		return ret;
-	}
-
-	ret = beau_ipc_ring_write_msg(beau_ipc.tx, (const uint8_t *)payload,
-				      (uint16_t)payload_len);
-	if (ret != 0) {
-		shell_error(sh, "tx failed: %d", ret);
-		return ret;
-	}
-
-	ret = beau_ipc_notify();
-	if (ret != 0) {
-		shell_error(sh, "notify failed: %d", ret);
-		return ret;
-	}
-
-	deadline = k_uptime_get() + BEAU_IPC_REPLY_WAIT_MS;
-	do {
-		ret = beau_ipc_ring_read_msg(beau_ipc.rx, reply, BEAU_IPC_MSG_MAX);
-		if (ret > 0) {
-			(void)beau_ipc_ack();
-			shell_print(sh, "reply:%s", reply);
-			return 0;
-		}
-		if (ret < 0) {
-			shell_error(sh, "rx failed: %d", ret);
-			return ret;
-		}
-		k_sleep(K_MSEC(BEAU_IPC_REPLY_POLL_MS));
-	} while (k_uptime_get() < deadline);
-
-	shell_error(sh, "reply timeout");
-	return -ETIMEDOUT;
+	shell_print(sh, "sent:%s peer-vm:%u", payload, peer_vmid);
+	return 0;
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_hipc,

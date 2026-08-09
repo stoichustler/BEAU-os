@@ -141,7 +141,6 @@ struct shell_cmd shell_arch_cmds[] = {
 	CMD("memstat", NULL, "list ARM64 page-table pool and stage-2 ownership statistics", shell_memstat, NULL),
 	CMD("walkpt", "<vmid> <ipa>", "walk one VM stage-2 translation without modifying it", shell_s2walk, NULL),
 	CMD("kusg", NULL, "list BEAU static memory usage in KB", shell_kusg, NULL),
-	CMD("health", NULL, "summarize current host and VM operational health", shell_health, NULL),
 	CMD("gen", "<panic|brk|esr <hex>>", "generate controlled ARM64 diagnostic faults",
 		shell_gen, &shell_gen_completions),
 	CMD("swtdbg", "<vmid>", "show retained VM watchdog minidump", shell_swtdbg, NULL),

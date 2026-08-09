@@ -190,7 +190,23 @@ static bool vpl011_push_tx(struct acrn_vm *vm, struct arm64_vpl011 *vu, char ch)
 	vu->tx_count++;
 	vu->last_tx = (uint8_t)ch;
 	(void)console_vm_tx_put(vm->vm_id, ch);
-	vpl011_refresh_tx_state(vm, vu);
+	/* [20260807] vPL011 steady-state TX cache
+	 *
+	 * guest character write -> ramlog append -> cached TX-ready state
+	 *                                              |
+	 *                                              +--> unchanged: no refresh
+	 *                                              +--> stale: refresh FR/RIS
+	 *
+	 * Key rule:
+	 *   - the console owns durable TX capture, while vPL011 owns FR/RIS state;
+	 *   - ICR, reset, or a console-space change marks the cached state stale;
+	 *   - do not skip the refresh that reasserts a guest-cleared TX interrupt.
+	 */
+	if (((vu->fr & PL011_FR_TXFE) == 0U) ||
+		((vu->fr & (PL011_FR_TXFF | PL011_FR_BUSY)) != 0U) ||
+		((vu->ris & PL011_INT_TX) == 0U)) {
+		vpl011_refresh_tx_state(vm, vu);
+	}
 
 	return ((old_ris ^ vu->ris) & PL011_INT_TX) != 0U;
 }

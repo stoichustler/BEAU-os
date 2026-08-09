@@ -45,5 +45,5 @@ unready peer, invalid payload, send error, ACK mismatch, or timeout fails the
 command without changing the existing `rpmsg-raw` behavior.
 
 `hipc send` requires a 1..192-byte payload. It uses the independent static
-VM0 <-> VM2 HVC IPC ring, drains stale replies, sends a notify, and waits up to
-1500 ms for the VM2 reply.
+VM0 <-> VM1 HVC IPC ring, drains stale replies, publishes the payload, and
+sends a notify without waiting for a peer reply.

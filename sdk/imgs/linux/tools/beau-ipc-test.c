@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -37,6 +38,41 @@ static int open_channel(uint32_t channel)
 	return length < 0 ? -errno : length;
 }
 
+static int find_unique_channel(uint32_t *channel)
+{
+	static const char prefix[] = "beau-ipc-";
+	DIR *dir;
+	struct dirent *entry;
+	uint32_t found = UINT32_MAX;
+	int ret = -ENODEV;
+
+	if (channel == NULL)
+		return -EINVAL;
+	dir = opendir("/dev");
+	if (dir == NULL)
+		return -errno;
+
+	while ((entry = readdir(dir)) != NULL) {
+		uint32_t candidate;
+
+		if (strncmp(entry->d_name, prefix, sizeof(prefix) - 1U) != 0 ||
+		    parse_channel(entry->d_name + sizeof(prefix) - 1U, &candidate))
+			continue;
+		if (found != UINT32_MAX) {
+			ret = -ENOTUNIQ;
+			goto out;
+		}
+		found = candidate;
+	}
+	if (found != UINT32_MAX) {
+		*channel = found;
+		ret = 0;
+	}
+out:
+	closedir(dir);
+	return ret;
+}
+
 static int wait_readable(int fd)
 {
 	struct pollfd pfd = { .fd = fd, .events = POLLIN };
@@ -57,29 +93,42 @@ static int run_server(uint32_t channel)
 	int fd = open_channel(channel);
 	if (fd < 0)
 		return fd;
-	printf("ipc echo server: channel %u\n", channel);
+	printf("hipc server: channel %u\n", channel);
+	fflush(stdout);
 	for (;;) {
 		ssize_t length;
 		int ret = wait_readable(fd);
 		if (ret)
 			continue;
 		length = read(fd, buffer, sizeof(buffer));
-		if (length <= 0 || write(fd, buffer, (size_t)length) != length) {
-			fprintf(stderr, "ipc server I/O failed: %s\n", strerror(errno));
+		if (length <= 0) {
+			ret = length < 0 ? -errno : -EIO;
+			fprintf(stderr, "hipc server read failed: %s\n", strerror(-ret));
 			close(fd);
-			return 1;
+			return ret;
+		}
+		if (printf("hipc: channel=%u recv:", channel) < 0 ||
+		    fwrite(buffer, 1U, (size_t)length, stdout) != (size_t)length ||
+		    fputc('\n', stdout) == EOF || fflush(stdout) == EOF) {
+			ret = errno != 0 ? -errno : -EIO;
+			close(fd);
+			return ret;
 		}
 	}
 }
 
-static int run_client(uint32_t channel, const char *message)
+static int run_client(const char *message)
 {
-	uint8_t reply[BEAU_IPC_MESSAGE_MAX];
-	size_t length = strlen(message);
-	int fd, ret;
-	ssize_t received;
-	if (!length || length > sizeof(reply))
+	size_t length = strnlen(message, BEAU_IPC_MESSAGE_MAX + 1U);
+	uint32_t channel = UINT32_MAX;
+	int fd;
+	int ret;
+
+	if (!length || length > BEAU_IPC_MESSAGE_MAX)
 		return -EMSGSIZE;
+	ret = find_unique_channel(&channel);
+	if (ret != 0)
+		return ret;
 	fd = open_channel(channel);
 	if (fd < 0)
 		return fd;
@@ -88,16 +137,9 @@ static int run_client(uint32_t channel, const char *message)
 		close(fd);
 		return ret;
 	}
-	ret = wait_readable(fd);
-	if (!ret) {
-		received = read(fd, reply, sizeof(reply));
-		if (received != (ssize_t)length || memcmp(reply, message, length))
-			ret = -EBADMSG;
-	}
 	close(fd);
-	if (ret)
-		return ret;
-	printf("ipc: channel=%u echo=%s\n", channel, message);
+	printf("hipc: channel=%u sent:%s\n", channel, message);
+	fflush(stdout);
 	return 0;
 }
 
@@ -105,14 +147,14 @@ int main(int argc, char **argv)
 {
 	uint32_t channel;
 	int ret;
-	if (argc < 3 || parse_channel(argv[2], &channel)) {
-		fprintf(stderr, "usage: %s server <channel> | client <channel> <payload>\n", argv[0]);
+	if (argc < 2) {
+		fprintf(stderr, "usage: %s server <channel> | client send <payload>\n", argv[0]);
 		return 2;
 	}
-	if (!strcmp(argv[1], "server") && argc == 3)
+	if (!strcmp(argv[1], "server") && argc == 3 && !parse_channel(argv[2], &channel))
 		ret = run_server(channel);
-	else if (!strcmp(argv[1], "client") && argc == 4)
-		ret = run_client(channel, argv[3]);
+	else if (!strcmp(argv[1], "client") && argc == 4 && !strcmp(argv[2], "send"))
+		ret = run_client(argv[3]);
 	else
 		ret = -EINVAL;
 	if (ret) {

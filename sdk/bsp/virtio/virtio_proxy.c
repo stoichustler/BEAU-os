@@ -84,7 +84,7 @@ _Static_assert(sizeof(struct virtio_proxy_batch_entry_meta) ==
 static bool virtio_proxy_queue_has_unsent_locked(struct virtio_proxy_dev *dev,
 	uint16_t queue_id);
 static uint16_t virtio_proxy_prefetch_avail_locked(struct virtio_proxy_dev *dev,
-	uint16_t queue_id, uint64_t now);
+	uint16_t queue_id, uint64_t now, uint16_t limit);
 
 static struct virtio_proxy_dev *virtio_proxy_get_dev_by_id_index(uint16_t vm_id,
 	uint16_t index)
@@ -420,6 +420,40 @@ static uint32_t virtio_proxy_wait_hint_us(const struct virtio_proxy_dev *dev)
 		VIRTIO_PROXY_WAIT_HIGH_US : VIRTIO_PROXY_WAIT_LOW_US;
 }
 
+static bool virtio_proxy_backend_batch_ready_locked(const struct virtio_proxy_dev *dev)
+{
+	return (dev != NULL) && dev->hcall_backend_registered &&
+		((dev->backend_caps & (ACRN_VIRTIO_PROXY_CAP_BATCH |
+		ACRN_VIRTIO_PROXY_CAP_SHARED_RING)) ==
+		(ACRN_VIRTIO_PROXY_CAP_BATCH | ACRN_VIRTIO_PROXY_CAP_SHARED_RING));
+}
+
+/* [20260807] Virtio-proxy bounded prefetch selection
+ *
+ * frontend QueueNotify
+ *     |
+ *     +--> negotiated high-throughput batch backend -> fill pending budget
+ *     |
+ *     +--> unregistered/non-batch backend          -> take one request
+ *
+ * Key rule:
+ *   - the frontend owns avail entries until this transport copies a complete
+ *     descriptor chain into its EL2-owned pending slot;
+ *   - batch prefetch is enabled only after the registered backend proved it
+ *     can consume shared batch entries;
+ *   - the fallback remains one bounded request, preventing a non-batch
+ *     backend from accumulating copied work and increasing tail latency.
+ */
+static uint16_t virtio_proxy_prefetch_limit_locked(const struct virtio_proxy_dev *dev)
+{
+	if ((dev != NULL) && (dev->throughput == VIRTIO_PROXY_THROUGHPUT_HIGH) &&
+		virtio_proxy_backend_batch_ready_locked(dev)) {
+		return dev->pending_limit;
+	}
+
+	return 1U;
+}
+
 static void virtio_proxy_drop_backend_locked(struct virtio_proxy_dev *dev,
 	int32_t reason)
 {
@@ -655,7 +689,8 @@ static void virtio_proxy_notify_queue(struct virtio_mmio_dev *mmio,
 	if (dev->hcall_backend_registered) {
 		bool had_pending = virtio_proxy_queue_has_unsent_locked(dev, queue_id);
 		uint16_t prefetched =
-			virtio_proxy_prefetch_avail_locked(dev, queue_id, now);
+			virtio_proxy_prefetch_avail_locked(dev, queue_id, now,
+				virtio_proxy_prefetch_limit_locked(dev));
 
 		if ((prefetched == 0U) && had_pending) {
 			dev->notify_coalesced_count++;
@@ -1250,19 +1285,22 @@ static int32_t virtio_proxy_next_pending_locked(struct virtio_proxy_dev *dev,
 }
 
 static uint16_t virtio_proxy_prefetch_avail_locked(struct virtio_proxy_dev *dev,
-	uint16_t queue_id, uint64_t now)
+	uint16_t queue_id, uint64_t now, uint16_t limit)
 {
 	struct virtio_proxy_pending *pending;
 	struct virtio_mmio_queue *vq;
 	uint16_t head;
 	uint16_t copied = 0U;
 
-	if (dev == NULL) {
+	if ((dev == NULL) || (limit == 0U)) {
 		return 0U;
+	}
+	if (limit > dev->pending_limit) {
+		limit = dev->pending_limit;
 	}
 
 	vq = virtio_mmio_get_queue(&dev->mmio, queue_id);
-	while (copied < dev->pending_limit) {
+	while (copied < limit) {
 		pending = virtio_proxy_free_pending_slot(dev);
 		if (pending == NULL) {
 			if (copied == 0U) {
@@ -1601,6 +1639,10 @@ static int32_t virtio_proxy_hcall_batch_poll(struct acrn_vcpu *vcpu,
 
 	requested = ioc->batch_count;
 	spinlock_obtain(&dev->lock);
+	if (!virtio_proxy_backend_batch_ready_locked(dev)) {
+		spinlock_release(&dev->lock);
+		return -ENOTSUP;
+	}
 	now = cpu_ticks();
 	virtio_proxy_check_timeouts_locked(dev, now);
 	virtio_proxy_refresh_health_locked(dev, now);
@@ -1660,6 +1702,10 @@ static int32_t virtio_proxy_hcall_batch_reply(struct acrn_vcpu *vcpu,
 	}
 
 	spinlock_obtain(&dev->lock);
+	if (!virtio_proxy_backend_batch_ready_locked(dev)) {
+		spinlock_release(&dev->lock);
+		return -ENOTSUP;
+	}
 	now = cpu_ticks();
 	dev->hcall_batch_reply_count++;
 

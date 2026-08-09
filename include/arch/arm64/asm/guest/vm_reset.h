@@ -18,5 +18,7 @@ int64_t arm64_vpsci_system_suspend(struct acrn_vcpu *vcpu,
 	uint64_t entry_point, uint64_t context_id);
 int64_t arm64_vpsci_system_off(struct acrn_vcpu *vcpu);
 int64_t arm64_vpsci_system_reset(struct acrn_vcpu *vcpu);
+int64_t arm64_vpsci_system_reset2(struct acrn_vcpu *vcpu,
+	uint64_t reset_type, uint64_t cookie);
 
 #endif /* ARM64_GUEST_VM_RESET_H */

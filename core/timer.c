@@ -75,13 +75,22 @@ bool timer_is_started(const struct hv_timer *timer)
 	return (!list_empty(&timer->node));
 }
 
+/* [20260809] Timer expiry trace order
+ *
+ * expired timer -> record immutable timeout -> invoke callback
+ *
+ * Key rule:
+ *   - the trace owns the deadline observed at timer dispatch;
+ *   - callbacks may rearm or clear their timer state only after publication;
+ *   - expiry diagnostics must not report a callback's replacement deadline.
+ */
 static void run_timer(const struct hv_timer *timer)
 {
+	TRACE_2L(TRACE_TIMER_ACTION_PCKUP, timer->timeout, 0UL);
+
 	if ((timer->func != NULL) && (timer->timeout != 0UL)) {
 		timer->func(timer->priv_data);
 	}
-
-	TRACE_2L(TRACE_TIMER_ACTION_PCKUP, timer->timeout, 0UL);
 }
 
 static void advance_periodic_timer(struct hv_timer *timer, uint64_t now)

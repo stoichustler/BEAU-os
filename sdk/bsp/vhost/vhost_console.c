@@ -12,7 +12,6 @@
 #include <bsp/vuart.h>
 #include <rtl.h>
 #include <bsp/io_req.h>
-#include <ticks.h>
 #include <spinlock.h>
 #include <logmsg.h>
 #include <virtio_mmio.h>
@@ -75,28 +74,16 @@
 
 #define VHOST_CONSOLE_COPY_BUF_SIZE	64U
 #define VHOST_CONSOLE_CHAIN_LIMIT	VHOST_CONSOLE_QUEUE_SIZE
-#define VHOST_CONSOLE_USEC_PER_SEC	1000000UL
 #define VHOST_CONSOLE_PENDING_QUEUE(queue_id)	(1U << (queue_id))
-#define VHOST_CONSOLE_BOOT_LOG_FEATURE_OK	(1U << 0U)
-#define VHOST_CONSOLE_BOOT_LOG_RX_READY	(1U << 1U)
-#define VHOST_CONSOLE_BOOT_LOG_TX_READY	(1U << 2U)
 #define VHOST_CONSOLE_BOOT_LOG_DRIVER_OK	(1U << 3U)
-
-struct vhost_console_latency_accum {
-	uint64_t count;
-	uint64_t min;
-	uint64_t max;
-	uint64_t sum;
-};
+#define VHOST_CONSOLE_BOOT_LOG_FAILED		(1U << 4U)
+#define VHOST_CONSOLE_STATUS_OK	(VIRTIO_STATUS_ACKNOWLEDGE | \
+	VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK)
 
 struct vhost_console_boot_log {
 	uint16_t vm_id;
 	uint32_t phase_mask;
 	uint32_t status;
-	uint64_t feature_ok_us;
-	uint64_t rx_ready_us;
-	uint64_t tx_ready_us;
-	uint64_t driver_ok_us;
 };
 
 /* [20260804] vhost-console transport service ownership
@@ -126,23 +113,14 @@ struct vhost_console_dev {
 	struct virtio_mmio_dev mmio;
 	uint32_t pending_queue_mask;
 	uint32_t pending_boot_log_mask;
-	uint64_t session_start_tick;
-	uint64_t feature_ok_tick;
-	uint64_t rx_ready_tick;
-	uint64_t tx_ready_tick;
-	uint64_t driver_ok_tick;
+	bool pass_reported;
+	bool fail_reported;
 	uint64_t tx_count;
 	uint64_t rx_count;
 	uint64_t tx_notify_count;
 	uint64_t rx_notify_count;
 	uint64_t tx_irq_count;
 	uint64_t rx_irq_count;
-	uint64_t tx_first_tick;
-	uint64_t tx_last_tick;
-	uint64_t rx_first_tick;
-	uint64_t rx_last_tick;
-	struct vhost_console_latency_accum tx_latency;
-	struct vhost_console_latency_accum rx_latency;
 };
 
 static struct vhost_console_dev vhost_console_devs[CONFIG_MAX_VM_NUM];
@@ -191,116 +169,41 @@ static void vhost_console_add_u64(uint64_t *counter, uint64_t delta)
 	}
 }
 
-static void vhost_console_mark_bytes(uint64_t *first_tick,
-	uint64_t *last_tick, uint64_t now)
-{
-	if ((first_tick == NULL) || (last_tick == NULL)) {
-		return;
-	}
-
-	if (*first_tick == 0UL) {
-		*first_tick = now;
-	}
-	*last_tick = now;
-}
-
-static uint64_t vhost_console_byte_rate(uint64_t bytes, uint64_t first_tick,
-	uint64_t now)
-{
-	uint64_t elapsed_us;
-
-	if ((first_tick == 0UL) || (now <= first_tick)) {
-		return 0UL;
-	}
-
-	elapsed_us = ticks_to_us(now - first_tick);
-	if (elapsed_us == 0UL) {
-		return 0UL;
-	}
-	if (bytes > (UINT64_MAX / VHOST_CONSOLE_USEC_PER_SEC)) {
-		return UINT64_MAX;
-	}
-
-	return (bytes * VHOST_CONSOLE_USEC_PER_SEC) / elapsed_us;
-}
-
-static void vhost_console_latency_accum(
-	struct vhost_console_latency_accum *stats, uint64_t delta)
-{
-	if (stats == NULL) {
-		return;
-	}
-
-	if ((stats->count == 0UL) || (delta < stats->min)) {
-		stats->min = delta;
-	}
-	if (delta > stats->max) {
-		stats->max = delta;
-	}
-	vhost_console_add_u64(&stats->sum, delta);
-	stats->count++;
-}
-
-static void vhost_console_latency_export(
-	const struct vhost_console_latency_accum *src,
-	struct vhost_console_latency_stats *dst)
-{
-	if ((src == NULL) || (dst == NULL)) {
-		return;
-	}
-
-	dst->count = src->count;
-	if (src->count != 0UL) {
-		dst->min_us = ticks_to_us(src->min);
-		dst->avg_us = ticks_to_us(src->sum / src->count);
-		dst->max_us = ticks_to_us(src->max);
-	}
-}
-
-static uint64_t vhost_console_session_elapsed(uint64_t start, uint64_t phase)
-{
-	return ((start != 0UL) && (phase >= start)) ?
-		ticks_to_us(phase - start) : 0UL;
-}
-
 /* [20260804] vhost-console boot diagnostic publication
  *
- * guest MMIO -> state_lock -> phase tick and pending bit -> unlock -> daemon_log
+ * guest MMIO -> state_lock -> result bit -> unlock -> daemon_log
  *
  * Key rule:
- *   - state_lock owns the phase tick and the pending diagnostic bit;
+ *   - state_lock owns the one-shot result bit and pending diagnostic bit;
  *   - a caller snapshots and clears the bit before async shell output, so a
  *     log cannot block guest MMIO or be emitted twice for one session;
  *   - reset clears unpublished bits with its session state, preventing an old
  *     transport session from being reported after the device is reused.
  */
-static void vhost_console_record_boot_phase(struct vhost_console_dev *dev,
-	uint64_t *phase_tick, uint32_t phase_mask, uint64_t now)
+static void vhost_console_record_boot_result(struct vhost_console_dev *dev,
+	bool *reported, uint32_t phase_mask)
 {
-	if (*phase_tick == 0UL) {
-		*phase_tick = now;
+	if (!*reported) {
+		*reported = true;
 		dev->pending_boot_log_mask |= phase_mask;
 	}
 }
 
 static void vhost_console_record_status(struct vhost_console_dev *dev)
 {
-	uint64_t now;
-
 	if (dev == NULL) {
 		return;
 	}
 
-	now = cpu_ticks();
-	if ((dev->feature_ok_tick == 0UL) &&
-		((dev->mmio.status & VIRTIO_STATUS_FEATURES_OK) != 0U)) {
-		vhost_console_record_boot_phase(dev, &dev->feature_ok_tick,
-			VHOST_CONSOLE_BOOT_LOG_FEATURE_OK, now);
-	}
-	if ((dev->driver_ok_tick == 0UL) &&
+	if (!dev->pass_reported &&
 		((dev->mmio.status & VIRTIO_STATUS_DRIVER_OK) != 0U)) {
-		vhost_console_record_boot_phase(dev, &dev->driver_ok_tick,
-			VHOST_CONSOLE_BOOT_LOG_DRIVER_OK, now);
+		vhost_console_record_boot_result(dev, &dev->pass_reported,
+			VHOST_CONSOLE_BOOT_LOG_DRIVER_OK);
+	}
+	if (!dev->fail_reported &&
+		((dev->mmio.status & VIRTIO_STATUS_FAILED) != 0U)) {
+		vhost_console_record_boot_result(dev, &dev->fail_reported,
+			VHOST_CONSOLE_BOOT_LOG_FAILED);
 	}
 }
 
@@ -319,29 +222,20 @@ static void vhost_console_collect_boot_log(struct vhost_console_dev *dev,
 		boot_log->vm_id = dev->mmio.vm->vm_id;
 		boot_log->phase_mask = dev->pending_boot_log_mask;
 		boot_log->status = dev->mmio.status;
-		boot_log->feature_ok_us = vhost_console_session_elapsed(
-			dev->session_start_tick, dev->feature_ok_tick);
-		boot_log->rx_ready_us = vhost_console_session_elapsed(
-			dev->session_start_tick, dev->rx_ready_tick);
-		boot_log->tx_ready_us = vhost_console_session_elapsed(
-			dev->session_start_tick, dev->tx_ready_tick);
-		boot_log->driver_ok_us = vhost_console_session_elapsed(
-			dev->session_start_tick, dev->driver_ok_tick);
 		dev->pending_boot_log_mask = 0U;
 	}
 	vhost_console_unlock_state(dev, rflags);
 }
 
 static void vhost_console_emit_boot_status(
-	const struct vhost_console_boot_log *boot_log, uint64_t elapsed_us)
+	const struct vhost_console_boot_log *boot_log, bool passed)
 {
 	if (boot_log == NULL) {
 		return;
 	}
 
-	(void)daemon_log(LOG_INFO,
-		"VSH: vm%hu:  status: 0x%02x elapsed: %12luus",
-		boot_log->vm_id, boot_log->status, elapsed_us);
+	LOG_INF("VSH:    VM%hu [hvc0] console verification: %s", boot_log->vm_id,
+		passed ? "PASS" : "FAIL");
 }
 
 static void vhost_console_emit_boot_log(const struct vhost_console_boot_log *boot_log)
@@ -350,17 +244,11 @@ static void vhost_console_emit_boot_log(const struct vhost_console_boot_log *boo
 		return;
 	}
 
-	if ((boot_log->phase_mask & VHOST_CONSOLE_BOOT_LOG_FEATURE_OK) != 0U) {
-		vhost_console_emit_boot_status(boot_log, boot_log->feature_ok_us);
-	}
-	if ((boot_log->phase_mask & VHOST_CONSOLE_BOOT_LOG_RX_READY) != 0U) {
-		vhost_console_emit_boot_status(boot_log, boot_log->rx_ready_us);
-	}
-	if ((boot_log->phase_mask & VHOST_CONSOLE_BOOT_LOG_TX_READY) != 0U) {
-		vhost_console_emit_boot_status(boot_log, boot_log->tx_ready_us);
-	}
-	if ((boot_log->phase_mask & VHOST_CONSOLE_BOOT_LOG_DRIVER_OK) != 0U) {
-		vhost_console_emit_boot_status(boot_log, boot_log->driver_ok_us);
+	if ((boot_log->phase_mask & VHOST_CONSOLE_BOOT_LOG_FAILED) != 0U) {
+		vhost_console_emit_boot_status(boot_log, false);
+	} else if (((boot_log->phase_mask & VHOST_CONSOLE_BOOT_LOG_DRIVER_OK) != 0U) &&
+		(boot_log->status == VHOST_CONSOLE_STATUS_OK)) {
+		vhost_console_emit_boot_status(boot_log, true);
 	}
 }
 
@@ -375,19 +263,10 @@ static void vhost_console_reset(struct virtio_mmio_dev *mmio)
 		dev->rx_notify_count = 0UL;
 		dev->tx_irq_count = 0UL;
 		dev->rx_irq_count = 0UL;
-		dev->tx_first_tick = 0UL;
-		dev->tx_last_tick = 0UL;
-		dev->rx_first_tick = 0UL;
-		dev->rx_last_tick = 0UL;
-		(void)memset(&dev->tx_latency, 0U, sizeof(dev->tx_latency));
-		(void)memset(&dev->rx_latency, 0U, sizeof(dev->rx_latency));
 		dev->pending_queue_mask = 0U;
 		dev->pending_boot_log_mask = 0U;
-		dev->session_start_tick = cpu_ticks();
-		dev->feature_ok_tick = 0UL;
-		dev->rx_ready_tick = 0UL;
-		dev->tx_ready_tick = 0UL;
-		dev->driver_ok_tick = 0UL;
+		dev->pass_reported = false;
+		dev->fail_reported = false;
 	}
 }
 
@@ -457,8 +336,6 @@ static void vhost_console_process_tx(struct vhost_console_dev *dev)
 	struct virtio_mmio_dev *mmio = &dev->mmio;
 	struct virtio_mmio_queue *vq = virtio_mmio_get_queue(mmio,
 		VHOST_CONSOLE_QUEUE_TX);
-	uint64_t start = cpu_ticks();
-	uint64_t now;
 	uint16_t head;
 	uint32_t total;
 	bool used = false;
@@ -472,41 +349,53 @@ static void vhost_console_process_tx(struct vhost_console_dev *dev)
 	}
 
 	if (used) {
-		now = cpu_ticks();
-		vhost_console_mark_bytes(&dev->tx_first_tick,
-			&dev->tx_last_tick, now);
-		vhost_console_latency_accum(&dev->tx_latency, now - start);
 		vhost_console_add_u64(&dev->tx_irq_count, 1UL);
 		vhost_console_raise_used_irq(dev);
 	}
 }
 
 static uint32_t vhost_console_fill_rx_desc(struct virtio_mmio_dev *mmio,
-	const struct virtio_ring_desc *desc)
+	const struct virtio_ring_desc *desc, bool *copy_failed)
 {
 	struct acrn_vm *vm = virtio_mmio_vm(mmio);
 	struct acrn_vuart *console = vm_console_vuart(vm);
-	char buf[VHOST_CONSOLE_COPY_BUF_SIZE];
 	uint32_t filled = 0U;
-	uint32_t chunk = 0U;
 	char ch;
 
-	while ((filled < desc->len) && vuart_rx_pending(console)) {
+	if (copy_failed != NULL) {
+		*copy_failed = false;
+	}
+
+	/* [20260808] Bounded virtio-console RX coalescing
+	 *
+	 * host input backlog (console.c budget)
+	 *     -> one-byte vUART staging FIFO
+	 *     -> writable guest RX descriptor
+	 *     -> one used-ring completion
+	 *
+	 * Key rule:
+	 *   - console.c owns input selection, ordering, and the current RX budget;
+	 *   - this transport requests another staged byte only after draining the
+	 *     previous one, so a guest descriptor cannot bypass that budget;
+	 *   - a failed GPA write aborts the RX head chain without a used-ring update,
+	 *     preventing a partially verified length from reaching the guest.
+	 */
+	while (filled < desc->len) {
+		if (!vuart_rx_pending(console) && !console_vm_rx_refill(console)) {
+			break;
+		}
 		ch = vuart_get_rx_char(console);
 		if (ch == -1) {
 			break;
 		}
-		buf[chunk] = ch;
-		chunk++;
-		filled++;
-		if ((chunk == sizeof(buf)) || (filled == desc->len) ||
-			!vuart_rx_pending(console)) {
-			if (!virtio_mmio_write_gpa(mmio,
-				desc->addr + filled - chunk, buf, chunk)) {
-				return 0U;
+		if (!virtio_mmio_write_gpa(mmio, desc->addr + filled, &ch,
+			sizeof(ch))) {
+			if (copy_failed != NULL) {
+				*copy_failed = true;
 			}
-			chunk = 0U;
+			return 0U;
 		}
+		filled++;
 	}
 
 	return filled;
@@ -521,13 +410,17 @@ static uint32_t vhost_console_handle_rx_chain(struct virtio_mmio_dev *mmio,
 	uint32_t total = 0U;
 	uint32_t nr_desc = 0U;
 	uint32_t filled;
+	bool copy_failed = false;
 
 	do {
 		if (!virtio_mmio_read_desc(mmio, vq, id, &desc)) {
 			break;
 		}
 		if ((desc.flags & VIRTIO_RING_F_WRITE) != 0U) {
-			filled = vhost_console_fill_rx_desc(mmio, &desc);
+			filled = vhost_console_fill_rx_desc(mmio, &desc, &copy_failed);
+			if (copy_failed) {
+				return 0U;
+			}
 			total += filled;
 			if ((filled < desc.len) || !vuart_rx_pending(vm_console_vuart(vm))) {
 				break;
@@ -547,8 +440,6 @@ static void vhost_console_process_rx(struct vhost_console_dev *dev)
 	struct acrn_vuart *console = vm_console_vuart(virtio_mmio_vm(mmio));
 	struct virtio_mmio_queue *vq = virtio_mmio_get_queue(mmio,
 		VHOST_CONSOLE_QUEUE_RX);
-	uint64_t start = cpu_ticks();
-	uint64_t now;
 	uint16_t head;
 	uint32_t total;
 	bool used = false;
@@ -568,10 +459,6 @@ static void vhost_console_process_rx(struct vhost_console_dev *dev)
 	}
 
 	if (used) {
-		now = cpu_ticks();
-		vhost_console_mark_bytes(&dev->rx_first_tick,
-			&dev->rx_last_tick, now);
-		vhost_console_latency_accum(&dev->rx_latency, now - start);
 		vhost_console_add_u64(&dev->rx_irq_count, 1UL);
 		vhost_console_raise_used_irq(dev);
 	}
@@ -605,16 +492,7 @@ static void vhost_console_queue_ready(struct virtio_mmio_dev *mmio,
 	struct vhost_console_dev *dev = (struct vhost_console_dev *)virtio_mmio_priv(mmio);
 
 	if ((dev != NULL) && (queue_id == VHOST_CONSOLE_QUEUE_RX)) {
-		if (dev->rx_ready_tick == 0UL) {
-			vhost_console_record_boot_phase(dev, &dev->rx_ready_tick,
-				VHOST_CONSOLE_BOOT_LOG_RX_READY, cpu_ticks());
-		}
 		vhost_console_mark_pending(dev, queue_id);
-	} else if ((dev != NULL) && (queue_id == VHOST_CONSOLE_QUEUE_TX)) {
-		if (dev->tx_ready_tick == 0UL) {
-			vhost_console_record_boot_phase(dev, &dev->tx_ready_tick,
-				VHOST_CONSOLE_BOOT_LOG_TX_READY, cpu_ticks());
-		}
 	}
 }
 
@@ -691,7 +569,8 @@ void vhost_console_init_vm(struct acrn_vm *vm)
 		spinlock_init(&dev->irq_lock);
 		dev->pending_queue_mask = 0U;
 		dev->pending_boot_log_mask = 0U;
-		dev->session_start_tick = cpu_ticks();
+		dev->pass_reported = false;
+		dev->fail_reported = false;
 		virtio_mmio_init(&dev->mmio, &init);
 		init_console_vuart(vm, irq);
 		console = vm_console_vuart(vm);
@@ -723,7 +602,6 @@ void vhost_console_reset_vm(struct acrn_vm *vm)
 bool vhost_console_get_stats(uint16_t vm_id, struct vhost_console_stats *stats)
 {
 	struct vhost_console_dev *dev;
-	uint64_t now = cpu_ticks();
 	uint64_t state_rflags;
 	uint64_t rx_rflags;
 	uint64_t tx_rflags;
@@ -758,24 +636,6 @@ bool vhost_console_get_stats(uint16_t vm_id, struct vhost_console_stats *stats)
 	stats->rx_notify_count = dev->rx_notify_count;
 	stats->tx_irq_count = dev->tx_irq_count;
 	stats->rx_irq_count = dev->rx_irq_count;
-	stats->tx_byte_rate = vhost_console_byte_rate(dev->tx_count,
-		dev->tx_first_tick, now);
-	stats->rx_byte_rate = vhost_console_byte_rate(dev->rx_count,
-		dev->rx_first_tick, now);
-	stats->boot.feature_ok = dev->feature_ok_tick != 0UL;
-	stats->boot.rx_ready = dev->rx_ready_tick != 0UL;
-	stats->boot.tx_ready = dev->tx_ready_tick != 0UL;
-	stats->boot.driver_ok = dev->driver_ok_tick != 0UL;
-	stats->boot.feature_ok_us = vhost_console_session_elapsed(dev->session_start_tick,
-		dev->feature_ok_tick);
-	stats->boot.rx_ready_us = vhost_console_session_elapsed(dev->session_start_tick,
-		dev->rx_ready_tick);
-	stats->boot.tx_ready_us = vhost_console_session_elapsed(dev->session_start_tick,
-		dev->tx_ready_tick);
-	stats->boot.driver_ok_us = vhost_console_session_elapsed(dev->session_start_tick,
-		dev->driver_ok_tick);
-	vhost_console_latency_export(&dev->tx_latency, &stats->tx_latency);
-	vhost_console_latency_export(&dev->rx_latency, &stats->rx_latency);
 
 	for (uint16_t i = 0U;
 		(i < VHOST_CONSOLE_STAT_QUEUE_NUM) && (i < dev->mmio.queue_num); i++) {

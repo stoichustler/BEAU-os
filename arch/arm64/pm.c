@@ -520,9 +520,15 @@ void arch_shutdown_host(void)
 	panic("arm64 psci system off failed, ret=%ld", ret);
 }
 
-void arch_reset_host(__unused bool warm)
+void arch_reset_host(bool warm)
 {
-	int64_t ret = psci_system_reset();
+	int64_t ret;
 
-	panic("arm64 psci system reset failed, ret=%ld", ret);
+	if (warm && !psci_system_reset2_is_supported()) {
+		panic("arm64 psci warm reset is not supported");
+	}
+
+	ret = warm ? psci_system_reset2(0U, 0UL) : psci_system_reset();
+
+	panic("arm64 psci %s reset failed, ret=%ld", warm ? "warm" : "cold", ret);
 }
