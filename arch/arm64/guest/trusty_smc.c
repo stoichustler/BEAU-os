@@ -117,7 +117,7 @@ static void trusty_heartbeat_thread_main(__unused struct thread_object *obj)
 		sequence = trusty_next_heartbeat_sequence();
 		reply = trusty_fastcall(TRUSTY_SMC_FC_BEAU_HEARTBEAT,
 			(uint64_t)sequence);
-        (void)daemon_log(LOG_WARNING, "TEE: ack:  %s seq:%016lu",
+        (void)daemon_log(LOG_INFO, "TEE: ack:  %s count:%016lu",
                 reply == TRUSTY_SMC_BEAU_HEARTBEAT_ACK ? "LIVE" : "DEAD",
                 sequence);
 	}
