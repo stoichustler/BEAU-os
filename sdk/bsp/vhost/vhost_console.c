@@ -234,8 +234,8 @@ static void vhost_console_emit_boot_status(
 		return;
 	}
 
-	LOG_INF("VSH:    VM%hu [hvc0] console verification: %s", boot_log->vm_id,
-		passed ? "PASS" : "FAIL");
+	LOG_INF("VM%hu:    [hvc0] console verification: %s", boot_log->vm_id,
+		passed ? "OK" : "NO");
 }
 
 static void vhost_console_emit_boot_log(const struct vhost_console_boot_log *boot_log)

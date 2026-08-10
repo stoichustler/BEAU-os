@@ -1517,7 +1517,7 @@ static bool vm_wdt_print_daemon_event(uint16_t vm_id,
 	gap_msec = ticks_to_ms(event->gap_ticks) % 1000UL;
 
 	return daemon_log(LOG_INFO,
-		"SWT: vm%hu:%9s (elapsed: %02lu.%03lus) CNT:0x%016lx",
+		"SWT: vm%hu:%9s (elapsed: %02lu.%03lus) count:%016lu",
 		vm_id, vm_wdt_name(vm_id), gap_sec, gap_msec, event->token);
 }
 

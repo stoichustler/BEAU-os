@@ -113,4 +113,3 @@ DECLARE_RT_SVC(
 	NULL,
 	trusty_generic_platform_smc
 );
-

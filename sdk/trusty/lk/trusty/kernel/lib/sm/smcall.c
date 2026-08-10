@@ -140,6 +140,12 @@ static long smc_get_version_str(struct smc32_args* args) {
     return lk_version[index];
 }
 
+/* The BEAU heartbeat is a QEMU diagnostic, not a Trusty state transition. */
+static long smc_beau_heartbeat(struct smc32_args* args) {
+    (void)args;
+    return SMC_BEAU_HEARTBEAT_ACK;
+}
+
 static smc32_handler_t sm_fastcall_function_table[] = {
         [SMC_FUNCTION(SMC_FC_GET_NEXT_IRQ)] = smc_intc_get_next_irq,
         [SMC_FUNCTION(SMC_FC_FIQ_ENTER)] = smc_fiq_enter,
@@ -150,6 +156,7 @@ static smc32_handler_t sm_fastcall_function_table[] = {
         [SMC_FUNCTION(SMC_FC_GET_VERSION_STR)] = smc_get_version_str,
         [SMC_FUNCTION(SMC_FC_API_VERSION)] = smc_sm_api_version,
         [SMC_FUNCTION(SMC_FC_GET_SMP_MAX_CPUS)] = smc_get_smp_max_cpus,
+        [SMC_FUNCTION(SMC_FC_BEAU_HEARTBEAT)] = smc_beau_heartbeat,
 };
 
 static long smc_fastcall_secure_monitor(struct smc32_args* args) {

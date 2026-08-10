@@ -1500,7 +1500,6 @@ int32_t shell_vmexitstat(int32_t argc, __unused char **argv)
 
 		shell_item_begin("VMEXITSTAT vm%hu:%s", vm_id,
 			(vm->name[0] != '\0') ? vm->name : vm_config->name);
-		shell_item_line("synchronous handler wall-time; cumulative since vCPU reset; physical IRQ exits not counted");
 		shell_item_line("vcpu  pcpu  class     count       total.us    avg.us      max.us");
 		shell_item_line("────  ────  ────────  ──────────  ──────────  ──────────  ──────────");
 

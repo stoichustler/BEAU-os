@@ -17,5 +17,6 @@ struct arm64_trusty_system_info {
 
 int32_t arm64_trusty_get_version(char *version, size_t version_size);
 int32_t arm64_trusty_get_system_info(struct arm64_trusty_system_info *info);
+void arm64_trusty_heartbeat_start(void);
 
 #endif /* ARM64_TRUSTY_H */

@@ -25,6 +25,7 @@
 #include <asm/irq.h>
 #include <asm/cache.h>
 #include <asm/pmu.h>
+#include <asm/trusty.h>
 #if CONFIG_ARM64_SPE
 #include <asm/spe.h>
 #endif
@@ -266,6 +267,7 @@ static void init_pcpu_comm_post(void)
 #endif
 		shell_start();
 		vm_wdt_start();
+		arm64_trusty_heartbeat_start();
 		vm_publish_static_boot_state();
 		arm64_release_vm_launch();
 	}

@@ -6,7 +6,12 @@
 
 #include <types.h>
 #include <errno.h>
+#include <logmsg.h>
 #include <memory.h>
+#include <per_cpu.h>
+#include <schedule.h>
+#include <ticks.h>
+#include <timer.h>
 #include <acrn_common.h>
 #include <vconfig.h>
 #include <vcpu.h>
@@ -16,13 +21,24 @@
 #define TRUSTY_SMC_FC_GET_VERSION_STR	0xbc00000aUL
 #define TRUSTY_SMC_FC_API_VERSION	0xbc00000bUL
 #define TRUSTY_SMC_FC_GET_SMP_MAX_CPUS	0xbc00000dUL
+#define TRUSTY_SMC_FC_BEAU_HEARTBEAT	0xbc00000eUL
+#define TRUSTY_SMC_BEAU_HEARTBEAT_ACK	0x42454155UL
 #define TRUSTY_API_VERSION_MIN		1UL
 #define TRUSTY_API_VERSION_MAX		5UL
 #define TRUSTY_SMC_UNK			UINT64_MAX
 #define TRUSTY_VERSION_LENGTH_INDEX	0xffffffffUL
 #define TRUSTY_VERSION_MAX_LEN		128U
+#define TRUSTY_HEARTBEAT_PERIOD_MS	10000U
 
 static uint64_t trusty_api_version_cache;
+
+#if defined(CONFIG_PLATFORM_QEMU)
+static struct thread_object trusty_heartbeat_thread;
+static uint8_t trusty_heartbeat_stack[CONFIG_STACK_SIZE] __aligned(16);
+static struct hv_timer trusty_heartbeat_timer;
+static uint64_t trusty_heartbeat_sequence;
+static bool trusty_heartbeat_started;
+#endif
 
 /* [20260727] Restricted Trusty API-version forwarding
  *
@@ -57,6 +73,105 @@ static uint64_t trusty_fastcall(uint64_t function_id, uint64_t argument)
 		  "x16", "x17", "memory");
 
 	return x0;
+}
+
+#if defined(CONFIG_PLATFORM_QEMU)
+/* [20260810] BSP-owned Trusty heartbeat
+ *
+ * BSP periodic timer -> wake Trusty worker -> private fast SMC -> Trusty LK
+ *          |                                                       |
+ *          +-- no secure call in softirq                           +-- ACK
+ *
+ * Key rule:
+ *   - the BSP owns the timer, worker, and monotonically increasing sequence;
+ *   - the timer only wakes the worker, while the worker performs the secure
+ *     transition with x2 through x7 cleared;
+ *   - an unknown or malformed reply is reported and dropped, so a secure
+ *     service failure cannot block timer dispatch, scheduling, or VM launch.
+ */
+static void trusty_heartbeat_timer_callback(__unused void *data)
+{
+	wake_thread(&trusty_heartbeat_thread);
+}
+
+static uint32_t trusty_next_heartbeat_sequence(void)
+{
+	if (trusty_heartbeat_sequence == UINT64_MAX) {
+		trusty_heartbeat_sequence = 1U;
+	} else {
+		trusty_heartbeat_sequence++;
+	}
+
+	return trusty_heartbeat_sequence;
+}
+
+static void trusty_heartbeat_thread_main(__unused struct thread_object *obj)
+{
+	uint64_t reply;
+	uint64_t sequence;
+
+	while (true) {
+		sleep_thread(&trusty_heartbeat_thread);
+		schedule();
+
+		sequence = trusty_next_heartbeat_sequence();
+		reply = trusty_fastcall(TRUSTY_SMC_FC_BEAU_HEARTBEAT,
+			(uint64_t)sequence);
+        (void)daemon_log(LOG_WARNING, "TEE: ack:  %s seq:%016lu",
+                reply == TRUSTY_SMC_BEAU_HEARTBEAT_ACK ? "LIVE" : "DEAD",
+                sequence);
+	}
+}
+#endif /* CONFIG_PLATFORM_QEMU */
+
+void arm64_trusty_heartbeat_start(void)
+{
+#if defined(CONFIG_PLATFORM_QEMU)
+	struct sched_params params = {0U};
+	uint64_t period_ticks = us_to_ticks(TRUSTY_HEARTBEAT_PERIOD_MS * 1000U);
+	uint64_t now;
+
+	if (trusty_heartbeat_started) {
+		return;
+	}
+	if (period_ticks == 0UL) {
+		LOG_ERR("TEE:    Trusty heartbeat has no timer period");
+		return;
+	}
+
+	now = cpu_ticks();
+	if (now > (UINT64_MAX - period_ticks)) {
+		LOG_ERR("TEE:    Trusty heartbeat timer overflow");
+		return;
+	}
+
+	(void)strncpy_s(trusty_heartbeat_thread.name,
+		sizeof(trusty_heartbeat_thread.name), "TEE-core",
+		sizeof(trusty_heartbeat_thread.name));
+	trusty_heartbeat_thread.pcpu_id = BSP_CPU_ID;
+	trusty_heartbeat_thread.sched_ctl = &per_cpu(sched_ctl, BSP_CPU_ID);
+	trusty_heartbeat_thread.thread_entry = trusty_heartbeat_thread_main;
+	trusty_heartbeat_thread.switch_out = NULL;
+	trusty_heartbeat_thread.switch_in = NULL;
+	trusty_heartbeat_thread.host_sp = arch_setup_thread_stack(
+		&trusty_heartbeat_thread, trusty_heartbeat_stack, CONFIG_STACK_SIZE);
+	if (trusty_heartbeat_thread.host_sp == 0UL) {
+		LOG_ERR("TEE:    cannot prepare Trusty heartbeat worker");
+		return;
+	}
+
+	params.prio = PRIO_LOW;
+	init_thread_data(&trusty_heartbeat_thread, &params);
+	initialize_timer(&trusty_heartbeat_timer, trusty_heartbeat_timer_callback,
+		NULL, now + period_ticks, period_ticks);
+	if (add_timer(&trusty_heartbeat_timer) != 0) {
+		LOG_ERR("TEE:    cannot start Trusty heartbeat timer");
+		return;
+	}
+
+	wake_thread(&trusty_heartbeat_thread);
+	trusty_heartbeat_started = true;
+#endif /* CONFIG_PLATFORM_QEMU */
 }
 
 /* [20260728] Read-only Trusty version query
@@ -111,7 +226,7 @@ int32_t arm64_trusty_get_version(char *version, size_t version_size)
 
 		return 0;
 	}
-#else
+#else /* CONFIG_PLATFORM_QEMU */
 	return -ENOTSUP;
 #endif
 }
