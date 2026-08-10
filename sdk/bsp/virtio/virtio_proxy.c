@@ -5,33 +5,34 @@
  *
  * [20260710] virtio-proxy transport principle:
  *
- * This file owns the EL2 transport boundary between a VM3 virtio frontend and a
- * VM2 backend. It intentionally does not understand FUSE, RNG, block, or I2C
- * payload semantics; it only snapshots frontend descriptor chains, exposes them
- * to a registered backend through HVC, then completes the original used ring.
+ * This file owns the EL2 transport boundary between a virtio frontend and its
+ * statically assigned backend. It intentionally does not understand FUSE, RNG,
+ * block, or I2C payload semantics; it only snapshots frontend descriptor chains,
+ * exposes them to a registered backend through HVC, then completes the original
+ * used ring.
  *
- *   VM3 virtio-mmio notify
+ *   frontend virtio-mmio notify
  *             |
  *             v
  *   copy desc chain into pending slot
  *             |
  *             v
- *   VM2 HVC poll / batch-poll
+ *   backend HVC poll / batch-poll
  *             |
  *             v
  *   backend protocol handler
  *             |
  *             v
- *   VM2 HVC reply / batch-reply
+ *   backend HVC reply / batch-reply
  *             |
  *             v
- *   copy reply into VM3 writable descs
+ *   copy reply into frontend writable descs
  *             |
  *             v
- *   add used-ring entry + inject VM3 IRQ
+ *   add used-ring entry + inject frontend IRQ
  *
- * Ownership rule: frontend vrings stay owned by VM3 Linux, pending slots are
- * EL2-owned copies, and request semantics stay owned by the VM2 backend.
+ * Ownership rule: frontend vrings stay owned by the frontend Linux VM, pending
+ * slots are EL2-owned copies, and request semantics stay owned by the backend.
  */
 
 #include <types.h>
@@ -83,7 +84,7 @@ _Static_assert(sizeof(struct virtio_proxy_batch_entry_meta) ==
 static bool virtio_proxy_queue_has_unsent_locked(struct virtio_proxy_dev *dev,
 	uint16_t queue_id);
 static uint16_t virtio_proxy_prefetch_avail_locked(struct virtio_proxy_dev *dev,
-	uint16_t queue_id, uint64_t now);
+	uint16_t queue_id, uint64_t now, uint16_t limit);
 
 static struct virtio_proxy_dev *virtio_proxy_get_dev_by_id_index(uint16_t vm_id,
 	uint16_t index)
@@ -419,6 +420,40 @@ static uint32_t virtio_proxy_wait_hint_us(const struct virtio_proxy_dev *dev)
 		VIRTIO_PROXY_WAIT_HIGH_US : VIRTIO_PROXY_WAIT_LOW_US;
 }
 
+static bool virtio_proxy_backend_batch_ready_locked(const struct virtio_proxy_dev *dev)
+{
+	return (dev != NULL) && dev->hcall_backend_registered &&
+		((dev->backend_caps & (ACRN_VIRTIO_PROXY_CAP_BATCH |
+		ACRN_VIRTIO_PROXY_CAP_SHARED_RING)) ==
+		(ACRN_VIRTIO_PROXY_CAP_BATCH | ACRN_VIRTIO_PROXY_CAP_SHARED_RING));
+}
+
+/* [20260807] Virtio-proxy bounded prefetch selection
+ *
+ * frontend QueueNotify
+ *     |
+ *     +--> negotiated high-throughput batch backend -> fill pending budget
+ *     |
+ *     +--> unregistered/non-batch backend          -> take one request
+ *
+ * Key rule:
+ *   - the frontend owns avail entries until this transport copies a complete
+ *     descriptor chain into its EL2-owned pending slot;
+ *   - batch prefetch is enabled only after the registered backend proved it
+ *     can consume shared batch entries;
+ *   - the fallback remains one bounded request, preventing a non-batch
+ *     backend from accumulating copied work and increasing tail latency.
+ */
+static uint16_t virtio_proxy_prefetch_limit_locked(const struct virtio_proxy_dev *dev)
+{
+	if ((dev != NULL) && (dev->throughput == VIRTIO_PROXY_THROUGHPUT_HIGH) &&
+		virtio_proxy_backend_batch_ready_locked(dev)) {
+		return dev->pending_limit;
+	}
+
+	return 1U;
+}
+
 static void virtio_proxy_drop_backend_locked(struct virtio_proxy_dev *dev,
 	int32_t reason)
 {
@@ -480,7 +515,7 @@ static void virtio_proxy_build_config(struct virtio_proxy_dev *dev,
 		net_config.mac[1] = 0x54U;
 		net_config.mac[2] = 0x00U;
 		net_config.mac[3] = 0xbeU;
-		net_config.mac[4] = 0x03U;
+		net_config.mac[4] = (uint8_t)proxy_config->frontend_vmid;
 		net_config.mac[5] = 0x00U;
 		net_config.status = VIRTIO_NET_S_LINK_UP;
 		(void)memcpy(dev->config, &net_config, sizeof(net_config));
@@ -654,7 +689,8 @@ static void virtio_proxy_notify_queue(struct virtio_mmio_dev *mmio,
 	if (dev->hcall_backend_registered) {
 		bool had_pending = virtio_proxy_queue_has_unsent_locked(dev, queue_id);
 		uint16_t prefetched =
-			virtio_proxy_prefetch_avail_locked(dev, queue_id, now);
+			virtio_proxy_prefetch_avail_locked(dev, queue_id, now,
+				virtio_proxy_prefetch_limit_locked(dev));
 
 		if ((prefetched == 0U) && had_pending) {
 			dev->notify_coalesced_count++;
@@ -722,7 +758,8 @@ void virtio_proxy_init_vm(struct acrn_vm *vm)
 		struct virtio_proxy_dev *dev = virtio_proxy_get_dev(vm, i);
 		struct virtio_mmio_init init;
 
-		if (dev == NULL) {
+		if ((dev == NULL) ||
+			(proxy_config->device_id == VIRTIO_DEVICE_ID_VSOCK)) {
 			continue;
 		}
 
@@ -732,6 +769,7 @@ void virtio_proxy_init_vm(struct acrn_vm *vm)
 		dev->access = proxy_config->access;
 		dev->throughput = proxy_config->throughput;
 		dev->hcall_backend_expected = true;
+		dev->configured_backend_vmid = proxy_config->backend_vmid;
 		dev->backend_vmid = ACRN_INVALID_VMID;
 		dev->state = VIRTIO_PROXY_STATE_WAIT_BACKEND;
 			dev->pending_limit = proxy_config->pending_num != 0U ?
@@ -786,7 +824,7 @@ void virtio_proxy_reset_vm(struct acrn_vm *vm)
 	for (uint16_t i = 0U; i < vm_config->arch.guest_virtio_proxy_num; i++) {
 		struct virtio_proxy_dev *dev = virtio_proxy_get_dev(vm, i);
 
-		if (dev != NULL) {
+		if ((dev != NULL) && (dev->device_id != VIRTIO_DEVICE_ID_VSOCK)) {
 			virtio_mmio_reset_dev(&dev->mmio);
 		}
 	}
@@ -1247,19 +1285,22 @@ static int32_t virtio_proxy_next_pending_locked(struct virtio_proxy_dev *dev,
 }
 
 static uint16_t virtio_proxy_prefetch_avail_locked(struct virtio_proxy_dev *dev,
-	uint16_t queue_id, uint64_t now)
+	uint16_t queue_id, uint64_t now, uint16_t limit)
 {
 	struct virtio_proxy_pending *pending;
 	struct virtio_mmio_queue *vq;
 	uint16_t head;
 	uint16_t copied = 0U;
 
-	if (dev == NULL) {
+	if ((dev == NULL) || (limit == 0U)) {
 		return 0U;
+	}
+	if (limit > dev->pending_limit) {
+		limit = dev->pending_limit;
 	}
 
 	vq = virtio_mmio_get_queue(&dev->mmio, queue_id);
-	while (copied < dev->pending_limit) {
+	while (copied < limit) {
 		pending = virtio_proxy_free_pending_slot(dev);
 		if (pending == NULL) {
 			if (copied == 0U) {
@@ -1416,6 +1457,20 @@ static int32_t virtio_proxy_hcall_register(struct acrn_vcpu *vcpu,
 
 	if ((dev != NULL) && (dev->mmio.vm != NULL) &&
 		(dev->mmio.vm->vm_id != vcpu->vm->vm_id)) {
+		/* [20260801] Static virtio-proxy backend ownership
+		 *
+		 * platform DTS owner -> validate caller VM -> publish registration
+		 *                                      |
+		 *                                      +--> mismatch returns -EPERM
+		 *
+		 * Key rule:
+		 *   - platform policy owns the permitted backend VM identity;
+		 *   - validate the caller before reading guest buffers or changing state;
+		 *   - backend reset clears registration, never configured ownership.
+		 */
+		if (dev->configured_backend_vmid != vcpu->vm->vm_id) {
+			return -EPERM;
+		}
 		if ((abi_version > ACRN_VIRTIO_PROXY_ABI_VERSION) ||
 			((ioc->ioc_size != 0U) && (ioc->ioc_size < sizeof(*ioc)))) {
 			return -EINVAL;
@@ -1584,6 +1639,10 @@ static int32_t virtio_proxy_hcall_batch_poll(struct acrn_vcpu *vcpu,
 
 	requested = ioc->batch_count;
 	spinlock_obtain(&dev->lock);
+	if (!virtio_proxy_backend_batch_ready_locked(dev)) {
+		spinlock_release(&dev->lock);
+		return -ENOTSUP;
+	}
 	now = cpu_ticks();
 	virtio_proxy_check_timeouts_locked(dev, now);
 	virtio_proxy_refresh_health_locked(dev, now);
@@ -1643,6 +1702,10 @@ static int32_t virtio_proxy_hcall_batch_reply(struct acrn_vcpu *vcpu,
 	}
 
 	spinlock_obtain(&dev->lock);
+	if (!virtio_proxy_backend_batch_ready_locked(dev)) {
+		spinlock_release(&dev->lock);
+		return -ENOTSUP;
+	}
 	now = cpu_ticks();
 	dev->hcall_batch_reply_count++;
 

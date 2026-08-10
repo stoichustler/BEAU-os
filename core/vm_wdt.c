@@ -20,7 +20,7 @@
 #include <vconfig.h>
 #include <vm_wdt.h>
 #include <virtio_proxy.h>
-#include <hwtdbg.h>
+#include <swtdbg.h>
 
 /* [20260712] VM watchdog diagnosis model
  *
@@ -73,14 +73,14 @@
 #define VM_WDT_RECOVERY_NOTICE_NUM	4U
 
 struct vm_wdt_pending_timeout {
-	struct hwtdbg_timeout_context context;
+	struct swtdbg_timeout_context context;
 };
 
 struct vm_wdt_recovery_notice {
 	uint64_t sequence;
 	uint64_t wait_vcpus;
 	int32_t reset_ret;
-	enum hwtdbg_recovery_result result;
+	enum swtdbg_recovery_result result;
 };
 
 struct vm_wdt_daemon_event {
@@ -392,7 +392,7 @@ static void vm_wdt_queue_timeout_locked(uint16_t vm_id,
 	pending = &entry->pending[slot];
 	(void)memset(pending, 0U, sizeof(*pending));
 	pending->context.kind = !vm_wdt_heartbeat_started(entry) ?
-		HWTDBG_TIMEOUT_FIRST_KICK : HWTDBG_TIMEOUT_RUNTIME;
+		SWTDBG_TIMEOUT_FIRST_KICK : SWTDBG_TIMEOUT_RUNTIME;
 	pending->context.cause = entry->per_vcpu_mode ?
 		VM_WDT_CAUSE_GUEST_VCPU_STALL : VM_WDT_CAUSE_TIMEOUT;
 	pending->context.detected_tsc = now;
@@ -502,7 +502,7 @@ static void vm_wdt_record_daemon_drop(uint16_t vm_id)
 }
 
 static void vm_wdt_queue_recovery_notice_locked(struct vm_wdt_entry *entry,
-	uint64_t sequence, enum hwtdbg_recovery_result result,
+	uint64_t sequence, enum swtdbg_recovery_result result,
 	uint64_t wait_vcpus, int32_t reset_ret)
 {
 	struct vm_wdt_recovery_notice *notice;
@@ -560,7 +560,7 @@ static void vm_wdt_flush_recovery_notices(uint16_t vm_id)
 		if (!vm_wdt_claim_recovery_notice(vm_id, &notice)) {
 			break;
 		}
-		hwtdbg_update_recovery(vm_id, notice.sequence, notice.result,
+		swtdbg_update_recovery(vm_id, notice.sequence, notice.result,
 			0UL, notice.wait_vcpus, notice.reset_ret);
 	}
 }
@@ -658,7 +658,7 @@ static bool vm_wdt_restart_enabled(uint16_t vm_id)
 
 static bool vm_wdt_claim_pending_timeout(uint16_t vm_id,
 	const struct vm_wdt_snapshot *snapshot,
-	struct hwtdbg_timeout_context *context)
+	struct swtdbg_timeout_context *context)
 {
 	struct vm_wdt_entry *entry;
 	uint64_t rflags;
@@ -690,7 +690,7 @@ static bool vm_wdt_claim_pending_timeout(uint16_t vm_id,
 }
 
 static bool vm_wdt_bind_captured_event(uint16_t vm_id,
-	const struct hwtdbg_timeout_context *context, uint64_t sequence)
+	const struct swtdbg_timeout_context *context, uint64_t sequence)
 {
 	struct vm_wdt_entry *entry;
 	uint64_t rflags;
@@ -719,17 +719,17 @@ static void vm_wdt_capture_pending_timeouts(uint16_t vm_id,
 	uint32_t index;
 
 	for (index = 0U; index < VM_WDT_PENDING_TIMEOUT_NUM; index++) {
-		struct hwtdbg_timeout_context context;
+		struct swtdbg_timeout_context context;
 		uint64_t sequence;
 
 		if (!vm_wdt_claim_pending_timeout(vm_id, snapshot, &context)) {
 			break;
 		}
-		sequence = hwtdbg_capture_timeout(vm_id, &context);
+		sequence = swtdbg_capture_timeout(vm_id, &context);
 		if ((sequence != 0UL) &&
 			!vm_wdt_bind_captured_event(vm_id, &context, sequence)) {
-			hwtdbg_update_recovery(vm_id, sequence,
-				HWTDBG_RECOVERY_LATE_KICK, 0UL, 0UL, 0);
+			swtdbg_update_recovery(vm_id, sequence,
+				SWTDBG_RECOVERY_LATE_KICK, 0UL, 0UL, 0);
 		}
 	}
 }
@@ -876,7 +876,7 @@ static bool vm_wdt_recovery_pending(uint16_t vm_id)
 }
 
 static bool vm_wdt_complete_recovery(uint16_t vm_id, bool success,
-	enum hwtdbg_recovery_result result, uint64_t wait_vcpus,
+	enum swtdbg_recovery_result result, uint64_t wait_vcpus,
 	int32_t reset_ret)
 {
 	struct vm_wdt_entry *entry;
@@ -909,7 +909,7 @@ static bool vm_wdt_complete_recovery(uint16_t vm_id, bool success,
 	}
 	spinlock_irqrestore_release(&vm_wdt_lock, rflags);
 	if (completed && (sequence != 0UL)) {
-		hwtdbg_update_recovery(vm_id, sequence, result, 0UL,
+		swtdbg_update_recovery(vm_id, sequence, result, 0UL,
 			wait_vcpus, reset_ret);
 	}
 
@@ -965,7 +965,7 @@ static bool vm_wdt_claim_restart(uint16_t vm_id,
 	}
 	spinlock_irqrestore_release(&vm_wdt_lock, rflags);
 	if (claimed && (sequence != 0UL)) {
-		hwtdbg_update_recovery(vm_id, sequence, HWTDBG_RECOVERY_QUIESCING,
+		swtdbg_update_recovery(vm_id, sequence, SWTDBG_RECOVERY_QUIESCING,
 			snapshot->restart_count + 1UL, 0UL, 0);
 	}
 
@@ -987,7 +987,7 @@ static void vm_wdt_mark_restart_exhausted(uint16_t vm_id,
 	vm_wdt_entries[vm_id].candidate_event_sequence = 0UL;
 	spinlock_irqrestore_release(&vm_wdt_lock, rflags);
 	if (sequence != 0UL) {
-		hwtdbg_update_recovery(vm_id, sequence, HWTDBG_RECOVERY_EXHAUSTED,
+		swtdbg_update_recovery(vm_id, sequence, SWTDBG_RECOVERY_EXHAUSTED,
 			0UL, 0UL, 0);
 	}
 }
@@ -1013,7 +1013,7 @@ static bool vm_wdt_update_quiesce(uint16_t vm_id, uint64_t wait_vcpus)
 	}
 	spinlock_irqrestore_release(&vm_wdt_lock, rflags);
 	if (sequence != 0UL) {
-		hwtdbg_update_recovery(vm_id, sequence, HWTDBG_RECOVERY_QUIESCING,
+		swtdbg_update_recovery(vm_id, sequence, SWTDBG_RECOVERY_QUIESCING,
 			0UL, wait_vcpus, 0);
 	}
 
@@ -1041,7 +1041,7 @@ static bool vm_wdt_begin_reset(uint16_t vm_id)
 	}
 	spinlock_irqrestore_release(&vm_wdt_lock, rflags);
 	if (begun && (sequence != 0UL)) {
-		hwtdbg_update_recovery(vm_id, sequence, HWTDBG_RECOVERY_RESETTING,
+		swtdbg_update_recovery(vm_id, sequence, SWTDBG_RECOVERY_RESETTING,
 			0UL, 0UL, 0);
 	}
 
@@ -1130,8 +1130,8 @@ static bool vm_wdt_start_verification(uint16_t vm_id)
 	}
 	spinlock_irqrestore_release(&vm_wdt_lock, rflags);
 	if (sequence != 0UL) {
-		hwtdbg_update_recovery(vm_id, sequence,
-			verified ? HWTDBG_RECOVERY_VERIFIED : HWTDBG_RECOVERY_LAUNCHED,
+		swtdbg_update_recovery(vm_id, sequence,
+			verified ? SWTDBG_RECOVERY_VERIFIED : SWTDBG_RECOVERY_LAUNCHED,
 			0UL, 0UL, 0);
 	}
 
@@ -1173,9 +1173,9 @@ static bool vm_wdt_process_recovery(uint16_t vm_id)
 	if (state == VM_WDT_RECOVERY_QUIESCING) {
 		vm = get_vm_from_vmid(vm_id);
 		if ((vm == NULL) || (vm->state != VM_RUNNING) || is_service_vm(vm)) {
-			LOG_ERR("HWT:    VM%u restart failed cause:invalid-state", vm_id);
+			LOG_ERR("SWT:    VM%u restart failed cause:invalid-state", vm_id);
 			(void)vm_wdt_complete_recovery(vm_id, false,
-				HWTDBG_RECOVERY_INVALID_STATE, 0UL, -EINVAL);
+				SWTDBG_RECOVERY_INVALID_STATE, 0UL, -EINVAL);
 			return false;
 		}
 
@@ -1213,41 +1213,41 @@ static bool vm_wdt_process_recovery(uint16_t vm_id)
 			if (!vm_wdt_begin_reset(vm_id)) {
 				return vm_wdt_recovery_pending(vm_id);
 			}
-			LOG_INF("HWT:    VM%u quiesced; cold restart queued", vm_id);
+			LOG_INF("SWT:    VM%u quiesced; cold restart queued", vm_id);
 			ret = request_vm_wdt_restart(vm);
 			if (ret != 0) {
-				LOG_ERR("HWT:    VM%u restart failed cause:reset-queue ret=%d",
+				LOG_ERR("SWT:    VM%u restart failed cause:reset-queue ret=%d",
 					vm_id, ret);
 				(void)vm_wdt_complete_recovery(vm_id, false,
-					HWTDBG_RECOVERY_RESET_FAILED, 0UL, ret);
+					SWTDBG_RECOVERY_RESET_FAILED, 0UL, ret);
 				return false;
 			}
 		} else if (vm_wdt_update_quiesce(vm_id, wait_vcpus)) {
-			LOG_ERR("HWT:    VM%u restart failed cause:quiesce-timeout wait:0x%lx",
+			LOG_ERR("SWT:    VM%u restart failed cause:quiesce-timeout wait:0x%lx",
 				vm_id, wait_vcpus);
 			(void)vm_wdt_complete_recovery(vm_id, false,
-				HWTDBG_RECOVERY_QUIESCE_TIMEOUT, wait_vcpus, 0);
+				SWTDBG_RECOVERY_QUIESCE_TIMEOUT, wait_vcpus, 0);
 			return false;
 		}
 	} else if (state == VM_WDT_RECOVERY_RESETTING) {
 		if (vm_wdt_claim_reset_completion(vm_id, &ret)) {
 			if (ret != 0) {
-				LOG_ERR("HWT:    VM%u restart failed cause:reset ret=%d", vm_id, ret);
+				LOG_ERR("SWT:    VM%u restart failed cause:reset ret=%d", vm_id, ret);
 				(void)vm_wdt_complete_recovery(vm_id, false,
-					HWTDBG_RECOVERY_RESET_FAILED, 0UL, ret);
+					SWTDBG_RECOVERY_RESET_FAILED, 0UL, ret);
 				return false;
 			}
 			if (vm_wdt_start_verification(vm_id)) {
-				LOG_INF("HWT:    VM%u restart verified", vm_id);
+				LOG_INF("SWT:    VM%u restart verified", vm_id);
 			} else {
-				LOG_INF("HWT:    VM%u restart launched", vm_id);
+				LOG_INF("SWT:    VM%u restart launched", vm_id);
 			}
 		}
 	} else if (state == VM_WDT_RECOVERY_VERIFYING) {
 		if (vm_wdt_verify_timed_out(vm_id)) {
-			LOG_ERR("HWT:    VM%u restart failed cause:verify-timeout", vm_id);
+			LOG_ERR("SWT:    VM%u restart failed cause:verify-timeout", vm_id);
 			(void)vm_wdt_complete_recovery(vm_id, false,
-				HWTDBG_RECOVERY_VERIFY_TIMEOUT, 0UL, 0);
+				SWTDBG_RECOVERY_VERIFY_TIMEOUT, 0UL, 0);
 			return false;
 		}
 	}
@@ -1262,7 +1262,7 @@ static void vm_wdt_schedule_recovery_poll(void)
 	if (!timer_is_started(&vm_wdt_recovery_timer)) {
 		update_timer(&vm_wdt_recovery_timer, cpu_ticks() + poll_ticks, 0UL);
 		if (add_timer(&vm_wdt_recovery_timer) != 0) {
-			LOG_ERR("HWT:    cannot schedule recovery poll");
+			LOG_ERR("SWT:    cannot schedule recovery poll");
 		}
 	}
 }
@@ -1390,7 +1390,7 @@ int32_t vm_wdt_pm_resume(uint64_t epoch)
 	if (vm_wdt_started) {
 		update_timer(&vm_wdt_timer, now + period_ticks, period_ticks);
 		if (add_timer(&vm_wdt_timer) != 0) {
-			LOG_ERR("HWT:    cannot resume periodic timer");
+			LOG_ERR("SWT:    cannot resume periodic timer");
 			status = -EIO;
 		}
 		if (recovery_pending) {
@@ -1517,7 +1517,7 @@ static bool vm_wdt_print_daemon_event(uint16_t vm_id,
 	gap_msec = ticks_to_ms(event->gap_ticks) % 1000UL;
 
 	return daemon_log(LOG_INFO,
-		"HWT: vm%hu:%9s (GAP: %02lu.%03lus) token:0x%016lx",
+		"SWT: vm%hu:%9s (elapsed: %02lu.%03lus) CNT:0x%016lx",
 		vm_id, vm_wdt_name(vm_id), gap_sec, gap_msec, event->token);
 }
 
@@ -1560,7 +1560,7 @@ static void vm_wdt_check_timeouts(void)
 		}
 		if (snapshot.status == VM_WDT_STATUS_STUCK) {
 			if (vm_wdt_claim_restart(vm_id, &snapshot)) {
-				LOG_ERR("HWT:    VM%u restart cause:%s age:%lums attempt:%lu/%u",
+				LOG_ERR("SWT:    VM%u restart cause:%s age:%lums attempt:%lu/%u",
 					vm_id, vm_wdt_cause_str(snapshot.cause), snapshot.last_ms,
 					snapshot.restart_count + 1UL, CONFIG_VM_WDT_RESTART_MAX);
 				recovery_pending |= vm_wdt_process_recovery(vm_id);
@@ -1618,7 +1618,7 @@ void vm_wdt_start(void)
 	vm_wdt_params.prio = PRIO_LOW;
 	init_thread_data(&vm_wdt_thread, &vm_wdt_params);
 	if (add_timer(&vm_wdt_timer) != 0) {
-		LOG_ERR("HWT:    cannot start periodic timer");
+		LOG_ERR("SWT:    cannot start periodic timer");
 		return;
 	}
 	wake_thread(&vm_wdt_thread);
@@ -1831,9 +1831,9 @@ int32_t vm_wdt_kick(const struct acrn_vcpu *vcpu, uint64_t token, uint64_t flags
 		verified = true;
 	}
 	vm_wdt_queue_recovery_notice_locked(entry, late_sequence,
-		HWTDBG_RECOVERY_LATE_KICK, 0UL, 0);
+		SWTDBG_RECOVERY_LATE_KICK, 0UL, 0);
 	vm_wdt_queue_recovery_notice_locked(entry, verified_sequence,
-		HWTDBG_RECOVERY_VERIFIED, 0UL, 0);
+		SWTDBG_RECOVERY_VERIFIED, 0UL, 0);
 out:
 	spinlock_irqrestore_release(&vm_wdt_lock, rflags);
 
@@ -1842,7 +1842,7 @@ out:
 		wake_thread(&vm_wdt_thread);
 	}
 	if (verified) {
-		LOG_INF("HWT:    VM%u restart verified", vm->vm_id);
+		LOG_INF("SWT:    VM%u restart verified", vm->vm_id);
 	}
 
 	return ret;

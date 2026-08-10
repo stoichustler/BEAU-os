@@ -74,7 +74,7 @@ static uint64_t rawimage_range_end(uint64_t base, uint64_t size)
 static void rawimage_log_load(uint16_t vm_id, const char *name, uint64_t base, uint64_t size)
 {
 	if (vm_id <= 3U) {
-		LOG_INF("VM%u:    load %-7s [0x%016lx-0x%016lx] (0x%08lx)",
+		LOG_INF("VM%u:    Load %-7s [0x%016lx-0x%016lx] (0x%08lx)",
 			vm_id, name, base, rawimage_range_end(base, size), size);
 	}
 }
@@ -168,6 +168,9 @@ static int32_t load_rawimage(struct acrn_vm *vm)
 	uint64_t ram_size;
 	uint64_t ramdisk_load_gpa = 0UL;
 	uint32_t ramdisk_size = ramdisk_info->size;
+#if defined(CONFIG_ARM64)
+	void *kernel_hva;
+#endif
 	int32_t ret;
 
 	/*
@@ -269,6 +272,15 @@ static int32_t load_rawimage(struct acrn_vm *vm)
 			(uint64_t)sw_kernel->kernel_size);
 		return -EFAULT;
 	}
+#if defined(CONFIG_ARM64)
+	kernel_hva = gpa2hva(vm, kernel_load_gpa);
+	if (kernel_hva == NULL) {
+		LOG_ERR("vm-%u:%-9s has no executable host mapping at gpa 0x%016lx",
+			vm->vm_id, vm_config->os_config.kernel_mod_tag, kernel_load_gpa);
+		return -EFAULT;
+	}
+	sync_instruction_cache_range(kernel_hva, sw_kernel->kernel_size);
+#endif
 
 	if (ramdisk_size > 0U) {
 		ret = copy_to_gpa(vm, ramdisk_info->src_addr, ramdisk_load_gpa, ramdisk_size);

@@ -128,7 +128,7 @@
  * level IRQ.
  *
  * Linux SMP boot depends on a precise edge-SGI lifecycle. A representative
- * failure was VM2 reaching the PL011 console and then stalling with CPU0 in
+ * failure was a Linux guest reaching its console and then stalling with CPU0 in
  * smp_call_function_many_cond(), waiting for CPU2 to unlock a synchronous CSD
  * queued by kick_all_cpus_sync(). Diagnosis showed that vCPU requests had been
  * consumed, SGI1 had been targeted and flushed into a list register, and the

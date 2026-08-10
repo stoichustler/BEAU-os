@@ -28,6 +28,21 @@ enum vm_paging_mode {
 };
 
 /*
+ * GVA helpers report the failed translation stage without exposing a host
+ * address.  Callers may use the value for diagnostics while the errno return
+ * remains the control-flow contract.
+ */
+enum guest_memory_error {
+	GUEST_MEMORY_ERR_NONE = 0U,
+	GUEST_MEMORY_ERR_ARGUMENT,
+	GUEST_MEMORY_ERR_VCPU_BUSY,
+	GUEST_MEMORY_ERR_TRANSLATION,
+	GUEST_MEMORY_ERR_PERMISSION,
+	GUEST_MEMORY_ERR_STAGE2,
+	GUEST_MEMORY_ERR_RETRY,
+};
+
+/*
  * VM related APIs
  */
 int32_t gva2gpa(struct acrn_vcpu *vcpu, uint64_t gva, uint64_t *gpa, uint32_t *err_code);

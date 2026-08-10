@@ -1,5 +1,5 @@
 #!/bin/sh
-# Rebuild the shared Linux initramfs used by VM2 and VM3.
+# Rebuild the shared Linux initramfs used by VM1, VM2, and VM3.
 
 set -eu
 
@@ -7,6 +7,8 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 ARCHIVE=${1:-"$ROOT/sdk/imgs/linux/Initramfs.cpio.gz"}
 EDU_TEST_SRC="$ROOT/sdk/imgs/linux/tools/beau-edu-test.c"
 RPMSG_TEST_SRC="$ROOT/sdk/imgs/linux/tools/beau-rpmsg-test.c"
+VSOCK_TEST_SRC="$ROOT/sdk/imgs/linux/tools/beau-vsock-test.c"
+IPC_TEST_SRC="$ROOT/sdk/imgs/linux/tools/beau-ipc-test.c"
 EDU_TEST_CC=${EDU_TEST_CC:-aarch64-linux-gnu-gcc}
 RT_TESTS_SRC=${RT_TESTS_SRC:-"$ROOT/../rt-tests-2.10"}
 RT_TESTS_VERSION=2.10
@@ -14,7 +16,7 @@ NUMACTL_VERSION=2.0.19
 NUMACTL_ARCHIVE="numactl-$NUMACTL_VERSION.tar.gz"
 NUMACTL_URL="https://github.com/numactl/numactl/releases/download/v$NUMACTL_VERSION/$NUMACTL_ARCHIVE"
 NUMACTL_SHA256=f2672a0381cb59196e9c246bf8bcc43d5568bc457700a697f1a1df762b9af884
-# QEMU VM2/VM3 reserve the final 4 KiB before pstore for their generated FDT.
+# QEMU Linux guests reserve the final 4 KiB before pstore for their generated FDT.
 INITRAMFS_MAX_SIZE=62910464
 case "$ARCHIVE" in
 /*) ;;
@@ -255,26 +257,23 @@ mkdir -p /tmp
 #
 # -------------------------------------------------------------------------
 #
-# /var/beau is the virtio-fs handoff point used by the BEAU proxy path:
-# VM2 exports it through the backend, while VM3 mounts the frontend there.
+# VM1 exports isolated virtio-fs roots for the VM2 and VM3 proxy frontends.
 #
 # Manual virtio-fs smoke test from the BEAU shell:
-#   1. vsh 2
-#      ls -l /var/beau
+#   1. vsh 1
+#      ls -l /var/beau/vm2 /var/beau/vm3
 #      <Ctrl-D>
 #   2. vsh 3
 #      mount -t virtiofs -o rw proxy-fs /var/beau
 #      echo "hello from vm3" > /var/beau/README
 #      <Ctrl-D>
-#   3. vsh 2
-#      cat /var/beau/README
+#   3. vsh 1
+#      cat /var/beau/vm3/README
 #
-# Current baseline: VM3 is the writable frontend, while VM2 reads the backend
-# export state. If VM3 writes /var/beau before the mount command, that file is
-# created in VM3's local initramfs and will not appear in VM2. After the rw
-# mount, VM3 writes should be visible from VM2 through the backend.
-mkdir -p /var/beau
-chmod 0755 /var /var/beau 2>/dev/null || true
+# VM2 and VM3 use separate backend roots so filesystem state cannot cross the
+# frontend ownership boundary.
+mkdir -p /var/beau/vm2 /var/beau/vm3
+chmod 0755 /var /var/beau /var/beau/vm2 /var/beau/vm3 2>/dev/null || true
 
 # BEAU static remoteproc/RPMsg smoke test (VM3 only):
 #   rpmsg hello-rpmsg
@@ -287,54 +286,63 @@ chmod 0755 /var /var/beau 2>/dev/null || true
 # BEAU Linux guests use virtio-console as the boot console (`console=hvc0`).
 # Do not create or probe ttyAMA0 here: a manually-created PL011 node can be a
 # character device while still having no backing driver, which makes /bin/sh
-# print "can't open /dev/ttyAMA0". Opening /dev/console also does not reliably
-# give ash a controlling tty, causing the "can't access tty" job-control warning.
-# Starting the shell as a new session on /dev/hvc0 keeps the console quiet.
+# print "can't open /dev/ttyAMA0". BusyBox getty owns the hvc0 session and
+# controlling tty so an interactive shell cannot exit immediately on an
+# unowned terminal.
 [ -c /dev/console ] || mknod /dev/console c 5 1
 [ -c /dev/tty ] || mknod /dev/tty c 5 0
 
-run_shell_on_tty()
+run_getty_on_tty()
 {
-	tty=$1
+	tty_name=$1
 
-	[ -c "$tty" ] || return 1
-	if ! /bin/sh -c "exec <\"$tty\" >\"$tty\" 2>&1" 2>/dev/null; then
-		return 1
-	fi
-
-	setsid /bin/sh -c "exec <\"$tty\" >\"$tty\" 2>&1; stty sane rows 24 cols 80 -ixon -ixoff 2>/dev/null || true; exec /bin/sh -i"
+	[ -c "/dev/$tty_name" ] || return 1
+	/sbin/getty -L -n -l /usr/local/bin/beau-console-shell \
+		115200 "$tty_name" dumb
 }
 
-# uos commands
-alias ll='ls -la'
-
-TERM=dumb
-PS1='\[\033[0;92m\]uos \w\[\033[0m\] '
-
-export PS1 PATH TERM
+export PATH
 
 while true; do
-	run_shell_on_tty /dev/hvc0 && continue
+	run_getty_on_tty hvc0 || true
+	# Bound retries even when getty or the interactive shell exits successfully.
 	sleep 1
 done
 EOF
 
 chmod 0755 "$WORKDIR/init"
-mkdir -p "$WORKDIR/var/beau"
-chmod 0755 "$WORKDIR/var" "$WORKDIR/var/beau"
+mkdir -p "$WORKDIR/var/beau/vm2" "$WORKDIR/var/beau/vm3"
+chmod 0755 "$WORKDIR/var" "$WORKDIR/var/beau" \
+	"$WORKDIR/var/beau/vm2" "$WORKDIR/var/beau/vm3"
 install_alpine_apk i2c-tools community
 install_alpine_apk hwdata-pci main
 install_alpine_apk pciutils-libs main
 install_alpine_apk pciutils main
 mkdir -p "$WORKDIR/usr/local/bin"
+cat > "$WORKDIR/usr/local/bin/beau-console-shell" <<'EOF'
+#!/bin/sh
+# getty has already established hvc0 as the controlling terminal.
+stty sane rows 24 cols 80 -ixon -ixoff 2>/dev/null || true
+TERM=dumb
+PS1='\[\033[0;92m\]uos \w\[\033[0m\] '
+export PS1 TERM
+exec /bin/sh -i
+EOF
+chmod 0755 "$WORKDIR/usr/local/bin/beau-console-shell"
 rm -f "$WORKDIR/usr/local/bin/beau-edu-test" \
-	"$WORKDIR/usr/local/bin/beau-rpmsg-test"
+	"$WORKDIR/usr/local/bin/beau-rpmsg-test" \
+	"$WORKDIR/usr/local/bin/beau-vsock-test" \
+	"$WORKDIR/usr/local/bin/beau-ipc-test" \
+	"$WORKDIR/usr/local/bin/ipc" \
+	"$WORKDIR/usr/local/bin/hipc"
 if ! command -v "$EDU_TEST_CC" >/dev/null 2>&1; then
 	echo "$EDU_TEST_CC is required to build initramfs test tools" >&2
 	exit 1
 fi
 "$EDU_TEST_CC" -Os -static -s -Wall -Wextra -o "$WORKDIR/usr/local/bin/vpci" "$EDU_TEST_SRC"
 "$EDU_TEST_CC" -Os -static -s -Wall -Wextra -o "$WORKDIR/usr/local/bin/rpmsg" "$RPMSG_TEST_SRC"
+"$EDU_TEST_CC" -Os -static -s -Wall -Wextra -o "$WORKDIR/usr/local/bin/vsock" "$VSOCK_TEST_SRC"
+"$EDU_TEST_CC" -Os -static -s -Wall -Wextra -o "$WORKDIR/usr/local/bin/hipc" "$IPC_TEST_SRC"
 install_rt_tests
 install_stress_ng_package
 install_debug_tools

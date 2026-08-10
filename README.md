@@ -19,16 +19,16 @@ for mixed RTOS and Linux guests.
 │ BEAU Hypervisor · ARM64 EL2  │
 ├──────────────┬───────────────┤
 │ VM0 Zephyr   │ service VM    │
-│ VM1 RT-Thread│ prelaunch VM  │
-│ VM2 Linux    │ prelaunch VM  │
-│ VM3 Linux    │ prelaunch VM  │
+│ VM1 Linux    │ secure/KBE VM │
+│ VM2 Linux    │ frontend VM   │
+│ VM3 Linux    │ frontend VM   │
 └──────────────┴───────────────┘
 ```
 
 ### Quick Run
 
 ```sh
-./scripts/kick.sh --build
+./scripts/kick.sh --build --tee
 ```
 
 ## Learning Path

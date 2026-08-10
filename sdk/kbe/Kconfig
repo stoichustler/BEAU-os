@@ -36,13 +36,13 @@ config BEAU_EDU_TEST
 	  vector, raises one device interrupt, and reports whether the
 	  interrupt handler observed it.
 
-config BEAU_IPC_TEST
-	bool "BEAU static IPC validation endpoint"
+config BEAU_IPC_RING
+	bool "BEAU shared-memory IPC ring"
 	default y
 	help
-	  Join the first BEAU IPC channel visible to this VM, map its shared
-	  SPSC rings, and exchange length-prefixed validation messages with the
-	  peer endpoint through HC_IPC notifications.
+	  Expose each BEAU static IPC DT channel as /dev/beau-ipc-<channel>.
+	  Notifications arrive through the channel virtual IRQ; reads and writes
+	  preserve one bounded message per operation.
 
 config BEAU_VIRTIOFS_BACKEND
 	bool "BEAU VM2 virtio-fs backend"

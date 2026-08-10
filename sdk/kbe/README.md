@@ -19,6 +19,11 @@ Linux kernel tree so they can be ported to multiple Linux versions.
   frontend I2C validation through BEAU virtio-proxy.
 - `virtio-net-backend.c`: VM2 virtio-net uplink backend for VM3 frontend
   Ethernet validation through BEAU virtio-proxy.
+- `beau_transport.c`, `beau_vsock.h`: VM1 AF_VSOCK HVC transport for
+  virtio-vsock peers in VM2 and VM3.
+- `ipc-ring.c`: static shared-memory SPSC channel driver. Each DT channel is
+  exposed as `/dev/beau-ipc-<channel>` and its HVC notification is delivered
+  through a virtual IRQ.
 - `vwdt.c`: hotplug-aware, per-CPU BEAU VM watchdog heartbeat driver.
 - `crash.c`: Linux panic and ARM64 oops notifier that reports a bounded crash
   record to the BEAU Host through HVC.
@@ -41,6 +46,37 @@ Linux kernel tree so they can be ported to multiple Linux versions.
      `CONFIG_BEAU_VIRTIONET_BACKEND`
 6. Build the target kernel image and install it into the BEAU Linux image slot
    used by the VM that should run the driver.
+
+## BEAU virtio-vsock Backend
+
+The VM1 backend is built in Linux `net/vmw_vsock` because it shares the
+upstream AF_VSOCK core and virtio transport helpers.  Copy
+`beau_transport.c` and `beau_vsock.h` from this directory to that subsystem.
+The matching VM2/VM3 frontend and all integration files are retained in
+`sdk/kfe/`.
+
+## Shared-Memory IPC Test
+
+The shared Linux initramfs contains `/usr/local/bin/hipc`. VM1 runs one
+explicit receive-and-print server per channel. VM2 and VM3 each discover their
+single exposed channel when sending:
+
+```sh
+# VM1: one server for VM0, VM2, and VM3 respectively.
+hipc server 0 >/tmp/hipc0.log 2>&1 &
+hipc server 1 >/tmp/hipc1.log 2>&1 &
+hipc server 2 >/tmp/hipc2.log 2>&1 &
+
+# VM2 and VM3: one-way sends to their respective VM1 channels.
+hipc client send vm2
+hipc client send vm3
+```
+
+Channel 0 is VM0 <-> VM1 HIPC and is exercised from VM0 with `hipc send
+<payload>`. A successful client command reports local ring publication and
+doorbell completion; VM1 prints each consumed payload and does not echo it.
+Channels 1 and 2 are isolated: VM2 receives only `/dev/beau-ipc-1`, VM3
+receives only `/dev/beau-ipc-2`, while VM1 receives all three.
 
 ## Notes
 

@@ -129,7 +129,7 @@ static void init_vm_bootargs_info(struct acrn_vm *vm, const struct acrn_boot_inf
 	 * - a kernel module tag suffix can override per-VM bootargs,
 	 * - Service VM can append the bootloader command line.
 	 *
-	 * ARM64 QEMU VM2 normally uses the configured bootargs from vconfig.c.
+	 * ARM64 QEMU Linux guests normally use the configured bootargs from DTS.
 	 */
 	vm->sw.bootargs_info.src_addr = vm_config->os_config.bootargs;
 	/* If module string of the kernel module exists, it would OVERRIDE the pre-configured build-in VM bootargs,

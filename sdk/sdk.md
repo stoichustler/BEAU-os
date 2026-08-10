@@ -12,10 +12,13 @@
 ├── lib
 ├── scripts
 └── sdk
+    ├── ai-sched         // AI scheduler assistent
     ├── beau             // Documentation
     ├── bsp              // BEAU dev/vdev drivers
-    ├── image
-    ├── kbe              // BEAU general-purpose Linux drivers
+    ├── imgs
+    ├── kbe              // BEAU general-purpose Linux backend drivers
+    ├── kfe              // BEAU general-purpose Linux frontend drivers
+    ├── trusty           // BEAU Trusty TEE
     ├── ube              // Userspace backend (not used yet)
     └── zsh              // BEAU general-purpose Zephyr applications
 ```
@@ -125,8 +128,8 @@ publish ownership
    trees, copy the approved reusable files into `sdk/kbe` and `sdk/zsh`
    respectively so later porting and validation can reuse them quickly.
 
-9. Move validation images that need to be reused, including Linux `Image`,
-   `rtthread.bin`, and `zephyr.bin`, into `sdk/image` so VM boot and regression
+9. Move validation images that need to be reused, including Linux `Image` and
+   `zephyr.bin`, into `sdk/imgs` so VM boot and regression
    validation can find stable guest image inputs.
 
 10. Do not commit temporary test scripts matching `scripts/test_*.py`. Move any
@@ -187,9 +190,9 @@ description
                   v                          v
   +---------------------- guest VM topology ------------------------+
   | VM0 Zephyr      : RTOS/service path, vPL011 console             |
-  | VM1 RT-Thread   : RTOS prelaunch path, vPL011 console, WDT      |
-  | VM2 Linux-2     : Linux backend/user path, virtio-console/proxy |
-  | VM3 Linux-3     : Linux frontend path, virtio frontend/proxy    |
+  | VM1 Linux-1     : secure/KBE, Trusty client, PCI passthrough    |
+  | VM2 Linux-2     : virtio-proxy frontend                         |
+  | VM3 Linux-3     : virtio-proxy frontend                         |
   +-----------------------------------------------------------------+
 ```
 
@@ -211,7 +214,7 @@ RTOS console
 Linux console and backend IO
     -> virtio-console or virtio-mmio frontend
     -> BEAU virtio proxy HVC/MMIO path
-    -> VM2/VM3 Linux backend/frontend drivers
+    -> VM1 Linux backend and VM2/VM3 frontend drivers
     -> sdk/kbe backend services when Linux owns the backend role
 
 PCIe passthrough
@@ -227,7 +230,7 @@ watchdog and observability
     -> BEAU watchdog state
     -> timeout capture: durable state + bounded live pCPU sample
     -> async cold reset on the VM BSP pCPU, then heartbeat verification
-    -> shell commands: hwtdbg, vmstat, vcpus, schedstat, irqstat, pcistat
+    -> shell commands: swtdbg, vmstat, vcpus, schedstat, irqstat, pcistat
 ```
 
 ## Core Invariants

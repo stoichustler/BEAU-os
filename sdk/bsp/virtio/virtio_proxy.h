@@ -35,8 +35,8 @@
  *
  * Runtime framework:
  *
- *   VM3 frontend Linux                         BEAU EL2                         VM2 backend Linux
- *   ------------------                         -------                         -----------------
+ *   frontend Linux                             BEAU EL2                         backend Linux
+ *   --------------                             -------                         -------------
  *
  *   virtio driver
  *      |
@@ -77,7 +77,7 @@
  *
  * The transport never parses FUSE, RNG, block, net, I2C, or SPI payloads.
  * It only moves descriptor-chain bytes and reports completion. That keeps one
- * high/low-throughput transport usable by multiple virtio protocols while VM2
+ * high/low-throughput transport usable by multiple virtio protocols while the
  * backend code remains responsible for protocol correctness and safety checks.
  *
  * Reset/recovery state model:
@@ -99,10 +99,10 @@
  *                                                            RUNNING
  *
  * Frontend notify before backend registration never consumes the avail ring.
- * If VM2 backend resets after BEAU has already popped a frontend request into a
+ * If the backend resets after BEAU has already popped a frontend request into a
  * pending slot, BEAU marks that slot unsent instead of dropping it. The rebuilt
- * VM2 backend can register again and poll the same request, while a VM3 reset
- * clears guest transport state and pending slots before Linux negotiates again.
+ * backend can register again and poll the same request, while a frontend reset
+ * clears only its transport state and pending slots before Linux negotiates again.
  */
 
 /* Common transport limits. */
@@ -139,7 +139,7 @@
 /*
  * struct virtio_proxy_net_config - static virtio-net config-space image.
  *
- * @mac: Stable frontend MAC used by the VM3 virtio-net driver.
+ * @mac: Stable MAC selected for the owning frontend VM.
  * @status: Link status when VIRTIO_NET_F_STATUS is offered.
  */
 struct virtio_proxy_net_config {
@@ -279,6 +279,7 @@ struct virtio_proxy_pending {
  * @no_backend_logged: Suppresses repeated notify-without-backend logs.
  * @hcall_backend_registered: True after a VM backend registers by HVC.
  * @hcall_backend_expected: True when this endpoint expects an HVC backend.
+ * @configured_backend_vmid: Static VM id allowed to register this endpoint.
  * @backend_vmid: VM id of the registered HVC backend.
  * @pending_limit: Active pending slot count for this throughput profile.
  * @pending: Descriptor chains waiting for or owned by a backend.
@@ -335,6 +336,7 @@ struct virtio_proxy_dev {
 	bool no_backend_logged;
 	bool hcall_backend_registered;
 	bool hcall_backend_expected;
+	uint16_t configured_backend_vmid;
 	uint16_t backend_vmid;
 	uint16_t pending_limit;
 	struct virtio_proxy_pending pending[VIRTIO_PROXY_PENDING_MAX];

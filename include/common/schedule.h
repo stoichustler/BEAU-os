@@ -322,6 +322,7 @@ void obtain_schedule_lock(uint16_t pcpu_id, uint64_t *rflag);
 void release_schedule_lock(uint16_t pcpu_id, uint64_t rflag);
 
 void init_thread_data(struct thread_object *obj, struct sched_params *params);
+int32_t reset_thread_data(struct thread_object *obj, struct sched_params *params);
 void deinit_thread_data(struct thread_object *obj);
 
 void make_reschedule_request(uint16_t pcpu_id);

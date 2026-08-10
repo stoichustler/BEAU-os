@@ -48,7 +48,9 @@
  *          |
  *          +-- SYSTEM_OFF             -> stop current vCPU
  *          |
- *          +-- SYSTEM_RESET           -> queue reset to idle owner
+ *          +-- SYSTEM_RESET           -> service VM resets host; others reset self
+ *          |
+ *          +-- SYSTEM_RESET2          -> service VM warm-resets host when supported
  *
  * Reset is deferred because the current vCPU exit still owns a live register
  * frame. The idle thread is the stable owner that can pause all vCPUs, reset
@@ -176,17 +178,27 @@ int64_t arm64_vpsci_system_reset(struct acrn_vcpu *vcpu)
 		return PSCI_RET_INVALID_PARAMS;
 	}
 
-	/*
-	 * PSCI SYSTEM_RESET is a guest self-reset request, not an EL2 host reset.
+	/* [20260807] Service-VM PSCI reset authority
 	 *
-	 *   guest SMC/HVC -> vCPU exit -> queue vm reset on this pCPU
-	 *                              -> block current vCPU
-	 *                              -> pCPU reaches idle and restarts VM
+	 * guest PSCI SYSTEM_RESET or SYSTEM_RESET2
+	 *     |
+	 *     +--> VM0 service VM -> validated authority -> platform PSCI reset
+	 *     |
+	 *     +--> other VM       -> deferred self-reset on idle pCPU
 	 *
-	 * The reset itself is deferred because the exit handler still owns the
-	 * current vCPU register frame. Resetting it in-place would make the normal
-	 * exit-return bookkeeping race the new boot context.
+	 * Key rule:
+	 *   - only the immutable service-VM role owns whole-system reset authority;
+	 *   - a platform reset is terminal, so no guest register frame is resumed;
+	 *   - non-service guests retain the existing deferred reset path because an
+	 *     exit handler must not overwrite the frame it is still consuming.
 	 */
+	if (is_service_vm(vcpu->vm)) {
+		LOG_INF("vm%u:vcpu%u psci service system reset",
+			vcpu->vm->vm_id, vcpu->vcpu_id);
+		reset_host(false);
+		return PSCI_RET_DENIED;
+	}
+
 	ret = make_reset_vm_request(pcpuid_from_vcpu(vcpu), vcpu->vm->vm_id);
 	if (ret != 0) {
 		return PSCI_RET_DENIED;
@@ -197,4 +209,25 @@ int64_t arm64_vpsci_system_reset(struct acrn_vcpu *vcpu)
 	pause_vcpu(vcpu);
 
 	return PSCI_RET_SUCCESS;
+}
+
+int64_t arm64_vpsci_system_reset2(struct acrn_vcpu *vcpu,
+	uint64_t reset_type, uint64_t cookie)
+{
+	if ((vcpu == NULL) || (vcpu->vm == NULL)) {
+		return PSCI_RET_INVALID_PARAMS;
+	}
+	/* BEAU exposes only the architecture-defined warm reset, not vendor state. */
+	if ((reset_type != 0UL) || (cookie != 0UL)) {
+		return PSCI_RET_INVALID_PARAMS;
+	}
+	if (!is_service_vm(vcpu->vm) || !psci_system_reset2_is_supported()) {
+		return PSCI_RET_NOT_SUPPORTED;
+	}
+
+	LOG_INF("vm%u:vcpu%u psci service system warm reset",
+		vcpu->vm->vm_id, vcpu->vcpu_id);
+	reset_host(true);
+
+	return PSCI_RET_DENIED;
 }

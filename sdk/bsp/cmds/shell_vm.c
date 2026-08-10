@@ -60,7 +60,7 @@ int32_t shell_coredump(int32_t argc, char **argv)
 
 /* [20260630] vmstat monitor:
  *
- * vmstat is the broad health summary before using retained hwtdbg evidence. It
+ * vmstat is the broad health summary before using retained swtdbg evidence. It
  * keeps one VM visible at a time: configured resources, runtime state,
  * watchdog and console status, scheduler diagnostics, and the guest timer/vGIC
  * delivery summary.
@@ -388,7 +388,6 @@ struct shell_health_vm {
 	uint64_t reasons;
 	const char *name;
 	enum vm_state state;
-	uint16_t lifecycle_phase;
 	uint16_t vm_id;
 	uint16_t configured_vcpus;
 	uint16_t created_vcpus;
@@ -397,15 +396,13 @@ struct shell_health_vm {
 	struct vm_wdt_snapshot wdt;
 	bool console_valid;
 	uint32_t console_queued;
-	uint32_t console_capacity;
-	uint64_t console_dropped;
 	uint16_t virtio_total;
 	uint16_t virtio_ready;
 	uint16_t virtio_lost;
 	uint64_t virtio_timeouts;
 };
 
-/* [20260718] Bounded health snapshot storage
+/* [20260718] Bounded vmstat summary snapshot storage
  *
  * shell command parser stack
  *             |
@@ -422,7 +419,7 @@ static struct shell_health_vm shell_health_vms[CONFIG_MAX_VM_NUM];
 
 /* [20260718] On-demand vCPU utilization
  *
- * scheduler runtime[N] at previous health
+ * scheduler runtime[N] at previous vmstat summary
  *                  |
  *                  v
  * scheduler runtime[N] now -> bounded delta/window -> display percentage
@@ -757,7 +754,6 @@ static void shell_health_collect_vm(uint16_t vm_id, struct shell_health_vm *heal
 
 	health->name = (vm->name[0] != '\0') ? vm->name : vm_config->name;
 	health->state = vm->state;
-	health->lifecycle_phase = vm->lifecycle.phase;
 	health->configured_vcpus = (uint16_t)shell_cpu_bitmap_weight(vm_config->cpu_affinity);
 	health->created_vcpus = vm->hw.created_vcpus;
 	/* A created post-launched VM is valid until its device model starts it. */
@@ -813,8 +809,6 @@ static void shell_health_collect_vm(uint16_t vm_id, struct shell_health_vm *heal
 	health->console_valid = console_vm_ring_get_stats(vm_id, &console);
 	if (health->console_valid) {
 		health->console_queued = console.queued;
-		health->console_capacity = console.capacity;
-		health->console_dropped = console.dropped_bytes;
 	}
 	shell_health_collect_virtio(health, vm->state == VM_RUNNING);
 }
@@ -822,7 +816,7 @@ static void shell_health_collect_vm(uint16_t vm_id, struct shell_health_vm *heal
 static void shell_health_print_vm(const struct shell_health_vm *health)
 {
 	char wdt_age[16U];
-	char console[32U];
+	char console[16U];
 	char virtio[16U];
 	const char *wdt_status = "-";
 
@@ -833,9 +827,7 @@ static void shell_health_print_vm(const struct shell_health_vm *health)
 		(void)snprintf(wdt_age, sizeof(wdt_age), "-");
 	}
 	if (health->console_valid) {
-		(void)snprintf(console, sizeof(console), "%5u/%5u d:%lu",
-			health->console_queued, health->console_capacity,
-			health->console_dropped);
+		(void)snprintf(console, sizeof(console), "%u", health->console_queued);
 	} else {
 		(void)snprintf(console, sizeof(console), "-");
 	}
@@ -846,11 +838,10 @@ static void shell_health_print_vm(const struct shell_health_vm *health)
 		(void)snprintf(virtio, sizeof(virtio), "-");
 	}
 
-	shell_item_line("vm%-2hu %-10s %-9s %2hu/%-2hu %-7s %-10s %-20s %-6s %s",
+	shell_item_line("vm%-2hu %-10s %-9s %2hu/%-2hu %-7s %-10s %-10s %-6s",
 		health->vm_id, health->name, shell_vm_state_to_str(health->state),
 		health->created_vcpus, health->configured_vcpus,
-		wdt_status, wdt_age, console, virtio,
-		vm_lifecycle_phase_name(health->lifecycle_phase));
+		wdt_status, wdt_age, console, virtio);
 	shell_output_checkpoint();
 }
 
@@ -951,17 +942,12 @@ static void shell_health_print_findings(const struct shell_health_host *host,
 	}
 }
 
-int32_t shell_health(int32_t argc, __unused char **argv)
+static void shell_vmstat_summary(void)
 {
 	struct shell_health_host host;
 	struct shell_health_vm *vms = shell_health_vms;
 	enum shell_health_level overall;
 	uint16_t vm_id;
-
-	if (argc != 1) {
-		shell_puts("usage: health\r\n");
-		return -EINVAL;
-	}
 
 	shell_health_collect_host(&host);
 	overall = host.level;
@@ -972,9 +958,9 @@ int32_t shell_health(int32_t argc, __unused char **argv)
 		}
 	}
 
-	shell_item_begin("HEALTH");
+	shell_item_begin("vmstat summary");
 	/* Host page values are used/total pools plus ownership anomalies. VM rows
-	 * combine lifecycle, vCPU count, watchdog age, console backlog, and virtio
+	 * combine state, vCPU count, watchdog age, console backlog, and virtio
 	 * state; Findings retains the derived PASS/WARN/FAIL diagnostic rules.
 	 */
 	shell_item_line("overall:%s uptime:%lums",
@@ -989,8 +975,8 @@ int32_t shell_health(int32_t argc, __unused char **argv)
 		host.stage2_accounted, host.stage2_unowned,
 		host.stage2_overaccounted, host.stage2_malformed);
 	shell_item_section("Virtual machines");
-	shell_item_line("vm   name       state     vcpus wdt     age        console              virtio lifecycle");
-	shell_item_line("──── ────────── ───────── ───── ─────── ────────── ──────────────────── ────── ───────────");
+	shell_item_line("vm   name       state     vcpus wdt     age        console.q  virtio");
+	shell_item_line("──── ────────── ───────── ───── ─────── ────────── ────────── ──────");
 	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
 		if (vms[vm_id].present) {
 			shell_health_print_vm(&vms[vm_id]);
@@ -1001,7 +987,6 @@ int32_t shell_health(int32_t argc, __unused char **argv)
 	shell_health_print_findings(&host, vms);
 	shell_item_end();
 
-	return 0;
 }
 
 static int64_t shell_vmstat_ticks_delta_us(int64_t delta)
@@ -1046,6 +1031,42 @@ static void shell_vmstat_collect_timer_summary(const struct acrn_vm *vm,
 	}
 }
 
+/* [20260807] Bounded SWT age compaction
+ *
+ * immutable WDT snapshot -> bounded age list -> vmstat diagnostic line
+ *
+ * Key rule:
+ *   - WDT owns the snapshot and vmstat only formats its local copy;
+ *   - preserve a visible truncation marker instead of overrunning the shell
+ *     command stack buffer;
+ *   - detailed tokens remain available through retained SWT diagnostics.
+ */
+static bool shell_vmstat_wdt_append_age(char *buf, size_t size, const char *prefix,
+	uint16_t vcpu_id, uint64_t age_ms)
+{
+	const size_t marker_size = 4U;
+	size_t offset = strnlen_s(buf, size);
+	size_t available;
+	int32_t written;
+
+	if ((offset >= size) || ((size - offset) <= marker_size)) {
+		if (offset < size) {
+			(void)snprintf(&buf[offset], size - offset, "...");
+		}
+		return false;
+	}
+
+	available = size - offset;
+	written = snprintf(&buf[offset], available, "%sv%hu=%lu", prefix, vcpu_id,
+		age_ms);
+	if ((written < 0) || ((uint32_t)written >= (available - (marker_size - 1U)))) {
+		(void)snprintf(&buf[offset], available, "%s...", prefix);
+		return false;
+	}
+
+	return true;
+}
+
 static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *vm_config,
 	const struct acrn_vm *vm)
 {
@@ -1073,7 +1094,7 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 	 * topology, console backlog, and boot image placement.
 	 */
 	/* vcpus compares configuration with runtime objects; GIC/ITS/vITS expose
-	 * interrupt state; timer/HWT are status and counters; vcon/virtio are
+	 * interrupt state; timer/SWT are status and counters; vcon/virtio are
 	 * diagnostic snapshots. Rendering does not modify VM state.
 	 */
 	shell_item_line("vcpus:configured:%u created:%hu state:%s flags:0x%08lx load:%u",
@@ -1114,37 +1135,53 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 		sve_status.vl_bits, sve_status.host_vl_bits,
 		arm64_vm_mpu_sve_reason_str(sve_status.reason));
 	shell_vmstat_collect_timer_summary(vm, &timer);
-	shell_item_line("timer:cntv:Y ppi:%lu backup:%lu poll:%lu pre-eret:%lu/%lu lr-miss:%lu cnthp:Y cntp-emul:Y maintenance:Y time-delta:%ld",
+	shell_item_line("timer:cntv:Y ppi:%lu backup:%lu poll:%lu eret:%lu/%lu lr-miss:%lu cnthp:Y cntp-emul:Y maintenance:Y time-delta:%ld",
 		timer.cntv_ppi, timer.cntv_backup, timer.cntv_poll,
 		timer.pre_eret_flush_expired, timer.pre_eret_flush,
 		timer.lost_pending_lr, vm->arch_vm.time_delta);
 	if (vm_wdt_get_snapshot(vm_id, &wdt) == 0) {
 		uint64_t last_sec = wdt.last_ms / 1000UL;
 		uint64_t last_msec = wdt.last_ms % 1000UL;
+		bool show_diag = (wdt.status != VM_WDT_STATUS_ALIVE) ||
+			(wdt.stalled_vcpu_mask != 0UL) ||
+			(wdt.recovery_state != VM_WDT_RECOVERY_IDLE) ||
+			wdt.daemon_pending || (wdt.restart_fail_count != 0UL);
 		uint16_t vcpu_id;
 
-		shell_item_line("HWT:status:%7s cause:%12s (%02lu.%03lu) timeout:%02lu restart:%02lu fail:%02lu recovery:%10s wait:0x%02lx token:0x%016lx daemon:%s merge:%lu drop:%lu",
+		shell_item_line("SWT:status:%s cause:%s age:%lu.%03lus timeout:%lu restart:%lu fail:%lu recovery:%s",
 			shell_vmstat_wdt_status_to_str(wdt.status),
 			shell_vmstat_wdt_cause_to_str(wdt.cause), last_sec, last_msec,
 			wdt.timeout_count, wdt.restart_count, wdt.restart_fail_count,
-			shell_vmstat_wdt_recovery_to_str(wdt.recovery_state),
-			wdt.recovery_wait_vcpus, wdt.last_token,
-			shell_yes_no(wdt.daemon_pending), wdt.daemon_merged,
-			wdt.daemon_dropped);
-		shell_item_line("HWT:heartbeat mode:%s expected:0x%02lx started:0x%02lx stalled:0x%02lx",
-			wdt.per_vcpu_mode ? "per-vcpu" : "legacy",
-			wdt.expected_vcpu_mask, wdt.started_vcpu_mask,
-			wdt.stalled_vcpu_mask);
+			shell_vmstat_wdt_recovery_to_str(wdt.recovery_state));
 		if (wdt.per_vcpu_mode) {
+			bool first = true;
+			bool complete = true;
+
+			temp_str[0] = '\0';
 			for (vcpu_id = 0U; vcpu_id < MAX_VCPUS_PER_VM; vcpu_id++) {
 				if ((wdt.expected_vcpu_mask & (1UL << vcpu_id)) != 0UL) {
-					shell_item_line("        vcpu%hu age:%lums token:0x%016lx%s",
-						vcpu_id, wdt.vcpu_age_ms[vcpu_id],
-						wdt.vcpu_last_token[vcpu_id],
-						(wdt.stalled_vcpu_mask & (1UL << vcpu_id)) != 0UL ?
-						" STALLED" : "");
+					if (!shell_vmstat_wdt_append_age(temp_str, sizeof(temp_str),
+						first ? "" : ",", vcpu_id, wdt.vcpu_age_ms[vcpu_id])) {
+						complete = false;
+						break;
+					}
+					first = false;
 				}
 			}
+			shell_item_line("SWT:per-vcpu expected:0x%02lx started:0x%02lx stalled:0x%02lx ages.ms:%s%s",
+				wdt.expected_vcpu_mask, wdt.started_vcpu_mask,
+				wdt.stalled_vcpu_mask, first ? "-" : temp_str,
+				complete ? "" : " (truncated)");
+		} else {
+			shell_item_line("SWT:legacy expected:0x%02lx started:0x%02lx stalled:0x%02lx",
+				wdt.expected_vcpu_mask, wdt.started_vcpu_mask,
+				wdt.stalled_vcpu_mask);
+		}
+		if (show_diag) {
+			shell_item_line("SWT:diag wait:0x%02lx token:0x%016lx daemon:%s merge:%lu drop:%lu",
+				wdt.recovery_wait_vcpus, wdt.last_token,
+				shell_yes_no(wdt.daemon_pending), wdt.daemon_merged,
+				wdt.daemon_dropped);
 		}
 	}
 	shell_item_line("vcon:selected:%s bound:%s ramlog-pending:%u drain:%u skipped:%lu",
@@ -1160,15 +1197,9 @@ static void shell_vmstat_vm_config(uint16_t vm_id, const struct acrn_vm_config *
 		shell_item_line("        virtio-console:active:%s irq:%u status:0x%02x isr:0x%02x tx:%lu rx:%lu",
 			shell_yes_no(vcon.active), vcon.irq, vcon.status,
 			vcon.interrupt_status, vcon.tx_count, vcon.rx_count);
-		shell_item_line("        vcon.stat tx:%luB/s rx:%luB/s notify:%lu/%lu irq:%lu/%lu",
-			vcon.tx_byte_rate, vcon.rx_byte_rate,
+		shell_item_line("        vcon.stat notify:%lu/%lu irq:%lu/%lu",
 			vcon.tx_notify_count, vcon.rx_notify_count,
 			vcon.tx_irq_count, vcon.rx_irq_count);
-		shell_item_line("        vcon.lat tx:%lu/%lu/%luus rx:%lu/%lu/%luus samples:%lu/%lu",
-			vcon.tx_latency.min_us, vcon.tx_latency.avg_us,
-			vcon.tx_latency.max_us, vcon.rx_latency.min_us,
-			vcon.rx_latency.avg_us, vcon.rx_latency.max_us,
-			vcon.tx_latency.count, vcon.rx_latency.count);
 		for (uint16_t qid = 0U; qid < VHOST_CONSOLE_STAT_QUEUE_NUM; qid++) {
 			const struct vhost_console_queue_stats *queue = &vcon.queues[qid];
 
@@ -1302,7 +1333,7 @@ static void shell_vmstat_vcpu_timer(const struct acrn_vcpu *vcpu)
 	}
 
 	if (timer_irq != NULL) {
-		shell_item_line("      timer:PPI%u ctl:0x%08x cval:0x%016lx delta.us:%ld exp:%s mask:%s ppi:%lu backup:%lu poll:%lu pre-eret:%lu/%lu",
+		shell_item_line("      timer:PPI%u ctl:0x%08x cval:0x%016lx delta.us:%ld exp:%s mask:%s ppi:%lu backup:%lu poll:%lu eret:%lu/%lu",
 			ARM64_GIC_PPI_VIRTUAL_TIMER, gctx->cntv_ctl_el0,
 			gctx->cntv_cval_el0, delta_us, shell_yes_no(expired),
 			shell_yes_no(gctx->cntv_el2_masked), diag->cntv_ppi,
@@ -1318,7 +1349,7 @@ static void shell_vmstat_vcpu_timer(const struct acrn_vcpu *vcpu)
 			vcpu->arch.vgic.used_lrs, vcpu->arch.vgic.hcr,
 			vcpu->arch.vgic.vmcr);
 	} else {
-		shell_item_line("      timer:PPI%u ctl:0x%08x cval:0x%016lx delta.us:%ld exp:%s mask:%s ppi:%lu backup:%lu poll:%lu pre-eret:%lu/%lu",
+		shell_item_line("      timer:PPI%u ctl:0x%08x cval:0x%016lx delta.us:%ld exp:%s mask:%s ppi:%lu backup:%lu poll:%lu eret:%lu/%lu",
 			ARM64_GIC_PPI_VIRTUAL_TIMER, gctx->cntv_ctl_el0,
 			gctx->cntv_cval_el0, delta_us, shell_yes_no(expired),
 			shell_yes_no(gctx->cntv_el2_masked), diag->cntv_ppi,
@@ -1430,6 +1461,76 @@ int32_t shell_vmstat(int32_t argc, __unused char **argv)
 			(vm->name[0] != '\0') ? vm->name : vm_config->name);
 		shell_vmstat_vm_config(vm_id, vm_config, vm);
 		shell_vmstat_vcpus(vm);
+		shell_item_end();
+		shell_output_checkpoint();
+	}
+	shell_vmstat_summary();
+
+	return 0;
+}
+
+/* [20260805] VM-exit diagnostic snapshot
+ *
+ * per-vCPU atomic exit counters -> shell-owned local copy -> formatted rows
+ *
+ * Key rule:
+ *   - the vCPU exit path remains the only counter writer;
+ *   - shell obtains no VM or scheduler lock and does not alter the counters;
+ *   - rows classify synchronous exits only; physical IRQ exits are not
+ *     counted and post-handler scheduling remains attributable to irqstat/
+ *     schedstat.
+ */
+int32_t shell_vmexitstat(int32_t argc, __unused char **argv)
+{
+	uint16_t vm_id;
+
+	if (argc != 1) {
+		return -EINVAL;
+	}
+
+	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
+		struct acrn_vm_config *vm_config = get_vm_config(vm_id);
+		struct acrn_vm *vm = get_vm_from_vmid(vm_id);
+		uint16_t vcpu_id;
+
+		if (!shell_vm_config_present(vm_config) &&
+			(vm->hw.created_vcpus == 0U) && is_poweroff_vm(vm)) {
+			continue;
+		}
+
+		shell_item_begin("VMEXITSTAT vm%hu:%s", vm_id,
+			(vm->name[0] != '\0') ? vm->name : vm_config->name);
+		shell_item_line("synchronous handler wall-time; cumulative since vCPU reset; physical IRQ exits not counted");
+		shell_item_line("vcpu  pcpu  class     count       total.us    avg.us      max.us");
+		shell_item_line("────  ────  ────────  ──────────  ──────────  ──────────  ──────────");
+
+		for (vcpu_id = 0U; vcpu_id < vm->hw.created_vcpus; vcpu_id++) {
+			const struct acrn_vcpu *vcpu = vcpu_from_vid(vm, vcpu_id);
+			struct arm64_vcpu_exit_stats stats = { 0U };
+			uint32_t exit_class;
+
+			if (!arm64_vcpu_exit_stats_snapshot(vcpu, &stats)) {
+				continue;
+			}
+			for (exit_class = 0U; exit_class < ARM64_VCPU_EXIT_CLASS_NUM;
+				exit_class++) {
+				const struct arm64_vcpu_exit_class_stats *class_stats =
+					&stats.class[exit_class];
+				uint64_t average_ticks;
+
+				if (class_stats->count == 0UL) {
+					continue;
+				}
+				average_ticks = class_stats->total_ticks / class_stats->count;
+				shell_item_line("%-5hu %-5hu %-9s %-11lu %-11lu %-11lu %-11lu",
+					vcpu_id, pcpuid_from_vcpu(vcpu),
+					arm64_vcpu_exit_class_name(
+						(enum arm64_vcpu_exit_class)exit_class),
+					class_stats->count, ticks_to_us(class_stats->total_ticks),
+					ticks_to_us(average_ticks), ticks_to_us(class_stats->max_ticks));
+				shell_output_checkpoint();
+			}
+		}
 		shell_item_end();
 		shell_output_checkpoint();
 	}

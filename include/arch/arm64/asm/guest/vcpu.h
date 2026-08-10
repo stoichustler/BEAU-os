@@ -152,6 +152,31 @@ struct arm64_vcpu_vtimer_diag {
 	uint64_t el2_mask_since_ticks;
 };
 
+/* Synchronous EL1-to-EL2 exits are classified by ESR_EL2.EC. Physical IRQ
+ * exits have no EC and remain attributable through irqstat. */
+enum arm64_vcpu_exit_class {
+	ARM64_VCPU_EXIT_IABT = 0U,
+	ARM64_VCPU_EXIT_SERROR,
+	ARM64_VCPU_EXIT_DABT,
+	ARM64_VCPU_EXIT_HVC,
+	ARM64_VCPU_EXIT_SMC,
+	ARM64_VCPU_EXIT_SYSREG,
+	ARM64_VCPU_EXIT_SVE,
+	ARM64_VCPU_EXIT_WFI_WFE,
+	ARM64_VCPU_EXIT_UNKNOWN,
+	ARM64_VCPU_EXIT_CLASS_NUM,
+};
+
+struct arm64_vcpu_exit_class_stats {
+	uint64_t count;
+	uint64_t total_ticks;
+	uint64_t max_ticks;
+};
+
+struct arm64_vcpu_exit_stats {
+	struct arm64_vcpu_exit_class_stats class[ARM64_VCPU_EXIT_CLASS_NUM];
+};
+
 struct acrn_vcpu_arch {
 	/*
 	 * Low-level guest-entry assembly locates this durable register image through
@@ -192,6 +217,10 @@ bool arm64_vcpu_has_pending_event(struct acrn_vcpu *vcpu);
 uint64_t arch_vcpu_get_entry(const struct acrn_vcpu *vcpu);
 void arm64_vtimer_diag_mark_pre_eret(struct acrn_vcpu *vcpu,
 	bool flushed, bool masked_expired);
+void arm64_vcpu_exit_stats_reset(const struct acrn_vcpu *vcpu);
+bool arm64_vcpu_exit_stats_snapshot(const struct acrn_vcpu *vcpu,
+	struct arm64_vcpu_exit_stats *stats);
+const char *arm64_vcpu_exit_class_name(enum arm64_vcpu_exit_class exit_class);
 
 #endif /* ASSEMBLER */
 

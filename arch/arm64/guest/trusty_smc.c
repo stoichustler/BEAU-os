@@ -26,7 +26,7 @@ static uint64_t trusty_api_version_cache;
 
 /* [20260727] Restricted Trusty API-version forwarding
  *
- * VM2 guest x0/x1             BEAU EL2                  TF-A / Trusty
+ * VM1 guest x0/x1             BEAU EL2                  TF-A / Trusty
  *       |                        |                            |
  *       +-- exact API request -->+-- client/version gate ------>+
  *                                |                            |
@@ -118,7 +118,7 @@ int32_t arm64_trusty_get_version(char *version, size_t version_size)
 
 /* [20260728] Trusty system-info snapshot
  *
- * VM2 API-version success -> release-store ABI cache
+ * VM1 API-version success -> release-store ABI cache
  *                                        |
  * shell dump -> fixed CPU SMC -> acquire-load cache -> complete snapshot
  *                    |
@@ -126,7 +126,7 @@ int32_t arm64_trusty_get_version(char *version, size_t version_size)
  *
  * Key rule:
  *   - Trusty owns the reported CPU limit while BEAU owns the ABI cache;
- *   - the VM2 policy validation completes before it publishes the cached ABI
+ *   - the VM1 policy validation completes before it publishes the cached ABI
  *     version, and the shell acquires that value only after its CPU query;
  *   - dump never invokes the stateful API-version SMC, preventing a diagnostic
  *     command from selecting or downgrading Trusty's global ABI state.

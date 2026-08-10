@@ -1,158 +1,90 @@
-# BEAU
+# BEAU Virtio Proxy
 
-## Virtio-proxy Fs, Rng, Blk, And I2c Validation
+## QEMU Topology
 
-The QEMU virtio-proxy topology keeps virtio-fs, virtio-rng, virtio-blk, and
-virtio-i2c enabled at the same time:
+VM1 Linux owns the KBE protocol backends. VM2 and VM3 each expose the standard
+virtio fs, rng, blk, i2c, and net frontends:
 
 ```text
-VM2 Linux virtio-fs frontend  -> BEAU virtio_proxy device-id 26 -> VM1 fs backend
-VM2 Linux virtio-rng frontend -> BEAU virtio_proxy device-id 4  -> VM1 rng backend
-VM2 Linux virtio-blk frontend -> BEAU virtio_proxy device-id 2  -> VM1 blk RAM backend
-VM2 Linux virtio-i2c frontend -> BEAU virtio_proxy device-id 34 -> VM1 i2c EEPROM backend
+VM2/VM3 frontend -> BEAU virtio_proxy -> VM1 KBE
+fs  device-id 26 -> isolated /var/beau/vm2 or /var/beau/vm3
+rng device-id 4  -> independent worker and buffers
+blk device-id 2  -> independent 1 MiB RAM disk
+i2c device-id 34 -> independent EEPROM state at address 0x50
+net device-id 1  -> independent MAC and RX queue, shared VM1 uplink
 ```
 
-Build-time requirements:
+The QEMU platform uses these guest physical MMIO ranges:
 
-- `arch/arm64/platform/qemu/platform.dts` advertises three proxy endpoints:
-  fs at `0x0a000200` with `beau,device-id = <26>; beau,throughput = "high";`
-  rng at `0x0a000400` with `beau,device-id = <4>; beau,throughput = "low";`,
-  blk at `0x0a000600` with `beau,device-id = <2>; beau,throughput = "high";`,
-  and i2c at `0x0a000800` with `beau,device-id = <34>; beau,throughput = "low";`.
-  All endpoints set `beau,frontend-vmid = <2>;`, so only VM2 gets the virtio
-  frontends while VM1 stays as the backend owner.
-- VM1 Linux enables `CONFIG_BEAU_VIRTIOFS_BACKEND=y`,
-  `CONFIG_BEAU_VIRTIORNG_BACKEND=y`, `CONFIG_BEAU_VIRTIOBLK_BACKEND=y`, and
-  `CONFIG_BEAU_VIRTIOI2C_BACKEND=y`.
-- VM2 Linux exposes all four virtio-mmio frontend nodes in its DTB.
-- VM2 Linux enables `CONFIG_HW_RANDOM_VIRTIO=y`, `CONFIG_VIRTIO_BLK=y`,
-  `CONFIG_I2C_VIRTIO=y`, and `CONFIG_I2C_CHARDEV=y`.
-- BEAU virtio-proxy is protocol-neutral transport: DTS can describe up to 32
-  devices, and the VM1 backend HVC selects the target by `device_id`.
+| Frontend | fs | rng | blk | i2c | net |
+|---|---:|---:|---:|---:|---:|
+| VM2 | `0x0a001200` | `0x0a001400` | `0x0a001600` | `0x0a001800` | `0x0a001a00` |
+| VM3 | `0x0a000200` | `0x0a000400` | `0x0a000600` | `0x0a000800` | `0x0a000a00` |
 
-QEMU smoke test:
+Every platform endpoint must define both identities:
+
+```dts
+beau,frontend-vmid = <2>; /* or 3 */
+beau,backend-vmid = <1>;
+```
+
+The DTS parser rejects a missing, invalid, or self-referential backend VMID.
+The register HVC also checks the calling VM against the configured owner before
+reading guest buffers or publishing runtime registration. An unauthorized
+caller receives `-EPERM`; backend reset clears runtime registration but retains
+the configured owner.
+
+## Guest Requirements
+
+VM1 enables `CONFIG_BEAU_VIRTIOFS_BACKEND`,
+`CONFIG_BEAU_VIRTIORNG_BACKEND`, `CONFIG_BEAU_VIRTIOBLK_BACKEND`,
+`CONFIG_BEAU_VIRTIOI2C_BACKEND`, and `CONFIG_BEAU_VIRTIONET_BACKEND`.
+VM2 and VM3 enable the corresponding standard virtio frontend drivers.
+
+The KBE common worker negotiates ABI v3 wait hints, heartbeat, statistics, and
+shared batch buffers. Fs and blk use batches of up to four requests. Rng and
+i2c use single-request workers. Net uses one worker and RX queue per frontend.
+
+## Inspection
+
+From the BEAU shell:
 
 ```text
 console:\> virtiostat
 ```
 
-Expected BEAU-side signals:
+Expected state:
 
-- `virtio-fs vm2:0` reports `device:26`, `tag:proxy-fs`, and `throughput:high`.
-- `virtio-rng vm2:1` reports `device:4`, `tag:proxy-rng`, and `throughput:low`.
-- `virtio-blk vm2:2` reports `device:2`, `tag:proxy-blk`, and `throughput:high`.
-- `virtio-i2c vm2:3` reports `device:34`, `tag:proxy-i2c`, and `throughput:low`.
-- fs queues become ready after VM2 probes virtio-fs.
-- rng queue 0 becomes ready after VM2 probes virtio-rng.
-- blk queue 0 becomes ready after VM2 probes virtio-blk.
-- i2c queue 0 becomes ready after VM2 probes virtio-i2c.
-- `backend:vm1`, `health:ok`, `backend:abi:3`, and growing heartbeat counters
-  after VM1 backend starts.
-- `empty` means BEAU returned `-ENODATA` with a wait hint because no frontend
-  request was available; `busy` means an in-flight request/pending slot was
-  not ready for another poll; `bp` means pending slots were full.
-- `batch:` counters grow on fs/blk traffic when VM1 negotiated
-  `BATCH | SHARED_RING`. This means multiple pending requests are transferred
-  through one shared VM1 batch buffer and completed with one batch reply HVC.
-- rng `last-reply len` grows when VM2 reads random bytes
-- blk `last-reply len` grows when VM2 reads or writes `/dev/vda`.
+- VM2 and VM3 each report five endpoints with `backend:vm1`.
+- Fs/blk report high throughput; rng/i2c report low throughput.
+- Backend ABI is 3 and heartbeat counters increase.
+- VM2 net MAC is `52:54:00:be:02:00`; VM3 is
+  `52:54:00:be:03:00`.
 
-VM1 backend check:
+From VM1:
 
 ```sh
 vsh 1
 dmesg | grep -i 'BEAU virtio-'
+ls -l /var/beau/vm2 /var/beau/vm3
 ```
 
-Expected VM1 signal:
-
-```text
-BEAU virtio-fs backend started
-BEAU virtio-rng backend started
-BEAU virtio-blk backend started, 1024 KiB RAM disk
-BEAU virtio-i2c backend started, EEPROM at 0x50
-```
-
-VM2 virtio-rng frontend check:
+From each frontend, replace `N` with 2 or 3:
 
 ```sh
-vsh 2
-dmesg | grep -i virtio_rng
-cat /sys/class/misc/hw_random/rng_current
-dd if=/dev/hwrng of=/tmp/beau-rng.bin bs=32 count=1
-hexdump -C /tmp/beau-rng.bin
-```
-
-Expected VM2 signals:
-
-- `rng_current` reports a virtio RNG provider, usually `virtio_rng.0`.
-- `/dev/hwrng` returns non-zero random-looking bytes.
-- Running `virtiostat` again in the BEAU shell shows increased reply
-  counters and a recent reply length matching the read size.
-
-VM2 virtio-i2c frontend check:
-
-```sh
-vsh 2
-dmesg | grep -i 'i2c_virtio\|virtio.*i2c'
-ls /dev/i2c-*
+vsh N
+dd if=/dev/hwrng of=/tmp/rng.bin bs=32 count=1
 i2cdetect -y 0
-i2ctransfer -y 0 w1@0x50 0x00 r16
-i2ctransfer -y 0 w3@0x50 0x10 0xab 0xcd
-i2ctransfer -y 0 w1@0x50 0x10 r2
-```
-
-Expected VM2 signals:
-
-- `i2cdetect` shows a device at `0x50`.
-- The first read returns the backend's default EEPROM contents.
-- The final read returns `0xab 0xcd`.
-
-VM2 virtio-blk frontend check:
-
-```sh
-vsh 2
-dmesg | grep -i virtio_blk
-ls -l /dev/vd*
-cat /sys/block/vda/size
-mkdir -p /tmp
-dd if=/dev/zero of=/tmp/beau-blk.w bs=4096 count=1
-printf BEAU-BLK-OK | dd of=/tmp/beau-blk.w bs=1 conv=notrunc
-dd if=/tmp/beau-blk.w of=/dev/vda bs=4096 count=1 conv=fsync
-dd if=/dev/vda of=/tmp/beau-blk.r bs=4096 count=1
-cmp /tmp/beau-blk.w /tmp/beau-blk.r
-hexdump -C /tmp/beau-blk.r | head
-```
-
-Expected blk signals:
-
-- `/dev/vda` exists and `/sys/block/vda/size` reports `2048` sectors.
-- `cmp` exits successfully after the VM2 write/read loop.
-- Running `virtiostat` again in the BEAU shell shows `virtio-blk vm2:2` reply
-  counters increasing. The backend is a 1 MiB RAM disk, so data is not
-  persistent across VM1 reboot.
-
-VM2 virtio-fs frontend check:
-
-```sh
-vsh 2
+dd if=/dev/zero of=/dev/vda bs=4096 count=1 conv=fsync
 mkdir -p /mnt/beau
-mount -t virtiofs beau /mnt/beau
-echo beau-fs-rng > /mnt/beau/proxy-check.txt
-cat /mnt/beau/proxy-check.txt
+mount -t virtiofs proxy-fs /mnt/beau
+echo "vmN" > /mnt/beau/proxy-check.txt
 ```
 
-VM1 export check:
-
-```sh
-vsh 1
-cat /var/beau/proxy-check.txt
-```
-
-Expected fs signal:
-
-- Both VM2 `/mnt/beau/proxy-check.txt` and VM1 `/var/beau/proxy-check.txt`
-  show `beau-fs-rng`.
+VM1 must observe VM2 data only under `/var/beau/vm2` and VM3 data only under
+`/var/beau/vm3`. Block and EEPROM writes from one frontend must not appear in
+the other frontend. These isolation checks are required before the retained KBE
+sources are synchronized into `sdk/kbe`.
 
 ---
 

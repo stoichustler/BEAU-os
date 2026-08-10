@@ -1,10 +1,11 @@
 # BEAU OS 整体框架与源码学习指南
 
-> 文档基线：2026-07-16 当前工作区，`main` 分支，BEAU OS `0.0.7`。
+> 文档基线：2026-08-07，BEAU OS [VERSION](../../VERSION)的两个 QEMU 4OS 开发分支：
+> `4os-zephyr+3linux` 与 `4os-zephyr+rtthread+2linux`。
 >
-> 本文以 [`sdk/sdk.md`](sdk/sdk.md) 为最高约束，并以当前源码、
-> `platform.dts`、Kconfig、构建脚本和 QEMU 回归脚本互相校验。当前工作区包含
-> 尚未提交的电源管理改动，因此本文描述的是工作区现状，不只是 `HEAD` 提交。
+> 本文以 [`sdk/sdk.md`](sdk/sdk.md) 为最高约束，并以各分支的源码、
+> `platform.dts`、Kconfig、构建脚本和 QEMU 回归脚本互相校验。除明确标注为
+> “共用”的内容外，VMID、镜像、命令和设备所有者均须按当前检出的分支解释。
 
 BEAU OS 是一个运行在 ARM64 EL2 的静态分区型 Hypervisor。它面向 QEMU `virt`
 和 rk356x，重点不是提供通用云虚拟化，而是用较小且可追踪的代码，承载 RTOS 与
@@ -40,6 +41,21 @@ Linux 混合客体，并把 CPU、内存、IRQ、DMA、设备和电源状态的�
 
 当前 ARM64 静态平台强制客体 RAM 使用 `IPA == HPA` 的 1:1 Stage-2 映射。
 这让 bring-up 和日志更直观，但不是通用虚拟化内存模型。
+
+### 1.3 两套 QEMU 4OS 配置
+
+本文使用下列简称。它们共享 EL2 架构、8 pCPU QEMU `virt` 主机、四个静态 VM 和
+VM0 Zephyr service VM；差别是 Linux backend 的 VMID，以及由该 backend 承担的
+设备与控制职责。
+
+| 简称 | 分支 | 客体组合 | Linux backend / frontend |
+|---|---|---|---|
+| Z3L | `4os-zephyr+3linux` | Zephyr + 3 Linux | VM1 backend；VM2、VM3 frontend |
+| ZR2L | `4os-zephyr+rtthread+2linux` | Zephyr + RT-Thread + 2 Linux | VM2 backend；VM3 frontend |
+
+后文的“backend VM”与“frontend VM”是角色名称，不固定为某一个 VMID；需要 VMID 的
+操作必须先查阅第 5.1 节的对照表。`platform.dts` 是最终事实源，文档不能替代其
+静态所有权策略。
 
 ## 2. 五分钟建立整体模型
 
@@ -180,8 +196,9 @@ VMID、vCPUID、StreamID、BDF、IRQ 或地址等对象身份。
 | `include` | 公共、架构、BSP、ABI 头文件 | 所有 C/汇编模块 |
 | `lib` | libc 子集、页表辅助、libfdt、SHA/HKDF | `core.a` |
 | `sdk/bsp` | 平台解析、设备模型、shell、console、vPCI、virtio | `libbsp.a` |
-| `sdk/image` | 稳定的 Zephyr、RT-Thread、LK、Linux、DTB、initramfs | 链接或 QEMU loader |
+| `sdk/imgs` | 稳定的 Zephyr、RT-Thread、LK、Linux、DTB、initramfs | 链接或 QEMU loader |
 | `sdk/kbe` | Linux 客体 KBE 驱动保留副本 | 移植进 Linux 内核树 |
+| `sdk/kfe` | Linux 客体 KFE 前端保留副本 | 移植进 Linux `net/vmw_vsock` |
 | `sdk/zsh` | Zephyr shell/HVC/WDT/IPC 验证代码 | 移植进 Zephyr sample |
 | `sdk/ube` | ACRN userspace device model 保留副本 | 当前 BEAU 不使用 |
 | `scripts` | 配置生成、链接、符号、QEMU 启动和回归 | 开发/验证工具 |
@@ -259,8 +276,9 @@ make ARCH=arm64 PLATFORM=qemu CROSS_COMPILE=aarch64-none-elf- -j"$(getconf _NPRO
 -kernel out/qemu_out/beau.debug.out
 ```
 
-Linux VM2/VM3 image 和共享 initramfs 由 QEMU `loader` 放入 DTS 约定的 staging
-地址；Zephyr、RT-Thread、LK 和客体 DTB 则直接嵌入 BEAU 镜像。
+Z3L 中 Linux VM1/VM2/VM3 image 和共享 initramfs 由 QEMU `loader` 放入 DTS
+约定的 staging 地址；ZR2L 中只有 Linux VM2/VM3 使用 loader。两套配置都将
+Zephyr、RT-Thread（仅 ZR2L）、LK（rk356x）和客体 DTB 直接嵌入 BEAU 镜像。
 
 预期第一个可见结果是：
 
@@ -272,51 +290,76 @@ console:\>
 
 ## 5. 当前平台拓扑
 
-### 5.1 QEMU `virt`
+### 5.1 QEMU `virt` 开发分支对照
 
 主机：8 pCPU、1.5 GiB RAM、GICv3+ITS、PL011、PCIe ECAM、SMMUv3。
 
-| VM | 角色 | RAM | vCPU 到 pCPU | 客体入口 | 控制台/设备 |
-|---|---|---|---|---|---|
-| VM0 Zephyr | service VM、RTOS | `0x42000000`, 96 MiB | `0->0`, `1->4` | `0x42000000` | vPL011、IPC、WDT |
-| VM1 RT-Thread | prelaunch RTOS | `0x60000000`, 128 MiB | `0->1`, `1->5` | `0x60080000` | vPL011、WDT |
-| VM2 Linux-2 | prelaunch backend | `0x80000000`, 256 MiB | `0->2`, `1->4`, `2->6`, `3->7` | `0x80200000` | virtio-console、KBE、vPCI 直通 |
-| VM3 Linux-3 | prelaunch frontend | `0x90000000`, 256 MiB | `0->3`, `1->5`, `2->6`, `3->7` | `0x90200000` | virtio-console、virtio proxy 前端 |
+| 分支 | VM | 角色 | RAM | vCPU 到 pCPU | 客体入口 | 控制台/设备 |
+|---|---|---|---|---|---|---|
+| Z3L | VM0 Zephyr | service VM | `0x42000000`, 128 MiB | `0->0`, `1->4` | `0x42000000` | vPL011、IPC、WDT |
+| Z3L | VM1 Linux-1 | secure/KBE backend | `0x60000000`, 256 MiB | `0->1`, `1->5` | `0x60200000` | Trusty client、KBE、vPCI、vsock backend (CID 3) |
+| Z3L | VM2 Linux-2 | prelaunch frontend | `0x80000000`, 256 MiB | `0->2`, `1->4`, `2->6`, `3->7` | `0x80200000` | virtio-console、proxy、vsock frontend (CID 4) |
+| Z3L | VM3 Linux-3 | prelaunch frontend | `0x90000000`, 256 MiB | `0->3`, `1->5`, `2->6`, `3->7` | `0x90200000` | virtio-console、proxy、vsock frontend (CID 5) |
+| ZR2L | VM0 Zephyr | service VM | `0x42000000`, 96 MiB | `0->0`, `1->4` | `0x42000000` | vPL011、IPC、WDT |
+| ZR2L | VM1 RT-Thread | prelaunch RTOS | `0x60000000`, 128 MiB | `0->1`, `1->5` | `0x60080000` | vPL011、WDT |
+| ZR2L | VM2 Linux-2 | prelaunch/KBE backend | `0x80000000`, 256 MiB | `0->2`, `1->4`, `2->6`, `3->7` | `0x80200000` | virtio-console、Trusty client、KBE、vPCI 直通 |
+| ZR2L | VM3 Linux-3 | prelaunch frontend | `0x90000000`, 256 MiB | `0->3`, `1->5`, `2->6`, `3->7` | `0x90200000` | virtio-console、proxy 前端 |
 
 这里的 `cpu-affinity` 是有序数组，不是无序 bitmap。数组第 N 项就是 vCPU N 的
 pCPU。运行时仍保留 bitmap，用于集合、共享和权限检查。
 
-QEMU 的 CPU pool：
+两套配置都定义以下 CPU pool；每 VM 的实际调度参数仍由自己的 `vm@N/sched` 节点决定：
 
 ```text
 pCPU0..3  exclusive  BVT  各承载一个 VM 的 vcpu0
 pCPU4..7  shared     CBS  period=2000us, budget=1000us
 ```
 
+Z3L 还为 VM0 secondary 配置 800 us CBS budget，为 VM1/VM2/VM3 secondary 配置
+600 us；ZR2L 的各 VM `sched` 节点仅给出 BVT weight，不应从 shared pool 的全局预算
+推断出相同的 per-VM reservation。
+
 `strict-placement` 在 DTS 解析时验证：pool 不重叠且覆盖全部 pCPU，secondary vCPU
 不能进入 exclusive pool，共享 pCPU 最多承载 3 个 VM/3 个 vCPU。
 
-QEMU virtio-proxy 当前拓扑：
+QEMU virtio-proxy 按分支采用以下拓扑：
 
 ```text
-VM3 standard virtio frontend
+Z3L:  VM2/VM3 standard virtio frontend -> BEAU -> VM1 Linux KBE backend
+ZR2L: VM3     standard virtio frontend -> BEAU -> VM2 Linux KBE backend
         |
         | virtio-mmio + descriptor chain
         v
 BEAU virtio-proxy transport
-        |
-        | HC_VIRTIO_PROXY_BACKEND ABI v3
-        v
-VM2 Linux KBE backend
 ```
 
-| 设备 | Virtio ID | VM3 MMIO | 队列 | VM2 后端 |
-|---|---:|---:|---|---|
-| net | 1 | `0x0a000a00` | RX/TX, 256 entries | VM2 uplink netdev |
-| blk | 2 | `0x0a000600` | 1, 64 entries | 1 MiB RAM disk |
-| rng | 4 | `0x0a000400` | 1, 64 entries | Linux RNG |
-| fs | 26 | `0x0a000200` | hiprio/request, 64 entries | `/var/beau` 窄 FUSE 实现 |
-| i2c | 34 | `0x0a000800` | 1, 64 entries | 0x50 内存 EEPROM |
+| 分支 | 设备 | Virtio ID | frontend MMIO | 队列 | Linux backend |
+|---|---|---:|---|---|---|
+| Z3L | net | 1 | VM2 `0x0a001a00` / VM3 `0x0a000a00` | RX/TX, 256 entries | VM1 uplink netdev |
+| Z3L | blk/rng/fs/i2c | 2/4/26/34 | VM2 `0x0a001600..0x0a001200` / VM3 `0x0a000600..0x0a000200` | 64 entries | VM1，每 frontend 独立状态 |
+| ZR2L | net | 1 | VM3 `0x0a000a00` | RX/TX, 256 entries | VM2 uplink netdev |
+| ZR2L | blk/rng/fs/i2c | 2/4/26/34 | VM3 `0x0a000600..0x0a000200` | 64 entries | VM2，单 frontend 状态 |
+
+Z3L 另有独立的 virtio-vsock 链路。它不使用 `virtio_proxy.c` 的通用 ABI，而是以
+device ID 19、3 个 virtqueue 和固定 CID 策略传送标准 virtio-vsock packet：
+
+| 所有者 | 角色 | MMIO / CID | 约束 |
+|---|---|---|---|
+| VM1 | KBE HVC backend | CID 3 | DT 含 `beau,vsock-backend`；只接受 VM2/VM3 |
+| VM2 | KFE virtio frontend | `0x0a001c00` / CID 4 | `beau,backend-vmid = <1>`，3 queues |
+| VM3 | KFE virtio frontend | `0x0a000c00` / CID 5 | `beau,backend-vmid = <1>`，3 queues |
+
+ZR2L 和 rk356x 当前未配置这条 vsock 拓扑。CID、backend VMID、queue 数或 packet
+长度不符合静态策略时，DTS 解析或 HVC 处理会拒绝请求。
+
+| 职责 | Z3L | ZR2L |
+|---|---|---|
+| PCIe EDU/net、SMMU owner | VM1 | VM2 |
+| HVC IPC endpoint | VM0 <-> VM1 | VM0 <-> VM2 |
+| Trusty client、PM controller | VM1、VM0 | VM2、VM2 |
+| 自动 WDT 重启 mask | `0xe`：VM1/VM2/VM3 | `0xc`：VM2/VM3 |
+| ramlog slot 划分 | 1 RTOS + 4 Linux | 2 RTOS + 3 Linux |
+| WDT 现场命令 | `swtdbg <vmid>` | `hwtdbg` |
 
 ### 5.2 rk356x
 
@@ -679,6 +722,13 @@ Hypervisor 重启或中断 capture 不会覆盖上一份可读记录。启动恢
 payload checksum 均有效的最新 bank；`ramlog <vmid>` 可重复导出 active 记录，并显示
 两个 bank 的状态与最近失败原因。
 
+ramlog 保持固定 5 槽 ABI，平台 DTS 只决定 RTOS/Linux 的槽位拆分。Z3L 使用 1 个
+RTOS 槽和 4 个 Linux 槽：VM0 使用 RTOS 槽，VM1 至 VM3 使用前三个 Linux 槽，最后一个
+Linux 槽预留；保留区为 `[0x7debf000, 0x80000000)`，总大小 `0x02141000`。ZR2L 使用
+2 个 RTOS 槽和 3 个 Linux 槽，保留区为 `[0x7e6bf000, 0x80000000)`，总大小
+`0x01941000`。rk356x 继续使用既有的 2+3 拆分；公共解析器只校验总槽数等于 5，不改变
+其平台 DTS。
+
 `devmap` 从实际 leaf descriptor 解码属性。Host Stage-1 通过 AttrIdx 查询当前
 `MAIR_EL2`，VM Stage-2 读取 `MemAttr[3:0]`；输出统一使用 13 字符 memory-type
 子列和固定 4-bit 编码，例如 `Device-nGnRE  [0b0100]`、
@@ -998,8 +1048,10 @@ used ring      -> virtio MMIO IRQ -> vGIC
 **能力**：
 
 - DTS 最多描述 32 个 protocol-neutral virtio device。
-- 从 VM3 vring 复制一个有界 descriptor chain 到 pending slot。
-- VM2 backend 通过 HVC 注册、poll、reply 和 heartbeat。
+- 从当前分支所配置的 frontend vring 复制一个有界 descriptor chain 到 pending slot。
+- Linux backend 通过 HVC 注册、poll、reply 和 heartbeat。
+- Z3L 以必填 `beau,backend-vmid = <1>` 固定 backend 所有者；ZR2L 由单一 VM2
+  backend 配置确定调用者。两条路径均拒绝未获授权的调用者并返回 `-EPERM`。
 - ABI v3 支持 wait hint、stats、batch 和 shared batch buffer。
 - high-throughput 设备可用最多 4 条 batch；低吞吐设备走单请求。
 - backend 超时、backpressure、pending full、busy 和 empty 都有独立统计。
@@ -1007,27 +1059,57 @@ used ring      -> virtio MMIO IRQ -> vGIC
 完整请求流：
 
 ```text
-VM3 QueueNotify
+frontend VM QueueNotify
     -> virtio_proxy_notify_queue()
     -> validate and copy descriptor chain
     -> pending slot
 
-VM2 KBE worker
+Linux backend VM KBE worker
     -> HC ... REGISTER
     -> HC ... POLL/BATCH_POLL
-    -> protocol handler in VM2
+    -> protocol handler in backend VM
     -> HC ... REPLY/BATCH_REPLY
 
 BEAU
-    -> copy output into VM3 writable descriptors
+    -> copy output into对应 frontend writable descriptors
     -> update used ring
     -> inject virtio IRQ
 ```
 
-BEAU 不解析 FUSE、block、I2C 或 Ethernet 协议。协议语义位于 VM2 KBE，这减少了
-Hypervisor 可信计算基中的设备协议代码。
+BEAU 不解析 FUSE、block、I2C 或 Ethernet 协议。协议语义位于 Linux backend 的 KBE，
+这减少了 Hypervisor 可信计算基中的设备协议代码。
 
 更多virtio前后端驱动信息，参考[virtio.md](virtio.md).
+
+### 12.6 virtio-vsock proxy
+
+**定位**：`sdk/bsp/virtio/vsock_proxy.c`、`sdk/kbe/beau_transport.c` 和
+`sdk/kfe/virtio_transport.c`。
+
+VM1 是 AF_VSOCK backend，不向它模拟 virtio-mmio 设备；VM2/VM3 使用标准 Linux
+virtio-vsock frontend。共享 Linux Image 通过 DT 选择角色：VM1 的
+`beau,vsock-backend` 节点启动 HVC transport，VM2/VM3 的 device ID 19 在 probe 时注册
+标准 virtio transport。这样同一 Image 不会为 VM1 和 frontend 同时注册相互冲突的
+AF_VSOCK transport。
+
+```text
+VM2/VM3 virtio-vsock TX descriptor
+    -> QueueNotify -> vsock_proxy MMIO model
+    -> validate CID, stream header, descriptor bounds, packet <= 64 KiB + header
+    -> bounded copy into VM1 HVC buffer
+    -> VM1 KBE POLL_TX -> AF_VSOCK backend
+
+VM1 AF_VSOCK reply
+    -> KBE SEND_RX HVC
+    -> copy only into a frontend writable RX descriptor
+    -> used ring update + virtual IRQ -> VM2/VM3 frontend
+```
+
+HVC `HC_VIRTIO_VSOCK_BACKEND` 使用 ABI v1 的 56-byte IOC。每次 HVC 只借用调用方的
+buffer GPA；EL2 不保留该 GPA。`REGISTER`、`POLL_TX`、`SEND_RX` 和 `HEARTBEAT` 都检查
+ABI 版本、IOC 大小、caller VMID、CID 对和 packet 边界。当前策略仅支持 VM1 CID 3 与
+VM2/VM3 CID 4/5 的 stream socket；无描述符、空队列和短暂 backpressure 会返回可重试
+错误，越权或格式错误则 fail closed。
 
 
 ## 13. Hypercall 与 IPC
@@ -1215,9 +1297,9 @@ scheduler selects vCPU thread
                 v
             guest EL1 first instruction
                 +--> VM0 Zephyr       service RTOS
-                +--> VM1 RT-Thread    prelaunch RTOS
-                +--> VM2 Linux-2      prelaunch backend
-                `--> VM3 Linux-3      prelaunch frontend
+                +--> VM1              Z3L Linux backend / ZR2L RT-Thread
+                +--> VM2 Linux-2      Z3L frontend / ZR2L backend
+                `--> VM3 Linux-3      frontend
 
 guest trap / IRQ
     -> arch/arm64/vector.S:guest_vector_entry
@@ -1237,14 +1319,15 @@ QEMU 的 `--tee` 启动链为 `TF-A -> Trusty LK -> BEAU`。BEAU shell 的 `tee 
 `SMC_FC_API_VERSION`，也不传递任何指针、共享内存或客体参数。
 
 `tee dump` 不重复构建字符串。它只通过 `SMC_FC_GET_SMP_MAX_CPUS` 获取 Trusty 的最大
-SMP CPU 数，并读取 BEAU 从 VM2 成功 API 协商后原子缓存的 ABI 版本。尚无成功协商记录时
+SMP CPU 数，并读取 BEAU 从 Trusty client VM 成功 API 协商后原子缓存的 ABI 版本。Z3L 的
+client 是 VM1，ZR2L 的 client 是 VM2。尚无成功协商记录时
 显示 `smc.api-version: N/A`；dump 不主动调用 API-version SMC，因而不会改变
 Trusty 的全局协商状态。CPU 查询失败时输出 `Trusty TEE Information: N/A`，
 不会输出部分 dump。
 
 两个命令只在 QEMU 平台尝试 secure-world SMC；未使用 Trusty firmware、SMC 返回未知值或
-字符串校验失败时失败关闭。VM2 的 `trusty-client` API-version 白名单独立于这些诊断命令，
-其他客体 SMC 仍保持拒绝。
+字符串校验失败时失败关闭。Trusty client VM 的 `trusty-client` API-version 白名单独立于
+这些诊断命令，其他客体 SMC 仍保持拒绝。
 
 ### 13.4 静态 IPC
 
@@ -1388,8 +1471,8 @@ detect stuck
 `CONFIG_VM_WDT_RESTART_VM_MASK` 选择允许恢复的 VM，service VM 永不自动重启；
 `CONFIG_VM_WDT_RESTART_MAX=5` 将每个 VM 实例的自动恢复限制为最多 5 次，防止无限重启。
 WDT 控制线程保持在 pCPU0，只负责检测、
-排队和验证；每个 VM 的 cold reset 在其独占 BSP pCPU 上执行。因此 VM2 的镜像重载
-不会累积 BVT runtime 并延迟 VM3 的恢复。若目标 pCPU 未完成 reset，该 VM 保持
+排队和验证；每个 VM 的 cold reset 在其独占 BSP pCPU 上执行。因此一个 Linux VM 的
+镜像重载不会累积 BVT runtime 并延迟其他 VM 的恢复。若目标 pCPU 未完成 reset，该 VM 保持
 `RESETTING` 可观测状态，其他 VM 的检测和恢复仍可继续。
 
 per-vCPU 模式只监测 `VCPU_RUNNING`。新进入 RUNNING 的 vCPU 从当前时刻获得完整超时
@@ -1397,12 +1480,14 @@ per-vCPU 模式只监测 `VCPU_RUNNING`。新进入 RUNNING 的 vCPU 从当前�
 模式和全部 counter。已纳入 expected 的短暂 PAUSED 状态保留原 deadline，但 PAUSED
 vCPU 不会被新纳入。system/VM STR 分别冻结每个 expected vCPU 的剩余 deadline，resume
 后恢复原 age，因此 suspend 时间不会制造误报。任一 stalled bit 都进入同一个有界整 VM
-恢复状态机；QEMU 的 `CONFIG_VM_WDT_RESTART_VM_MASK=0xc` 因而允许 VM2/VM3 自动重启。
+恢复状态机；QEMU 的 WDT restart mask 取决于开发分支：Z3L 为 `0xe`，允许
+VM1/VM2/VM3 自动重启；ZR2L 为 `0xc`，只允许 VM2/VM3 自动重启。
 
 ### 15.2 超时现场保留
 
-`sdk/bsp/arm64/hwtdbg.c` 在每次 heartbeat timeout 转换发生时、VM quiesce/restart
-之前冻结现场。首次启动一直未 kick 和运行后长期未 kick 使用同一采集路径：
+Z3L 的 `sdk/bsp/arm64/swtdbg.c` 与 ZR2L 的 `sdk/bsp/arm64/hwtdbg.c` 都会在每次
+heartbeat timeout 转换发生时、VM quiesce/restart 之前冻结现场。首次启动一直未 kick
+和运行后长期未 kick 使用同一采集路径：
 
 ```text
 timeout false -> true
@@ -1417,9 +1502,10 @@ timeout false -> true
 ```
 
 每个受监控 VM 在 BSS 中保留 4 个事件，写满后覆盖最老事件。远端回调只写
-per-pCPU generation mailbox；超时后的晚到回调不能修改事件槽。`hwtdbg` 无参数，
-按 VM 分组并按 sequence 从旧到新打印所有 checksum 有效事件；读取不清除数据，
-但 Hypervisor 重启后数据不保留。没有超时事件时输出
+per-pCPU generation mailbox；超时后的晚到回调不能修改事件槽。Z3L 使用
+`swtdbg <vmid>`，ZR2L 使用无参数的 `hwtdbg`；两者均按 VM 分组并按 sequence 从旧到新
+打印所有 checksum 有效事件，读取不清除数据，但 Hypervisor 重启后数据不保留。没有超时
+事件时分别输出 `swtdbg: no watchdog timeout events` 或
 `hwtdbg: no watchdog timeout events`。
 
 为避免超时报告被高频轨迹和底层寄存器细节淹没，事件不保留 guest exit、vGIC
@@ -1428,7 +1514,7 @@ vCPU 保留完整 GPR/异常寄存器、guest/host stack、调度延迟、pCPU �
 request/IRQ；多个 stalled bit 全部采集，legacy 或空/无效 stalled mask 回退为全量采集。
 VM 级仍保留 WDT/recovery、全部 expected vCPU 的 heartbeat mask/age/token、IRQ 和 virtio
 信息。架构持续态只维护
-`vmstat/health` 使用的
+`vmstat summary` 使用的
 `vtimer_diag` 聚合计数，不维护 trace ring。
 
 ### 15.3 客体驱动
@@ -1563,7 +1649,10 @@ performance policy，并选最大 P-state。QEMU 和 rk356x platform backend 目
 host shell 无输入时保持 blocked。首次输入发现延迟由 2 ms timer 周期限定；唤醒后
 最多连续处理 64 字节，再重新经过 scheduler，以限制单次 console service 时间。
 
-`sdk/bsp/shell.c` 提供行编辑、历史、Tab completion、异步输出保护和命令分发；
+`sdk/bsp/shell.c` 提供行编辑、历史、Tab completion、异步输出保护和命令分发。Tab
+completion 由命令注册表中的静态语法树驱动：可枚举的命名子命令可按层级补全，唯一候选
+自动追加空格，多个候选补至公共前缀或列出候选。VMID、计数、地址、文本和敏感参数不作为
+候选；未声明命名子命令的命令保持无参数补全行为。
 `sdk/bsp/cmds/` 按功能提供 common 和架构诊断命令。
 
 `core/logmsg.c` 在输出到 console、memory 或 NPK 前写入独立的 host dmesg record
@@ -1602,10 +1691,10 @@ WDT recovery 与 failure 事件继续使用 `LOG_*` 保留为故障证据。
 | `devmap` | host Stage-1 与每 VM Stage-2 map |
 | `memstat` | 页表池和 Stage-2 ownership |
 | `walkpt <vmid> <ipa>` | 只读输出指定 IPA 的逐级 Stage-2 descriptor、映射与属性 |
-| `health` | host/VM 运行健康摘要与 findings |
-| `hwtdbg` | 打印所有已保留 WDT 超时现场，读取不清除 |
+| `swtdbg <vmid>`（Z3L）/ `hwtdbg`（ZR2L） | 打印所有已保留 WDT 超时现场，读取不清除 |
 | `coredump <print\|erase>` | 查看或清除最近一次 ARM64 panic/异常快照 |
-| `vmstat` | VM 配置、状态、affinity、boot、timer、WDT |
+| `vmstat` | VM 配置、状态、affinity、boot、timer、WDT，以及末尾的 host/VM summary 与 findings |
+| `vmexitstat` | VM/vCPU 同步 VM-exit handler 的 EC 分类次数与 wall-time；物理 IRQ exit 不单独计入，且不含后续调度 |
 | `cachestat` | cache topology 和 LLC domain |
 | `ipcstat` | HVC IPC channel、ring、notify/ack/drop，以及 static remoteproc/rpmsg channel、doorbell、vIRQ 和拒绝计数 |
 | `virtiostat` | proxy device、queue、backend、吞吐和延迟 |
@@ -1619,17 +1708,32 @@ WDT recovery 与 failure 事件继续使用 `LOG_*` 保留为故障证据。
 | `pm reboot <vmid>` | 异步 cold restart 非 service VM |
 | `pm ...` / `pmstat` | VM STR/reboot 控制与 transaction 诊断 |
 
-`health` 的 vCPU utilization 表使用相邻两次命令之间的 scheduler runtime 差值。
+`vmstat summary` 的 vCPU utilization 表使用相邻两次 `vmstat` 命令之间的 scheduler runtime 差值。
 列数取所有已配置 VM 中最大的 vCPU 数；某 VM 未配置的列显示 `NC`，已配置但 VM
 或 vCPU 不处于 running 生命周期时显示 `NA`。首次命令只建立基线并以 `--` 表示
 running vCPU；后续命令仅对当前快照为 running 的 vCPU 显示百分比。`total` 是该 VM
 各 running vCPU 百分比之和，可能超过 100%。利用率表示调度时间，不替代 WDT
-heartbeat 对 guest forward progress 的判断。
+heartbeat 对 guest forward progress 的判断。summary 的 VM 表是紧凑总览：`console.q`
+只显示当前 console 排队字节数；容量与累计 drop 保留在对应 VM 详情中的 `vcon` 行。
+逐 VM 的正常 SWT 诊断压缩为 status 与 per-vCPU age 两行；token、队列与 recovery wait
+仅在 WDT 非 alive、stalled、recovery、restart failure 或 daemon pending 时显示，完整现场使用
+`swtdbg`。
 
 `ps` 把 idle、shell、helper 和 vCPU thread 放在同一张表中，`cpu%/run.us` 使用相邻
 两次 `ps` 的独立 runtime 快照；首次采样、线程首次出现、计数回退或快照容量不足
 时显示 `--`。执行 `schedstat` 不会改变 `ps` 的采样窗口。`schedstat` 只保留 pCPU
-busy%、policy 和 BVT/RTDS/CBS 诊断，不再重复 per-thread CPU usage。
+busy%、policy 和 BVT/RTDS/CBS 诊断，不再重复 per-thread CPU usage。CBS latency
+histogram 首次输出是 vCPU 创建以来的累计计数，`window.us:--`；后续输出是相对前一次
+`schedstat` 的增量，`window.us` 给出该采样窗口。`samples` 是八个等待桶之和，
+`tail>=5ms`/`tail%` 是落入 `>=5ms` 桶的样本数及占比，`max.us (TTL)` 始终是生命周期
+最大等待，不能当作当前窗口最大值。
+
+`vmexitstat` 的计时范围从 `vcpu_exit_handler()` 入口到对应 EC handler 返回，只用于比较
+MMIO、HVC、sysreg 等同步 exit 在同一 VM/vCPU 上的 EL2 handler cost。物理 IRQ exit 不会
+按 EC 分类或计入表中；`wall-time` 不应解读为完整 EL1/EL2 往返时间，vector save/restore、
+后续 scheduler 和 ERET 不在计时范围内。trace、irqstat、schedstat 和 pmustat 可辅助归因。
+统计在 vCPU reset 后清零；shell 读取的是无锁的单调快照，因而相邻字段可跨一次正在进行的
+exit，但不会改变 guest 执行。
 
 ### 18.3 Trace 与符号化
 
@@ -1648,8 +1752,8 @@ ARM64 build 保留 frame pointer；debug image 由 `gen_symtab.py` 生成地址�
 `arch/arm64/coredump.c` 只在已登记的 thread、per-pCPU 或 boot stack 边界内读取
 frame record，并限制原始栈快照和回溯深度；panic 与同步异常共用该 fail-closed
 host 栈回溯路径。每个 pCPU 保留一个带版本和校验和的内存快照，shell 可通过
-`coredump print` 查看最新快照或通过 `coredump erase` 清除；`hwtdbg` 提供重启前
-冻结的 guest/vCPU WDT 超时证据。
+`coredump print` 查看最新快照或通过 `coredump erase` 清除；当前分支的 `swtdbg` 或
+`hwtdbg` 提供重启前冻结的 guest/vCPU WDT 超时证据。
 
 ### 18.4 Perf
 
@@ -1669,13 +1773,13 @@ QEMU 只能验证控制流、SMP ring ownership 和回溯边界，不能作为�
 
 ## 19. SDK 模块
 
-### 19.1 `sdk/image`
+### 19.1 `sdk/imgs`
 
 用于固定回归输入：
 
-- `zephyr.bin`、`rtthread.bin`、`lk.bin`。
-- VM2 Linux `Image`，VM3 默认复用 VM2 image，亦可独立指定。
-- VM2/VM3 Linux DTB、RT-Thread DTB。
+- `zephyr.bin`、`rtthread.bin`（仅 ZR2L）、`lk.bin`。
+- Z3L 的 VM1/VM2/VM3 Linux `Image` 与 DTB；ZR2L 的 VM2/VM3 Linux `Image` 与 DTB。
+  两个分支均允许 VM3 使用独立 Linux image。
 - 共享 `Initramfs.cpio.gz`。
 
 `scripts/repack_initramfs.sh` 可把 KBE 驱动与测试工具重新打包进默认 initramfs。
@@ -1689,18 +1793,35 @@ QEMU 只能验证控制流、SMP ring ownership 和回溯边界，不能作为�
 |---|---|
 | `hcall.*` | WDT、virtio-proxy、IPC 的 AArch64 HVC wrapper |
 | `virtio-proxy-backend.*` | register、poll、batch、reply、heartbeat、adaptive wait |
-| `virtio-fs-backend.c` | `/var/beau` 下有限 regular-file FUSE 操作，不是完整 virtiofsd |
-| `virtio-rng-backend.c` | Linux RNG 填充 VM3 writable buffer |
-| `virtio-blk-backend.c` | 1 MiB 非持久 RAM disk，有限单段请求 |
-| `virtio-i2c-backend.c` | 0x50、256-byte 内存 EEPROM |
-| `virtio-net-backend.c` | VM2 uplink 转发，关闭 offload/MQ/RSS 等复杂能力 |
+| `virtio-fs-backend.c` | 有限 regular-file FUSE 操作，不是完整 virtiofsd；Z3L 为每 frontend 隔离目录 |
+| `virtio-rng-backend.c` | Linux RNG 填充当前 frontend writable buffer |
+| `virtio-blk-backend.c` | 每 frontend 1 MiB 非持久 RAM disk，有限单段请求 |
+| `virtio-i2c-backend.c` | 每 frontend 独立 0x50、256-byte 内存 EEPROM |
+| `virtio-net-backend.c` | Linux backend uplink 转发，关闭 offload/MQ/RSS |
+| `beau_transport.c`、`beau_vsock.h` | VM1 CID 3 HVC vsock backend；移植到 `net/vmw_vsock` |
 | `vwdt.c` | 早期、hotplug-aware per-vCPU scheduling-progress heartbeat |
 | `edu-test.c` | QEMU edu 直通与 IRQ 验证 |
 | `ipc-test.c` | Linux IPC query/ring/notify/ack endpoint |
 
-所有 proxy backend 只在 DT model 表明自己是 VM2 时启动，frontend 固定为 VM3。
+所有 proxy backend 只在 DT model 表明自己是 backend VM 时启动：Z3L 为 VM1，并为
+VM2/VM3 分配独立实例；ZR2L 为 VM2，frontend 固定为 VM3。
 
-### 19.3 `sdk/zsh`
+### 19.3 `sdk/kfe`
+
+`sdk/kfe` 保留 Z3L 的完整 virtio-vsock frontend：
+
+- `virtio_transport.c`：VM2/VM3 标准 virtio-vsock frontend，延迟到设备 probe 时注册
+  AF_VSOCK core，供共享 Image 的 DT 角色选择使用。
+- `Kconfig`、`Makefile`：`net/vmw_vsock` 的完整集成文件，包含
+  `CONFIG_BEAU_VSOCKETS`。
+- `beau-vsock-test.c`：打包到 initramfs 的静态 echo server/client。
+
+移植时，把 `sdk/kbe/beau_transport.c`、`sdk/kbe/beau_vsock.h`、上述 KFE 文件复制到
+Linux `net/vmw_vsock`，并启用 `CONFIG_VSOCKETS`、`CONFIG_VIRTIO_VSOCKETS` 与
+`CONFIG_BEAU_VSOCKETS`。不要把这组文件复制到 `drivers/virt/beau`，因为它依赖
+vsock 子系统内部的 transport helpers。
+
+### 19.4 `sdk/zsh`
 
 - `hcall.*`：Zephyr HVC、IPC 与 AI scheduler advisor ABI。
 - `beau_wdt.c`：heartbeat thread。
@@ -1710,15 +1831,13 @@ QEMU 只能验证控制流、SMP ring ownership 和回溯边界，不能作为�
 
 移植到 Zephyr shell sample 时，把三个 C 文件加入 application `target_sources()`。
 
-### 19.4 `sdk/ube`
+### 19.5 `sdk/ube`
 
 这是继承自 ACRN 的 userspace device model，覆盖 PCI、virtio、ACPI、USB、TPM、
 图形等大量设备。`sdk/sdk.md` 明确标记为“not used yet”，顶层 BEAU `Makefile` 也不
 编译它。学习当前 BEAU 数据面时应先忽略，只有设计 future userspace backend 时再读。
 
-## 20. 回归与验证
-
-### 19.5 AI-assisted scheduling SDK
+### 19.6 AI-assisted scheduling SDK
 
 `sdk/ai-sched` retains emlearn and a host-side training/export flow for an
 experimental scheduler advisor. It is not part of the EL2 image. The
@@ -1735,7 +1854,7 @@ minimum update interval. No proposal changes a reservation in this revision.
 All future apply paths must reuse the same validation before touching scheduler
 state.
 
-### 19.6 Arm SPE
+### 19.7 Arm SPE
 
 `CONFIG_ARM64_SPE` builds an EL2-owned Arm Statistical Profiling Extension
 collector. The feature is disabled by default and requires a platform
@@ -1743,6 +1862,8 @@ collector. The feature is disabled by default and requires a platform
 registers and static buffers; guest SPE identification and sysreg accesses are
 hidden. `spestat` reports state and provides bounded capture control. The
 current QEMU configuration has no SPE PPI and reports the unavailable path.
+
+## 20. 回归与验证
 
 ### 20.1 自动回归
 
@@ -1754,11 +1875,15 @@ python3 scripts/regress.py
 
 - BEAU prompt 和 fatal pattern。
 - PM policy、`vcpus`、hybrid `schedstat`、`rttest`。
-- `vmstat`、`devmap`、`memstat`、`health`、`irqstat`。
-- `virtiostat` 的 VM3 fs/rng/blk/i2c proxy。
-- 正常启动时 `hwtdbg` 无事件；WDT smoke 后保留 guest regs、栈和恢复结果。
-- VM0 Zephyr、VM1 RT-Thread、VM2 Linux backend、VM3 Linux frontend shell。
-- VM2 KBE backend startup 与 VM3 virtio-proxy smoke。
+- `vmstat`（含 summary）、`devmap`、`memstat`、`irqstat`。
+- Z3L 的 VM2/VM3 fs/rng/blk/i2c/net proxy，或 ZR2L 的 VM3 对应 proxy。
+- Z3L VM1 vsock backend 与 VM2/VM3 standard virtio-vsock frontend 的 echo 链路。
+- 正常启动时 Z3L `swtdbg <vmid>` 或 ZR2L `hwtdbg` 无事件；WDT smoke 后保留 guest
+  regs、栈和恢复结果。
+- Z3L 的 VM0 Zephyr、VM1 Linux KBE、VM2/VM3 Linux frontend shell，或 ZR2L 的
+  VM0 Zephyr、VM1 RT-Thread、VM2 Linux KBE、VM3 Linux frontend shell。
+- 当前 backend VM 的 KBE startup 与其全部 frontend 的 virtio-proxy smoke；Z3L 还要
+  验证跨 frontend 隔离。
 - 可选 VM console stress、help stress、WDT recovery、STR cycles 和故障注入。
 
 常用变体：
@@ -1775,17 +1900,38 @@ python3 scripts/regress.py --dry-run
 ### 20.2 手工最小 smoke
 
 ```text
-console:\> health
 console:\> vmstat
 console:\> schedstat
 console:\> irqstat
 console:\> virtiostat
-console:\> vsh 2
+Z3L: console:\> vsh 1     # Linux backend
+ZR2L: console:\> vsh 1    # RT-Thread shell
+<Ctrl-D>
+console:\> vsh 2          # Z3L frontend / ZR2L Linux backend
 uos ~ dmesg | grep -i 'BEAU virtio-'
 <Ctrl-D>
-console:\> vsh 3
+console:\> vsh 3          # Linux frontend
 uos ~ dmesg | grep -i virtio
 ```
+
+Z3L virtio-vsock 基础链路使用同一 initramfs 中的 `vsock` 工具：
+
+```text
+console:\> vsh 1
+uos ~ vsock server 5000 >/tmp/vsock.log 2>&1 &
+<Ctrl-D>
+console:\> vsh 2
+uos ~ vsock client 3 5000 vm2
+vsock: cid=3 port=5000 echo=vm2
+<Ctrl-D>
+console:\> vsh 3
+uos ~ vsock client 3 5000 vm3
+vsock: cid=3 port=5000 echo=vm3
+```
+
+VM1 的 echo server 可顺序接受两个 frontend client。`vsock cid` 绑定
+`VMADDR_CID_ANY` 后输出 `4294967295`，仅用于确认 socket setup，不是 DT 配置 CID 的
+查询接口；测试目标 CID 固定为 VM1 的 3。
 
 ## 21. 常见扩展操作
 
@@ -1795,7 +1941,7 @@ uos ~ dmesg | grep -i virtio
    boot module、SVE 和 scheduler 参数。
 2. 确保 VM RAM 与其他 VM、Hypervisor、staging image 不重叠，并满足 Stage-2
    block alignment。
-3. 把可复用 image/DTB 放到 `sdk/image`；若是嵌入资产，更新 `platform.S` 和依赖。
+3. 把可复用 image/DTB 放到 `sdk/imgs`；若是嵌入资产，更新 `platform.S` 和依赖。
 4. 更新平台 `Bconfig` 的 VM 数量和资源上限。
 5. 执行 `make ... checkconfig`、完整构建和 QEMU regression。
 
@@ -1805,9 +1951,11 @@ uos ~ dmesg | grep -i virtio
 ### 21.2 增加 virtio-proxy 设备
 
 1. 在 `/vm/generic` 增加 `beau,virtio-proxy` 节点，配置唯一 MMIO/IRQ/device ID、
-   frontend VM、queue num/size、pending num、tag 和 throughput。
+   frontend VM、queue num/size、pending num、tag 和 throughput；Z3L 还必须配置
+   `beau,backend-vmid`。
 2. 确保 frontend guest DTB 含对应 `virtio,mmio` 节点。
-3. 在 `sdk/kbe` 增加 VM2 protocol backend，复用 common worker。
+3. 在 `sdk/kbe` 增加 backend VM protocol backend；Z3L 复用 common worker 并隔离
+   VM2/VM3 frontend 状态，ZR2L 的 frontend 为 VM3。
 4. 只在 backend 中解析协议；Hypervisor 只处理 descriptor transport。
 5. 更新 Kconfig/Makefile、initramfs 和 regression。
 
@@ -1841,7 +1989,7 @@ host banner/pCPU all running
     -> boot kernel/load/entry/FDT address
     -> devmap: RAM Stage-2 exists
     -> vcpus: BSP runnable/running
-    -> hwtdbg: 若已发生 WDT timeout，检查重启前 ELR/ESR/FAR/HPFAR
+    -> Z3L swtdbg <vmid> / ZR2L hwtdbg: 检查重启前 ELR/ESR/FAR/HPFAR
 ```
 
 常见原因：image staging 地址错误、load range 越界、FDT overlap、entry 未对齐、
@@ -1852,13 +2000,14 @@ affinity 指向未初始化 scheduler。
 查看：
 
 ```text
-hwtdbg
+Z3L: swtdbg <vmid>
+ZR2L: hwtdbg
 irqstat
 vmstat
 schedstat
 ```
 
-`hwtdbg` 重点查看超时前 GPR/异常寄存器、guest/host stack、`pcpu-owner`、pending
+当前分支的 WDT 现场命令重点查看超时前 GPR/异常寄存器、guest/host stack、`pcpu-owner`、pending
 request/IRQ 和 vCPU wait latency；`vmstat` 查看 CNTV ctl/cval、PPI descriptor、
 backup/poll/PPI count、EL2 mask 和 pre-ERET flush 聚合；`irqstat` 核对 host/guest
 IRQ 是否持续推进。Linux 有 arch_timer IRQ 不代表 softirq 一定推进，需要结合三类
@@ -1917,6 +2066,8 @@ smmustat
 10. KBE fs/blk/i2c/net 都是验证级 backend，不是完整生产设备服务。
 11. `sdk/ube` 尚未接入。
 12. 自动回归集中在 QEMU；rk356x 需要硬件验证。
+13. virtio-vsock 已完成 VM1 <-> VM2/VM3 基础 echo 链路；尚未完成长期压力、并发连接、
+    大包吞吐、backpressure 和 VM reset/reconnect 验证。
 
 ## 24. 推荐源码学习顺序
 
@@ -1994,7 +2145,8 @@ sdk/bsp/pm.c
 sdk/bsp/cmds/shell_pm.c
 ```
 
-目标：能用 `schedstat/hwtdbg/health/pmstat` 给出有代码证据的故障判断。
+目标：能用 `schedstat`、当前分支的 WDT 现场命令、`vmstat summary` 和 `pmstat` 给出有代码
+证据的故障判断。
 
 ## 25. 关键结构速查
 

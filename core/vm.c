@@ -255,11 +255,11 @@ static const char *vm_boot_load_order_name(enum acrn_vm_load_order load_order)
 {
 	switch (load_order) {
 	case SERVICE_VM:
-		return "service";
+		return "Service";
 	case PRE_LAUNCHED_VM:
-		return "prelaunch";
+		return "Prelaunch";
 	case POST_LAUNCHED_VM:
-		return "postlaunch";
+		return "Postlaunch";
 	default:
 		return "unknown";
 	}
@@ -455,7 +455,7 @@ void launch_vms(uint16_t pcpu_id)
 							vm_lifecycle_commit_locked(vm, VM_LIFECYCLE_CREATED, VM_CREATED);
 							if (start_vm(vm) == 0) {
 								if (vm_boot_log_enabled(vm_id)) {
-									LOG_INF("VM%u:    %-10s vm: %9s started",
+									LOG_INF("VM%u:    %-10s VM: %9s started",
 										vm_id, vm_boot_load_order_name(vm_config->load_order),
 										vm_config->name);
 								}
@@ -657,6 +657,25 @@ int32_t create_vm(uint16_t vm_id, uint64_t pcpu_bitmap, struct acrn_vm_config *v
 	return status;
 }
 
+static int32_t reset_vm_scheduler(struct acrn_vm *vm)
+{
+	struct acrn_vm_config *vm_config = get_vm_config(vm->vm_id);
+	struct acrn_vcpu *vcpu = NULL;
+	uint16_t i;
+	int32_t ret = 0;
+
+	foreach_vcpu(i, vm, vcpu) {
+		ret = reset_thread_data(&vcpu->thread_obj, &vm_config->sched_params);
+		if (ret != 0) {
+			LOG_ERR("VM%u: vCPU%hu scheduler reset failed ret=%d",
+				vm->vm_id, vcpu->vcpu_id, ret);
+			break;
+		}
+	}
+
+	return ret;
+}
+
 int32_t reset_vm(struct acrn_vm *vm)
 {
 	int32_t ret = -1;
@@ -666,7 +685,10 @@ int32_t reset_vm(struct acrn_vm *vm)
 	}
 	ai_sched_invalidate_vm(vm->vm_id);
 	(void)vm_lifecycle_begin_locked(vm, VM_LIFECYCLE_RESETTING);
-	ret = arch_reset_vm(vm);
+	ret = reset_vm_scheduler(vm);
+	if (ret == 0) {
+		ret = arch_reset_vm(vm);
+	}
 	if (ret == 0) {
 		vm_lifecycle_commit_locked(vm, VM_LIFECYCLE_CREATED, VM_CREATED);
 	} else {
@@ -699,7 +721,7 @@ static int32_t restart_vm_locked(struct acrn_vm *vm, bool reload_image)
 			ret = start_vm(vm);
 			if (ret == 0) {
 				LOG_INF("VM%u:    %4s reset complete", vm->vm_id,
-					reload_image ? "cold" : "warm");
+					reload_image ? "Cold" : "Warm");
 			}
 		}
 	}

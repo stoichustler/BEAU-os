@@ -406,6 +406,7 @@ void arch_reset_vcpu(struct acrn_vcpu *vcpu)
 {
 	arm64_vtimer_cancel_all(vcpu);
 	memset(&vcpu->arch, 0, sizeof(vcpu->arch));
+	arm64_vcpu_exit_stats_reset(vcpu);
 	arm64_prepare_linux_vcpu_context(vcpu, 0UL, 0UL);
 }
 

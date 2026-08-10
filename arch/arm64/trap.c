@@ -11,7 +11,7 @@
 #include <notify.h>
 #include <hv_pm.h>
 #include <debug/dump.h>
-#include <hwtdbg.h>
+#include <swtdbg.h>
 
 #include <asm/trap.h>
 #include <asm/ddb.h>
@@ -115,7 +115,7 @@ static void dispatch_exception(struct intr_excp_ctx *ctx, uint64_t trap_type)
 			ctx->regs.elr, pcpu_id);
 	}
 	if ((trap_type == ARM64_TRAP_SERROR) && arm64_ras_capture(&ras)) {
-		hwtdbg_capture_ras(NULL, &ctx->regs, &ras);
+		swtdbg_capture_ras(NULL, &ctx->regs, &ras);
 	}
 
 	dump_exception(ctx, pcpu_id);

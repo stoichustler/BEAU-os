@@ -27,6 +27,21 @@ extern char shell_log_buf[SHELL_LOG_BUF_SIZE];
 typedef int32_t (*shell_cmd_fn_t)(int32_t argc, char **argv);
 
 #define SHELL_CMD_FLAG_SENSITIVE_ARGS	(1U << 0U)
+#define SHELL_COMPLETION_FLAG_VALUE	(1U << 0U)
+#define SHELL_COMPLETION_FLAG_REPEAT	(1U << 1U)
+
+struct shell_completion_set;
+
+struct shell_completion {
+	const char *str;
+	const struct shell_completion_set *children;
+	uint32_t flags;
+};
+
+struct shell_completion_set {
+	const struct shell_completion *entries;
+	uint32_t count;
+};
 
 struct shell_cmd {
 	char *str;
@@ -34,6 +49,7 @@ struct shell_cmd {
 	char *help_str;
 	shell_cmd_fn_t fcn;
 	uint32_t flags;
+	const struct shell_completion_set *completion;
 };
 
 #define MAX_BUFFERED_CMDS 8

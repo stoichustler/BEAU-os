@@ -42,6 +42,8 @@
 #define PSCI_0_2_FN64_SYSTEM_SUSPEND	PSCI_0_2_FN64(14UL)
 #define PSCI_0_2_FN_SYSTEM_OFF		PSCI_0_2_FN(8UL)
 #define PSCI_0_2_FN_SYSTEM_RESET	PSCI_0_2_FN(9UL)
+#define PSCI_1_0_FN_PSCI_FEATURES	PSCI_0_2_FN(10UL)
+#define PSCI_1_1_FN64_SYSTEM_RESET2	PSCI_0_2_FN64(18UL)
 
 /*
  * SMCCC is a register ABI, not a normal C function ABI. Keep the PSCI function
@@ -78,6 +80,18 @@ int64_t psci_system_off(void)
 int64_t psci_system_reset(void)
 {
 	return (int64_t)arm_smccc_smc(PSCI_0_2_FN_SYSTEM_RESET, 0UL, 0UL, 0UL);
+}
+
+bool psci_system_reset2_is_supported(void)
+{
+	return (int64_t)arm_smccc_smc(PSCI_1_0_FN_PSCI_FEATURES,
+		PSCI_1_1_FN64_SYSTEM_RESET2, 0UL, 0UL) == PSCI_RET_SUCCESS;
+}
+
+int64_t psci_system_reset2(uint32_t reset_type, uint64_t cookie)
+{
+	return (int64_t)arm_smccc_smc(PSCI_1_1_FN64_SYSTEM_RESET2,
+		(uint64_t)reset_type, cookie, 0UL);
 }
 
 int64_t psci_system_suspend(uint64_t resume_entry, uint64_t context_id)

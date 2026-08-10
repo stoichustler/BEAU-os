@@ -90,24 +90,23 @@ execution. If the test plan changes, stop and request approval again.
 
 #### Manual Testing
 
-When the user selects manual testing or validation, provide a suggested test
-method tailored to the approved design, actual changes, and target platform
-before waiting for the human result. Include:
+When the user selects manual testing or validation, obtain explicit confirmation
+before the final test handoff. After confirmation, direct the human to run this
+exact command from the repository root:
 
-- the behavior or contract to validate;
-- prerequisites, environment, and safety precautions;
-- ordered human actions and inputs;
-- the expected result for each action;
-- evidence to record;
-- cleanup or recovery actions;
-- explicit pass, fail, and stop criteria;
-- known limitations or behavior not covered by the method.
+```sh
+./scripts/kick.py --build --tee
+```
 
-After providing the suggested method, stop all AI-side test activity and wait
-for the human result. Do not run commands, start or monitor an environment,
-request or verify evidence, inspect processes, or perform cleanup unless the
-user later requests specific assistance. Keep that action within the explicit
-scope.
+The human must interact directly with BEAU OS in that session and validate the
+behavior affected by the current change. Keep the handoff concise. Do not embed
+a task-specific test script, fixed command sequence, exhaustive evidence list,
+or generic prerequisite and cleanup template in this skill. Provide additional
+interaction suggestions or pass/fail details only when the user requests them.
+
+Do not execute, automate, substitute, start, or monitor this manual acceptance
+on the user's behalf. After handing off the command, stop AI-side test activity
+and wait for the human result unless the user requests specific assistance.
 
 Accept an explicit human pass or fail report as the authoritative test result
 without performing corroborating work. Enter Phase 6 after a reported pass.

@@ -26,21 +26,19 @@
 #include <asm/guest/vrproc.h>
 #include <asm/vtd.h>
 #include <arm64_platform_dts.h>
+#include <debug/ramlog.h>
 #include <virtio_proxy.h>
 
 #define ARM64_DTS_MMIO_REGION_MAX	8U
 #define ARM64_DTS_GIC_SPI		0U
 #define ARM64_DTS_IRQ_TYPE_EDGE_RISING	1U
 #define ARM64_DTS_IRQ_TYPE_LEVEL_HIGH	4U
-#define ARM64_DTS_STRICT_SHARED_PCPU_VM_MAX	3U
 #define ARM64_DTS_PM_TIMEOUT_MAX_MS	600000U
 #define ARM64_DTS_GUEST_SMMU_SIZE	0x20000UL
 #define ARM64_DTS_GUEST_SMMU_ALIGN	0x10000UL
 #define ARM64_DTS_GUEST_SMMU_MAX_QUEUE_LOG2	6U
 #define ARM64_DTS_GUEST_PSTORE_ALIGN	MEM_4K
 #define ARM64_DTS_RAMLOG_HEADER_SIZE	0x1000U
-#define ARM64_DTS_RAMLOG_RTOS_VM_COUNT	2U
-#define ARM64_DTS_RAMLOG_LINUX_VM_COUNT	3U
 #define ARM64_DTS_UINT16_MAX		0xffffU
 #define ARM64_DTS_DMA_ISOLATION_REQUIRED	"required"
 #define ARM64_DTS_DMA_ISOLATION_BRINGUP	"bringup"
@@ -1176,9 +1174,11 @@ static void dts_parse_ramlog(const void *fdt)
 	if (count != 1U) {
 		arm64_dts_panic("beau,ramlog", -FDT_ERR_NOTFOUND);
 	}
+	/* [20260801] Platforms choose the RTOS/Linux split within the fixed ABI. */
 	if ((header_size != ARM64_DTS_RAMLOG_HEADER_SIZE) ||
-		(rtos_vm_count != ARM64_DTS_RAMLOG_RTOS_VM_COUNT) ||
-		(linux_vm_count != ARM64_DTS_RAMLOG_LINUX_VM_COUNT) ||
+		(rtos_vm_count > RAMLOG_VM_SLOT_COUNT) ||
+		(linux_vm_count > RAMLOG_VM_SLOT_COUNT) ||
+		(rtos_vm_count + linux_vm_count != RAMLOG_VM_SLOT_COUNT) ||
 		(rtos_size != 0x40000U) || (linux_size != 0x840000U) ||
 		!mem_aligned_check(base, PAGE_SIZE) || !mem_aligned_check(size, PAGE_SIZE) ||
 		!dts_range_end(base, size, &end) ||
@@ -1317,7 +1317,7 @@ void arm64_platform_dts_parse_board(const void *fdt,
 	beau_config.gic_iidr = info->gic_iidr;
 }
 
-static uint64_t dts_parse_cpu_affinity(const void *fdt, int32_t node,
+static uint64_t dts_parse_cpu_affinity(const void *fdt, int32_t node, uint16_t vm_id,
 	uint16_t *order, uint16_t *order_num)
 {
 	const fdt32_t *prop;
@@ -1327,6 +1327,7 @@ static uint64_t dts_parse_cpu_affinity(const void *fdt, int32_t node,
 	uint32_t count;
 	uint64_t affinity = 0UL;
 	uint32_t pcpu_id;
+	uint16_t first_vcpu;
 
 	/* [20260708] preserve the authored pCPU order from DTS:
 	 *
@@ -1357,7 +1358,13 @@ static uint64_t dts_parse_cpu_affinity(const void *fdt, int32_t node,
 			panic("invalid arm64 dts vm pcpu id %u", pcpu_id);
 		}
 		if ((affinity & AFFINITY_CPU(pcpu_id)) != 0UL) {
-			panic("duplicate arm64 dts vm pcpu id %u", pcpu_id);
+			for (first_vcpu = 0U; first_vcpu < *order_num; first_vcpu++) {
+				if (order[first_vcpu] == (uint16_t)pcpu_id) {
+					break;
+				}
+			}
+			panic("duplicate arm64 dts VM%hu cpu-affinity: vcpu%hu and vcpu%hu pCPU%u",
+				vm_id, first_vcpu, (uint16_t)i, pcpu_id);
 		}
 		order[*order_num] = (uint16_t)pcpu_id;
 		(*order_num)++;
@@ -2023,6 +2030,7 @@ static void dts_parse_arch(const void *fdt, int32_t generic, int32_t vm_node,
 		virtio_proxy >= 0; virtio_proxy = fdt_next_subnode(fdt, virtio_proxy)) {
 		struct arm64_virtio_proxy_config *proxy_config;
 		uint32_t frontend_vmid;
+		uint32_t backend_vmid;
 
 		if (!dts_is_virtio_proxy(fdt, virtio_proxy)) {
 			continue;
@@ -2036,6 +2044,13 @@ static void dts_parse_arch(const void *fdt, int32_t generic, int32_t vm_node,
 		if ((frontend_vmid != ACRN_INVALID_VMID) &&
 			(frontend_vmid != vm_id)) {
 			continue;
+		}
+		backend_vmid = dts_u32_prop(fdt, virtio_proxy, "beau,backend-vmid",
+			ACRN_INVALID_VMID);
+		if ((backend_vmid == ACRN_INVALID_VMID) ||
+			(backend_vmid >= CONFIG_MAX_VM_NUM) ||
+			(backend_vmid == vm_id)) {
+			arm64_dts_panic("virtio-proxy backend vm", -EINVAL);
 		}
 		if (proxy_count >= ARM64_VIRTIO_PROXY_MAX) {
 			arm64_dts_panic("too many virtio-proxy nodes", -EINVAL);
@@ -2051,9 +2066,12 @@ static void dts_parse_arch(const void *fdt, int32_t generic, int32_t vm_node,
 		proxy_config->irq = fdt32_to_cpu(irq_prop[1]) + 32U;
 		proxy_config->device_id = dts_u32_prop(fdt, virtio_proxy,
 			"beau,device-id", VIRTIO_DEVICE_ID_FS);
+		proxy_config->vsock_cid = dts_u64_prop(fdt, virtio_proxy,
+			"beau,vsock-cid", 0UL);
 		proxy_config->frontend_vmid =
 			(uint16_t)((frontend_vmid == ACRN_INVALID_VMID) ? vm_id :
 			frontend_vmid);
+		proxy_config->backend_vmid = (uint16_t)backend_vmid;
 		proxy_config->queue_num =
 			(uint16_t)dts_u32_prop(fdt, virtio_proxy, "beau,queue-num",
 				VIRTIO_PROXY_QUEUE_NUM_DEFAULT);
@@ -2086,6 +2104,12 @@ static void dts_parse_arch(const void *fdt, int32_t generic, int32_t vm_node,
 				(proxy_config->queue_size == 0U) ||
 				(proxy_config->pending_num > VIRTIO_PROXY_PENDING_MAX)) {
 				arm64_dts_panic("virtio-proxy queue", -EINVAL);
+			}
+			if ((proxy_config->device_id == VIRTIO_DEVICE_ID_VSOCK) &&
+				((proxy_config->queue_num != 3U) ||
+				(proxy_config->backend_vmid != 1U) ||
+				(proxy_config->vsock_cid != ((uint64_t)proxy_config->frontend_vmid + 2UL)))) {
+				arm64_dts_panic("virtio-vsock config", -EINVAL);
 			}
 		proxy_count++;
 	}
@@ -2193,7 +2217,7 @@ static void dts_parse_vm_node(const void *fdt, int32_t generic, int32_t vm_node,
 	dts_parse_load_order(fdt, vm_node, vm_config);
 	dts_copy_string(vm_config->name, MAX_VM_NAME_LEN,
 		dts_string_prop(fdt, vm_node, "beau,name", ""));
-	vm_config->cpu_affinity = dts_parse_cpu_affinity(fdt, vm_node,
+	vm_config->cpu_affinity = dts_parse_cpu_affinity(fdt, vm_node, vm_id,
 		vm_config->cpu_affinity_order, &vm_config->cpu_affinity_num);
 	vm_config->guest_flags = dts_parse_guest_flags(fdt, vm_node);
 
@@ -2387,6 +2411,7 @@ static void dts_validate_sched_vm_placement(void)
 	uint16_t exclusive_capacity;
 	uint16_t expected_exclusive_bsp;
 	uint16_t vm_id;
+	uint16_t validate_pcpu;
 
 	if (!config->configured || !config->strict_placement) {
 		return;
@@ -2399,7 +2424,8 @@ static void dts_validate_sched_vm_placement(void)
 	 *       +--> vcpu0: exclusive pool first
 	 *       |             fallback to shared only after exclusive capacity is full
 	 *       |
-	 *       +--> vcpuN: shared pool, each shared pCPU <= 3 VMs / 3 vCPUs
+	 *       +--> vcpuN: shared pool, each pCPU has at most one vCPU per VM
+	 *                    and no more vCPUs than configured VMs
 	 *                    |
 	 *                    v
 	 *                fail closed before VM objects are created
@@ -2455,22 +2481,24 @@ static void dts_validate_sched_vm_placement(void)
 						pcpu_id, exclusive_vcpu_count[pcpu_id]);
 				}
 			} else if ((config->shared.pcpu_mask & pcpu_mask) != 0UL) {
-				uint16_t shared_vm_count;
-
 				shared_vcpu_count[pcpu_id]++;
 				if (vm_id < 64U) {
 					shared_vm_masks[pcpu_id] |= AFFINITY_CPU(vm_id);
-				}
-				shared_vm_count = bitmap_weight(shared_vm_masks[pcpu_id]);
-				if ((shared_vcpu_count[pcpu_id] > ARM64_DTS_STRICT_SHARED_PCPU_VM_MAX) ||
-					(shared_vm_count > ARM64_DTS_STRICT_SHARED_PCPU_VM_MAX)) {
-					panic("arm64 dts strict scheduler placement: shared pCPU%hu has %u vCPUs from %hu VMs",
-						pcpu_id, shared_vcpu_count[pcpu_id], shared_vm_count);
 				}
 			} else {
 				panic("arm64 dts strict scheduler placement: vm%hu vcpu%hu pCPU%hu is outside scheduler pools",
 					vm_id, idx, pcpu_id);
 			}
+		}
+	}
+	for (validate_pcpu = 0U; validate_pcpu < MAX_PCPU_NUM; validate_pcpu++) {
+		uint16_t shared_vm_count = bitmap_weight(shared_vm_masks[validate_pcpu]);
+
+		if ((shared_vcpu_count[validate_pcpu] > configured_vm_count) ||
+			(shared_vcpu_count[validate_pcpu] != shared_vm_count)) {
+			panic("arm64 dts strict scheduler placement: shared pCPU%hu has %u vCPUs from %hu VMs (configured:%hu)",
+				validate_pcpu, shared_vcpu_count[validate_pcpu], shared_vm_count,
+				configured_vm_count);
 		}
 	}
 

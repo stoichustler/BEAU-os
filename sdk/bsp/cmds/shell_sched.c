@@ -20,6 +20,7 @@
 #define SHELL_THREAD_SAMPLE_MAX \
 	((CONFIG_MAX_VM_NUM * MAX_VCPUS_PER_VM) + MAX_PCPU_NUM + 8U)
 #define SHELL_CPU_PERCENT_SCALE	1000UL
+#define SHELL_CBS_LATENCY_TAIL_BUCKET	4U
 
 static const char *thread_state_str(enum thread_object_state state);
 static const char *thread_lifecycle_str(const struct thread_object *thread);
@@ -448,7 +449,65 @@ static const char *shell_schedstat_pcpu_role(uint16_t pcpu_id)
 	return pcpu_is_shared_by_vcpus(pcpu_id) ? "shared" : "exclusive";
 }
 
-static void shell_schedstat_print_cbs_latency_hist(const struct shell_schedstat_snapshot *snapshot)
+/* [20260807] CBS latency-window presentation
+ *
+ * scheduler-owned cumulative wait buckets
+ *                 |
+ *                 v
+ * shell-owned snapshots -> cumulative first sample / delta later samples
+ *                 |
+ *                 v
+ * bounded tail-count and percentage formatting
+ *
+ * Key rule:
+ *   - the scheduler remains the owner of latency counters;
+ *   - shell diagnostics derive all window values from read-only snapshots;
+ *   - a zero or saturated sample must remain explicit rather than producing an
+ *     invalid percentage.
+ */
+static uint64_t shell_schedstat_hist_sum(const uint64_t *hist, uint32_t first_bucket)
+{
+	uint64_t total = 0UL;
+	uint32_t bucket;
+
+	for (bucket = first_bucket; bucket < SCHED_LATENCY_HIST_BUCKETS; bucket++) {
+		if (hist[bucket] > (UINT64_MAX - total)) {
+			return UINT64_MAX;
+		}
+		total += hist[bucket];
+	}
+
+	return total;
+}
+
+static uint64_t shell_schedstat_ratio_permille(uint64_t part, uint64_t total)
+{
+	if ((total == 0UL) || (part == 0UL)) {
+		return 0UL;
+	}
+	if (part >= total) {
+		return SHELL_CPU_PERCENT_SCALE;
+	}
+	if (part <= (UINT64_MAX / SHELL_CPU_PERCENT_SCALE)) {
+		return (part * SHELL_CPU_PERCENT_SCALE) / total;
+	}
+
+	return part / (total / SHELL_CPU_PERCENT_SCALE);
+}
+
+static void shell_schedstat_format_ratio(char *buf, size_t size, uint64_t part,
+	uint64_t total)
+{
+	uint64_t permille = shell_schedstat_ratio_permille(part, total);
+
+	if (permille > SHELL_CPU_PERCENT_SCALE) {
+		permille = SHELL_CPU_PERCENT_SCALE;
+	}
+	(void)snprintf(buf, size, "%lu.%01lu%%", permille / 10UL, permille % 10UL);
+}
+
+static void shell_schedstat_print_cbs_latency_hist(
+	const struct shell_schedstat_snapshot *snapshot, uint64_t window_ticks)
 {
 	uint32_t idx;
 	bool printed_header = false;
@@ -460,6 +519,9 @@ static void shell_schedstat_print_cbs_latency_hist(const struct shell_schedstat_
 		const struct shell_schedstat_thread_sample *previous;
 		struct sched_cbs_stats cbs;
 		uint64_t hist[SCHED_LATENCY_HIST_BUCKETS];
+		uint64_t samples;
+		uint64_t tail_samples;
+		char tail_percent[16U];
 		uint32_t bucket;
 
 		if (!sched_get_cbs_stats(thread, &cbs)) {
@@ -476,11 +538,19 @@ static void shell_schedstat_print_cbs_latency_hist(const struct shell_schedstat_
 					previous->wait_hist[bucket]) :
 				current->wait_hist[bucket];
 		}
+		samples = shell_schedstat_hist_sum(hist, 0U);
+		tail_samples = shell_schedstat_hist_sum(hist, SHELL_CBS_LATENCY_TAIL_BUCKET);
+		shell_schedstat_format_ratio(tail_percent, sizeof(tail_percent), tail_samples,
+			samples);
 
 		if (!printed_header) {
-			shell_item_section("CBS latency histogram %s (runnable -> running):",
-				has_previous ? "delta" : "cumulative");
-			shell_item_line("name             pcpu  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  max.us (TTL)",
+			if (has_previous) {
+				shell_item_section("CBS latency histogram delta (runnable -> running), window.us:%lu:",
+					ticks_to_us(window_ticks));
+			} else {
+				shell_item_section("CBS latency histogram cumulative (runnable -> running), window.us:--");
+			}
+			shell_item_line("name             pcpu  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  samples    tail>=5ms  tail%%    max.us (TTL)",
 				sched_latency_hist_bucket_name(0U),
 				sched_latency_hist_bucket_name(1U),
 				sched_latency_hist_bucket_name(2U),
@@ -489,11 +559,11 @@ static void shell_schedstat_print_cbs_latency_hist(const struct shell_schedstat_
 				sched_latency_hist_bucket_name(5U),
 				sched_latency_hist_bucket_name(6U),
 				sched_latency_hist_bucket_name(7U));
-			shell_item_line("───────────────  ────  ───────  ───────  ───────  ───────  ───────  ───────  ───────  ───────  ──────");
+			shell_item_line("───────────────  ────  ───────  ───────  ───────  ───────  ───────  ───────  ───────  ───────  ─────────  ─────────  ───────  ──────");
 			printed_header = true;
 		}
 
-		shell_item_line("%-15s  %-4hu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-6lu",
+		shell_item_line("%-15s  %-4hu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-9lu  %-9lu  %-7s  %-6lu",
 			thread->name,
 			thread->pcpu_id,
 			hist[0U],
@@ -504,6 +574,9 @@ static void shell_schedstat_print_cbs_latency_hist(const struct shell_schedstat_
 			hist[5U],
 			hist[6U],
 			hist[7U],
+			samples,
+			tail_samples,
+			tail_percent,
 			ticks_to_us(current->max_wait_ticks));
 		shell_output_checkpoint();
 	}
@@ -680,7 +753,7 @@ int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 				shell_output_checkpoint();
 			}
 		}
-		shell_schedstat_print_cbs_latency_hist(&shell_schedstat_sample);
+		shell_schedstat_print_cbs_latency_hist(&shell_schedstat_sample, window_ticks);
 	}
 
 	shell_schedstat_last = shell_schedstat_sample;
