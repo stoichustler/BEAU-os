@@ -10,11 +10,15 @@
 #include <per_cpu.h>
 #include <asm/notify.h>
 #include <common/notify.h>
+#include <common/ticks.h>
 #include <logmsg.h>
 #include <asm/cpu.h>
 #include <cpu.h>
 #include <delay.h>
 #include <errno.h>
+
+#define SMP_CALL_RETRY_DELAY_US		10U
+#define SMP_CALL_DEFAULT_TIMEOUT_US	100000U
 
 static volatile uint64_t smp_call_mask = 0UL;
 static volatile uint64_t smp_call_owner;
@@ -66,21 +70,38 @@ void handle_smp_call(void)
 	kick_notification(0U, NULL);
 }
 
-static bool wait_smp_call_done(uint32_t timeout_us)
+static bool smp_call_deadline_expired(uint64_t deadline)
 {
-	bool completed = true;
+	return (int64_t)(cpu_ticks() - deadline) >= 0L;
+}
 
-	if (timeout_us == 0U) {
-		wait_sync_change(&smp_call_mask, 0UL);
-	} else {
-		while ((smp_call_mask != 0UL) && (timeout_us != 0U)) {
-			udelay(10U);
-			timeout_us = (timeout_us > 10U) ? (timeout_us - 10U) : 0U;
-		}
-		completed = (smp_call_mask == 0UL);
+static int32_t smp_call_acquire(uint64_t deadline, bool try_acquire)
+{
+	if (try_acquire) {
+		return atomic_cmpxchg64(&smp_call_owner, 0UL, 1UL) == 0UL ?
+			0 : -EBUSY;
 	}
 
-	return completed;
+	while (atomic_cmpxchg64(&smp_call_owner, 0UL, 1UL) != 0UL) {
+		if (smp_call_deadline_expired(deadline)) {
+			return -ETIMEDOUT;
+		}
+		udelay(SMP_CALL_RETRY_DELAY_US);
+	}
+
+	return 0;
+}
+
+static bool wait_smp_call_done(uint64_t deadline)
+{
+	while (smp_call_mask != 0UL) {
+		if (smp_call_deadline_expired(deadline)) {
+			return false;
+		}
+		udelay(SMP_CALL_RETRY_DELAY_US);
+	}
+
+	return true;
 }
 
 static void clear_smp_call_info(uint64_t mask)
@@ -104,21 +125,41 @@ static int32_t smp_call_function_common(uint64_t mask, smp_call_func_t func,
 	uint16_t pcpu_id;
 	struct smp_call_info_data *smp_call;
 	uint64_t orig_mask = mask;
+	uint64_t deadline;
 	uint64_t generation;
+	int32_t ret;
 	bool completed;
 
 	/*
-	 * Fault capture cannot wait behind an unrelated SMP call indefinitely.
-	 * Its try path either owns the global slot immediately or falls back to
-	 * durable state; legacy callers retain their blocking acquisition contract.
+	 * [20260811] SMP callback deadline and mailbox ownership
+	 *
+	 * contender -> acquire owner -> publish mailbox -> kick pCPU -> collect ACK
+	 *     |              |                                      |
+	 *     +--> deadline -+------------------------------> revoke generation
+	 *
+	 * Key rule:
+	 *   - smp_call_owner serializes the shared mailbox and is acquired before
+	 *     any generation, callback, data, or mask state is published;
+	 *   - one deadline covers owner contention and remote completion, so a
+	 *     caller cannot wait indefinitely behind a stalled request;
+	 *   - timeout first revokes the active generation, then clears mailbox state
+	 *     and releases the owner, preventing a stale IPI from authorizing a new
+	 *     callback.
 	 */
-	if (try_acquire) {
-		if (atomic_cmpxchg64(&smp_call_owner, 0UL, 1UL) != 0UL) {
-			return -EBUSY;
+	if ((mask == 0UL) || (func == NULL) || (timeout_us == 0U)) {
+		return -EINVAL;
+	}
+	deadline = cpu_ticks() + us_to_ticks(timeout_us);
+	ret = smp_call_acquire(deadline, try_acquire);
+	if ((ret == 0) && smp_call_deadline_expired(deadline)) {
+		__atomic_store_n(&smp_call_owner, 0UL, __ATOMIC_RELEASE);
+		ret = -ETIMEDOUT;
+	}
+	if (ret != 0) {
+		if (ret == -ETIMEDOUT) {
+			LOG_ERR("SMP: owner timeout mask:0x%lx budget:%uus", mask, timeout_us);
 		}
-	} else {
-		/* wait for previous smp call complete, which may run on other cpus */
-		while (atomic_cmpxchg64(&smp_call_owner, 0UL, 1UL) != 0UL);
+		return ret;
 	}
 	generation = __atomic_add_fetch(&smp_call_next_generation, 1UL,
 		__ATOMIC_SEQ_CST);
@@ -157,11 +198,13 @@ static int32_t smp_call_function_common(uint64_t mask, smp_call_func_t func,
 		pcpu_id = ffs64(mask);
 	}
 	/* wait for current smp call complete */
-	completed = wait_smp_call_done(timeout_us);
+	completed = wait_smp_call_done(deadline);
 	__atomic_store_n(&smp_call_active_generation, 0UL, __ATOMIC_RELEASE);
 	clear_smp_call_info(orig_mask);
 	if (!completed) {
 		__atomic_store_n(&smp_call_mask, 0UL, __ATOMIC_RELEASE);
+		LOG_ERR("SMP: callback timeout mask:0x%lx budget:%uus", orig_mask,
+			timeout_us);
 	}
 	__atomic_store_n(&smp_call_owner, 0UL, __ATOMIC_RELEASE);
 
@@ -173,7 +216,12 @@ static int32_t smp_call_function_common(uint64_t mask, smp_call_func_t func,
  */
 void smp_call_function(uint64_t mask, smp_call_func_t func, void *data)
 {
-	(void)smp_call_function_common(mask, func, data, 0U, false);
+	int32_t ret = smp_call_function_common(mask, func, data,
+		SMP_CALL_DEFAULT_TIMEOUT_US, false);
+
+	if (ret != 0) {
+		LOG_ERR("SMP: legacy call failed mask:0x%lx ret:%d", mask, ret);
+	}
 }
 
 bool smp_call_function_timeout(uint64_t mask, smp_call_func_t func, void *data, uint32_t timeout_us)

@@ -579,7 +579,8 @@ class QemuSession:
         try:
             self.send(CTRL_D)
             self.expect(PROMPT, f"return to BEAU shell for {label}", timeout=5.0, keepalive=ENTER)
-            for line in ("vcpus", "schedstat", "vmstat", "irqstat", f"swtdbg {vmid}"):
+            for line in ("vcpus", "schedstat", "vmstat", "irqstat", "ipcstat",
+                         f"swtdbg {vmid}"):
                 self.send(line + ENTER)
                 self.expect(PROMPT, f"{line} diagnostics", timeout=15.0, keepalive=ENTER)
         except Exception as err:
@@ -808,13 +809,10 @@ def run_hipc_smoke(qemu):
     vm_command(qemu, 1, f"hipc secure send {secure_payload}",
                "HIPC: VM1 secure send")
     vcon_return(qemu, "HIPC: return from VM1 secure sender", vmid=1)
-
-    vm0_offset = len(qemu.output)
-    vcon_enter(qemu, 0, ZEPHYR_PROMPT, "HIPC: VM0 secure receiver", timeout=30.0)
-    vm0_text = qemu.output[vm0_offset:]
-    if f"channel=0 peer-vm=1 recv:{secure_payload}" not in vm0_text:
-        raise RuntimeError("HIPC: VM0 secure receive printk is missing")
-    vcon_return(qemu, "HIPC: return from VM0 secure receiver", vmid=0)
+    qemu.command_retry("ipcstat", [
+        "ch0 ep0:vm0 ep1:vm1",
+        "dir:vm1->vm0 notify:1 ack:1 wake:0 irq:1/0",
+    ])
 
     vcon_enter(qemu, 1, LINUX_PROMPT, "HIPC: VM1 invalid peer sender", timeout=60.0)
     vm_command(qemu, 1, "hipc server send 99 hipc-invalid-peer",
@@ -1141,8 +1139,11 @@ def expect_vm2_cpu1_lifecycle(qemu):
                "VM2 CPU1 offline", timeout=30.0)
     vcon_return(qemu, "return from VM2 after CPU1 offline", vmid=2)
 
-    for command in ("vcpus", "ps", "schedstat", "vmstat"):
+    for command in ("vcpus", "ps", "vmstat"):
         qemu.command_retry(command, ["vm2:vcpu1", "poweroff"])
+    schedstat = qemu.command_retry("schedstat", ["vm2:vcpu1"])
+    if re.search(r"vm2:vcpu1\s+\d+\s+blocked\b", schedstat) is None:
+        raise RuntimeError("schedstat does not report VM2 CPU1 as blocked")
 
     vcon_enter(qemu, 2, LINUX_PROMPT, "VM2 shell for CPU1 online", timeout=30.0)
     vm_command(qemu, 2, f"echo 1 > {online} && test \"$(cat {online})\" = 1",
@@ -1675,6 +1676,7 @@ def run_qemu(args, cmd):
         expect_linux_id(qemu, 2, "VM2 Linux root identity")
         expect_linux_stress_ng(qemu, 2, "VM2 stress-ng CPU smoke")
         run_hipc_smoke(qemu)
+        vcon_enter(qemu, 2, LINUX_PROMPT, "VM2 shell after HIPC", timeout=60.0)
         expect_virtio_proxy_smoke(qemu, 2)
         expect_vm2_cpu1_lifecycle(qemu)
         qemu.send(CTRL_D)

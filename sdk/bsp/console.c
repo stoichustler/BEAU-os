@@ -93,7 +93,7 @@ static bool console_pm_suspended;
 #endif
 #define VM_CONSOLE_RX_LOW_WATERMARK CONFIG_VM_CONSOLE_RX_LOW_WATERMARK
 #ifndef CONFIG_VM_CONSOLE_INPUT_BACKLOG_SIZE
-#define CONFIG_VM_CONSOLE_INPUT_BACKLOG_SIZE 64U
+#define CONFIG_VM_CONSOLE_INPUT_BACKLOG_SIZE 1024U
 #endif
 #if (CONFIG_VM_CONSOLE_INPUT_BACKLOG_SIZE < 2U)
 #error "CONFIG_VM_CONSOLE_INPUT_BACKLOG_SIZE must be at least 2 bytes"
@@ -330,6 +330,12 @@ static bool console_vm_input_empty(void)
 	return vm_console_input_prod == vm_console_input_cons;
 }
 
+static bool console_vm_input_full(void)
+{
+	return (vm_console_input_prod - vm_console_input_cons) >=
+		VM_CONSOLE_INPUT_BACKLOG_CAPACITY;
+}
+
 static bool console_vm_input_has_non_enter(void)
 {
 	uint32_t queued = vm_console_input_prod - vm_console_input_cons;
@@ -391,15 +397,6 @@ static bool console_vm_input_put(char ch)
 		return true;
 	}
 
-	if (queued >= VM_CONSOLE_INPUT_BACKLOG_CAPACITY) {
-		/*
-		 * Prefer the newest host input over stale backlog. This keeps a command
-		 * typed after a key-repeat burst from being dropped just because old
-		 * blank lines filled the staging queue.
-		 */
-		vm_console_input_cons++;
-		queued--;
-	}
 	if (queued < VM_CONSOLE_INPUT_BACKLOG_CAPACITY) {
 		vm_console_input_backlog[vm_console_input_prod & VM_CONSOLE_INPUT_BACKLOG_MASK] = ch;
 		vm_console_input_prod++;
@@ -433,12 +430,18 @@ static bool console_vm_input_collect(uint16_t target_vmid)
 	char temp_str[TEMP_STR_SIZE];
 
 	console_vm_input_sync(target_vmid);
-	/*
-	 * Host serial input is polled in bounded chunks. Ctrl-D is consumed by
-	 * the multiplexer itself, not forwarded to the guest, because it changes
-	 * ownership back to the BEAU shell.
+	/* [20260811] VM console input backpressure
+	 *
+	 * host serial -> bounded backlog -> guest RX FIFO
+	 *                    |
+	 *                    +--> full: leave the next byte upstream
+	 *
+	 * Key rule:
+	 *   - bytes accepted into the backlog retain FIFO order until guest delivery;
+	 *   - capacity stops collection before a new byte is consumed, so a full
+	 *     backlog cannot silently overwrite an incomplete guest command.
 	 */
-	while (budget > 0U) {
+	while ((budget > 0U) && !console_vm_input_full()) {
 		ch = serial_getc();
 		if (ch == -1) {
 			if (console_vm_input_empty()) {

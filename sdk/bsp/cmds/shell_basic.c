@@ -45,7 +45,7 @@ int32_t shell_symtab(int32_t argc, __unused char **argv)
 		return -EINVAL;
 	}
 
-	shell_item_begin("symtab symbols:%u", dbg_symbol_count);
+	shell_item_begin("SYMBOL TABLE:%u", dbg_symbol_count);
 	if (dbg_symbol_count == 0U) {
 		shell_item_line("symbol table is empty");
 		shell_item_end();

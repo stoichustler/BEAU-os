@@ -20,6 +20,11 @@ struct smp_call_info_data {
 
 void init_smp_call(void);
 void handle_smp_call(void);
+
+/*
+ * timeout_us is one total budget for owner acquisition and target completion.
+ * A zero timeout or invalid request fails without publishing a mailbox entry.
+ */
 void smp_call_function(uint64_t mask, smp_call_func_t func, void *data);
 bool smp_call_function_timeout(uint64_t mask, smp_call_func_t func, void *data, uint32_t timeout_us);
 int32_t smp_try_call_function_timeout(uint64_t mask, smp_call_func_t func,
