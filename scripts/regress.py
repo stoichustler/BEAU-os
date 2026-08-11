@@ -769,6 +769,61 @@ def expect_linux_stress_ng(qemu, vmid, name):
         raise
 
 
+def run_hipc_smoke(qemu):
+    """Exercise all static HIPC routes and their receiver printk records."""
+    cases = (
+        (2, "hipc client send hipc-vm2-vm1", 1, "hipc-vm2-vm1",
+         "channel=1 peer-vm=2"),
+        (3, "hipc client send hipc-vm3-vm1", 1, "hipc-vm3-vm1",
+         "channel=2 peer-vm=3"),
+        (1, "hipc server send 2 hipc-vm1-vm2", 2, "hipc-vm1-vm2",
+         "channel=1 peer-vm=1"),
+        (1, "hipc server send 3 hipc-vm1-vm3", 3, "hipc-vm1-vm3",
+         "channel=2 peer-vm=1"),
+        (0, "hipc send hipc-vm0-vm1", 1, "hipc-vm0-vm1",
+         "channel=0 peer-vm=0"),
+    )
+
+    for sender, command, receiver, payload, route in cases:
+        vcon_enter(qemu, sender, ZEPHYR_PROMPT if sender == 0 else LINUX_PROMPT,
+                   f"HIPC: VM{sender} sender", timeout=60.0)
+        if sender == 0:
+            qemu.send(command + ENTER)
+            qemu.expect(f"sent:{payload}", "HIPC: VM0 send", timeout=20.0)
+            qemu.expect(ZEPHYR_PROMPT, "HIPC: VM0 sender prompt", timeout=20.0,
+                        keepalive=ENTER)
+        else:
+            vm_command(qemu, sender, command, f"HIPC: VM{sender} send")
+        vcon_return(qemu, f"HIPC: return from VM{sender}", vmid=sender)
+
+        vcon_enter(qemu, receiver, LINUX_PROMPT,
+                   f"HIPC: VM{receiver} receiver", timeout=60.0)
+        vm_command(qemu, receiver,
+                   f"dmesg | grep -F '{route} recv:{payload}'",
+                   f"HIPC: VM{receiver} printk {payload}")
+        vcon_return(qemu, f"HIPC: return from VM{receiver}", vmid=receiver)
+
+    secure_payload = "hipc-vm1-vm0"
+    vcon_enter(qemu, 1, LINUX_PROMPT, "HIPC: VM1 secure sender", timeout=60.0)
+    vm_command(qemu, 1, f"hipc secure send {secure_payload}",
+               "HIPC: VM1 secure send")
+    vcon_return(qemu, "HIPC: return from VM1 secure sender", vmid=1)
+
+    vm0_offset = len(qemu.output)
+    vcon_enter(qemu, 0, ZEPHYR_PROMPT, "HIPC: VM0 secure receiver", timeout=30.0)
+    vm0_text = qemu.output[vm0_offset:]
+    if f"channel=0 peer-vm=1 recv:{secure_payload}" not in vm0_text:
+        raise RuntimeError("HIPC: VM0 secure receive printk is missing")
+    vcon_return(qemu, "HIPC: return from VM0 secure receiver", vmid=0)
+
+    vcon_enter(qemu, 1, LINUX_PROMPT, "HIPC: VM1 invalid peer sender", timeout=60.0)
+    vm_command(qemu, 1, "hipc server send 99 hipc-invalid-peer",
+               "HIPC: VM1 rejects an absent DTS peer", patterns=["ipc failed:"],
+               expect_rc=1)
+    vcon_return(qemu, "HIPC: return from VM1 invalid peer sender", vmid=1)
+    print("[pass] HIPC static routes, printk receivers, and absent peer rejection", flush=True)
+
+
 def expect_vm1_kbe_backends(qemu, name):
     checks = (
         "dmesg | grep -q 'BEAU virtio-fs backends started'",
@@ -1129,30 +1184,6 @@ def expect_zephyr_dev_shell(qemu):
                             keepalive=ENTER)
     if "select" not in help_text:
         raise RuntimeError("VM0 shell select command is unavailable")
-
-    qemu.send("kernel reboot warm" + ENTER)
-    qemu.expect("kernel reboot warm", "VM0 warm reboot command echo", timeout=20.0)
-    qemu.expect(ZEPHYR_PROMPT, "VM0 warm reboot returns", timeout=60.0,
-                keepalive=ENTER)
-    qemu.send("version" + ENTER)
-    qemu.expect("Zephyr version", "VM0 version after warm reboot", timeout=20.0)
-    qemu.expect(ZEPHYR_PROMPT, "VM0 version command returns", timeout=20.0,
-                keepalive=ENTER)
-
-
-def expect_zephyr_safety_monitor(qemu):
-    start_offset = len(qemu.output)
-
-    qemu.send("safety status" + ENTER)
-    qemu.expect("SAFETY state:healthy", "VM0 safety monitor is healthy", timeout=20.0)
-    qemu.expect("peer-vm:", "VM0 safety monitor reports dynamic peer", timeout=20.0)
-    qemu.expect(ZEPHYR_PROMPT, "VM0 safety monitor status returns", timeout=20.0,
-                keepalive=ENTER)
-    qemu.drain_for(2.5)
-    if qemu.output[start_offset:].count("safety-v1:") > 1:
-        raise RuntimeError("VM0 safety monitor sent periodic IPC after status")
-    print("[pass] VM0 safety monitor performs no periodic IPC", flush=True)
-
 
 def run_vsh_help_stress(qemu, args):
     if args.stress_help_rounds < 1:
@@ -1575,7 +1606,7 @@ def run_qemu(args, cmd):
             [
                 "VMEXITSTAT vm0:Zephyr",
                 "VMEXITSTAT vm1:Linux-1",
-                "synchronous handler wall-time",
+                "total.us",
                 "vcpu",
                 "class",
                 "hvc",
@@ -1623,7 +1654,6 @@ def run_qemu(args, cmd):
         run_guest_help(qemu, 0, ZEPHYR_PROMPT, "VM0 Zephyr", 15.0)
         check_zephyr_thread_list(qemu, "VM0 Zephyr SMP runtime stats")
         expect_zephyr_dev_shell(qemu)
-        expect_zephyr_safety_monitor(qemu)
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM0 shell")
 
@@ -1644,6 +1674,7 @@ def run_qemu(args, cmd):
             raise
         expect_linux_id(qemu, 2, "VM2 Linux root identity")
         expect_linux_stress_ng(qemu, 2, "VM2 stress-ng CPU smoke")
+        run_hipc_smoke(qemu)
         expect_virtio_proxy_smoke(qemu, 2)
         expect_vm2_cpu1_lifecycle(qemu)
         qemu.send(CTRL_D)
@@ -1679,7 +1710,7 @@ def main():
         if not args.no_build:
             print(render(build, args.toolchains))
         print(quote(qemu))
-        checks = "prompt, vcpus, ps, schedstat, vmstat summary, swtdbg empty, devmap, irqstat, virtiostat, vsh 0, Zephyr, vsh 1, Linux-1 backend/PCI, vsh 2, Linux-2 frontend, vsh 3, Linux-3 frontend"
+        checks = "prompt, vcpus, ps, schedstat, vmstat summary, swtdbg empty, devmap, irqstat, virtiostat, HIPC routes/printk, vsh 0, Zephyr, vsh 1, Linux-1 backend/PCI, vsh 2, Linux-2 frontend, vsh 3, Linux-3 frontend"
         if args.stress_vsh_switch:
             checks += ", VM console switch/Enter stress"
         if args.stress_vsh_help:

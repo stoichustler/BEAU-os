@@ -5,6 +5,8 @@
  */
 
 #include <zephyr/kernel.h>
+#include <zephyr/devicetree.h>
+#include <zephyr/irq.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/barrier.h>
 #include <zephyr/sys/device_mmio.h>
@@ -12,12 +14,22 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "beau_ipc.h"
 #include "hcall.h"
 
 #define BEAU_IPC_MSG_MAX		192U
 #define BEAU_IPC_DRAIN_MAX		16U
 #define BEAU_IPC_REPLY_WAIT_MS		1500U
 #define BEAU_IPC_REPLY_POLL_MS		20U
+#define BEAU_IPC_REPLY_CAPACITY		(BEAU_IPC_MSG_MAX + 1U)
+#define BEAU_IPC_RX_THREAD_STACK_SIZE	2048U
+#define BEAU_IPC_RX_THREAD_PRIO	14
+#define BEAU_IPC_NODE			DT_NODELABEL(beau_hipc)
+#define BEAU_IPC_GPA_BASE		DT_REG_ADDR(BEAU_IPC_NODE)
+#define BEAU_IPC_MAP_SIZE		DT_REG_SIZE(BEAU_IPC_NODE)
+
+BUILD_ASSERT(DT_NODE_HAS_STATUS(BEAU_IPC_NODE, okay),
+	"BEAU HIPC DT node must be enabled");
 
 struct beau_ipc_channel {
 	uint32_t channel_id;
@@ -37,7 +49,25 @@ static struct beau_ipc_channel beau_ipc = {
 
 static struct beau_ipc_ioc beau_ipc_hcall_ioc __aligned(64);
 K_MUTEX_DEFINE(beau_ipc_hcall_lock);
-K_MUTEX_DEFINE(beau_ipc_send_lock);
+K_MUTEX_DEFINE(beau_ipc_exchange_lock);
+K_SEM_DEFINE(beau_ipc_rx_doorbell, 0, 1);
+static bool beau_ipc_irq_ready;
+
+static void beau_ipc_irq_handler(const void *arg)
+{
+	ARG_UNUSED(arg);
+	k_sem_give(&beau_ipc_rx_doorbell);
+}
+
+static void beau_ipc_irq_init(void)
+{
+	if (!beau_ipc_irq_ready) {
+		IRQ_CONNECT(DT_IRQN(BEAU_IPC_NODE), DT_IRQ(BEAU_IPC_NODE, priority),
+			beau_ipc_irq_handler, NULL, 0);
+		irq_enable(DT_IRQN(BEAU_IPC_NODE));
+		beau_ipc_irq_ready = true;
+	}
+}
 
 static int beau_ipc_call(uint32_t op, struct beau_ipc_ioc *ioc)
 {
@@ -218,8 +248,13 @@ static int beau_ipc_query_and_map(void)
 	}
 	if (ioc.ring_count != BEAU_IPC_RING_COUNT ||
 	    ioc.ring_size == 0U ||
-	    ioc.ring_size > (UINT32_MAX / ioc.ring_count)) {
+	    ioc.ring_size > (UINT32_MAX / ioc.ring_count) ||
+	    ioc.gpa_base != BEAU_IPC_GPA_BASE ||
+	    ((uint64_t)ioc.ring_size * ioc.ring_count) != BEAU_IPC_MAP_SIZE) {
 		return -EINVAL;
+	}
+	if ((ioc.flags & BEAU_IPC_FLAG_NOTIFY_IRQ) != 0U) {
+		beau_ipc_irq_init();
 	}
 
 	map_size = (size_t)ioc.ring_size * ioc.ring_count;
@@ -263,42 +298,105 @@ static int beau_ipc_drain_rx(void)
 		if (ret < 0) {
 			return ret;
 		}
-		(void)beau_ipc_ack();
+		ret = beau_ipc_ack();
+		if (ret != 0) {
+			return ret;
+		}
 	}
 
 	return 0;
 }
 
-/* [20260809] One-way HIPC shell publication
+/* [20260811] Service-VM HIPC receive ownership
  *
- * shell sender -> send lock -> validate/map -> drain stale RX -> publish TX -> notify peer
+ * VM1 secure send -> DT-selected vIRQ -> RX thread -> consume/ACK -> printk
  *
  * Key rule:
- *   - one shell send owns the ring publication until its doorbell completes;
- *   - success means the local producer published a bounded payload, not peer consumption;
- *   - stale replies are acknowledged before the next one-way message is written.
+ *   - the receiver and synchronous safety exchange serialize on one lock;
+ *   - only the lock owner may advance the VM0 RX consumer index;
+ *   - VM0's shared range and vIRQ come from DTS, while EL2 returns the
+ *     endpoint peer after applying its platform-DTS access policy.
  */
-static int beau_ipc_send(const uint8_t *payload, uint16_t payload_len,
+static void beau_ipc_rx_thread(void *arg1, void *arg2, void *arg3)
+{
+	ARG_UNUSED(arg1);
+	ARG_UNUSED(arg2);
+	ARG_UNUSED(arg3);
+
+	for (;;) {
+		uint32_t count = 0U;
+		int ret;
+
+		k_mutex_lock(&beau_ipc_exchange_lock, K_FOREVER);
+		ret = beau_ipc_query_and_map();
+		k_mutex_unlock(&beau_ipc_exchange_lock);
+		if (ret != 0) {
+			printk("hipc: gpa=0x%llx query failed:%d\n",
+				(unsigned long long)BEAU_IPC_GPA_BASE, ret);
+			k_sleep(K_MSEC(BEAU_IPC_REPLY_POLL_MS));
+			continue;
+		}
+		(void)k_sem_take(&beau_ipc_rx_doorbell, K_FOREVER);
+		k_mutex_lock(&beau_ipc_exchange_lock, K_FOREVER);
+		while (count < BEAU_IPC_DRAIN_MAX) {
+			uint8_t message[BEAU_IPC_MSG_MAX + 1U];
+
+			ret = beau_ipc_ring_read_msg(beau_ipc.rx, message,
+				BEAU_IPC_MSG_MAX);
+			if (ret == 0) {
+				break;
+			}
+			if (ret < 0) {
+				printk("hipc: channel=%u peer-vm=%u receive failed:%d\n",
+					beau_ipc.channel_id, beau_ipc.peer_vmid, ret);
+				break;
+			}
+			printk("hipc: channel=%u peer-vm=%u recv:%.*s\n",
+				beau_ipc.channel_id, beau_ipc.peer_vmid, ret, message);
+			ret = beau_ipc_ack();
+			if (ret != 0) {
+				printk("hipc: channel=%u peer-vm=%u ACK failed:%d\n",
+					beau_ipc.channel_id, beau_ipc.peer_vmid, ret);
+				break;
+			}
+			count++;
+		}
+		if (beau_ipc.rx->prod != beau_ipc.rx->cons) {
+			k_sem_give(&beau_ipc_rx_doorbell);
+		}
+		k_mutex_unlock(&beau_ipc_exchange_lock);
+	}
+}
+
+K_THREAD_DEFINE(beau_ipc_rx_thread_id, BEAU_IPC_RX_THREAD_STACK_SIZE,
+	beau_ipc_rx_thread, NULL, NULL, NULL, BEAU_IPC_RX_THREAD_PRIO, 0, 0);
+
+/* [20260809] Serialized one-way IPC publication
+ *
+ * shell sender -> IPC lock -> validate/map -> publish TX -> notify peer
+ *
+ * Key rule:
+ *   - one-way commands share the transaction lock with the receiver and safety probes;
+ *   - a successful return means local ring publication and doorbell completion only;
+ *   - only the receiver or an active exchange may consume the RX ring.
+ */
+static int beau_ipc_send(const uint8_t *request, uint16_t request_len,
 	uint16_t *peer_vmid)
 {
 	int ret;
 
-	if ((payload == NULL) || (payload_len == 0U) ||
-		(payload_len > BEAU_IPC_MSG_MAX) || (peer_vmid == NULL)) {
+	if ((request == NULL) || (request_len == 0U) ||
+		(request_len > BEAU_IPC_MSG_MAX) || (peer_vmid == NULL)) {
 		return -EINVAL;
 	}
 
 	*peer_vmid = UINT16_MAX;
-	k_mutex_lock(&beau_ipc_send_lock, K_FOREVER);
+	k_mutex_lock(&beau_ipc_exchange_lock, K_FOREVER);
 	ret = beau_ipc_query_and_map();
 	if (ret != 0) {
 		goto out;
 	}
-	ret = beau_ipc_drain_rx();
-	if (ret != 0) {
-		goto out;
-	}
-	ret = beau_ipc_ring_write_msg(beau_ipc.tx, payload, payload_len);
+	ret = beau_ipc_ring_write_msg(beau_ipc.tx, request, request_len);
 	if (ret != 0) {
 		goto out;
 	}
@@ -307,7 +405,82 @@ static int beau_ipc_send(const uint8_t *payload, uint16_t payload_len,
 		*peer_vmid = beau_ipc.peer_vmid;
 	}
 out:
-	k_mutex_unlock(&beau_ipc_send_lock);
+	k_mutex_unlock(&beau_ipc_exchange_lock);
+	return ret;
+}
+
+/* [20260806] Serialized static IPC exchange
+ *
+ * caller -> exchange lock -> drain stale reply -> publish request -> wait/ack
+ *                                               |
+ *                                               +--> bounded failure
+ *
+ * Key rule:
+ *   - this function owns one complete VM0 IPC transaction;
+ *   - no request is published until the static channel is validated;
+ *   - callers receive no partial reply after a timeout or ACK failure.
+ */
+int beau_ipc_exchange(const uint8_t *request, uint16_t request_len,
+	uint8_t *reply, uint16_t reply_capacity, uint16_t *reply_len,
+	uint16_t *peer_vmid, int32_t timeout_ms)
+{
+	int64_t deadline;
+	int ret;
+
+	if ((request == NULL) || (request_len == 0U) ||
+		(request_len > BEAU_IPC_MSG_MAX) || (reply == NULL) ||
+		(reply_capacity < BEAU_IPC_REPLY_CAPACITY) || (reply_len == NULL) ||
+		(peer_vmid == NULL) || (timeout_ms <= 0) ||
+		(timeout_ms > BEAU_IPC_REPLY_WAIT_MS)) {
+		return -EINVAL;
+	}
+
+	*reply_len = 0U;
+	*peer_vmid = UINT16_MAX;
+	k_mutex_lock(&beau_ipc_exchange_lock, K_FOREVER);
+
+	ret = beau_ipc_query_and_map();
+	if (ret != 0) {
+		goto out;
+	}
+	ret = beau_ipc_drain_rx();
+	if (ret != 0) {
+		goto out;
+	}
+	ret = beau_ipc_ring_write_msg(beau_ipc.tx, request, request_len);
+	if (ret != 0) {
+		goto out;
+	}
+	ret = beau_ipc_notify();
+	if (ret != 0) {
+		goto out;
+	}
+
+	deadline = k_uptime_get() + timeout_ms;
+	do {
+		ret = beau_ipc_ring_read_msg(beau_ipc.rx, reply, BEAU_IPC_MSG_MAX);
+		if (ret > 0) {
+			int ack_ret = beau_ipc_ack();
+
+			if (ack_ret != 0) {
+				ret = ack_ret;
+				goto out;
+			}
+			*reply_len = (uint16_t)ret;
+			*peer_vmid = beau_ipc.peer_vmid;
+			ret = 0;
+			goto out;
+		}
+		if (ret < 0) {
+			goto out;
+		}
+		(void)k_sem_take(&beau_ipc_rx_doorbell,
+			K_MSEC(BEAU_IPC_REPLY_POLL_MS));
+	} while (k_uptime_get() < deadline);
+
+	ret = -ETIMEDOUT;
+out:
+	k_mutex_unlock(&beau_ipc_exchange_lock);
 	return ret;
 }
 
@@ -316,7 +489,11 @@ static int cmd_hipc_status(const struct shell *sh, size_t argc, char **argv)
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
 
-	int ret = beau_ipc_query_and_map();
+	int ret;
+
+	k_mutex_lock(&beau_ipc_exchange_lock, K_FOREVER);
+	ret = beau_ipc_query_and_map();
+	k_mutex_unlock(&beau_ipc_exchange_lock);
 
 	if (ret != 0) {
 		shell_error(sh, "query failed: %d", ret);

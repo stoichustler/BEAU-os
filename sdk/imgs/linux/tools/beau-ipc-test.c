@@ -3,7 +3,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <poll.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -11,8 +10,8 @@
 #include <string.h>
 #include <unistd.h>
 
-#define BEAU_IPC_MESSAGE_MAX 1024U
-#define BEAU_IPC_TIMEOUT_MS 3000
+#define BEAU_IPC_MESSAGE_MAX 192U
+#define BEAU_IPC_SYSFS_MISC "/sys/class/misc"
 
 static int parse_channel(const char *text, uint32_t *channel)
 {
@@ -22,6 +21,8 @@ static int parse_channel(const char *text, uint32_t *channel)
 		return -EINVAL;
 	errno = 0;
 	value = strtoul(text, &end, 0);
+	while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')
+		end++;
 	if (errno || *end || value > UINT32_MAX)
 		return -EINVAL;
 	*channel = (uint32_t)value;
@@ -38,7 +39,30 @@ static int open_channel(uint32_t channel)
 	return length < 0 ? -errno : length;
 }
 
-static int find_unique_channel(uint32_t *channel)
+static int read_channel_peer(const char *name, uint32_t *peer_vmid)
+{
+	char path[160];
+	char value[32];
+	ssize_t length;
+	int fd;
+
+	if (snprintf(path, sizeof(path), BEAU_IPC_SYSFS_MISC "/%s/device/peer_vmid",
+		name) >= (int)sizeof(path))
+		return -ENAMETOOLONG;
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -errno;
+	length = read(fd, value, sizeof(value) - 1U);
+	close(fd);
+	if (length < 0)
+		return -errno;
+	if (length == 0)
+		return -EIO;
+	value[length] = '\0';
+	return parse_channel(value, peer_vmid);
+}
+
+static int find_channel_for_peer(uint32_t peer_vmid, uint32_t *channel)
 {
 	static const char prefix[] = "beau-ipc-";
 	DIR *dir;
@@ -53,10 +77,13 @@ static int find_unique_channel(uint32_t *channel)
 		return -errno;
 
 	while ((entry = readdir(dir)) != NULL) {
-		uint32_t candidate;
+		uint32_t candidate, candidate_peer;
 
 		if (strncmp(entry->d_name, prefix, sizeof(prefix) - 1U) != 0 ||
 		    parse_channel(entry->d_name + sizeof(prefix) - 1U, &candidate))
+			continue;
+		if (read_channel_peer(entry->d_name, &candidate_peer) != 0 ||
+		    candidate_peer != peer_vmid)
 			continue;
 		if (found != UINT32_MAX) {
 			ret = -ENOTUNIQ;
@@ -73,51 +100,7 @@ out:
 	return ret;
 }
 
-static int wait_readable(int fd)
-{
-	struct pollfd pfd = { .fd = fd, .events = POLLIN };
-	int ret;
-	do {
-		ret = poll(&pfd, 1, BEAU_IPC_TIMEOUT_MS);
-	} while (ret < 0 && errno == EINTR);
-	if (ret == 0)
-		return -ETIMEDOUT;
-	if (ret < 0)
-		return -errno;
-	return (pfd.revents & (POLLERR | POLLNVAL)) ? -EIO : 0;
-}
-
-static int run_server(uint32_t channel)
-{
-	uint8_t buffer[BEAU_IPC_MESSAGE_MAX];
-	int fd = open_channel(channel);
-	if (fd < 0)
-		return fd;
-	printf("hipc server: channel %u\n", channel);
-	fflush(stdout);
-	for (;;) {
-		ssize_t length;
-		int ret = wait_readable(fd);
-		if (ret)
-			continue;
-		length = read(fd, buffer, sizeof(buffer));
-		if (length <= 0) {
-			ret = length < 0 ? -errno : -EIO;
-			fprintf(stderr, "hipc server read failed: %s\n", strerror(-ret));
-			close(fd);
-			return ret;
-		}
-		if (printf("hipc: channel=%u recv:", channel) < 0 ||
-		    fwrite(buffer, 1U, (size_t)length, stdout) != (size_t)length ||
-		    fputc('\n', stdout) == EOF || fflush(stdout) == EOF) {
-			ret = errno != 0 ? -errno : -EIO;
-			close(fd);
-			return ret;
-		}
-	}
-}
-
-static int run_client(const char *message)
+static int send_to_peer(uint32_t peer_vmid, const char *message)
 {
 	size_t length = strnlen(message, BEAU_IPC_MESSAGE_MAX + 1U);
 	uint32_t channel = UINT32_MAX;
@@ -126,7 +109,7 @@ static int run_client(const char *message)
 
 	if (!length || length > BEAU_IPC_MESSAGE_MAX)
 		return -EMSGSIZE;
-	ret = find_unique_channel(&channel);
+	ret = find_channel_for_peer(peer_vmid, &channel);
 	if (ret != 0)
 		return ret;
 	fd = open_channel(channel);
@@ -138,23 +121,26 @@ static int run_client(const char *message)
 		return ret;
 	}
 	close(fd);
-	printf("hipc: channel=%u sent:%s\n", channel, message);
+	printf("hipc: channel=%u peer-vm=%u sent:%s\n", channel, peer_vmid, message);
 	fflush(stdout);
 	return 0;
 }
 
 int main(int argc, char **argv)
 {
-	uint32_t channel;
+	uint32_t peer_vmid;
 	int ret;
 	if (argc < 2) {
-		fprintf(stderr, "usage: %s server <channel> | client send <payload>\n", argv[0]);
+		fprintf(stderr, "usage: %s client send <payload> | server send <vmid> <payload> | secure send <payload>\n", argv[0]);
 		return 2;
 	}
-	if (!strcmp(argv[1], "server") && argc == 3 && !parse_channel(argv[2], &channel))
-		ret = run_server(channel);
-	else if (!strcmp(argv[1], "client") && argc == 4 && !strcmp(argv[2], "send"))
-		ret = run_client(argv[3]);
+	if (!strcmp(argv[1], "client") && argc == 4 && !strcmp(argv[2], "send"))
+		ret = send_to_peer(1U, argv[3]);
+	else if (!strcmp(argv[1], "server") && argc == 5 && !strcmp(argv[2], "send") &&
+		 !parse_channel(argv[3], &peer_vmid))
+		ret = send_to_peer(peer_vmid, argv[4]);
+	else if (!strcmp(argv[1], "secure") && argc == 4 && !strcmp(argv[2], "send"))
+		ret = send_to_peer(0U, argv[3]);
 	else
 		ret = -EINVAL;
 	if (ret) {

@@ -3,26 +3,37 @@
 #include <linux/fs.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/jiffies.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
-#include <linux/poll.h>
+#include <linux/property.h>
+#include <linux/sysfs.h>
 #include <linux/uaccess.h>
+#include <linux/workqueue.h>
 
 #include "hcall.h"
 
 #define BEAU_IPC_MESSAGE_MAX 1024U
+#define BEAU_IPC_PRINT_MAX 192U
+#define BEAU_IPC_DRAIN_MAX 16U
+#define BEAU_IPC_NOTIFY_RETRY_MAX 3U
+#define BEAU_IPC_NOTIFY_RETRY_DELAY_MS 20U
 
 struct beau_ipc_ring_dev {
 	struct device *dev;
 	u32 channel_id;
+	u16 peer_vmid;
 	struct beau_ipc_ioc ioc;
 	struct beau_ipc_ring_header *tx;
 	struct beau_ipc_ring_header *rx;
 	struct mutex lock;
-	wait_queue_head_t rx_wait;
+	struct delayed_work rx_work;
+	struct delayed_work notify_work;
+	u8 notify_retries;
+	bool notify_pending;
 	struct miscdevice misc;
 };
 
@@ -55,6 +66,57 @@ static long beau_ipc_hcall(struct beau_ipc_ring_dev *ipc, u32 op)
 	if (ret != 0)
 		return ret;
 	return ipc->ioc.status == BEAU_IPC_STATUS_OK ? 0 : -ENODEV;
+}
+
+/* [20260811] HIPC notification completion
+ *
+ * userspace write -> publish TX ring -> HVC NOTIFY
+ *                                      |
+ *                                      +--> bounded delayed retry
+ *
+ * Key rule:
+ *   - ipc->lock owns the published-but-not-yet-notified state;
+ *   - a completed ring publish is never rolled back because the peer can
+ *     observe it after any successful notification;
+ *   - retries are bounded so a broken peer cannot hold a worker indefinitely.
+ */
+static void beau_ipc_defer_notify_locked(struct beau_ipc_ring_dev *ipc, int ret)
+{
+	dev_warn_ratelimited(ipc->dev,
+		"hipc: channel=%u peer-vm=%u notify failed: %d; delivery deferred\n",
+		ipc->channel_id, ipc->peer_vmid, ret);
+	ipc->notify_pending = true;
+	ipc->notify_retries = 0U;
+	mod_delayed_work(system_wq, &ipc->notify_work,
+		msecs_to_jiffies(BEAU_IPC_NOTIFY_RETRY_DELAY_MS));
+}
+
+static void beau_ipc_notify_work(struct work_struct *work)
+{
+	struct beau_ipc_ring_dev *ipc = container_of(to_delayed_work(work),
+		struct beau_ipc_ring_dev, notify_work);
+	int ret;
+
+	mutex_lock(&ipc->lock);
+	if (!ipc->notify_pending)
+		goto out;
+
+	ret = beau_ipc_hcall(ipc, BEAU_IPC_OP_NOTIFY);
+	if (ret == 0) {
+		ipc->notify_pending = false;
+		ipc->notify_retries = 0U;
+		goto out;
+	}
+	if (ipc->notify_retries++ < BEAU_IPC_NOTIFY_RETRY_MAX) {
+		mod_delayed_work(system_wq, &ipc->notify_work,
+			msecs_to_jiffies(BEAU_IPC_NOTIFY_RETRY_DELAY_MS));
+	} else {
+		dev_warn_ratelimited(ipc->dev,
+			"hipc: channel=%u peer-vm=%u notification retries exhausted: %d\n",
+			ipc->channel_id, ipc->peer_vmid, ret);
+	}
+out:
+	mutex_unlock(&ipc->lock);
 }
 
 static int beau_ipc_write_msg(struct beau_ipc_ring_header *ring, const u8 *data,
@@ -102,12 +164,73 @@ static int beau_ipc_read_msg(struct beau_ipc_ring_header *ring, u8 *data,
 		return -EIO;
 	length = beau_ipc_data(ring)[cons % cap];
 	length |= (u16)beau_ipc_data(ring)[(cons + 1U) % cap] << 8U;
-	if (length == 0U || length > capacity || ((u32)length + 2U) > available)
+	if (length == 0U || length > capacity || ((u32)length + 2U) > available) {
+		smp_store_release(&ring->cons, prod);
 		return -EMSGSIZE;
+	}
 	for (idx = 0U; idx < length; idx++)
 		data[idx] = beau_ipc_data(ring)[(cons + 2U + idx) % cap];
 	smp_store_release(&ring->cons, cons + (u32)length + 2U);
 	return length;
+}
+
+/* [20260811] HIPC receive ownership
+ *
+ * peer publish -> virtual IRQ -> delayed work -> consume/ACK -> printk
+ *
+ * Key rule:
+ *   - the per-channel delayed work is the only consumer of the RX ring;
+ *   - it holds ipc->lock while consuming and acknowledging so its IOC cannot
+ *     race with a user write on the opposite ring;
+ *   - a bounded batch prevents an untrusted peer from monopolizing a worker,
+ *     while requeueing preserves pending messages.
+ */
+static void beau_ipc_rx_work(struct work_struct *work)
+{
+	struct beau_ipc_ring_dev *ipc = container_of(to_delayed_work(work),
+		struct beau_ipc_ring_dev, rx_work);
+	u8 message[BEAU_IPC_MESSAGE_MAX];
+	u32 count;
+	bool pending;
+
+	mutex_lock(&ipc->lock);
+	for (count = 0U; count < BEAU_IPC_DRAIN_MAX; count++) {
+		u32 print_len;
+		int ret = beau_ipc_read_msg(ipc->rx, message, sizeof(message));
+
+		if (ret == 0)
+			break;
+		if (ret < 0) {
+			dev_warn_ratelimited(ipc->dev,
+				"hipc: channel=%u peer-vm=%u receive failed: %d\n",
+				 ipc->channel_id, ipc->peer_vmid, ret);
+			ret = beau_ipc_hcall(ipc, BEAU_IPC_OP_QUERY);
+			if (ret == 0)
+				ret = beau_ipc_hcall(ipc, BEAU_IPC_OP_ACK);
+			if (ret != 0)
+				dev_warn_ratelimited(ipc->dev,
+					"hipc: channel=%u peer-vm=%u recovery failed: %d\n",
+					ipc->channel_id, ipc->peer_vmid, ret);
+			break;
+		}
+
+		print_len = min_t(u32, (u32)ret, BEAU_IPC_PRINT_MAX);
+		pr_info_ratelimited("hipc: channel=%u peer-vm=%u recv:%*pE%s\n",
+			ipc->channel_id, ipc->peer_vmid, (int)print_len, message,
+			(u32)ret > print_len ? " [truncated]" : "");
+		ret = beau_ipc_hcall(ipc, BEAU_IPC_OP_ACK);
+		if (ret != 0) {
+			dev_warn_ratelimited(ipc->dev,
+				"hipc: channel=%u peer-vm=%u ACK failed: %d\n",
+				 ipc->channel_id, ipc->peer_vmid, ret);
+			break;
+		}
+	}
+	pending = smp_load_acquire(&ipc->rx->prod) != READ_ONCE(ipc->rx->cons);
+	mutex_unlock(&ipc->lock);
+
+	if (pending)
+		mod_delayed_work(system_wq, &ipc->rx_work, 0U);
 }
 
 static irqreturn_t beau_ipc_irq(int irq, void *arg)
@@ -115,39 +238,20 @@ static irqreturn_t beau_ipc_irq(int irq, void *arg)
 	struct beau_ipc_ring_dev *ipc = arg;
 
 	(void)irq;
-	wake_up_interruptible(&ipc->rx_wait);
+	mod_delayed_work(system_wq, &ipc->rx_work, 0U);
 	return IRQ_HANDLED;
 }
 
-static ssize_t beau_ipc_read(struct file *file, char __user *buffer, size_t length,
-			     loff_t *offset)
+static ssize_t peer_vmid_show(struct device *dev, struct device_attribute *attr,
+	char *buf)
 {
-	struct beau_ipc_ring_dev *ipc = container_of(file->private_data,
-		struct beau_ipc_ring_dev, misc);
-	u8 message[BEAU_IPC_MESSAGE_MAX];
-	int ret;
+	struct beau_ipc_ring_dev *ipc = dev_get_drvdata(dev);
 
-	(void)offset;
-	if (length < 1U)
-		return -EINVAL;
-	for (;;) {
-		ret = beau_ipc_read_msg(ipc->rx, message, min_t(size_t, length, sizeof(message)));
-		if (ret != 0)
-			break;
-		if (file->f_flags & O_NONBLOCK)
-			return -EAGAIN;
-		ret = wait_event_interruptible(ipc->rx_wait,
-			smp_load_acquire(&ipc->rx->prod) != READ_ONCE(ipc->rx->cons));
-		if (ret != 0)
-			return ret;
-	}
-	if (ret < 0)
-		return ret;
-	if (copy_to_user(buffer, message, ret))
-		return -EFAULT;
-	(void)beau_ipc_hcall(ipc, BEAU_IPC_OP_ACK);
-	return ret;
+	(void)attr;
+	return ipc != NULL ? sysfs_emit(buf, "%u\n", ipc->peer_vmid) : -ENODEV;
 }
+
+static DEVICE_ATTR_RO(peer_vmid);
 
 static ssize_t beau_ipc_write(struct file *file, const char __user *buffer, size_t length,
 			      loff_t *offset)
@@ -164,32 +268,29 @@ static ssize_t beau_ipc_write(struct file *file, const char __user *buffer, size
 		return -EFAULT;
 	mutex_lock(&ipc->lock);
 	ret = beau_ipc_write_msg(ipc->tx, message, length);
-	if (ret == 0)
+	if (ret == 0) {
 		ret = beau_ipc_hcall(ipc, BEAU_IPC_OP_NOTIFY);
+		if (ret != 0) {
+			beau_ipc_defer_notify_locked(ipc, ret);
+			ret = 0;
+		} else {
+			ipc->notify_pending = false;
+			ipc->notify_retries = 0U;
+		}
+	}
 	mutex_unlock(&ipc->lock);
 	return ret == 0 ? length : ret;
 }
 
-static __poll_t beau_ipc_poll(struct file *file, poll_table *wait)
-{
-	struct beau_ipc_ring_dev *ipc = container_of(file->private_data,
-		struct beau_ipc_ring_dev, misc);
-
-	poll_wait(file, &ipc->rx_wait, wait);
-	return smp_load_acquire(&ipc->rx->prod) != READ_ONCE(ipc->rx->cons) ?
-		EPOLLIN | EPOLLRDNORM : 0U;
-}
-
 static const struct file_operations beau_ipc_fops = {
-	.owner = THIS_MODULE, .read = beau_ipc_read, .write = beau_ipc_write,
-	.poll = beau_ipc_poll, .llseek = noop_llseek,
+	.owner = THIS_MODULE, .write = beau_ipc_write, .llseek = noop_llseek,
 };
 
 static int beau_ipc_probe(struct platform_device *pdev)
 {
 	struct beau_ipc_ring_dev *ipc;
 	struct resource *res;
-	u32 channel_id;
+	u32 channel_id, peer_vmid;
 	int irq, ret, dir;
 
 	if (device_property_read_u32(&pdev->dev, "beau,channel-id", &channel_id))
@@ -202,6 +303,10 @@ static int beau_ipc_probe(struct platform_device *pdev)
 	ret = beau_ipc_hcall(ipc, BEAU_IPC_OP_QUERY);
 	if (ret != 0 || (ipc->ioc.flags & BEAU_IPC_FLAG_NOTIFY_IRQ) == 0U)
 		return ret != 0 ? ret : -EPROTO;
+	if (device_property_read_u32(&pdev->dev, "beau,peer-vmid", &peer_vmid) ||
+		peer_vmid > U16_MAX || ipc->ioc.peer_vmid != (u16)peer_vmid)
+		return -EPROTO;
+	ipc->peer_vmid = (u16)peer_vmid;
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res || ipc->ioc.gpa_base != res->start ||
 		((u64)ipc->ioc.ring_size * ipc->ioc.ring_count) != resource_size(res))
@@ -221,7 +326,8 @@ static int beau_ipc_probe(struct platform_device *pdev)
 	if (!ipc->tx || !ipc->rx)
 		return -EPROTO;
 	mutex_init(&ipc->lock);
-	init_waitqueue_head(&ipc->rx_wait);
+	INIT_DELAYED_WORK(&ipc->rx_work, beau_ipc_rx_work);
+	INIT_DELAYED_WORK(&ipc->notify_work, beau_ipc_notify_work);
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
 		return irq;
@@ -232,18 +338,28 @@ static int beau_ipc_probe(struct platform_device *pdev)
 	ipc->misc.name = devm_kasprintf(&pdev->dev, GFP_KERNEL, "beau-ipc-%u", channel_id);
 	ipc->misc.fops = &beau_ipc_fops;
 	ipc->misc.parent = &pdev->dev;
-	ret = misc_register(&ipc->misc);
+	platform_set_drvdata(pdev, ipc);
+	ret = device_create_file(&pdev->dev, &dev_attr_peer_vmid);
 	if (ret)
 		return ret;
-	platform_set_drvdata(pdev, ipc);
+	ret = misc_register(&ipc->misc);
+	if (ret) {
+		device_remove_file(&pdev->dev, &dev_attr_peer_vmid);
+		return ret;
+	}
 	return 0;
 }
 
 static void beau_ipc_remove(struct platform_device *pdev)
 {
 	struct beau_ipc_ring_dev *ipc = platform_get_drvdata(pdev);
-	if (ipc)
+
+	if (ipc) {
+		cancel_delayed_work_sync(&ipc->rx_work);
+		cancel_delayed_work_sync(&ipc->notify_work);
 		misc_deregister(&ipc->misc);
+		device_remove_file(&pdev->dev, &dev_attr_peer_vmid);
+	}
 }
 
 static const struct of_device_id beau_ipc_of_match[] = {

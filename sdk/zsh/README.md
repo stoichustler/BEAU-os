@@ -13,8 +13,10 @@ The current source set is:
   and the AI scheduler advisor ABI.
 - `beau_wdt.c`: BEAU VM watchdog heartbeat thread; successful kicks are silent
   while failed kicks are logged.
-- `beau_ipc.c`: BEAU HVC IPC shell commands: `hipc status` and
-  `hipc send <payload>`.
+- `beau_ipc.c` / `beau_ipc.h`: BEAU HVC IPC shell commands and the optional
+  synchronous exchange API. `hipc send <payload>` is the VM0 service-to-VM1
+  secure message path; received VM1 messages are printed by the IRQ-driven
+  receiver thread.
 - `beau_ai_sched.c` / `beau_ai_sched.h`: VM0 AI scheduler advisor. It registers
   through `HC_AI_SCHED`, retains the boot-bound capability, then requests a
   snapshot every 100 ms.
@@ -30,7 +32,8 @@ The current source set is:
 When porting into a Zephyr shell sample, add `src/hcall.c`, `src/beau_wdt.c`,
 `src/beau_ipc.c`, and `src/beau_ai_sched.c` to the application
 `target_sources()` list. Keep `beau_ai_sched.h` and `beau_ai_model.h` beside
-the source files.
+the source files, together with `beau_ipc.h`. Add an enabled `beau_hipc` DT
+node with the HIPC shared-memory range and virtual IRQ.
 
 For static remoteproc/RPMsg, apply `beau_rpmsg.overlay` and
 `beau_rpmsg.conf`, then include `beau_rpmsg.cmake` after the application's
@@ -44,6 +47,8 @@ available. A successful command validates the ACK sequence and payload; an
 unready peer, invalid payload, send error, ACK mismatch, or timeout fails the
 command without changing the existing `rpmsg-raw` behavior.
 
-`hipc send` requires a 1..192-byte payload. It uses the independent static
-VM0 <-> VM1 HVC IPC ring, drains stale replies, publishes the payload, and
-sends a notify without waiting for a peer reply.
+`hipc send` requires a 1..192-byte payload. It uses the DTS-selected static
+VM0 <-> VM1 HVC IPC ring, publishes the payload, and sends a notification
+without waiting for a peer reply. The receiver thread exclusively consumes the
+opposite ring, acknowledges each message, and prints the payload on the VM0
+console.

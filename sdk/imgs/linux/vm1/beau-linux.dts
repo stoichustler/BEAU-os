@@ -170,6 +170,7 @@
 		reg = <0x0 0x0b000000 0x0 0x00020000>;
 		interrupts = <0 50 4>;
 		beau,channel-id = <0>;
+		beau,peer-vmid = <0>;
 	};
 
 	beau-ipc@b020000 {
@@ -177,6 +178,7 @@
 		reg = <0x0 0x0b020000 0x0 0x00020000>;
 		interrupts = <0 51 4>;
 		beau,channel-id = <1>;
+		beau,peer-vmid = <2>;
 	};
 
 	beau-ipc@b040000 {
@@ -184,6 +186,7 @@
 		reg = <0x0 0x0b040000 0x0 0x00020000>;
 		interrupts = <0 52 4>;
 		beau,channel-id = <2>;
+		beau,peer-vmid = <3>;
 	};
 
 	virtio_mmio@a000000 {

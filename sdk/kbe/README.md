@@ -58,25 +58,29 @@ The matching VM2/VM3 frontend and all integration files are retained in
 ## Shared-Memory IPC Test
 
 The shared Linux initramfs contains `/usr/local/bin/hipc`. VM1 runs one
-explicit receive-and-print server per channel. VM2 and VM3 each discover their
-single exposed channel when sending:
+kernel HIPC receiver per DTS channel; received payloads are printed in the
+kernel log. The tool discovers the channel by the DT-validated
+`peer_vmid` sysfs attribute rather than by a fixed channel number:
 
 ```sh
-# VM1: one server for VM0, VM2, and VM3 respectively.
-hipc server 0 >/tmp/hipc0.log 2>&1 &
-hipc server 1 >/tmp/hipc1.log 2>&1 &
-hipc server 2 >/tmp/hipc2.log 2>&1 &
-
-# VM2 and VM3: one-way sends to their respective VM1 channels.
+# VM2 and VM3 send to their VM1 service endpoint.
 hipc client send vm2
 hipc client send vm3
+
+# VM1 sends to the configured VM2 or VM3 endpoint.
+hipc server send 2 vm1-to-vm2
+hipc server send 3 vm1-to-vm3
+
+# VM1 sends to the configured VM0 secure endpoint.
+hipc secure send vm1-to-vm0
 ```
 
-Channel 0 is VM0 <-> VM1 HIPC and is exercised from VM0 with `hipc send
-<payload>`. A successful client command reports local ring publication and
-doorbell completion; VM1 prints each consumed payload and does not echo it.
-Channels 1 and 2 are isolated: VM2 receives only `/dev/beau-ipc-1`, VM3
-receives only `/dev/beau-ipc-2`, while VM1 receives all three.
+Channel 0 is the VM0 secure VM <-> VM1 service VM HIPC path and is exercised
+from VM0 with `hipc send <payload>`. A successful command reports local ring
+publication; if a notification fails after publication the driver retries it a
+bounded number of times. Channels 1 and 2 are isolated: VM2 receives only
+its VM1 path, VM3 receives only its VM1 path, while VM1 exposes all three
+DTS-described peer endpoints.
 
 ## Notes
 
