@@ -54,6 +54,7 @@ int32_t shell_virtiostat(int32_t argc, char **argv);
 int32_t shell_smmustat(int32_t argc, char **argv);
 int32_t shell_pcistat(int32_t argc, char **argv);
 int32_t shell_cpufreq(int32_t argc, char **argv);
+int32_t shell_hwc(int32_t argc, char **argv);
 int32_t shell_rttest(int32_t argc, char **argv);
 int32_t shell_oslat(int32_t argc, char **argv);
 int32_t shell_ipilat(int32_t argc, char **argv);

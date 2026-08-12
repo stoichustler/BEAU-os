@@ -412,6 +412,32 @@ bool cpufreq_is_enabled(void)
 	return cpufreq_ctx.enabled;
 }
 
+bool cpufreq_get_pcpu_frequency_hz(uint16_t pcpu_id, uint64_t *frequency_hz)
+{
+	uint32_t idx;
+
+	if ((frequency_hz == NULL) || !cpufreq_ctx.initialized ||
+		!cpufreq_ctx.enabled || (pcpu_id >= MAX_PCPU_NUM)) {
+		return false;
+	}
+
+	for (idx = 0U; idx < cpufreq_ctx.domain_count; idx++) {
+		const struct cpufreq_domain *domain = &cpufreq_ctx.domains[idx];
+
+		if ((domain->platform.cpu_mask & (1UL << pcpu_id)) == 0UL) {
+			continue;
+		}
+		if (domain->current_index >= domain->pstate_count) {
+			return false;
+		}
+		*frequency_hz = (uint64_t)
+			domain->pstates[domain->current_index].freq_khz * 1000UL;
+		return true;
+	}
+
+	return false;
+}
+
 void cpufreq_dump(void)
 {
 	uint32_t idx;
@@ -456,6 +482,12 @@ void cpufreq_apply_performance(void)
 }
 
 bool cpufreq_is_enabled(void)
+{
+	return false;
+}
+
+bool cpufreq_get_pcpu_frequency_hz(__unused uint16_t pcpu_id,
+	__unused uint64_t *frequency_hz)
 {
 	return false;
 }

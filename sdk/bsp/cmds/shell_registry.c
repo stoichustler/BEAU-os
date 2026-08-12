@@ -156,6 +156,7 @@ struct shell_cmd shell_arch_cmds[] = {
 	CMD("smmustat", NULL, "list ARM and guest-visible synthetic SMMUv3 state", shell_smmustat, NULL),
 	CMD("pcistat", NULL, "list PCI passthrough and SMMU stream state", shell_pcistat, NULL),
 	CMD("cpufreq", NULL, "list host CPU frequency policy state", shell_cpufreq, NULL),
+	CMD("hwc", NULL, "read current pCPU hardware cycle counter", shell_hwc, NULL),
 	CMD("rttest", NULL, "run local EL2 timer latency tests on every pCPU", shell_rttest, NULL),
 	CMD("oslat", "[duration-ms]", "measure bounded EL2 polling gaps on every pCPU", shell_oslat, NULL),
 	CMD("ipilat", "[samples]", "measure bounded EL2 IPI latency from BSP", shell_ipilat, NULL),

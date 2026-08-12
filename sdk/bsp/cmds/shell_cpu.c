@@ -5,10 +5,12 @@
  */
 
 #include <types.h>
+#include <bits.h>
 #include <cpu.h>
 #include <debug/shell.h>
 #include <errno.h>
 #include <per_cpu.h>
+#include <notify.h>
 #include <schedule.h>
 #include <spinlock.h>
 #include <sprintf.h>
@@ -24,6 +26,75 @@
 #include "shell_cmds.h"
 
 static struct arm64_core_pmu_snapshot shell_pmu_snapshot;
+
+#define HWC_SMP_TIMEOUT_US	10000U
+
+struct shell_hwc_sample {
+	uint64_t cycles;
+	uint64_t generation;
+	uint16_t pcpu_id;
+	bool valid;
+} __aligned(64);
+
+static struct shell_hwc_sample shell_hwc_samples[MAX_PCPU_NUM];
+static uint64_t shell_hwc_generation;
+
+/* [20260812] Bounded per-pCPU hardware-cycle sample
+ *
+ * shell owner -> publish generation -> SMP callback -> local CNTPCT read
+ *                                                |
+ *                                                v
+ *                                         release publication
+ *
+ * Key rule:
+ *   - each target pCPU owns its CNTPCT_EL0 read and publishes it only after
+ *     the command generation is visible;
+ *   - a timed-out or stale callback cannot be reported as this command's
+ *     sample, so incomplete rows remain unavailable.
+ */
+static void shell_hwc_capture(void *data)
+{
+	const uint64_t *generation = data;
+	uint16_t pcpu_id = get_pcpu_id();
+	struct shell_hwc_sample *sample;
+	uint64_t value;
+
+	if ((generation == NULL) || (pcpu_id >= MAX_PCPU_NUM)) {
+		return;
+	}
+	value = __atomic_load_n(generation, __ATOMIC_ACQUIRE);
+	if (value == 0UL) {
+		return;
+	}
+
+	sample = &shell_hwc_samples[pcpu_id];
+	__atomic_store_n(&sample->valid, false, __ATOMIC_RELEASE);
+	sample->cycles = cpu_ticks();
+	sample->pcpu_id = pcpu_id;
+	__atomic_store_n(&sample->generation, value, __ATOMIC_RELEASE);
+	__atomic_store_n(&sample->valid, true, __ATOMIC_RELEASE);
+}
+
+static bool shell_hwc_get_sample(uint16_t pcpu_id, uint64_t generation,
+	uint64_t *cycles)
+{
+	const struct shell_hwc_sample *sample = &shell_hwc_samples[pcpu_id];
+	uint64_t sample_generation;
+	uint64_t value;
+
+	if ((cycles == NULL) || !__atomic_load_n(&sample->valid, __ATOMIC_ACQUIRE)) {
+		return false;
+	}
+	value = __atomic_load_n(&sample->cycles, __ATOMIC_ACQUIRE);
+	sample_generation = __atomic_load_n(&sample->generation, __ATOMIC_ACQUIRE);
+	if (!__atomic_load_n(&sample->valid, __ATOMIC_ACQUIRE) ||
+		(sample_generation != generation) || (sample->pcpu_id != pcpu_id)) {
+		return false;
+	}
+	*cycles = value;
+	return true;
+}
+
 #if CONFIG_ARM64_SPE
 static const char *shell_spe_reason(enum arm64_spe_reason reason)
 {
@@ -102,6 +173,61 @@ int32_t shell_cpufreq(__unused int32_t argc, __unused char **argv)
 {
 	cpufreq_dump();
 	return 0;
+}
+
+int32_t shell_hwc(int32_t argc, __unused char **argv)
+{
+	uint64_t active_mask;
+	uint64_t generation;
+	uint16_t pcpu_id;
+	int32_t status;
+
+	if (argc != 1) {
+		shell_puts("usage: hwc\r\n");
+		return -EINVAL;
+	}
+
+	active_mask = get_active_pcpu_bitmap();
+	if (active_mask == 0UL) {
+		return -ENODEV;
+	}
+	generation = __atomic_add_fetch(&shell_hwc_generation, 1UL,
+		__ATOMIC_SEQ_CST);
+	if (generation == 0UL) {
+		generation = __atomic_add_fetch(&shell_hwc_generation, 1UL,
+			__ATOMIC_SEQ_CST);
+	}
+	for (pcpu_id = 0U; pcpu_id < MAX_PCPU_NUM; pcpu_id++) {
+		if ((active_mask & (1UL << pcpu_id)) != 0UL) {
+			__atomic_store_n(&shell_hwc_samples[pcpu_id].valid, false,
+				__ATOMIC_RELEASE);
+		}
+	}
+	status = smp_try_call_function_timeout(active_mask, shell_hwc_capture,
+		&generation, HWC_SMP_TIMEOUT_US);
+
+	shell_item_begin("HWC online:%hu smp-status:%d", bitmap_weight(active_mask), status);
+	for (pcpu_id = 0U; pcpu_id < MAX_PCPU_NUM; pcpu_id++) {
+		uint64_t cycles;
+		uint64_t frequency_hz;
+
+		if ((active_mask & (1UL << pcpu_id)) == 0UL) {
+			continue;
+		}
+		if (!shell_hwc_get_sample(pcpu_id, generation, &cycles)) {
+			shell_item_line("pcpu %hu: unavailable", pcpu_id);
+			continue;
+		}
+		if (cpufreq_get_pcpu_frequency_hz(pcpu_id, &frequency_hz)) {
+			shell_item_line("pcpu %hu: %lu hw cycles, %lu hz", pcpu_id,
+				cycles, frequency_hz);
+		} else {
+			shell_item_line("pcpu %hu: %lu hw cycles, frequency unavailable",
+				pcpu_id, cycles);
+		}
+	}
+	shell_item_end();
+	return status;
 }
 
 struct shell_pmu_aggregate {

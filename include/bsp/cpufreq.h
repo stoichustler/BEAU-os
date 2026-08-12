@@ -35,6 +35,7 @@ void cpufreq_init(void);
 void cpufreq_apply_performance(void);
 void cpufreq_dump(void);
 bool cpufreq_is_enabled(void);
+bool cpufreq_get_pcpu_frequency_hz(uint16_t pcpu_id, uint64_t *frequency_hz);
 const struct cpufreq_platform_ops *cpufreq_get_platform_ops(void);
 
 #endif /* BSP_CPUFREQ_H */
