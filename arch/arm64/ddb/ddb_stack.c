@@ -52,11 +52,18 @@ struct ddb_cpu_mailbox {
 	struct ddb_cpu_sample sample;
 } __aligned(64);
 
+struct ddb_cpu_trap_mailbox {
+	uint64_t publish_version;
+	uint64_t sequence;
+	struct cpu_regs regs;
+} __aligned(64);
+
 struct ddb_cpu_request {
 	uint64_t sequence;
 };
 
 static struct ddb_cpu_mailbox ddb_cpu_mailboxes[MAX_PCPU_NUM];
+static struct ddb_cpu_trap_mailbox ddb_cpu_trap_mailboxes[MAX_PCPU_NUM];
 static struct ddb_cpu_request ddb_cpu_request;
 static uint64_t ddb_cpu_next_sequence;
 
@@ -220,18 +227,75 @@ int32_t ddb_cmd_backtrace(struct ddb_session *session, uint32_t argc,
 	return 0;
 }
 
-/* [20260720] Bounded live pCPU sampling
+/* [20260812] Bounded interrupted pCPU sampling
  *
- *   DDB owner -> publish generation -> SMP try-call -> pCPU mailbox
- *                                      |
+ *   DDB owner -> publish generation -> SMP SGI exception frame -> callback
+ *                                      |                         |
+ *                                      |                         +--> mailbox
  *                                      +--> guest: saved exit registers
- *                                      `--> host: callback SP/FP/LR sample
  *
  * Key rule:
- *   - callbacks publish odd/even mailbox versions around one fixed snapshot;
+ *   - the target pCPU owns the raw Host exception frame and publishes it before
+ *     the SMP callback can consume it;
  *   - a timeout cannot make a late callback valid for a newer generation;
  *   - remote CPUs are sampled and released, never parked by the debugger.
  */
+void arm64_ddb_capture_smp_trap(const struct intr_excp_ctx *ctx)
+{
+	uint16_t pcpu_id = get_pcpu_id();
+	struct ddb_cpu_trap_mailbox *mailbox;
+	uint64_t sequence;
+	uint64_t version;
+
+	if ((ctx == NULL) || (pcpu_id >= MAX_PCPU_NUM)) {
+		return;
+	}
+	sequence = __atomic_load_n(&ddb_cpu_request.sequence, __ATOMIC_ACQUIRE);
+	if (sequence == 0UL) {
+		return;
+	}
+
+	mailbox = &ddb_cpu_trap_mailboxes[pcpu_id];
+	version = (__atomic_load_n(&mailbox->publish_version,
+		__ATOMIC_RELAXED) + 1UL) | 1UL;
+	__atomic_store_n(&mailbox->publish_version, version, __ATOMIC_RELEASE);
+	cpu_write_memory_barrier();
+	(void)memcpy_s(&mailbox->regs, sizeof(mailbox->regs), &ctx->regs,
+		sizeof(ctx->regs));
+	cpu_write_memory_barrier();
+	__atomic_store_n(&mailbox->sequence, sequence, __ATOMIC_RELEASE);
+	cpu_write_memory_barrier();
+	__atomic_store_n(&mailbox->publish_version, version + 1UL,
+		__ATOMIC_RELEASE);
+}
+
+static bool ddb_cpu_copy_smp_trap(uint16_t pcpu_id, uint64_t sequence,
+	struct cpu_regs *regs)
+{
+	const struct ddb_cpu_trap_mailbox *mailbox =
+		&ddb_cpu_trap_mailboxes[pcpu_id];
+	uint64_t version_before;
+	uint64_t version_after;
+
+	if (regs == NULL) {
+		return false;
+	}
+	version_before = __atomic_load_n(&mailbox->publish_version,
+		__ATOMIC_ACQUIRE);
+	if (((version_before & 1UL) != 0UL) ||
+		(__atomic_load_n(&mailbox->sequence, __ATOMIC_ACQUIRE) != sequence)) {
+		return false;
+	}
+	(void)memcpy_s(regs, sizeof(*regs), &mailbox->regs, sizeof(mailbox->regs));
+	cpu_read_memory_barrier();
+	version_after = __atomic_load_n(&mailbox->publish_version,
+		__ATOMIC_ACQUIRE);
+
+	return (version_before == version_after) &&
+		((version_after & 1UL) == 0UL) &&
+		(__atomic_load_n(&mailbox->sequence, __ATOMIC_ACQUIRE) == sequence);
+}
+
 static void ddb_cpu_capture_owner(struct ddb_cpu_sample *sample)
 {
 	struct thread_object *owner = sched_get_current(sample->pcpu_id);
@@ -252,6 +316,7 @@ static void ddb_cpu_capture_callback(void *data)
 	struct ddb_cpu_mailbox *mailbox;
 	struct ddb_cpu_sample sample;
 	struct acrn_vcpu *vcpu;
+	struct cpu_regs regs;
 	uint64_t version;
 	uint64_t sequence;
 
@@ -276,12 +341,13 @@ static void ddb_cpu_capture_callback(void *data)
 		sample.fp = vcpu->arch.regs.x29;
 		sample.lr = vcpu->arch.regs.lr;
 	} else {
-		__asm__ volatile(
-			"mov %0, sp\n"
-			"mov %1, x29\n"
-			"mov %2, x30\n"
-			: "=r" (sample.sp), "=r" (sample.fp), "=r" (sample.lr));
-		sample.pc = sample.lr;
+		if (!ddb_cpu_copy_smp_trap(pcpu_id, sequence, &regs)) {
+			return;
+		}
+		sample.pc = regs.elr;
+		sample.sp = regs.sp;
+		sample.fp = regs.x29;
+		sample.lr = regs.lr;
 	}
 	sample.valid = true;
 

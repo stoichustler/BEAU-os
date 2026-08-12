@@ -52,7 +52,7 @@ static const struct ddb_command ddb_commands[] = {
 	{ "help", ddb_cmd_help },
 	{ "regs", ddb_cmd_regs },
 	{ "bt", ddb_cmd_backtrace },
-	{ "x", ddb_cmd_examine },
+	{ "xd", ddb_cmd_examine },
 	{ "symbol", ddb_cmd_symbol },
 	{ "cpu", ddb_cmd_cpu },
 	{ "continue", ddb_cmd_continue },
@@ -118,7 +118,7 @@ static int32_t ddb_cmd_help(__unused struct ddb_session *session,
 	ddb_puts("help                 list commands\n");
 	ddb_puts("regs                 print saved Host registers\n");
 	ddb_puts("bt                   unwind the current EL2 stack\n");
-	ddb_puts("x <addr> [count]     read 1-256 bytes of Normal memory\n");
+	ddb_puts("xd <addr> [count]    read 1-256 bytes of Normal memory\n");
 	ddb_puts("symbol <addr>        resolve a Host text address\n");
 	ddb_puts("cpu                  sample active pCPUs\n");
 	ddb_puts("continue | c         resume after the DDB breakpoint\n");
@@ -200,12 +200,19 @@ static void ddb_run_session(struct ddb_session *session,
 		session->ctx->regs.elr, session->ctx->regs.esr);
 	ddb_puts("type 'help' for commands\n");
 	while (!session->done) {
+		int32_t read_status;
 		uint32_t argc;
 		uint32_t index;
 		bool found = false;
 
 		ddb_printf("ddb[cpu%hu]> ", session->pcpu_id);
-		if (ddb_read_line(line, sizeof(line)) < 0) {
+		read_status = ddb_read_line(line, sizeof(line));
+		if (read_status == -ETIMEDOUT) {
+			ddb_puts("ddb: idle timeout\n");
+			session->done = true;
+			continue;
+		}
+		if (read_status < 0) {
 			continue;
 		}
 		argc = ddb_split_line(line, argv, ARRAY_SIZE(argv));

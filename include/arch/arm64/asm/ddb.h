@@ -17,5 +17,6 @@ struct intr_excp_ctx;
 void arm64_ddb_break(void);
 void arm64_ddb_panic_break(void);
 bool arm64_ddb_handle_trap(struct intr_excp_ctx *ctx, uint64_t trap_type);
+void arm64_ddb_capture_smp_trap(const struct intr_excp_ctx *ctx);
 
 #endif /* ARM64_DDB_H */

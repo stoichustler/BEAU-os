@@ -6,9 +6,11 @@
 
 #include <types.h>
 #include <cpu.h>
+#include <errno.h>
 #include <rtl.h>
 #include <serial.h>
 #include <sprintf.h>
+#include <ticks.h>
 #include "ddb_internal.h"
 
 #define DDB_PRINT_SIZE	256U
@@ -36,16 +38,22 @@ void ddb_printf(const char *fmt, ...)
 
 int32_t ddb_read_line(char *line, uint32_t size)
 {
+	uint64_t deadline;
 	uint32_t length = 0U;
 
 	if ((line == NULL) || (size < 2U)) {
 		return -1;
 	}
 	line[0] = '\0';
+	deadline = cpu_ticks() + ((uint64_t)CONFIG_DDB_IDLE_TIMEOUT_MS *
+		TICKS_PER_MS);
 	while (true) {
 		char ch = serial_debug_getc();
 
 		if (ch == -1) {
+			if ((int64_t)(cpu_ticks() - deadline) >= 0L) {
+				return -ETIMEDOUT;
+			}
 			cpu_relax();
 			continue;
 		}

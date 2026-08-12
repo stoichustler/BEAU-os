@@ -142,6 +142,9 @@ static void dispatch_interrupt_common(const struct intr_excp_ctx *ctx,
 		}
 		return;
 	}
+	if (handle_softirq && (intid == ARM64_GIC_SGI_SMP_CALL)) {
+		arm64_ddb_capture_smp_trap(ctx);
+	}
 
 #ifdef CONFIG_PERF
 	arm64_perf_sample_irq(ctx, guest_context);

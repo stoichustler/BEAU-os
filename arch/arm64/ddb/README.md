@@ -56,9 +56,16 @@ reboot
 `x` accepts only readable Normal-memory mappings and uses a recoverable
 single-byte probe. It rejects MMIO and unmapped addresses. `bt` follows at most
 32 validated frame-pointer records inside the current known EL2 stack. `cpu`
-uses a bounded SMP sample and does not park remote CPUs.
+uses a bounded SMP sample and reports the saved Host EL2 exception frame when
+the target handles the DDB SMP SGI; it does not park remote CPUs.
 
 The debugger is intentionally read-only. It does not provide memory writes,
 software or hardware breakpoints, watchpoints, instruction stepping, or a
 stop-the-world mode. Other pCPUs continue to run, so memory and CPU output is a
 diagnostic sample rather than a globally consistent snapshot.
+
+Each DDB command prompt has a bounded idle interval controlled by
+`CONFIG_DDB_IDLE_TIMEOUT_MS` (60 seconds by default). An idle normal session
+releases the raw UART and resumes after its reserved breakpoint. An idle panic
+session returns to the panic path's permanent halt and never resumes normal
+execution.

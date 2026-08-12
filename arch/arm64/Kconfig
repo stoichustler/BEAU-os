@@ -66,6 +66,16 @@ config STACK_SIZE
 	  Stack size in bytes for BEAU threads, vCPUs, shell, watchdog, and
 	  per-pCPU stacks.
 
+config DDB_IDLE_TIMEOUT_MS
+	int "DDB idle timeout in milliseconds"
+	default 60000
+	range 1000 3600000
+	help
+	  End an idle ARM64 DDB command prompt after this interval. A normal DDB
+	  entry resumes after the reserved breakpoint; a panic DDB entry returns to
+	  the panic halt path. The timeout bounds raw UART ownership and the CPU
+	  held in the debugger without enabling a stop-the-world mode.
+
 config ARM64_MTE
 	bool "ARM64 EL2 Memory Tagging Extension"
 	default y
