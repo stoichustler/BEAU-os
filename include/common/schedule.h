@@ -110,6 +110,9 @@ struct sched_bvt_stats {
 	uint64_t vt_ratio;
 	int64_t avt;
 	int64_t evt;
+	int32_t warp_value;
+	uint32_t warp_left;
+	uint64_t cooldown_left_ticks;
 };
 
 struct sched_rtds_stats {

@@ -20,22 +20,30 @@
 #define SHELL_THREAD_SAMPLE_MAX \
 	((CONFIG_MAX_VM_NUM * MAX_VCPUS_PER_VM) + MAX_PCPU_NUM + 8U)
 #define SHELL_CPU_PERCENT_SCALE	1000UL
-#define SHELL_CBS_LATENCY_TAIL_BUCKET	4U
 
 static const char *thread_state_str(enum thread_object_state state);
 static const char *thread_lifecycle_str(const struct thread_object *thread);
+
+enum shell_schedstat_algorithm {
+	SHELL_SCHEDSTAT_ALGORITHM_NONE,
+	SHELL_SCHEDSTAT_ALGORITHM_BVT,
+	SHELL_SCHEDSTAT_ALGORITHM_CBS,
+	SHELL_SCHEDSTAT_ALGORITHM_RTDS,
+};
+
 struct shell_schedstat_thread_sample {
 	const struct thread_object *thread;
-	uint64_t max_wait_ticks;
-	uint64_t wait_hist[SCHED_LATENCY_HIST_BUCKETS];
+	enum shell_schedstat_algorithm algorithm;
+	struct sched_bvt_stats bvt;
+	struct sched_cbs_stats cbs;
+	struct sched_rtds_stats rtds;
 };
 
 struct shell_schedstat_snapshot {
-	bool valid;
 	bool overflow;
-	uint64_t sample_ticks;
-	uint64_t idle_runtime_ticks[MAX_PCPU_NUM];
-	bool idle_seen[MAX_PCPU_NUM];
+	uint32_t bvt_count;
+	uint32_t cbs_count;
+	uint32_t rtds_count;
 	uint32_t thread_count;
 	struct shell_schedstat_thread_sample thread[SHELL_THREAD_SAMPLE_MAX];
 };
@@ -53,7 +61,6 @@ struct shell_ps_snapshot {
 	struct shell_ps_thread_sample thread[SHELL_THREAD_SAMPLE_MAX];
 };
 
-static struct shell_schedstat_snapshot shell_schedstat_last;
 static struct shell_schedstat_snapshot shell_schedstat_sample;
 static struct shell_ps_snapshot shell_ps_last;
 static struct shell_ps_snapshot shell_ps_sample;
@@ -187,11 +194,6 @@ static const char *thread_lifecycle_str(const struct thread_object *thread)
 	}
 
 	return state;
-}
-
-static uint64_t shell_counter_delta(uint64_t current, uint64_t previous)
-{
-	return (current >= previous) ? (current - previous) : 0UL;
 }
 
 static void shell_format_cpu_percent(char *buf, size_t size,
@@ -345,31 +347,15 @@ static uint32_t shell_sched_runqueue_count(uint16_t pcpu_id)
 	return count;
 }
 
-static const struct shell_schedstat_thread_sample *shell_schedstat_find_thread_sample(
-	const struct shell_schedstat_snapshot *snapshot, const struct thread_object *thread)
-{
-	uint32_t idx;
-
-	for (idx = 0U; idx < snapshot->thread_count; idx++) {
-		if (snapshot->thread[idx].thread == thread) {
-			return &snapshot->thread[idx];
-		}
-	}
-
-	return NULL;
-}
-
-/* [20260719] schedstat monitor
+/* [20260813] schedstat algorithm snapshot
  *
- * previous schedstat idle runtime / wait histogram
- *                       |
- *                       v
- * current scheduler snapshot -> pCPU busy + CBS latency deltas
+ * pCPU scheduler lock -> algorithm snapshot -> shell-owned report -> BVT/CBS/RTDS tables
  *
  * Key rule:
- *   - schedstat owns policy and pCPU diagnostics, while ps owns per-thread CPU
- *     usage history;
- *   - the two command histories remain independent;
+ *   - scheduler state remains pCPU-owned and every algorithm helper snapshots
+ *     it under that pCPU's scheduler lock;
+ *   - the shell owns the copied report and never holds a scheduler lock while
+ *     formatting output;
  *   - snapshot overflow remains visible instead of silently dropping evidence.
  */
 static void shell_schedstat_take_snapshot(struct shell_schedstat_snapshot *snapshot)
@@ -382,381 +368,181 @@ static void shell_schedstat_take_snapshot(struct shell_schedstat_snapshot *snaps
 	count = shell_snapshot_threads(threads, &snapshot->overflow);
 	for (idx = 0U; idx < count; idx++) {
 		struct thread_object *thread = threads[idx];
-		struct sched_latency_stats stats = { 0U };
-		uint16_t pcpu_id = thread->pcpu_id;
+		struct shell_schedstat_thread_sample *sample =
+			&snapshot->thread[snapshot->thread_count];
 
-		sched_get_latency(thread, &stats);
-		snapshot->thread[idx].thread = thread;
-		snapshot->thread[idx].max_wait_ticks = stats.max_wait_ticks;
-		memcpy(snapshot->thread[idx].wait_hist, stats.wait_hist,
-			sizeof(stats.wait_hist));
-		snapshot->thread_count++;
-
-		if ((pcpu_id < MAX_PCPU_NUM) && is_idle_thread(thread)) {
-			snapshot->idle_runtime_ticks[pcpu_id] = stats.runtime_ticks;
-			snapshot->idle_seen[pcpu_id] = true;
+		sample->thread = thread;
+		if (sched_get_bvt_stats(thread, &sample->bvt)) {
+			sample->algorithm = SHELL_SCHEDSTAT_ALGORITHM_BVT;
+			snapshot->bvt_count++;
+		} else if (sched_get_cbs_stats(thread, &sample->cbs)) {
+			sample->algorithm = SHELL_SCHEDSTAT_ALGORITHM_CBS;
+			snapshot->cbs_count++;
+		} else if (sched_get_rtds_stats(thread, &sample->rtds)) {
+			sample->algorithm = SHELL_SCHEDSTAT_ALGORITHM_RTDS;
+			snapshot->rtds_count++;
 		}
+		snapshot->thread_count++;
 	}
-
-	snapshot->sample_ticks = cpu_ticks();
-	snapshot->valid = true;
 }
 
-static void shell_schedstat_format_pcpu_busy(char *buf, size_t size, uint16_t pcpu_id,
-	uint64_t window_ticks)
+static void shell_schedstat_print_bvt(const struct shell_schedstat_snapshot *snapshot)
 {
-	uint64_t idle_delta;
-	uint64_t idle_permille;
-	uint64_t busy_permille;
+	uint32_t idx;
 
-	if (!shell_schedstat_last.valid ||
-		!shell_schedstat_sample.idle_seen[pcpu_id] ||
-		!shell_schedstat_last.idle_seen[pcpu_id] ||
-		(window_ticks == 0UL)) {
-		snprintf(buf, size, "0.0");
+	if (snapshot->bvt_count == 0U) {
 		return;
 	}
 
-	idle_delta = shell_counter_delta(shell_schedstat_sample.idle_runtime_ticks[pcpu_id],
-		shell_schedstat_last.idle_runtime_ticks[pcpu_id]);
-	if ((idle_delta >= window_ticks) || (idle_delta > (UINT64_MAX / SHELL_CPU_PERCENT_SCALE))) {
-		idle_permille = SHELL_CPU_PERCENT_SCALE;
-	} else {
-		idle_permille = (idle_delta * SHELL_CPU_PERCENT_SCALE) / window_ticks;
-		if (idle_permille > SHELL_CPU_PERCENT_SCALE) {
-			idle_permille = SHELL_CPU_PERCENT_SCALE;
+	shell_item_section("BVT threads:");
+	shell_item_line("thread           pcpu  weight  vt.ratio   avt        evt        warp.value  warp.left  cooldown.left.us");
+	shell_item_line("───────────────  ────  ──────  ─────────  ─────────  ─────────  ──────────  ─────────  ────────────────");
+	for (idx = 0U; idx < snapshot->thread_count; idx++) {
+		const struct shell_schedstat_thread_sample *sample = &snapshot->thread[idx];
+
+		if (sample->algorithm != SHELL_SCHEDSTAT_ALGORITHM_BVT) {
+			continue;
 		}
+		shell_item_line("%-15s  %-4hu  %-6u  %-9lu  %-9ld  %-9ld  %-10ld  %-9u  %-16lu", sample->thread->name,
+			sample->thread->pcpu_id, (uint32_t)sample->bvt.weight,
+			sample->bvt.vt_ratio, sample->bvt.avt, sample->bvt.evt,
+			(int64_t)sample->bvt.warp_value, sample->bvt.warp_left,
+			ticks_to_us(sample->bvt.cooldown_left_ticks));
+		shell_output_checkpoint();
 	}
-
-	busy_permille = SHELL_CPU_PERCENT_SCALE - idle_permille;
-	snprintf(buf, size, "%lu.%01lu", busy_permille / 10UL, busy_permille % 10UL);
 }
 
-static const char *shell_schedstat_pcpu_role(uint16_t pcpu_id)
+static void shell_schedstat_format_utilization(char *buf, size_t size,
+	uint64_t budget_ticks, uint64_t period_ticks)
 {
-	const struct sched_platform_config *config = sched_get_platform_config();
-	uint64_t pcpu_mask = 1UL << pcpu_id;
-
-	if (config->configured) {
-		if ((config->exclusive.pcpu_mask & pcpu_mask) != 0UL) {
-			return "exclusive";
-		}
-		if ((config->shared.pcpu_mask & pcpu_mask) != 0UL) {
-			return "shared";
-		}
+	if (period_ticks == 0UL) {
+		(void)snprintf(buf, size, "--");
+		return;
 	}
 
-	return pcpu_is_shared_by_vcpus(pcpu_id) ? "shared" : "exclusive";
+	shell_format_cpu_percent(buf, size, budget_ticks, period_ticks);
 }
 
-/* [20260807] CBS latency-window presentation
- *
- * scheduler-owned cumulative wait buckets
- *                 |
- *                 v
- * shell-owned snapshots -> cumulative first sample / delta later samples
- *                 |
- *                 v
- * bounded tail-count and percentage formatting
- *
- * Key rule:
- *   - the scheduler remains the owner of latency counters;
- *   - shell diagnostics derive all window values from read-only snapshots;
- *   - a zero or saturated sample must remain explicit rather than producing an
- *     invalid percentage.
- */
-static uint64_t shell_schedstat_hist_sum(const uint64_t *hist, uint32_t first_bucket)
-{
-	uint64_t total = 0UL;
-	uint32_t bucket;
-
-	for (bucket = first_bucket; bucket < SCHED_LATENCY_HIST_BUCKETS; bucket++) {
-		if (hist[bucket] > (UINT64_MAX - total)) {
-			return UINT64_MAX;
-		}
-		total += hist[bucket];
-	}
-
-	return total;
-}
-
-static uint64_t shell_schedstat_ratio_permille(uint64_t part, uint64_t total)
-{
-	if ((total == 0UL) || (part == 0UL)) {
-		return 0UL;
-	}
-	if (part >= total) {
-		return SHELL_CPU_PERCENT_SCALE;
-	}
-	if (part <= (UINT64_MAX / SHELL_CPU_PERCENT_SCALE)) {
-		return (part * SHELL_CPU_PERCENT_SCALE) / total;
-	}
-
-	return part / (total / SHELL_CPU_PERCENT_SCALE);
-}
-
-static void shell_schedstat_format_ratio(char *buf, size_t size, uint64_t part,
-	uint64_t total)
-{
-	uint64_t permille = shell_schedstat_ratio_permille(part, total);
-
-	if (permille > SHELL_CPU_PERCENT_SCALE) {
-		permille = SHELL_CPU_PERCENT_SCALE;
-	}
-	(void)snprintf(buf, size, "%lu.%01lu%%", permille / 10UL, permille % 10UL);
-}
-
-static void shell_schedstat_print_cbs_latency_hist(
-	const struct shell_schedstat_snapshot *snapshot, uint64_t window_ticks)
+static void shell_schedstat_print_cbs(const struct shell_schedstat_snapshot *snapshot)
 {
 	uint32_t idx;
-	bool printed_header = false;
-	bool has_previous = shell_schedstat_last.valid;
 
+	if (snapshot->cbs_count == 0U) {
+		return;
+	}
+
+	shell_item_section("CBS threads:");
+	shell_item_line("thread           pcpu  util%%   period.us  budget.us  remain.us  deadline.us  depleted  replenish  late");
+	shell_item_line("───────────────  ────  ─────   ─────────  ─────────  ─────────  ───────────  ────────  ─────────  ────────");
 	for (idx = 0U; idx < snapshot->thread_count; idx++) {
-		const struct thread_object *thread = snapshot->thread[idx].thread;
-		const struct shell_schedstat_thread_sample *current;
-		const struct shell_schedstat_thread_sample *previous;
-		struct sched_cbs_stats cbs;
-		uint64_t hist[SCHED_LATENCY_HIST_BUCKETS];
-		uint64_t samples;
-		uint64_t tail_samples;
-		char tail_percent[16U];
-		uint32_t bucket;
+		const struct shell_schedstat_thread_sample *sample = &snapshot->thread[idx];
+		uint64_t now;
+		uint64_t deadline;
+		char utilization[16U];
 
-		if (!sched_get_cbs_stats(thread, &cbs)) {
+		if (sample->algorithm != SHELL_SCHEDSTAT_ALGORITHM_CBS) {
 			continue;
 		}
-		current = shell_schedstat_find_thread_sample(&shell_schedstat_sample, thread);
-		if (current == NULL) {
+		now = cpu_ticks();
+		deadline = (sample->cbs.deadline_ticks > now) ?
+			ticks_to_us(sample->cbs.deadline_ticks - now) : 0UL;
+		shell_schedstat_format_utilization(utilization, sizeof(utilization),
+			sample->cbs.budget_ticks, sample->cbs.period_ticks);
+		shell_item_line("%-15s  %-4hu  %-6s  %-9lu  %-9lu  %-9lu  %-11lu  %-8lu  %-9lu  %-8lu",
+			sample->thread->name, sample->thread->pcpu_id,
+			utilization,
+			ticks_to_us(sample->cbs.period_ticks), ticks_to_us(sample->cbs.budget_ticks),
+			ticks_to_us(sample->cbs.remaining_ticks), deadline, sample->cbs.depleted_count,
+			sample->cbs.replenish_count, sample->cbs.late_account_count);
+		shell_output_checkpoint();
+	}
+}
+
+static void shell_schedstat_print_rtds(const struct shell_schedstat_snapshot *snapshot)
+{
+	uint32_t idx;
+
+	if (snapshot->rtds_count == 0U) {
+		return;
+	}
+
+	shell_item_section("RTDS threads:");
+	shell_item_line("thread           pcpu  util%%   period.us  budget.us  remain.us  deadline.us");
+	shell_item_line("───────────────  ────  ──────   ─────────  ─────────  ─────────  ───────────");
+	for (idx = 0U; idx < snapshot->thread_count; idx++) {
+		const struct shell_schedstat_thread_sample *sample = &snapshot->thread[idx];
+		uint64_t now;
+		uint64_t deadline;
+		char utilization[16U];
+
+		if (sample->algorithm != SHELL_SCHEDSTAT_ALGORITHM_RTDS) {
 			continue;
 		}
-		previous = shell_schedstat_find_thread_sample(&shell_schedstat_last, thread);
-		for (bucket = 0U; bucket < SCHED_LATENCY_HIST_BUCKETS; bucket++) {
-			hist[bucket] = (has_previous && (previous != NULL)) ?
-				shell_counter_delta(current->wait_hist[bucket],
-					previous->wait_hist[bucket]) :
-				current->wait_hist[bucket];
-		}
-		samples = shell_schedstat_hist_sum(hist, 0U);
-		tail_samples = shell_schedstat_hist_sum(hist, SHELL_CBS_LATENCY_TAIL_BUCKET);
-		shell_schedstat_format_ratio(tail_percent, sizeof(tail_percent), tail_samples,
-			samples);
-
-		if (!printed_header) {
-			if (has_previous) {
-				shell_item_section("CBS latency histogram delta (runnable -> running), window.us:%lu:",
-					ticks_to_us(window_ticks));
-			} else {
-				shell_item_section("CBS latency histogram cumulative (runnable -> running), window.us:--");
-			}
-			shell_item_line("name             pcpu  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  %-7s  samples    tail>=5ms  tail%%    max.us (TTL)",
-				sched_latency_hist_bucket_name(0U),
-				sched_latency_hist_bucket_name(1U),
-				sched_latency_hist_bucket_name(2U),
-				sched_latency_hist_bucket_name(3U),
-				sched_latency_hist_bucket_name(4U),
-				sched_latency_hist_bucket_name(5U),
-				sched_latency_hist_bucket_name(6U),
-				sched_latency_hist_bucket_name(7U));
-			shell_item_line("───────────────  ────  ───────  ───────  ───────  ───────  ───────  ───────  ───────  ───────  ─────────  ─────────  ───────  ──────");
-			printed_header = true;
-		}
-
-		shell_item_line("%-15s  %-4hu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-7lu  %-9lu  %-9lu  %-7s  %-6lu",
-			thread->name,
-			thread->pcpu_id,
-			hist[0U],
-			hist[1U],
-			hist[2U],
-			hist[3U],
-			hist[4U],
-			hist[5U],
-			hist[6U],
-			hist[7U],
-			samples,
-			tail_samples,
-			tail_percent,
-			ticks_to_us(current->max_wait_ticks));
+		now = cpu_ticks();
+		deadline = (sample->rtds.deadline_ticks > now) ?
+			ticks_to_us(sample->rtds.deadline_ticks - now) : 0UL;
+		shell_schedstat_format_utilization(utilization, sizeof(utilization),
+			sample->rtds.budget_ticks, sample->rtds.period_ticks);
+		shell_item_line("%-15s  %-4hu  %-6s  %-9lu  %-9lu  %-9lu  %-11lu",
+			sample->thread->name, sample->thread->pcpu_id,
+			utilization,
+			ticks_to_us(sample->rtds.period_ticks), ticks_to_us(sample->rtds.budget_ticks),
+			ticks_to_us(sample->rtds.remaining_ticks), deadline);
 		shell_output_checkpoint();
 	}
 }
 
 int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 {
-	uint32_t idx;
 	uint16_t pcpu_id;
 	uint16_t pcpu_num = get_pcpu_nums();
-	bool has_bvt_stats = false;
-	bool has_rtds_stats = false;
-	bool has_cbs_stats = false;
-	bool printed_cbs_pcpu_header = false;
-	uint64_t window_ticks;
+	const char *policy_names[MAX_PCPU_NUM];
+	uint16_t policy_pcpus[MAX_PCPU_NUM];
+	uint16_t policy_count = 0U;
 
 	shell_schedstat_take_snapshot(&shell_schedstat_sample);
-	window_ticks = shell_schedstat_last.valid ?
-		shell_counter_delta(shell_schedstat_sample.sample_ticks,
-			shell_schedstat_last.sample_ticks) : 0UL;
-
 	shell_item_begin("schedstat pcpus:%hu", pcpu_num);
+	for (pcpu_id = 0U; pcpu_id < pcpu_num; pcpu_id++) {
+		const char *name = sched_get_scheduler_name(pcpu_id);
+		uint16_t policy_idx;
 
-	/*
-	 * Per-pCPU counters answer whether the scheduler is ticking, whether
-	 * context switches are happening, and which thread currently owns a CPU.
-	 */
-	shell_item_section("Per-pCPU hybrid scheduler counters:");
-	shell_item_line("pcpu  role       scheduler    busy%%  timer   switches  resched  runqueue  current");
-	shell_item_line("────  ─────────  ───────────  ─────  ──────  ────────  ───────  ────────  ─────────────────");
-
+		for (policy_idx = 0U; policy_idx < policy_count; policy_idx++) {
+			if (strcmp(policy_names[policy_idx], name) == 0) {
+				break;
+			}
+		}
+		if (policy_idx == policy_count) {
+			policy_names[policy_count] = name;
+			policy_pcpus[policy_count] = pcpu_id;
+			policy_count++;
+		}
+	}
+	for (pcpu_id = 0U; pcpu_id < policy_count; pcpu_id++) {
+		shell_item_line("scheduler policy: %s=%s", policy_names[pcpu_id],
+			sched_get_scheduler_stat_desc(policy_pcpus[pcpu_id]));
+	}
+	shell_item_section("pCPU schedulers:");
+    shell_item_line("pcpu  scheduler    ticks      ctx-swi    resched    runqueue  current");
+	shell_item_line("────  ───────────  ─────────  ─────────  ─────────  ────────  ───────────────");
 	for (pcpu_id = 0U; pcpu_id < pcpu_num; pcpu_id++) {
 		struct thread_object *current = sched_get_current(pcpu_id);
-		const char *name = (current != NULL) ? current->name : "-";
-		char busy[16U];
 
-		shell_schedstat_format_pcpu_busy(busy, sizeof(busy), pcpu_id, window_ticks);
-
-		shell_item_line("%-5hu %-10s %-12s %-6s %-7lu %-9lu %-8lu %-9u %s",
-			pcpu_id,
-			shell_schedstat_pcpu_role(pcpu_id),
-			sched_get_scheduler_name(pcpu_id),
-			busy,
-			sched_get_ticks(pcpu_id),
-			sched_get_context_switches(pcpu_id),
-			sched_get_reschedule_requests(pcpu_id),
-			shell_sched_runqueue_count(pcpu_id),
-			name);
+		shell_item_line("%-5hu %-12s %-10lu %-10lu %-10lu %-9u %s", pcpu_id,
+			sched_get_scheduler_name(pcpu_id), sched_get_ticks(pcpu_id),
+			sched_get_context_switches(pcpu_id), sched_get_reschedule_requests(pcpu_id),
+			shell_sched_runqueue_count(pcpu_id), (current != NULL) ? current->name : "-");
 		shell_output_checkpoint();
 	}
 
-	for (pcpu_id = 0U; pcpu_id < pcpu_num; pcpu_id++) {
-		struct sched_cbs_pcpu_stats cbs_pcpu;
-
-		if (sched_get_cbs_pcpu_stats(pcpu_id, &cbs_pcpu)) {
-			if (!printed_cbs_pcpu_header) {
-				shell_item_section("CBS pCPU stats:");
-				shell_item_line("pcpu  admission.ppm  runqueue");
-				shell_item_line("────  ─────────────  ────────");
-				printed_cbs_pcpu_header = true;
-			}
-			shell_item_line("%-5hu %-14lu %-8u",
-				pcpu_id, cbs_pcpu.admission_utilization,
-				cbs_pcpu.runqueue_count);
-			shell_output_checkpoint();
-		}
+	shell_item_section("scheduler summary: BVT:%u CBS:%u RTDS:%u",
+		shell_schedstat_sample.bvt_count, shell_schedstat_sample.cbs_count,
+		shell_schedstat_sample.rtds_count);
+	shell_schedstat_print_bvt(&shell_schedstat_sample);
+	shell_schedstat_print_cbs(&shell_schedstat_sample);
+	shell_schedstat_print_rtds(&shell_schedstat_sample);
+	if (shell_schedstat_sample.overflow) {
+		shell_item_line("warning: schedstat thread sample overflow; algorithm rows may be incomplete.");
 	}
-
-	for (idx = 0U; idx < shell_schedstat_sample.thread_count; idx++) {
-		const struct thread_object *thread = shell_schedstat_sample.thread[idx].thread;
-		struct sched_bvt_stats bvt;
-		struct sched_rtds_stats rtds;
-		struct sched_cbs_stats cbs;
-
-		if (sched_get_bvt_stats(thread, &bvt)) {
-			has_bvt_stats = true;
-		}
-		if (sched_get_rtds_stats(thread, &rtds)) {
-			has_rtds_stats = true;
-		}
-		if (sched_get_cbs_stats(thread, &cbs)) {
-			has_cbs_stats = true;
-		}
-		if (has_bvt_stats && has_rtds_stats && has_cbs_stats) {
-			break;
-		}
-	}
-
-	if (has_bvt_stats) {
-		/*
-		 * BVT stats expose virtual-time ordering. Lower avt/evt is more
-		 * eligible; weight controls how quickly virtual time advances.
-		 */
-		shell_item_section("BVT stats:");
-		shell_item_line("name             pcpu  state     weight  avt       evt");
-		shell_item_line("───────────────  ────  ────────  ──────  ────────  ────────");
-
-		for (idx = 0U; idx < shell_schedstat_sample.thread_count; idx++) {
-			const struct thread_object *thread = shell_schedstat_sample.thread[idx].thread;
-			struct sched_bvt_stats bvt;
-
-			if (sched_get_bvt_stats(thread, &bvt)) {
-				shell_item_line("%-15s  %-4hu  %-8s  %-6u  %-8ld  %-8ld",
-					thread->name,
-					thread->pcpu_id,
-					thread_state_str(thread->status),
-					(uint32_t)bvt.weight,
-					bvt.avt,
-					bvt.evt);
-				shell_output_checkpoint();
-			}
-		}
-	}
-
-	if (has_rtds_stats) {
-		uint64_t now = cpu_ticks();
-
-		/*
-		 * RTDS stats show fixed-period budget accounting and the time
-		 * left before the next scheduling deadline.
-		 */
-		shell_item_section("RTDS stats:");
-		shell_item_line("name             pcpu  state     period.us  budget.us  remain.us  deadline-in.us");
-		shell_item_line("───────────────  ────  ────────  ─────────  ─────────  ─────────  ──────────────");
-
-		for (idx = 0U; idx < shell_schedstat_sample.thread_count; idx++) {
-			const struct thread_object *thread = shell_schedstat_sample.thread[idx].thread;
-			struct sched_rtds_stats rtds;
-
-			if (sched_get_rtds_stats(thread, &rtds)) {
-				shell_item_line("%-15s  %-4hu  %-8s  %-9lu  %-9lu  %-9lu  %-11lu",
-					thread->name,
-					thread->pcpu_id,
-					thread_state_str(thread->status),
-					ticks_to_us(rtds.period_ticks),
-					ticks_to_us(rtds.budget_ticks),
-					ticks_to_us(rtds.remaining_ticks),
-					(rtds.deadline_ticks > now) ?
-						ticks_to_us(rtds.deadline_ticks - now) : 0UL);
-				shell_output_checkpoint();
-			}
-		}
-	}
-
-	if (has_cbs_stats) {
-		uint64_t now = cpu_ticks();
-
-		/*
-		 * CBS stats show the active reservation server state. Deadline moves
-		 * forward when budget is replenished after depletion or wake admission.
-		 */
-		shell_item_section("CBS stats:");
-		shell_item_line("name             pcpu  state     period.us  budget.us  remain.us  deadline-in.us  dep       repl      wake      late");
-		shell_item_line("───────────────  ────  ────────  ─────────  ─────────  ─────────  ──────────────  ────────  ────────  ────────  ────────");
-
-		for (idx = 0U; idx < shell_schedstat_sample.thread_count; idx++) {
-			const struct thread_object *thread = shell_schedstat_sample.thread[idx].thread;
-			struct sched_cbs_stats cbs;
-
-			if (sched_get_cbs_stats(thread, &cbs)) {
-				shell_item_line("%-15s  %-4hu  %-8s  %-9lu  %-9lu  %-9lu  %-14lu  %-8lu  %-8lu  %-8lu  %-8lu",
-					thread->name,
-					thread->pcpu_id,
-					thread_state_str(thread->status),
-					ticks_to_us(cbs.period_ticks),
-					ticks_to_us(cbs.budget_ticks),
-					ticks_to_us(cbs.remaining_ticks),
-					(cbs.deadline_ticks > now) ?
-						ticks_to_us(cbs.deadline_ticks - now) : 0UL,
-					cbs.depleted_count,
-					cbs.replenish_count,
-					cbs.wake_replenish_count,
-					cbs.late_account_count);
-				shell_output_checkpoint();
-			}
-		}
-		shell_schedstat_print_cbs_latency_hist(&shell_schedstat_sample, window_ticks);
-	}
-
-	shell_schedstat_last = shell_schedstat_sample;
 	shell_item_end();
 
 	return 0;

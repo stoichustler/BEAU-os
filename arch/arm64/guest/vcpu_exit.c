@@ -37,6 +37,7 @@
 #include <asm/guest/vm_reset.h>
 #include <asm/guest/vmpu.h>
 #include <asm/guest/vgicv3.h>
+#include <asm/trusty.h>
 
 /* [20260630] vCPU exit principle:
  *
@@ -92,8 +93,7 @@
 #define PSCI_0_2_FN64_AFFINITY_INFO	0xc4000004U
 #define PSCI_1_0_FN64_SYSTEM_SUSPEND	0xc400000eU
 #define PSCI_0_2_TOS_MP		2L
-#define TRUSTY_SMC_FC_API_VERSION	0xbc00000bU
-#define SMC_UNK				UINT64_MAX
+#define SMC_UNK				ARM64_TRUSTY_SMC_UNK
 
 static struct arm64_vcpu_exit_stats
 	arm64_vcpu_exit_stats[CONFIG_MAX_VM_NUM][MAX_VCPUS_PER_VM];
@@ -247,9 +247,6 @@ const char *arm64_vcpu_exit_class_name(enum arm64_vcpu_exit_class exit_class)
 #define PSCI_AFFINITY_LEVEL_OFF		1UL
 #define SPSR_MODE_MASK			0xfUL
 #define SPSR_MODE_EL1H			0x5UL
-
-uint64_t beau_trusty_smc(struct acrn_vcpu *vcpu, uint64_t function_id,
-	uint64_t requested_version);
 
 #define ESR_SYSREG_DIR_READ		1UL
 #define ESR_SYSREG_OP0_SHIFT		20U
@@ -931,12 +928,7 @@ static int32_t handle_smc64(struct acrn_vcpu *vcpu)
 		return handle_psci64(vcpu, true);
 	}
 
-	if (function_id == (uint64_t)TRUSTY_SMC_FC_API_VERSION) {
-		vcpu->arch.regs.x0 = beau_trusty_smc(vcpu, function_id,
-			vcpu->arch.regs.x1);
-	} else {
-		vcpu->arch.regs.x0 = SMC_UNK;
-	}
+	vcpu->arch.regs.x0 = arm64_trusty_handle_guest_smc(vcpu);
 	advance_vcpu_elr(vcpu);
 
 	return 0;

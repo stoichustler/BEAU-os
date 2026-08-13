@@ -1326,8 +1326,13 @@ Trusty 的全局协商状态。CPU 查询失败时输出 `Trusty TEE Information
 不会输出部分 dump。
 
 两个命令只在 QEMU 平台尝试 secure-world SMC；未使用 Trusty firmware、SMC 返回未知值或
-字符串校验失败时失败关闭。Trusty client VM 的 `trusty-client` API-version 白名单独立于
-这些诊断命令，其他客体 SMC 仍保持拒绝。
+字符串校验失败时失败关闭。Trusty client VM 的 `trusty-client` 白名单独立于这些诊断命令。
+除 API-version 协商外，BEAU 只允许已协商 API >= 2 的零参数 `SMC_SC_NOP`，以及同一 VM、
+vCPU、pCPU 对中断结果的 `SMC_SC_RESTART_LAST` 或 `SMC_SC_RESTART_FIQ` 续接；
+`SM_ERR_NOP_INTERRUPTED` 只能由同一三元组重发 NOP。BEAU 在每次
+调用前清除 x2-x6，并以受控的 VMID 重写 x7；全局短临界区串行化进入 TF-A SPD，避免其单一
+secure-world transaction 被不同 VM 交织。共享内存注册、TIPC、virtio、FF-A 和其余客体 SMC
+均保持拒绝，因当前 QEMU POC 没有相应的来宾内存所有权或传输 ABI。
 
 ### 13.4 静态 IPC
 
@@ -1685,8 +1690,8 @@ WDT recovery 与 failure 事件继续使用 `LOG_*` 保留为故障证据。
 | `dmesg [count]` | 输出最近的 BEAU host 日志；缺省输出整个 host 环 |
 | `vcpus` | 列出 vCPU、pCPU、状态和 switch 信息 |
 | `ps` | scheduler thread 状态、current owner 和相邻命令间 CPU% |
-| `schedstat` | pCPU policy、busy%、runqueue、BVT/CBS 统计 |
-| `irqstat` | host IRQ 和 guest vIRQ latency |
+| `schedstat` | pCPU scheduler、累计调度计数、runqueue/current 与分表的 BVT/CBS/RTDS 算法统计 |
+| `irqstat` | host PIRQ 与按 VM 分区的 guest vIRQ lifecycle/latency |
 | `vsh <vmid>` | 切到客体 console，`Ctrl-D` 返回 |
 | `devmap` | host Stage-1 与每 VM Stage-2 map |
 | `memstat` | 页表池和 Stage-2 ownership |
@@ -1721,12 +1726,15 @@ heartbeat 对 guest forward progress 的判断。summary 的 VM 表是紧凑总�
 
 `ps` 把 idle、shell、helper 和 vCPU thread 放在同一张表中，`cpu%/run.us` 使用相邻
 两次 `ps` 的独立 runtime 快照；首次采样、线程首次出现、计数回退或快照容量不足
-时显示 `--`。执行 `schedstat` 不会改变 `ps` 的采样窗口。`schedstat` 只保留 pCPU
-busy%、policy 和 BVT/RTDS/CBS 诊断，不再重复 per-thread CPU usage。CBS latency
-histogram 首次输出是 vCPU 创建以来的累计计数，`window.us:--`；后续输出是相对前一次
-`schedstat` 的增量，`window.us` 给出该采样窗口。`samples` 是八个等待桶之和，
-`tail>=5ms`/`tail%` 是落入 `>=5ms` 桶的样本数及占比，`max.us (TTL)` 始终是生命周期
-最大等待，不能当作当前窗口最大值。
+时显示 `--`。执行 `schedstat` 不会改变 `ps` 的采样窗口。`schedstat` 先按实际 scheduler
+去重输出策略说明，再显示 pCPU 的 `scheduler/ticks/ctx-swi/resched/runqueue/current`，以及按算法
+分开的 BVT、CBS、RTDS 线程表；它不重复逐线程的 state、CPU% 或运行时间。`current` 仅对应读取时
+该 pCPU 的即时 owner。BVT 表显示 `weight/vt.ratio/avt/evt/warp.value/warp.left/`
+`cooldown.left.us`；后者是再次允许 warp 前的剩余冷却时间，`0` 表示当前 warp、无需冷却或
+冷却已结束。CBS/RTDS 表显示
+`util%/period/budget/remain/deadline`，其中 `util%` 为预算除以周期。CBS 另有
+`depleted/replenish/late` 累计值，用于衡量预算耗尽、补充和延迟记账。表头前的 summary 给出
+各算法线程数；无该算法线程时不打印对应表。
 
 `vmexitstat` 的计时范围从 `vcpu_exit_handler()` 入口到对应 EC handler 返回，只用于比较
 MMIO、HVC、sysreg 等同步 exit 在同一 VM/vCPU 上的 EL2 handler cost。物理 IRQ exit 不会
@@ -2056,8 +2064,8 @@ smmustat
 2. 客体 RAM 强制 1:1 Stage-2，尚无通用非 identity backing。
 3. GVA page walk/copy 未实现，Hypercall 主要使用 GPA ABI。
 4. post-launched VM、HSM I/O、ACPI 默认关闭；Trusty 仅支持 QEMU POC 的
-   `TF-A -> Trusty LK -> BEAU` 启动链和只读 `tee <version|dump>` 诊断，不提供通用 TEE、
-   FF-A、共享内存或 RK 平台支持。
+   `TF-A -> Trusty LK -> BEAU` 启动链、只读 `tee <version|dump>` 诊断，以及受控的
+   client API-version/NOP/restart SMC；不提供通用 TEE、FF-A、共享内存或 RK 平台支持。
 5. ARM64 动态 VM 管理与多数继承的 ACRN Hypercall 未接通。
 6. relocation 函数未实现，默认固定链接地址。
 7. CPUFreq backend 为 stub；rk356x PM 当前 disabled。

@@ -121,7 +121,8 @@ struct shell_cmd shell_common_cmds[] = {
 	CMD("dmesg", "[count]", "dump retained host log records", shell_dmesg, NULL),
 	CMD("vcpus", NULL, "list all vcpus in all vms", shell_list_vcpu, NULL),
 	CMD("ps", NULL, "list scheduler threads, state, and CPU usage", shell_list_threads, NULL),
-	CMD("schedstat", NULL, "list per-pcpu scheduler statistics", shell_schedstat, NULL),
+	CMD("schedstat", NULL, "list pCPU runqueues and scheduler algorithm statistics",
+		shell_schedstat, NULL),
 	CMD("schedai", "snapshot", "emit configured AI scheduler telemetry",
 		shell_schedai, &shell_schedai_completions),
 #if CONFIG_ARM64_SPE

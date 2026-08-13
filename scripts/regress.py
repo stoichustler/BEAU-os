@@ -1141,9 +1141,9 @@ def expect_vm2_cpu1_lifecycle(qemu):
 
     for command in ("vcpus", "ps", "vmstat"):
         qemu.command_retry(command, ["vm2:vcpu1", "poweroff"])
-    schedstat = qemu.command_retry("schedstat", ["vm2:vcpu1"])
-    if re.search(r"vm2:vcpu1\s+\d+\s+blocked\b", schedstat) is None:
-        raise RuntimeError("schedstat does not report VM2 CPU1 as blocked")
+    ps = qemu.command_retry("ps", ["vm2:vcpu1"])
+    if re.search(r"vm2:vcpu1\s+\d+\s+\S+\s+blocked\b", ps) is None:
+        raise RuntimeError("ps does not report VM2 CPU1 as blocked")
 
     vcon_enter(qemu, 2, LINUX_PROMPT, "VM2 shell for CPU1 online", timeout=30.0)
     vm_command(qemu, 2, f"echo 1 > {online} && test \"$(cat {online})\" = 1",
@@ -1531,22 +1531,28 @@ def run_qemu(args, cmd):
             "schedstat",
             [
                 "schedstat pcpus:",
-                "Per-pCPU hybrid scheduler counters:",
+                "pCPU schedulers:",
                 "pcpu",
-                "role",
                 "scheduler",
-                "exclusive",
-                "shared",
+                "scheduler policy:",
                 "sched_bvt",
                 "sched_cbs",
-                "busy%",
-                "timer",
-                "switches",
+                "ticks",
+                "ctx-swi",
                 "resched",
                 "runqueue",
                 "current",
-                "BVT stats:",
-                "CBS stats:",
+                "scheduler summary: BVT:",
+                "CBS:",
+                "BVT threads:",
+                "vt.ratio",
+                "warp.value",
+                "warp.left",
+                "cooldown.left.us",
+                "CBS threads:",
+                "util%",
+                "replenish",
+                "late",
             ],
             ["CPU usage since previous schedstat:"],
         )

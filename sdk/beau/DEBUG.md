@@ -95,14 +95,17 @@ TEE worker 和 vCPU thread；连续两次执行可看线程 CPU 占用与运行�
 schedstat
 ```
 
-`schedstat` 显示每个 pCPU 的 scheduler policy、busy%、runqueue 与 BVT/RTDS/CBS 诊断；
-CBS histogram 在第一次调用时是累计值，第二次及以后才是窗口增量。
+`schedstat` 先显示每种实际 scheduler 的策略说明，再显示每个 pCPU 的 scheduler、累计 ticks、
+ctx-swi、resched、runqueue 与即时 current，并以独立窄表分别显示 BVT、CBS、RTDS 的算法状态：
+BVT 显示 weight/vt.ratio/avt/evt/warp.value/warp.left/cooldown.left.us；`cooldown.left.us` 为
+再次允许 warp 前的剩余冷却时间。CBS/RTDS 显示
+util%/period/budget/remain/deadline，CBS 另显示 depleted/replenish/late。`util%` 是预算占
+周期的比例。逐线程运行状态与 CPU 占用由 `ps` 提供。
 
 在 WDT quiesce 故障中，重点观察承载目标 vCPU 的 pCPU：
 
-- busy% 是否持续接近 100%。
 - runqueue 是否持续有积压。
-- CBS 是否出现 depleted、overrun 或大于等于 5 ms 的 latency tail。
+- CBS 是否出现 depleted，或 remain/deadline 长期没有推进。
 - 该 pCPU 的 `ps` 是否长期由一个 guest vCPU 或 helper 占用。
 
 `schedstat` 不能直接显示 quiesce ACK generation；需要用 `vmstat` 的 `wait` mask、WDT 现场和

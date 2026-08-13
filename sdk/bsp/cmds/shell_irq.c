@@ -16,7 +16,54 @@
 #include "shell_cmds.h"
 
 #ifdef CONFIG_ARM64
+#define SHELL_IRQSTAT_INVALID_VM_ID	0xffffU
+
 static struct arm64_vgic_irq_stats shell_irqstat_vgic_stats[ARM64_VGIC_IRQSTAT_MAX];
+
+static bool shell_irqstat_vgic_before(const struct arm64_vgic_irq_stats *left,
+	const struct arm64_vgic_irq_stats *right)
+{
+	if (left->vm_id != right->vm_id) {
+		return left->vm_id < right->vm_id;
+	}
+	if (left->vcpu_id != right->vcpu_id) {
+		return left->vcpu_id < right->vcpu_id;
+	}
+
+	return left->virq < right->virq;
+}
+
+/* [20260813] VM-grouped vIRQ shell snapshot
+ *
+ * vGIC locked snapshot -> shell-local stable sort -> VM sections
+ *                                      |
+ *                                      +--> vCPU / INTID rows
+ *
+ * Key rule:
+ *   - vGIC owns the live sparse counters and copies a complete snapshot before
+ *     this shell code mutates its private buffer;
+ *   - equal keys retain their snapshot order, while VM/vCPU/INTID ordering
+ *     makes separate guest interrupt domains readable without changing data;
+ *   - reporting never takes the vGIC lock or changes guest state, preventing
+ *     diagnostics from delaying interrupt delivery.
+ */
+static void shell_irqstat_sort_vgic_stats(uint16_t count)
+{
+	uint16_t idx;
+
+	for (idx = 1U; idx < count; idx++) {
+		struct arm64_vgic_irq_stats entry = shell_irqstat_vgic_stats[idx];
+		uint16_t insert = idx;
+
+		while ((insert > 0U) && shell_irqstat_vgic_before(&entry,
+			&shell_irqstat_vgic_stats[insert - 1U])) {
+			shell_irqstat_vgic_stats[insert] =
+				shell_irqstat_vgic_stats[insert - 1U];
+			insert--;
+		}
+		shell_irqstat_vgic_stats[insert] = entry;
+	}
+}
 #endif
 struct irqstat_total {
 	uint64_t count;
@@ -155,6 +202,7 @@ static void shell_print_guest_irqstat(void)
 	struct arm64_vgic_irqstat_summary summary;
 	uint16_t count;
 	uint16_t idx;
+	uint16_t vm_id = SHELL_IRQSTAT_INVALID_VM_ID;
 
 	/*
 	 * Guest vIRQ latency columns:
@@ -179,22 +227,31 @@ static void shell_print_guest_irqstat(void)
 	count = arm64_vgicv3_get_irq_stats(shell_irqstat_vgic_stats,
 		ARRAY_SIZE(shell_irqstat_vgic_stats));
 	arm64_vgicv3_get_irqstat_summary(&summary);
-	shell_item_section("guest virq: entries:%hu/%hu evicted:%lu dropped:%lu",
+	shell_item_section("guest vIRQ: entries:%hu/%hu evicted:%lu dropped:%lu",
 		summary.used, summary.capacity, summary.evicted, summary.dropped);
 	if (count == 0U) {
 		shell_item_line("(no guest-visible virtual IRQ activity)");
 		return;
 	}
 
+	shell_irqstat_sort_vgic_stats(count);
+
 #if CONFIG_IRQSTAT_LATENCY
-	shell_item_line("vm   vcpu virq  type  live assert   deassert lr       eoi      raise-lr min/avg/max      lr-eoi min/avg/max");
-	shell_item_line("──── ──── ───── ───── ──── ──────── ──────── ──────── ──────── ───────────────────────── ─────────────────────────");
+	const char * const header = "vcpu vIRQ  type  live assert   deassert lr       eoi      raise-lr min/avg/max      lr-eoi min/avg/max";
+	const char * const separator = "──── ───── ───── ──── ──────── ──────── ──────── ──────── ───────────────────────── ─────────────────────────";
 #else
-	shell_item_line("vm   vcpu virq  type  live assert   deassert lr       eoi");
-	shell_item_line("──── ──── ───── ───── ──── ──────── ──────── ──────── ────────");
+	const char * const header = "vcpu vIRQ  type  live assert   deassert lr       eoi";
+	const char * const separator = "──── ───── ───── ──── ──────── ──────── ──────── ────────";
 #endif
 	for (idx = 0U; idx < count; idx++) {
 		const struct arm64_vgic_irq_stats *entry = &shell_irqstat_vgic_stats[idx];
+
+		if (entry->vm_id != vm_id) {
+			vm_id = entry->vm_id;
+			shell_item_section("guest vIRQ vm%hu", vm_id);
+			shell_item_line("%s", header);
+			shell_item_line("%s", separator);
+		}
 
 #if CONFIG_IRQSTAT_LATENCY
 		char raise_to_lr[40U];
@@ -204,8 +261,7 @@ static void shell_print_guest_irqstat(void)
 			&entry->raise_to_lr);
 		shell_irqstat_format_vgic_latency(lr_to_eoi, sizeof(lr_to_eoi),
 			&entry->lr_to_eoi);
-		shell_item_line("%-4hu %-4hu %-5u %-5s %-4s %-8lu %-8lu %-8lu %-8lu %-25s %-25s",
-			entry->vm_id,
+		shell_item_line("%-4hu %-5u %-5s %-4s %-8lu %-8lu %-8lu %-8lu %-25s %-25s",
 			entry->vcpu_id,
 			entry->virq,
 			entry->level ? "level" : "edge",
@@ -217,8 +273,7 @@ static void shell_print_guest_irqstat(void)
 			raise_to_lr,
 			lr_to_eoi);
 #else
-		shell_item_line("%-4hu %-4hu %-5u %-5s %-4s %-8lu %-8lu %-8lu %-8lu",
-			entry->vm_id,
+		shell_item_line("%-4hu %-5u %-5s %-4s %-8lu %-8lu %-8lu %-8lu",
 			entry->vcpu_id,
 			entry->virq,
 			entry->level ? "level" : "edge",
@@ -259,7 +314,7 @@ int32_t shell_irqstat(int32_t argc, __unused char **argv)
 	/* Host active is descriptor allocation; CPU columns are entry counts; optional
 	 * handler-lat is min/avg/max handler duration in us.
 	 */
-	shell_item_section("host pirq: nr_irqs=%u, pcpus=%hu", NR_IRQS, pcpu_num);
+	shell_item_section("host pIRQ: nr_irqs=%u, pcpus=%hu", NR_IRQS, pcpu_num);
 	shell_puts("│   irq   name             active ");
 	shell_print_irq_cpu_headers(pcpu_num);
 #if CONFIG_IRQSTAT_LATENCY

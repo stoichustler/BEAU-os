@@ -358,13 +358,26 @@ static void sched_bvt_snapshot(const struct thread_object *obj,
 	uint64_t now_tsc = cpu_ticks();
 	uint64_t residual = data->residual;
 	uint64_t delta_mcu = 0U;
+	uint64_t cooldown_ticks = 0U;
 
 	*stats = (struct sched_bvt_stats) {
 		.weight = data->weight,
 		.vt_ratio = data->vt_ratio,
 		.avt = data->avt,
 		.evt = data->evt,
+		.warp_value = data->warp_value,
+		.warp_left = data->warp_left,
 	};
+	if (!data->warp_on && (data->mcu != 0UL) && (data->unwarp_period != 0U) &&
+		(data->last_unwarp_tsc != 0UL) &&
+		((uint64_t)data->unwarp_period <= (UINT64_MAX / data->mcu))) {
+		cooldown_ticks = (uint64_t)data->unwarp_period * data->mcu;
+		if ((now_tsc > data->last_unwarp_tsc) &&
+			((now_tsc - data->last_unwarp_tsc) < cooldown_ticks)) {
+			stats->cooldown_left_ticks = cooldown_ticks -
+				(now_tsc - data->last_unwarp_tsc);
+		}
+	}
 
 	if ((obj->status == THREAD_STS_RUNNING) && !is_idle_thread(obj) &&
 		(now_tsc > data->start_tsc)) {
