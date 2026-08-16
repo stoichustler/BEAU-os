@@ -1,0 +1,23 @@
+#
+# Copyright 2025, Colias Group, LLC
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+
+[workspace]
+resolver = "3"
+members = [
+    "tool/microkit",
+    "initialiser",
+]
+
+[workspace.dependencies.sel4-capdl-initializer]
+git = "https://github.com/seL4/rust-sel4"
+rev = "dbe6445d56059ed9a757e53c7137892aece1d179"
+
+[workspace.dependencies.sel4-capdl-initializer-types]
+git = "https://github.com/seL4/rust-sel4"
+rev = "dbe6445d56059ed9a757e53c7137892aece1d179"
+
+[profile.release.package.microkit-tool]
+strip = true

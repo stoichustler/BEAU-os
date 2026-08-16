@@ -1,0 +1,123 @@
+VMOS_VENV ?= $(HOME)/.venvs/secure-os-vmos
+PYTHON ?= $(if $(wildcard $(VMOS_VENV)/bin/python3),$(VMOS_VENV)/bin/python3,python3)
+BOARD ?= qemu_virt_aarch64
+KERNEL_PLATFORM ?= qemu-arm-virt
+GCC_CPU ?= cortex-a53
+LOADER_LINK_ADDRESS ?= 0x70000000
+CPUS ?= 4
+CONFIG ?= debug
+JOBS ?= $(shell nproc)
+BUILD_DIR ?= build/vmos
+CMAKE_DEFS ?=
+SUPPORT_MANIFEST ?= vmos/support/Cargo.toml
+SUPPORT_TARGET ?= $(BUILD_DIR)/.support-target
+QEMU_SMOKE_MANIFEST ?= vmos/qemu-smoke/Cargo.toml
+QEMU_SMOKE_TARGET ?= $(BUILD_DIR)/.qemu-smoke-target
+RUSTC ?= rustc
+AARCH64_LD ?= aarch64-none-elf-ld
+QEMU ?= qemu-system-aarch64
+QEMU_MEMORY ?= 2G
+
+VMOS_OUTPUT := $(BUILD_DIR)/$(BOARD)/$(CONFIG)
+VMOS_SDK := $(VMOS_OUTPUT)/sdk
+QEMU_BUILD := $(VMOS_OUTPUT)/qemu
+QEMU_SMOKE_ELF := $(QEMU_BUILD)/vmos-qemu-smoke.elf
+QEMU_IMAGE := $(QEMU_BUILD)/loader.img
+QEMU_REPORT := $(QEMU_BUILD)/report.txt
+
+.PHONY: build qemu-image qemu test verify-source clean help
+
+build:
+	$(PYTHON) build_vmos.py \
+		--board $(BOARD) \
+		--kernel-platform $(KERNEL_PLATFORM) \
+		--gcc-cpu $(GCC_CPU) \
+		--loader-link-address $(LOADER_LINK_ADDRESS) \
+		--cpus $(CPUS) \
+		--config $(CONFIG) \
+		--jobs $(JOBS) \
+		--build-dir $(BUILD_DIR) \
+		$(CMAKE_DEFS)
+	CARGO_TARGET_DIR=$(abspath $(SUPPORT_TARGET)) cargo run --quiet --manifest-path $(SUPPORT_MANIFEST) -- \
+		publish \
+		--sdk $(BUILD_DIR)/$(BOARD)/$(CONFIG)/sdk \
+		--board $(BOARD) \
+		--config $(CONFIG) \
+		--output $(BUILD_DIR)/$(BOARD)/$(CONFIG)
+
+qemu-image: build
+	@test "$(BOARD)" = "qemu_virt_aarch64" || { \
+		echo "qemu-image only supports BOARD=qemu_virt_aarch64" >&2; exit 2; \
+	}
+	mkdir -p $(QEMU_BUILD)
+	$(RUSTC) --edition=2021 \
+		--target aarch64-unknown-none \
+		-C opt-level=2 \
+		-C panic=abort \
+		-C linker=$(AARCH64_LD) \
+		-C link-arg=-L$(VMOS_SDK)/board/$(BOARD)/$(CONFIG)/lib \
+		-C link-arg=-lmicrokit \
+		-C link-arg=-T$(VMOS_SDK)/board/$(BOARD)/$(CONFIG)/lib/microkit.ld \
+		-o $(QEMU_SMOKE_ELF) \
+		vmos/qemu-smoke/src/main.rs
+	$(VMOS_SDK)/bin/microkit \
+		vmos/qemu-smoke/qemu-smoke.system \
+		--search-path $(QEMU_BUILD) \
+		--board $(BOARD) \
+		--config $(CONFIG) \
+		-o $(QEMU_IMAGE) \
+		-r $(QEMU_REPORT)
+
+qemu: qemu-image
+	$(QEMU) \
+		-machine virt,virtualization=on \
+		-cpu $(GCC_CPU) \
+		-smp $(CPUS) \
+		-nographic \
+		-serial mon:stdio \
+		-m size=$(QEMU_MEMORY) \
+		-device loader,file=$(QEMU_IMAGE),addr=$(LOADER_LINK_ADDRESS),cpu-num=0
+
+test:
+	$(PYTHON) -m unittest discover -s vmos/tests -v
+	CARGO_TARGET_DIR=$(abspath $(SUPPORT_TARGET)) cargo test --manifest-path $(SUPPORT_MANIFEST)
+	CARGO_TARGET_DIR=$(abspath $(QEMU_SMOKE_TARGET)) cargo test --manifest-path $(QEMU_SMOKE_MANIFEST)
+
+verify-source:
+	CARGO_TARGET_DIR=$(abspath $(SUPPORT_TARGET)) cargo run --quiet --manifest-path $(SUPPORT_MANIFEST) -- \
+		verify --root vmos --manifest vmos/UPSTREAM_SHA256
+
+clean:
+	rm -rf build/vmos
+
+help:
+	@echo "VMOS ARM64 hypervisor build"
+	@echo ""
+	@echo "Targets:"
+	@echo "  build          Build seL4 and all VMOS components"
+	@echo "  qemu-image     Package the Rust VMOS QEMU smoke image"
+	@echo "  qemu           Build and boot the smoke image with qemu-system-aarch64"
+	@echo "  test           Run VMOS Python and Rust unit tests"
+	@echo "  verify-source  Verify the standalone vendored-source checksums"
+	@echo "  clean          Remove build/vmos only"
+	@echo "  help           Show this help"
+	@echo ""
+	@echo "Variables (defaults):"
+	@echo "  VMOS_VENV=$(VMOS_VENV)"
+	@echo "  PYTHON=$(PYTHON)"
+	@echo "  BOARD=$(BOARD)"
+	@echo "  KERNEL_PLATFORM=$(KERNEL_PLATFORM)"
+	@echo "  GCC_CPU=$(GCC_CPU)"
+	@echo "  LOADER_LINK_ADDRESS=$(LOADER_LINK_ADDRESS)"
+	@echo "  CPUS=$(CPUS)"
+	@echo "  CONFIG=$(CONFIG)"
+	@echo "  JOBS=$(JOBS)"
+	@echo "  BUILD_DIR=$(BUILD_DIR)"
+	@echo "  SUPPORT_TARGET=$(SUPPORT_TARGET)"
+	@echo "  QEMU_SMOKE_TARGET=$(QEMU_SMOKE_TARGET)"
+	@echo "  QEMU=$(QEMU)"
+	@echo "  QEMU_MEMORY=$(QEMU_MEMORY)"
+	@echo "  CMAKE_DEFS='--cmake-def KEY=VALUE ...'"
+	@echo ""
+	@echo "Primary ELF output: build/vmos/BOARD/CONFIG/elf"
+	@echo "Internal SDK:       build/vmos/BOARD/CONFIG/sdk"

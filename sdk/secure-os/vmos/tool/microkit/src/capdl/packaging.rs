@@ -1,0 +1,64 @@
+//
+// Copyright 2025, UNSW
+//
+// SPDX-License-Identifier: BSD-2-Clause
+//
+
+use crate::{
+    capdl::{initialiser::CapDLInitialiser, spec::FillContent, CapDLSpecContainer},
+    elf::ElfFile,
+    sel4::{Config, PageSize},
+};
+
+pub fn pack_spec_into_initial_task(
+    sel4_config: &Config,
+    build_config: &str,
+    spec_container: &CapDLSpecContainer,
+    system_elfs: &[ElfFile],
+    capdl_initialiser: &mut CapDLInitialiser,
+) {
+    let compress_frames = true;
+    let embed_frames = true;
+
+    let (mut output_spec, embedded_frame_data_list) = spec_container.spec.embed_fill(
+        PageSize::Small.fixed_size_bits(sel4_config) as u8,
+        |_| embed_frames,
+        |d, buf: &mut [u8]| {
+            match d {
+                FillContent::ElfContent(elf_content) => {
+                    buf.copy_from_slice(
+                        &system_elfs[elf_content.elf_id].segments[elf_content.elf_seg_idx].data()
+                            [elf_content.elf_seg_data_range.clone()],
+                    );
+                }
+                FillContent::BytesContent(bytes_content) => {
+                    buf.copy_from_slice(&bytes_content.bytes);
+                }
+            }
+
+            compress_frames
+        },
+    );
+
+    let embedded_frame_data = embedded_frame_data_list
+        .into_iter()
+        .flatten()
+        .collect::<Vec<u8>>();
+
+    for named_obj in output_spec.objects.iter_mut() {
+        match build_config {
+            "smp-debug" | "debug" => {}
+            // We don't copy over the object names as there is no debug printing in these configuration to save memory.
+            "release" | "benchmark" | "smp-release" | "smp-benchmark" => named_obj.name = None,
+            _ => panic!("unknown configuration {build_config}"),
+        };
+    }
+
+    output_spec.cache_orig_cap_slots();
+
+    output_spec.set_log_level(capdl_initialiser.log_level as u8);
+
+    let initialiser_payload = output_spec.to_bytes().unwrap();
+
+    capdl_initialiser.add_spec(initialiser_payload, embedded_frame_data);
+}
