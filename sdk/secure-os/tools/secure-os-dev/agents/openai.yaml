@@ -1,0 +1,4 @@
+interface:
+  display_name: "Secure OS Development"
+  short_description: "Guarded seL4 and VMOS development workflow"
+  default_prompt: "Use $secure-os-dev to develop a reviewed Rust VMOS feature in secure-os."

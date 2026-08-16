@@ -131,6 +131,92 @@ fn publish_elfs(sdk: &Path, board: &str, config: &str, output: &Path) -> Result<
     Ok(())
 }
 
+#[cfg(test)]
+fn scan_architecture_markers(path: &Path, violations: &mut Vec<String>) -> Result<(), String> {
+    for entry in
+        fs::read_dir(path).map_err(|error| format!("cannot scan {}: {error}", path.display()))?
+    {
+        let entry = entry.map_err(|error| format!("cannot scan {}: {error}", path.display()))?;
+        let entry_path = entry.path();
+        if entry_path.is_dir() {
+            scan_architecture_markers(&entry_path, violations)?;
+            continue;
+        }
+        let extension = entry_path.extension().and_then(|value| value.to_str());
+        let is_makefile =
+            entry_path.file_name().and_then(|value| value.to_str()) == Some("Makefile");
+        if !is_makefile
+            && !matches!(extension, Some("c" | "h" | "rs" | "s" | "S" | "toml" | "xml" | "ld"))
+        {
+            continue;
+        }
+        let contents = fs::read_to_string(&entry_path)
+            .map_err(|error| format!("cannot read {}: {error}", entry_path.display()))?;
+        let lowercase = contents.to_ascii_lowercase();
+        if ["x86", "ia32", "pc99", "config_vtx"].iter().any(|marker| lowercase.contains(marker)) {
+            violations.push(format!("x86 marker remains in {}", entry_path.display()));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn audit_arm64_only(root: &Path) -> Result<(), String> {
+    let forbidden_paths = [
+        "include/arch/x86",
+        "include/plat/pc99",
+        "src/arch/x86",
+        "src/plat/pc99",
+        "libsel4/arch_include/x86",
+        "libsel4/sel4_arch_include/ia32",
+        "libsel4/sel4_arch_include/x86_64",
+        "libsel4/sel4_plat_include/pc99",
+        "configs/X64_verified.cmake",
+    ];
+    let mut violations = Vec::new();
+    for relative in forbidden_paths {
+        if root.join(relative).exists() {
+            violations.push(format!("forbidden architecture path remains: {relative}"));
+        }
+    }
+
+    let root_cmake = fs::read_to_string(root.join("CMakeLists.txt"))
+        .map_err(|error| format!("cannot read CMakeLists.txt: {error}"))?;
+    if ["KernelArchX86", "KernelSel4ArchX86", "KernelSel4ArchIA32", "elf_x86"]
+        .iter()
+        .any(|marker| root_cmake.contains(marker))
+    {
+        violations.push("x86 build logic remains in CMakeLists.txt".to_string());
+    }
+
+    let sel4_config = fs::read_to_string(root.join("configs/seL4Config.cmake"))
+        .map_err(|error| format!("cannot read configs/seL4Config.cmake: {error}"))?;
+    if ["\"x86_64;", "\"ia32;", "\"x86;KernelArchX86"]
+        .iter()
+        .any(|marker| sel4_config.contains(marker))
+    {
+        violations
+            .push("x86 architecture remains selectable in configs/seL4Config.cmake".to_string());
+    }
+
+    for relative in ["vmos/libmicrokit", "vmos/monitor"] {
+        scan_architecture_markers(&root.join(relative), &mut violations)?;
+    }
+
+    let tool_config = root.join("vmos/tool/microkit/src/sel4.rs");
+    let tool_config_contents = fs::read_to_string(&tool_config)
+        .map_err(|error| format!("cannot read {}: {error}", tool_config.display()))?;
+    if tool_config_contents.contains("\"x86_64\" => Arch::X86_64") {
+        violations.push("VMOS tool still accepts x86_64 SDK configurations".to_string());
+    }
+
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(violations.join("\n"))
+    }
+}
+
 fn value_after(args: &[String], option: &str) -> Result<PathBuf, String> {
     let index = args
         .iter()
@@ -299,5 +385,11 @@ mod tests {
         assert_eq!(fs::read(output.join("elf/loader.elf")).unwrap(), b"loader");
         assert_eq!(fs::read(output.join("elf/monitor.elf")).unwrap(), b"monitor");
         assert_eq!(fs::read(output.join("elf/initialiser.elf")).unwrap(), b"initialiser");
+    }
+
+    #[test]
+    fn repository_contains_no_x86_support() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        audit_arm64_only(&repository).unwrap();
     }
 }

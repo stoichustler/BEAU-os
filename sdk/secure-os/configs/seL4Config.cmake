@@ -52,9 +52,12 @@ macro(declare_seL4_arch)
     "aarch64;KernelSel4ArchAarch64;ARCH_AARCH64"
     "arm_hyp;KernelSel4ArchArmHyp;ARCH_ARM_HYP"
     "riscv32;KernelSel4ArchRiscV32;ARCH_RISCV32"
-    "riscv64;KernelSel4ArchRiscV64;ARCH_RISCV64"
-    "x86_64;KernelSel4ArchX86_64;ARCH_X86_64"
-    "ia32;KernelSel4ArchIA32;ARCH_IA32")
+    "riscv64;KernelSel4ArchRiscV64;ARCH_RISCV64")
+
+  # rust-sel4 consumes these legacy keys even when the corresponding
+  # architectures are unavailable. Keep them explicitly disabled.
+  config_set(KernelSel4ArchX86_64 ARCH_X86_64 OFF)
+  config_set(KernelSel4ArchIA32 ARCH_IA32 OFF)
 
   if(KernelSel4ArchArmHyp)
     # arm-hyp is basically aarch32. This should be cleaned up and aligned
@@ -68,15 +71,16 @@ macro(declare_seL4_arch)
     ARCH
     "Architecture to use when building the kernel"
     "arm;KernelArchARM;ARCH_ARM;KernelSel4ArchAarch32 OR KernelSel4ArchAarch64"
-    "riscv;KernelArchRiscV;ARCH_RISCV;KernelSel4ArchRiscV32 OR KernelSel4ArchRiscV64"
-    "x86;KernelArchX86;ARCH_X86;KernelSel4ArchX86_64 OR KernelSel4ArchIA32")
+    "riscv;KernelArchRiscV;ARCH_RISCV;KernelSel4ArchRiscV32 OR KernelSel4ArchRiscV64")
+
+  config_set(KernelArchX86 ARCH_X86 OFF)
 
   # Set kernel mode options
-  if(KernelSel4ArchAarch32 OR KernelSel4ArchRiscV32 OR KernelSel4ArchIA32)
+  if(KernelSel4ArchAarch32 OR KernelSel4ArchRiscV32)
     config_set(KernelWordSize WORD_SIZE 32)
     set(Kernel64 OFF CACHE INTERNAL "")
     set(Kernel32 ON CACHE INTERNAL "")
-  elseif(KernelSel4ArchAarch64 OR KernelSel4ArchRiscV64 OR KernelSel4ArchX86_64)
+  elseif(KernelSel4ArchAarch64 OR KernelSel4ArchRiscV64)
     config_set(KernelWordSize WORD_SIZE 64)
     set(Kernel64 ON CACHE INTERNAL "")
     set(Kernel32 OFF CACHE INTERNAL "")
@@ -93,7 +97,7 @@ endmacro()
 # config1: the CMake configuration name. Such as KernelPlatImx7.
 # config2: the C header file config name without CONFIG_. Such as PLAT_IMX7_SABRE.
 # enable_test: A CMake boolean formula that allows the option to be selected.
-#     e.g. "KernelSel4ArchAarch32", or "KernelSel4ArchX86_64 OR KernelSel4ArchIA32"
+#     e.g. "KernelSel4ArchAarch32" or "KernelSel4ArchRiscV64"
 macro(declare_platform name config1 config2 enable_test)
   list(APPEND kernel_platforms "${name}\;${config1}\;${config2}\;${enable_test}")
   if("${KernelPlatform}" STREQUAL ${name})

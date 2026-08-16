@@ -47,7 +47,6 @@ seL4_Word pd_stack_bottom_addrs[MAX_PDS];
 
 /* Sanity check that the architecture specific macro have been set. */
 #if defined(ARCH_aarch64)
-#elif defined(ARCH_x86_64)
 #elif defined(ARCH_riscv64)
 #else
 #error "No architecture flag was defined, double check your CC flags"
@@ -228,29 +227,6 @@ static char *data_abort_dfsc_to_string(uintptr_t dfsc)
         return "unsupported atomic hardware update fault";
     }
     return "<unexpected DFSC>";
-}
-#endif
-
-#ifdef ARCH_x86_64
-static char *page_fault_to_string(seL4_Word fsr)
-{
-    // https://wiki.osdev.org/Exceptions#Page_Fault
-    switch (fsr) {
-    case 0 | 4:
-        return "read to a non-present page at ring 3";
-    case 1 | 4:
-        return "page-protection violation from read at ring 3";
-    case 2 | 4:
-        return "write to a non-present page at ring 3";
-    case 3 | 4:
-        return "page-protection violation from write at ring 3";
-    case 16:
-        // Note that seL4 currently does not implement the NX/XD bit
-        // to mark a page as non-executable so we will never see the below message.
-        return "instruction fetch from non-executable page";
-    default:
-        return "invalid FSR or unimplemented decoding";
-    }
 }
 #endif
 
@@ -553,68 +529,6 @@ static void print_tcb_registers(seL4_UserContext *regs)
     puts("tpidrro_el0 : ");
     puthex64(regs->tpidrro_el0);
     puts("\n");
-#elif ARCH_x86_64
-    puts("Registers: \n");
-    puts("rip : ");
-    puthex64(regs->rip);
-    puts("\n");
-    puts("rsp : ");
-    puthex64(regs->rsp);
-    puts("\n");
-    puts("rflags : ");
-    puthex64(regs->rflags);
-    puts("\n");
-    puts("rax : ");
-    puthex64(regs->rax);
-    puts("\n");
-    puts("rbx : ");
-    puthex64(regs->rbx);
-    puts("\n");
-    puts("rcx : ");
-    puthex64(regs->rcx);
-    puts("\n");
-    puts("rdx : ");
-    puthex64(regs->rdx);
-    puts("\n");
-    puts("rsi : ");
-    puthex64(regs->rsi);
-    puts("\n");
-    puts("rdi : ");
-    puthex64(regs->rdi);
-    puts("\n");
-    puts("rbp : ");
-    puthex64(regs->rbp);
-    puts("\n");
-    puts("r8 : ");
-    puthex64(regs->r8);
-    puts("\n");
-    puts("r9 : ");
-    puthex64(regs->r9);
-    puts("\n");
-    puts("r10 : ");
-    puthex64(regs->r10);
-    puts("\n");
-    puts("r11 : ");
-    puthex64(regs->r11);
-    puts("\n");
-    puts("r12 : ");
-    puthex64(regs->r12);
-    puts("\n");
-    puts("r13 : ");
-    puthex64(regs->r13);
-    puts("\n");
-    puts("r14 : ");
-    puthex64(regs->r14);
-    puts("\n");
-    puts("r15 : ");
-    puthex64(regs->r15);
-    puts("\n");
-    puts("fs_base : ");
-    puthex64(regs->fs_base);
-    puts("\n");
-    puts("gs_base : ");
-    puthex64(regs->gs_base);
-    puts("\n");
 #endif
 }
 
@@ -636,29 +550,6 @@ static void riscv_print_vm_fault()
     puts("\n");
     puts("MON|ERROR: description of fault: ");
     puts(riscv_fsr_to_string(fsr));
-    puts("\n");
-}
-#endif
-
-#if ARCH_x86_64
-static void x86_64_print_vm_fault()
-{
-    seL4_Word ip = seL4_GetMR(seL4_VMFault_IP);
-    seL4_Word fault_addr = seL4_GetMR(seL4_VMFault_Addr);
-    seL4_Word is_instruction = seL4_GetMR(seL4_VMFault_PrefetchFault);
-    seL4_Word fsr = seL4_GetMR(seL4_VMFault_FSR);
-    puts("MON|ERROR: VMFault: ip=");
-    puthex64(ip);
-    puts("  fault_addr=");
-    puthex64(fault_addr);
-    puts("  fsr=");
-    puthex64(fsr);
-    puts("  ");
-    puts(is_instruction ? "(instruction fault)" : "(data fault)");
-    puts("\n");
-
-    puts("MON|ERROR: description of fault: ");
-    puts(page_fault_to_string(fsr));
     puts("\n");
 }
 #endif
@@ -843,8 +734,6 @@ static void monitor(void)
             aarch64_print_vm_fault();
 #elif defined(ARCH_riscv64)
             riscv_print_vm_fault();
-#elif defined(ARCH_x86_64)
-            x86_64_print_vm_fault();
 #else
 #error "Unknown architecture to print a VM fault for"
 #endif

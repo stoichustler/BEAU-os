@@ -47,32 +47,7 @@ include(config.cmake)
 
 string(APPEND common_flags " -D__KERNEL_${KernelWordSize}__")
 
-if(KernelArchX86)
-  if(${KernelX86MicroArch} STREQUAL "generic")
-    string(APPEND common_flags " -mtune=generic")
-  else()
-    string(APPEND common_flags " -march=${KernelX86MicroArch}")
-  endif()
-
-  if(KernelSel4ArchX86_64)
-    string(APPEND common_exe_flags " -Wl,-m,elf_x86_64")
-  elseif(KernelSel4ArchIA32)
-    string(APPEND common_exe_flags " -Wl,-m,elf_i386")
-  else()
-    message(FATAL_ERROR "unknown x86 KernelSel4Arch '${KernelSel4Arch}'")
-  endif()
-
-  string(APPEND c_common_flags " -m${KernelWordSize}")
-
-  if(LLVM_TOOLCHAIN)
-    if(KernelSel4ArchIA32)
-      string(APPEND asm_common_flags " -m32")
-    endif()
-  else() # default is GCC toolchain
-    string(APPEND asm_common_flags " -Wa,--${KernelWordSize}")
-  endif()
-
-elseif(KernelArchARM)
+if(KernelArchARM)
   set(arm_march "${KernelArmArmV}${KernelArmMachFeatureModifiers}")
   string(APPEND c_common_flags " -march=${arm_march}")
   string(APPEND asm_common_flags " -march=${arm_march}")
@@ -259,17 +234,7 @@ if(KernelDebugBuild)
   KernelCommonFlags(-g -ggdb)
 endif()
 
-if(KernelArchX86)
-  if(KernelSel4ArchX86_64)
-    KernelCommonFlags(-mcmodel=kernel)
-  elseif(KernelSel4ArchIA32)
-    # nothing special
-  else()
-    message(FATAL_ERROR "unknown x86 KernelSel4Arch '${KernelSel4Arch}'")
-  endif()
-  add_compile_options(-mno-mmx -mno-sse -mno-sse2 -mno-3dnow)
-
-elseif(KernelArchARM)
+if(KernelArchARM)
   if(KernelSel4ArchAarch64)
     KernelCommonFlags(-mgeneral-regs-only)
     if(((CMAKE_C_COMPILER_ID STREQUAL "GNU") AND (CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL

@@ -43,12 +43,6 @@ else ifeq ($(ARCH),riscv64)
 	CFLAGS_ARCH := -mcmodel=medany -march=rv64imac_zicsr_zifencei -mabi=lp64
 
 	ARCH_DIR := riscv
-else ifeq ($(ARCH),x86_64)
-	CFLAGS_ARCH := -march=x86-64 -mtune=$(GCC_CPU)
-	ASM_CPP_FLAGS := -x assembler-with-cpp -c -g
-	ASM_FLAGS := -g -march=generic64
-
-	ARCH_DIR := x86_64
 else
 	$(error ARCH is unsupported)
 endif

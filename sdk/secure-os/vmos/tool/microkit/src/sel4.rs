@@ -418,8 +418,11 @@ impl Config {
         let arch = match json_str(&kernel_config_json, "SEL4_ARCH")? {
             "aarch64" => Arch::Aarch64,
             "riscv64" => Arch::Riscv64,
-            "x86_64" => Arch::X86_64,
-            _ => panic!("Unsupported kernel config architecture"),
+            unsupported => {
+                return Err(format!(
+                    "microkit: error: unsupported kernel config architecture '{unsupported}'"
+                ))
+            }
         };
 
         let (device_regions, normal_regions) = match arch {

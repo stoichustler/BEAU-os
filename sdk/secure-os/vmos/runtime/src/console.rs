@@ -10,6 +10,7 @@ pub enum Command<'a> {
     Echo(&'a str),
     Selftest,
     Stats,
+    Ps,
     Unknown(&'a str),
 }
 
@@ -20,7 +21,33 @@ pub trait Output {
 const LINE_BUFFER_SIZE: usize = 128;
 const MAX_LINE_LENGTH: usize = LINE_BUFFER_SIZE - 1;
 const BANNER: &str = "VMOS runtime console ready\n";
-const PROMPT: &str = "vmos> ";
+const PROMPT: &str = "secure:\\> ";
+
+struct CommandSpec {
+    name: &'static str,
+    usage: &'static str,
+}
+
+const COMMAND_SPECS: [CommandSpec; 7] = [
+    CommandSpec { name: "help", usage: "help" },
+    CommandSpec { name: "version", usage: "version" },
+    CommandSpec { name: "ping", usage: "ping" },
+    CommandSpec { name: "echo", usage: "echo <text>" },
+    CommandSpec { name: "selftest", usage: "selftest" },
+    CommandSpec { name: "stats", usage: "stats" },
+    CommandSpec { name: "ps", usage: "ps" },
+];
+
+struct Program {
+    id: u64,
+    name: &'static str,
+    state: &'static str,
+}
+
+const PROGRAMS: [Program; 2] = [
+    Program { id: 0, name: "monitor", state: "running" },
+    Program { id: 1, name: "vmos_runtime", state: "running" },
+];
 
 pub struct Console<W: Output> {
     output: W,
@@ -67,6 +94,7 @@ impl<W: Output> Console<W> {
                 self.previous_was_cr = true;
             }
             b'\n' => self.finish_line(),
+            b'\t' => self.complete_command(),
             b'\x08' | b'\x7f' => self.erase_character(),
             b' '..=b'~' => self.append_character(byte),
             _ => self.invalid = true,
@@ -97,6 +125,60 @@ impl<W: Output> Console<W> {
 
         self.length -= 1;
         self.output.write_str("\x08 \x08");
+    }
+
+    fn complete_command(&mut self) {
+        if self.discard || self.invalid {
+            self.output.write_str("\x07");
+            return;
+        }
+
+        let Ok(prefix) = core::str::from_utf8(&self.line[..self.length]) else {
+            self.output.write_str("\x07");
+            return;
+        };
+        if prefix.bytes().any(|byte| byte.is_ascii_whitespace()) {
+            self.output.write_str("\x07");
+            return;
+        }
+
+        let mut match_count = 0;
+        let mut unique_match = "";
+        for command in &COMMAND_SPECS {
+            if command.name.starts_with(prefix) {
+                match_count += 1;
+                unique_match = command.name;
+            }
+        }
+
+        match match_count {
+            0 => self.output.write_str("\x07"),
+            1 => {
+                let completion = &unique_match[self.length..];
+                if self.length + completion.len() + 1 > MAX_LINE_LENGTH {
+                    self.output.write_str("\x07");
+                    return;
+                }
+                for byte in completion.bytes() {
+                    self.append_character(byte);
+                }
+                self.append_character(b' ');
+            }
+            _ => {
+                self.output.write_str("\n");
+                let mut separator = "";
+                for command in &COMMAND_SPECS {
+                    if command.name.starts_with(prefix) {
+                        self.output.write_str(separator);
+                        self.output.write_str(command.name);
+                        separator = " ";
+                    }
+                }
+                self.output.write_str("\n");
+                self.output.write_str(PROMPT);
+                self.output.write_str(prefix);
+            }
+        }
     }
 
     fn finish_line(&mut self) {
@@ -140,7 +222,7 @@ impl<W: Output> Console<W> {
                 self.recognized += 1;
                 self.write_stats();
             }
-            Command::Help | Command::Version | Command::Ping | Command::Echo(_) => {
+            Command::Help | Command::Version | Command::Ping | Command::Echo(_) | Command::Ps => {
                 self.recognized += 1;
                 dispatch_command(line, &mut self.output);
             }
@@ -158,7 +240,7 @@ impl<W: Output> Console<W> {
     }
 }
 
-fn write_u64<W: Output>(output: &mut W, mut value: u64) {
+fn write_u64<W: Output + ?Sized>(output: &mut W, mut value: u64) {
     let mut digits = [0_u8; 20];
     let mut start = digits.len();
 
@@ -206,6 +288,7 @@ pub fn parse_command(input: &str) -> Command<'_> {
         "echo" => Command::Echo(arguments),
         "selftest" => Command::Selftest,
         "stats" => Command::Stats,
+        "ps" => Command::Ps,
         _ => Command::Unknown(name),
     }
 }
@@ -214,7 +297,12 @@ pub fn dispatch_command<W: Output + ?Sized>(input: &str, output: &mut W) {
     match parse_command(input) {
         Command::Empty => {}
         Command::Help => {
-            output.write_str("commands: help version ping echo <text> selftest stats\n");
+            output.write_str("commands:");
+            for command in &COMMAND_SPECS {
+                output.write_str(" ");
+                output.write_str(command.usage);
+            }
+            output.write_str("\n");
         }
         Command::Version => {
             output.write_str("VMOS runtime console | ARM64 | seL4/Microkit | Rust\n");
@@ -224,12 +312,27 @@ pub fn dispatch_command<W: Output + ?Sized>(input: &str, output: &mut W) {
             output.write_str(text);
             output.write_str("\n");
         }
+        Command::Ps => write_programs(output),
         Command::Selftest | Command::Stats => {}
         Command::Unknown(name) => {
             output.write_str("ERROR: unknown command '");
             output.write_str(name);
             output.write_str("'; use 'help'\n");
         }
+    }
+}
+
+fn write_programs<W: Output + ?Sized>(output: &mut W) {
+    output.write_str("ID  NAME          STATE\n");
+    for program in &PROGRAMS {
+        write_u64(output, program.id);
+        output.write_str("   ");
+        output.write_str(program.name);
+        for _ in program.name.len()..14 {
+            output.write_str(" ");
+        }
+        output.write_str(program.state);
+        output.write_str("\n");
     }
 }
 
@@ -254,12 +357,25 @@ mod tests {
 
     #[test]
     fn dispatches_exact_command_responses() {
-        assert_eq!(response("help"), "commands: help version ping echo <text> selftest stats\n");
+        assert_eq!(response("help"), "commands: help version ping echo <text> selftest stats ps\n");
         assert_eq!(response("version"), "VMOS runtime console | ARM64 | seL4/Microkit | Rust\n");
         assert_eq!(response("ping"), "pong\n");
         assert_eq!(response("echo hello"), "hello\n");
         assert_eq!(response("echo"), "\n");
         assert_eq!(response("bad"), "ERROR: unknown command 'bad'; use 'help'\n");
+    }
+
+    #[test]
+    fn parses_ps_as_a_command() {
+        assert_eq!(parse_command("ps"), Command::Ps);
+    }
+
+    #[test]
+    fn ps_lists_every_persistent_userspace_program() {
+        assert_eq!(
+            response("ps"),
+            "ID  NAME          STATE\n0   monitor       running\n1   vmos_runtime  running\n"
+        );
     }
 
     #[test]
@@ -288,25 +404,34 @@ mod tests {
     #[test]
     fn start_prints_banner_and_prompt() {
         let console = started_console();
-        assert_eq!(console.output.0, "VMOS runtime console ready\nvmos> ");
+        assert_eq!(console.output.0, "VMOS runtime console ready\nsecure:\\> ");
     }
 
     #[test]
     fn echoes_printable_input_and_executes_on_cr_or_lf() {
         let mut cr_console = started_console();
         type_bytes(&mut cr_console, b"ping\r");
-        assert_eq!(cr_console.output.0, "VMOS runtime console ready\nvmos> ping\npong\nvmos> ");
+        assert_eq!(
+            cr_console.output.0,
+            "VMOS runtime console ready\nsecure:\\> ping\npong\nsecure:\\> "
+        );
 
         let mut lf_console = started_console();
         type_bytes(&mut lf_console, b"ping\n");
-        assert_eq!(lf_console.output.0, "VMOS runtime console ready\nvmos> ping\npong\nvmos> ");
+        assert_eq!(
+            lf_console.output.0,
+            "VMOS runtime console ready\nsecure:\\> ping\npong\nsecure:\\> "
+        );
     }
 
     #[test]
     fn crlf_executes_one_command() {
         let mut console = started_console();
         type_bytes(&mut console, b"ping\r\n");
-        assert_eq!(console.output.0, "VMOS runtime console ready\nvmos> ping\npong\nvmos> ");
+        assert_eq!(
+            console.output.0,
+            "VMOS runtime console ready\nsecure:\\> ping\npong\nsecure:\\> "
+        );
     }
 
     #[test]
@@ -315,15 +440,50 @@ mod tests {
         type_bytes(&mut console, b"pign\x08\x7fng\r");
         assert_eq!(
             console.output.0,
-            "VMOS runtime console ready\nvmos> pign\x08 \x08\x08 \x08ng\npong\nvmos> "
+            "VMOS runtime console ready\nsecure:\\> pign\x08 \x08\x08 \x08ng\npong\nsecure:\\> "
         );
+    }
+
+    #[test]
+    fn tab_completes_a_unique_command_and_appends_a_space() {
+        let mut console = started_console();
+        type_bytes(&mut console, b"ve\t");
+        assert_eq!(console.output.0, "VMOS runtime console ready\nsecure:\\> version ");
+        assert_eq!(&console.line[..console.length], b"version ");
+    }
+
+    #[test]
+    fn tab_lists_ambiguous_commands_and_redraws_the_input() {
+        let mut console = started_console();
+        type_bytes(&mut console, b"s\t");
+        assert_eq!(
+            console.output.0,
+            "VMOS runtime console ready\nsecure:\\> s\nselftest stats\nsecure:\\> s"
+        );
+        assert_eq!(&console.line[..console.length], b"s");
+    }
+
+    #[test]
+    fn tab_rings_the_terminal_bell_when_no_command_matches() {
+        let mut console = started_console();
+        type_bytes(&mut console, b"z\t");
+        assert_eq!(console.output.0, "VMOS runtime console ready\nsecure:\\> z\x07");
+        assert_eq!(&console.line[..console.length], b"z");
+    }
+
+    #[test]
+    fn tab_does_not_complete_command_arguments() {
+        let mut console = started_console();
+        type_bytes(&mut console, b"echo value\t");
+        assert_eq!(console.output.0, "VMOS runtime console ready\nsecure:\\> echo value\x07");
+        assert_eq!(&console.line[..console.length], b"echo value");
     }
 
     #[test]
     fn empty_line_only_refreshes_prompt() {
         let mut console = started_console();
         type_bytes(&mut console, b"\r");
-        assert_eq!(console.output.0, "VMOS runtime console ready\nvmos> \nvmos> ");
+        assert_eq!(console.output.0, "VMOS runtime console ready\nsecure:\\> \nsecure:\\> ");
     }
 
     #[test]
@@ -332,9 +492,11 @@ mod tests {
         type_bytes(&mut console, &[b'x'; 128]);
         type_bytes(&mut console, b"ignored\rping\r");
 
-        let mut expected = String::from("VMOS runtime console ready\nvmos> ");
+        let mut expected = String::from("VMOS runtime console ready\nsecure:\\> ");
         expected.push_str(&"x".repeat(127));
-        expected.push_str("\nERROR: line too long (maximum 127 bytes)\nvmos> ping\npong\nvmos> ");
+        expected.push_str(
+            "\nERROR: line too long (maximum 127 bytes)\nsecure:\\> ping\npong\nsecure:\\> ",
+        );
         assert_eq!(console.output.0, expected);
     }
 
@@ -345,7 +507,7 @@ mod tests {
         type_bytes(&mut console, b"ping\r");
         assert_eq!(
             console.output.0,
-            "VMOS runtime console ready\nvmos> p\nERROR: input must be printable ASCII\nvmos> ping\npong\nvmos> "
+            "VMOS runtime console ready\nsecure:\\> p\nERROR: input must be printable ASCII\nsecure:\\> ping\npong\nsecure:\\> "
         );
     }
 
@@ -358,13 +520,23 @@ mod tests {
         assert!(console
             .output
             .0
-            .ends_with("stats\nstats: recognized=2 unknown=1 overflowed=1\nvmos> "));
+            .ends_with("stats\nstats: recognized=2 unknown=1 overflowed=1\nsecure:\\> "));
     }
 
     #[test]
     fn selftest_reports_pass() {
         let mut console = started_console();
         type_bytes(&mut console, b"selftest\r");
-        assert!(console.output.0.ends_with("selftest\nselftest: PASS\nvmos> "));
+        assert!(console.output.0.ends_with("selftest\nselftest: PASS\nsecure:\\> "));
+    }
+
+    #[test]
+    fn ps_counts_as_a_recognized_command() {
+        let mut console = started_console();
+        type_bytes(&mut console, b"ps\rstats\r");
+        assert!(console
+            .output
+            .0
+            .ends_with("stats\nstats: recognized=2 unknown=0 overflowed=0\nsecure:\\> "));
     }
 }

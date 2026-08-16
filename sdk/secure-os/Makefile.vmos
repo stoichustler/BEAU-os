@@ -88,7 +88,7 @@ verify-source:
 		verify --root vmos --manifest vmos/UPSTREAM_SHA256
 
 clean:
-	rm -rf build/vmos
+	rm -rf build __pycache__
 
 help:
 	@echo "VMOS ARM64 hypervisor build"
