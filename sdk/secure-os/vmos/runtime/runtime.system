@@ -4,8 +4,8 @@
 <system>
     <memory_region name="pl011" size="0x1000" phys_addr="0x0900_0000" />
 
-    <protection_domain name="vmos_qemu_smoke">
-        <program_image path="vmos-qemu-smoke.elf" />
+    <protection_domain name="vmos_runtime">
+        <program_image path="vmos-runtime.elf" />
         <map mr="pl011" vaddr="0x1000_0000" perms="rw" cached="false" />
         <irq irq="33" id="0" trigger="level" />
     </protection_domain>

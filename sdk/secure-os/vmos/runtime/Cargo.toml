@@ -1,5 +1,5 @@
 [package]
-name = "vmos-qemu-smoke"
+name = "vmos-runtime"
 version = "0.1.0"
 edition = "2021"
 publish = false
@@ -7,7 +7,7 @@ publish = false
 [workspace]
 
 [[bin]]
-name = "vmos-qemu-smoke"
+name = "vmos-runtime"
 path = "src/main.rs"
 
 [profile.dev]

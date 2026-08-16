@@ -135,7 +135,7 @@ fn microkit_irq_ack(channel: u32) {
 pub extern "C" fn init() {
     pl011_write(PL011_INTERRUPT_MASK, 0);
     pl011_write(PL011_INTERRUPT_CLEAR, u32::MAX);
-    debug_write("VMOS|INFO: Rust smoke protection domain started\n");
+    debug_write("VMOS|INFO: Rust runtime started\n");
     CONSOLE.with(Console::start);
     pl011_write(PL011_INTERRUPT_MASK, PL011_INPUT_INTERRUPTS);
 }

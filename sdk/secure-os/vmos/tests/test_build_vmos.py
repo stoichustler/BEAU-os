@@ -309,10 +309,10 @@ class RootEntryPointTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIn(text, output)
 
-    def test_dry_run_qemu_builds_rust_smoke_image_and_starts_at_el2(self):
+    def test_dry_run_qemu_builds_rust_runtime_image_and_starts_at_el2(self):
         output = self.run_make("-n", "qemu")
         for text in (
-            "vmos/qemu-smoke/src/main.rs",
+            "vmos/runtime/src/main.rs",
             "--target aarch64-unknown-none",
             "sdk/bin/microkit",
             "qemu-system-aarch64",
@@ -323,15 +323,15 @@ class RootEntryPointTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIn(text, output)
 
-    def test_test_target_runs_qemu_console_rust_tests(self):
+    def test_test_target_runs_runtime_console_rust_tests(self):
         output = self.run_make("-n", "test")
         self.assertIn(
-            "cargo test --manifest-path vmos/qemu-smoke/Cargo.toml", output
+            "cargo test --manifest-path vmos/runtime/Cargo.toml", output
         )
 
-    def test_qemu_console_system_maps_pl011_and_irq(self):
+    def test_runtime_system_maps_pl011_and_irq(self):
         system = ET.parse(
-            REPOSITORY_ROOT / "vmos" / "qemu-smoke" / "qemu-smoke.system"
+            REPOSITORY_ROOT / "vmos" / "runtime" / "runtime.system"
         ).getroot()
         memory_region = system.find("memory_region")
         self.assertIsNotNone(memory_region)
@@ -347,9 +347,9 @@ class RootEntryPointTests(unittest.TestCase):
         self.assertEqual(irq.attrib["id"], "0")
         self.assertEqual(irq.attrib["trigger"], "level")
 
-    def test_qemu_console_runtime_uses_volatile_pl011_interrupts(self):
+    def test_runtime_uses_volatile_pl011_interrupts(self):
         source = (
-            REPOSITORY_ROOT / "vmos" / "qemu-smoke" / "src" / "main.rs"
+            REPOSITORY_ROOT / "vmos" / "runtime" / "src" / "main.rs"
         ).read_text(encoding="utf-8")
         for text in (
             "read_volatile",

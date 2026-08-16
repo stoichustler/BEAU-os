@@ -68,10 +68,9 @@ make -f Makefile.vmos build \
 Platform-specific CMake definitions may be passed through `CMAKE_DEFS`, for
 example `CMAKE_DEFS='--cmake-def KernelARMPlatform=my-platform'`.
 
-### QEMU smoke boot
+### QEMU runtime
 
-Build, package, and boot the Rust smoke protection domain on the ARM64 QEMU
-`virt` machine with:
+Build, package, and boot the Rust runtime on the ARM64 QEMU `virt` machine:
 
 ```shell
 make -f Makefile.vmos qemu
@@ -82,7 +81,7 @@ serial console. A successful complete boot ends with:
 
 ```text
 MON|INFO: Microkit Monitor started!
-VMOS|INFO: Rust smoke protection domain started
+VMOS|INFO: Rust runtime started
 VMOS runtime console ready
 vmos>
 ```

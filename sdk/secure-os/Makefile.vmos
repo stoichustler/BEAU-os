@@ -11,8 +11,8 @@ BUILD_DIR ?= build/vmos
 CMAKE_DEFS ?=
 SUPPORT_MANIFEST ?= vmos/support/Cargo.toml
 SUPPORT_TARGET ?= $(BUILD_DIR)/.support-target
-QEMU_SMOKE_MANIFEST ?= vmos/qemu-smoke/Cargo.toml
-QEMU_SMOKE_TARGET ?= $(BUILD_DIR)/.qemu-smoke-target
+RUNTIME_MANIFEST ?= vmos/runtime/Cargo.toml
+RUNTIME_TARGET ?= $(BUILD_DIR)/.runtime-target
 RUSTC ?= rustc
 AARCH64_LD ?= aarch64-none-elf-ld
 QEMU ?= qemu-system-aarch64
@@ -21,7 +21,7 @@ QEMU_MEMORY ?= 2G
 VMOS_OUTPUT := $(BUILD_DIR)/$(BOARD)/$(CONFIG)
 VMOS_SDK := $(VMOS_OUTPUT)/sdk
 QEMU_BUILD := $(VMOS_OUTPUT)/qemu
-QEMU_SMOKE_ELF := $(QEMU_BUILD)/vmos-qemu-smoke.elf
+RUNTIME_ELF := $(QEMU_BUILD)/vmos-runtime.elf
 QEMU_IMAGE := $(QEMU_BUILD)/loader.img
 QEMU_REPORT := $(QEMU_BUILD)/report.txt
 
@@ -58,10 +58,10 @@ qemu-image: build
 		-C link-arg=-L$(VMOS_SDK)/board/$(BOARD)/$(CONFIG)/lib \
 		-C link-arg=-lmicrokit \
 		-C link-arg=-T$(VMOS_SDK)/board/$(BOARD)/$(CONFIG)/lib/microkit.ld \
-		-o $(QEMU_SMOKE_ELF) \
-		vmos/qemu-smoke/src/main.rs
+		-o $(RUNTIME_ELF) \
+		vmos/runtime/src/main.rs
 	$(VMOS_SDK)/bin/microkit \
-		vmos/qemu-smoke/qemu-smoke.system \
+		vmos/runtime/runtime.system \
 		--search-path $(QEMU_BUILD) \
 		--board $(BOARD) \
 		--config $(CONFIG) \
@@ -81,7 +81,7 @@ qemu: qemu-image
 test:
 	$(PYTHON) -m unittest discover -s vmos/tests -v
 	CARGO_TARGET_DIR=$(abspath $(SUPPORT_TARGET)) cargo test --manifest-path $(SUPPORT_MANIFEST)
-	CARGO_TARGET_DIR=$(abspath $(QEMU_SMOKE_TARGET)) cargo test --manifest-path $(QEMU_SMOKE_MANIFEST)
+	CARGO_TARGET_DIR=$(abspath $(RUNTIME_TARGET)) cargo test --manifest-path $(RUNTIME_MANIFEST)
 
 verify-source:
 	CARGO_TARGET_DIR=$(abspath $(SUPPORT_TARGET)) cargo run --quiet --manifest-path $(SUPPORT_MANIFEST) -- \
@@ -95,8 +95,8 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  build          Build seL4 and all VMOS components"
-	@echo "  qemu-image     Package the Rust VMOS QEMU smoke image"
-	@echo "  qemu           Build and boot the smoke image with qemu-system-aarch64"
+	@echo "  qemu-image     Package the Rust VMOS runtime image"
+	@echo "  qemu           Build and boot the runtime with qemu-system-aarch64"
 	@echo "  test           Run VMOS Python and Rust unit tests"
 	@echo "  verify-source  Verify the standalone vendored-source checksums"
 	@echo "  clean          Remove build/vmos only"
@@ -114,7 +114,7 @@ help:
 	@echo "  JOBS=$(JOBS)"
 	@echo "  BUILD_DIR=$(BUILD_DIR)"
 	@echo "  SUPPORT_TARGET=$(SUPPORT_TARGET)"
-	@echo "  QEMU_SMOKE_TARGET=$(QEMU_SMOKE_TARGET)"
+	@echo "  RUNTIME_TARGET=$(RUNTIME_TARGET)"
 	@echo "  QEMU=$(QEMU)"
 	@echo "  QEMU_MEMORY=$(QEMU_MEMORY)"
 	@echo "  CMAKE_DEFS='--cmake-def KEY=VALUE ...'"
