@@ -26,7 +26,7 @@ config CONSOLE_DEFAULT_VM
 	default "ACRN_INVALID_VMID"
 	help
 	  Initial VM console owner. ACRN_INVALID_VMID means the BEAU shell owns
-	  host input and output until a vsh command selects a VM.
+	  host input and output until a switch command selects a VM.
 
 config CONSOLE_LOGLEVEL_DEFAULT
 	int "Default console log level"

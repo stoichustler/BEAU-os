@@ -34,7 +34,6 @@ int32_t shell_dmesg(int32_t argc, char **argv);
 int32_t shell_list_vcpu(int32_t argc, char **argv);
 int32_t shell_list_threads(int32_t argc, char **argv);
 int32_t shell_schedstat(int32_t argc, char **argv);
-int32_t shell_schedai(int32_t argc, char **argv);
 int32_t shell_spestat(int32_t argc, char **argv);
 int32_t shell_irqstat(int32_t argc, char **argv);
 int32_t shell_to_vm_console(int32_t argc, char **argv);

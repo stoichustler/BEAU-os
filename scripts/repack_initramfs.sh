@@ -260,14 +260,14 @@ mkdir -p /tmp
 # VM1 exports isolated virtio-fs roots for the VM2 and VM3 proxy frontends.
 #
 # Manual virtio-fs smoke test from the BEAU shell:
-#   1. vsh 1
+#   1. switch 1
 #      ls -l /var/beau/vm2 /var/beau/vm3
 #      <Ctrl-D>
-#   2. vsh 3
+#   2. switch 3
 #      mount -t virtiofs -o rw proxy-fs /var/beau
 #      echo "hello from vm3" > /var/beau/README
 #      <Ctrl-D>
-#   3. vsh 1
+#   3. switch 1
 #      cat /var/beau/vm3/README
 #
 # VM2 and VM3 use separate backend roots so filesystem state cannot cross the

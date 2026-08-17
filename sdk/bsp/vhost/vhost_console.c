@@ -24,7 +24,7 @@
  * backend by HVC. BEAU owns the full console data path and bridges the guest's
  * virtio-console frontend to the per-VM console vUART used by the BEAU shell.
  * The intended split is Linux -> virtio-console and RTOS -> vPL011; the
- * frontend differs, but the host-side console ring and vsh backend are shared.
+ * frontend differs, but the host-side console ring and switch backend are shared.
  *
  *   Linux VM frontend                          BEAU EL2
  *   -----------------                          -------
@@ -55,7 +55,7 @@
  *                                         - add used ring and inject IRQ
  *
  *   BEAU shell input  ---> console_vm_rx_refill() ---> VM console vUART
- *   VM guest output   ---> console_vm_tx_put()    ---> BEAU shell/vsh ring
+ *   VM guest output   ---> console_vm_tx_put()    ---> BEAU shell/switch ring
  *
  * Direction naming follows virtio-console convention from the device view:
  * RX queue carries BEAU-to-guest input, TX queue carries guest-to-BEAU output.

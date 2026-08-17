@@ -64,7 +64,7 @@ Expected state:
 From VM1:
 
 ```sh
-vsh 1
+switch 1
 dmesg | grep -i 'BEAU virtio-'
 ls -l /var/beau/vm2 /var/beau/vm3
 ```
@@ -72,7 +72,7 @@ ls -l /var/beau/vm2 /var/beau/vm3
 From each frontend, replace `N` with 2 or 3:
 
 ```sh
-vsh N
+switch N
 dd if=/dev/hwrng of=/tmp/rng.bin bs=32 count=1
 i2cdetect -y 0
 dd if=/dev/zero of=/dev/vda bs=4096 count=1 conv=fsync

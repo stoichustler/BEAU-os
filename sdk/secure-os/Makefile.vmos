@@ -22,8 +22,19 @@ VMOS_OUTPUT := $(BUILD_DIR)/$(BOARD)/$(CONFIG)
 VMOS_SDK := $(VMOS_OUTPUT)/sdk
 QEMU_BUILD := $(VMOS_OUTPUT)/qemu
 RUNTIME_ELF := $(QEMU_BUILD)/vmos-runtime.elf
+IPC_RESPONDER_ELF := $(QEMU_BUILD)/ipc-benchmark-responder.elf
 QEMU_IMAGE := $(QEMU_BUILD)/loader.img
 QEMU_REPORT := $(QEMU_BUILD)/report.txt
+RUNTIME_RUST_FLAGS = \
+	--edition=2021 \
+	--target aarch64-unknown-none \
+	-C opt-level=2 \
+	-C panic=abort \
+	-D warnings \
+	-C linker=$(AARCH64_LD) \
+	-C link-arg=-L$(VMOS_SDK)/board/$(BOARD)/$(CONFIG)/lib \
+	-C link-arg=-lmicrokit \
+	-C link-arg=-T$(VMOS_SDK)/board/$(BOARD)/$(CONFIG)/lib/microkit.ld
 
 .PHONY: build qemu-image qemu test verify-source clean help
 
@@ -50,16 +61,14 @@ qemu-image: build
 		echo "qemu-image only supports BOARD=qemu_virt_aarch64" >&2; exit 2; \
 	}
 	mkdir -p $(QEMU_BUILD)
-	$(RUSTC) --edition=2021 \
-		--target aarch64-unknown-none \
-		-C opt-level=2 \
-		-C panic=abort \
-		-C linker=$(AARCH64_LD) \
-		-C link-arg=-L$(VMOS_SDK)/board/$(BOARD)/$(CONFIG)/lib \
-		-C link-arg=-lmicrokit \
-		-C link-arg=-T$(VMOS_SDK)/board/$(BOARD)/$(CONFIG)/lib/microkit.ld \
+	$(RUSTC) $(RUNTIME_RUST_FLAGS) \
+		--cfg ipc_benchmark_client \
 		-o $(RUNTIME_ELF) \
 		vmos/runtime/src/main.rs
+	$(RUSTC) $(RUNTIME_RUST_FLAGS) \
+		--cfg ipc_benchmark_responder \
+		-o $(IPC_RESPONDER_ELF) \
+		vmos/runtime/src/ipc_responder.rs
 	$(VMOS_SDK)/bin/microkit \
 		vmos/runtime/runtime.system \
 		--search-path $(QEMU_BUILD) \

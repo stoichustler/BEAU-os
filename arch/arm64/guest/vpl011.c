@@ -48,7 +48,7 @@ static const uint8_t pl011_cid[] = { 0x0dU, 0xf0U, 0x05U, 0xb1U };
  *
  * vPL011 is the ARM64 guest console device. Stage-2 deliberately leaves the
  * UART IPA unmapped, data-abort MMIO reaches this file, and the common console
- * ring remains the owner of host-side buffering and vsh replay ordering.
+ * ring remains the owner of host-side buffering and switch replay ordering.
  * The intended split is RTOS -> vPL011 and Linux -> virtio-console; this file
  * remains the serial-compatible frontend for RTOS and fallback diagnostics.
  *

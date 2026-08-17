@@ -1,6 +1,8 @@
 // Copyright 2026, BEAU OS contributors
 // SPDX-License-Identifier: BSD-2-Clause
 
+use crate::benchmark::{parse_ipc_iterations, ParseError, RunError, Stats};
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum Command<'a> {
     Empty,
@@ -11,6 +13,7 @@ pub enum Command<'a> {
     Selftest,
     Stats,
     Ps,
+    Benchmark(&'a str),
     Unknown(&'a str),
 }
 
@@ -23,12 +26,19 @@ const MAX_LINE_LENGTH: usize = LINE_BUFFER_SIZE - 1;
 const BANNER: &str = "VMOS runtime console ready\n";
 const PROMPT: &str = "secure:\\> ";
 
+type BenchmarkRunner = fn(u32) -> Result<Stats, RunError>;
+
+#[cfg(not(target_arch = "aarch64"))]
+fn unavailable_benchmark(_iterations: u32) -> Result<Stats, RunError> {
+    Err(RunError::Unavailable)
+}
+
 struct CommandSpec {
     name: &'static str,
     usage: &'static str,
 }
 
-const COMMAND_SPECS: [CommandSpec; 7] = [
+const COMMAND_SPECS: [CommandSpec; 8] = [
     CommandSpec { name: "help", usage: "help" },
     CommandSpec { name: "version", usage: "version" },
     CommandSpec { name: "ping", usage: "ping" },
@@ -36,6 +46,7 @@ const COMMAND_SPECS: [CommandSpec; 7] = [
     CommandSpec { name: "selftest", usage: "selftest" },
     CommandSpec { name: "stats", usage: "stats" },
     CommandSpec { name: "ps", usage: "ps" },
+    CommandSpec { name: "benchmark", usage: "benchmark ipc [iterations]" },
 ];
 
 struct Program {
@@ -44,13 +55,15 @@ struct Program {
     state: &'static str,
 }
 
-const PROGRAMS: [Program; 2] = [
+const PROGRAMS: [Program; 3] = [
     Program { id: 0, name: "monitor", state: "running" },
     Program { id: 1, name: "vmos_runtime", state: "running" },
+    Program { id: 2, name: "ipc_responder", state: "passive" },
 ];
 
 pub struct Console<W: Output> {
     output: W,
+    benchmark: BenchmarkRunner,
     line: [u8; LINE_BUFFER_SIZE],
     length: usize,
     discard: bool,
@@ -62,9 +75,15 @@ pub struct Console<W: Output> {
 }
 
 impl<W: Output> Console<W> {
+    #[cfg(not(target_arch = "aarch64"))]
     pub const fn new(output: W) -> Self {
+        Self::with_benchmark(output, unavailable_benchmark)
+    }
+
+    pub const fn with_benchmark(output: W, benchmark: BenchmarkRunner) -> Self {
         Self {
             output,
+            benchmark,
             line: [0; LINE_BUFFER_SIZE],
             length: 0,
             discard: false,
@@ -222,6 +241,11 @@ impl<W: Output> Console<W> {
                 self.recognized += 1;
                 self.write_stats();
             }
+            Command::Benchmark(arguments) => {
+                self.recognized += 1;
+                let iterations = parse_ipc_iterations(arguments);
+                self.write_benchmark(iterations);
+            }
             Command::Help | Command::Version | Command::Ping | Command::Echo(_) | Command::Ps => {
                 self.recognized += 1;
                 dispatch_command(line, &mut self.output);
@@ -237,6 +261,48 @@ impl<W: Output> Console<W> {
         self.output.write_str(" overflowed=");
         write_u64(&mut self.output, self.overflowed);
         self.output.write_str("\n");
+    }
+
+    fn write_benchmark(&mut self, parsed_iterations: Result<u32, ParseError>) {
+        let iterations = match parsed_iterations {
+            Ok(iterations) => iterations,
+            Err(ParseError::Usage) => {
+                self.output.write_str("ERROR: usage: benchmark ipc [iterations]\n");
+                return;
+            }
+            Err(ParseError::IterationsOutOfRange) => {
+                self.output.write_str("ERROR: iterations must be in range 1..=100000\n");
+                return;
+            }
+        };
+
+        match (self.benchmark)(iterations) {
+            Ok(stats) => {
+                self.output.write_str("benchmark ipc: iterations=");
+                write_u64(&mut self.output, u64::from(stats.iterations));
+                self.output.write_str(" min_ticks=");
+                write_u64(&mut self.output, stats.min_ticks);
+                self.output.write_str(" avg_ticks=");
+                write_u64(&mut self.output, stats.average_ticks);
+                self.output.write_str(" max_ticks=");
+                write_u64(&mut self.output, stats.max_ticks);
+                self.output.write_str(" counter_hz=");
+                write_u64(&mut self.output, stats.counter_hz);
+                self.output.write_str("\n");
+            }
+            Err(RunError::ReplyMismatch) => {
+                self.output.write_str("ERROR: benchmark IPC reply mismatch\n");
+            }
+            Err(RunError::InvalidIterations) => {
+                self.output.write_str("ERROR: invalid benchmark iteration count\n");
+            }
+            Err(RunError::InvalidCounterFrequency) => {
+                self.output.write_str("ERROR: invalid benchmark counter frequency\n");
+            }
+            Err(RunError::Unavailable) => {
+                self.output.write_str("ERROR: IPC benchmark backend unavailable\n");
+            }
+        }
     }
 }
 
@@ -289,6 +355,7 @@ pub fn parse_command(input: &str) -> Command<'_> {
         "selftest" => Command::Selftest,
         "stats" => Command::Stats,
         "ps" => Command::Ps,
+        "benchmark" => Command::Benchmark(arguments),
         _ => Command::Unknown(name),
     }
 }
@@ -313,7 +380,7 @@ pub fn dispatch_command<W: Output + ?Sized>(input: &str, output: &mut W) {
             output.write_str("\n");
         }
         Command::Ps => write_programs(output),
-        Command::Selftest | Command::Stats => {}
+        Command::Selftest | Command::Stats | Command::Benchmark(_) => {}
         Command::Unknown(name) => {
             output.write_str("ERROR: unknown command '");
             output.write_str(name);
@@ -357,7 +424,10 @@ mod tests {
 
     #[test]
     fn dispatches_exact_command_responses() {
-        assert_eq!(response("help"), "commands: help version ping echo <text> selftest stats ps\n");
+        assert_eq!(
+            response("help"),
+            "commands: help version ping echo <text> selftest stats ps benchmark ipc [iterations]\n"
+        );
         assert_eq!(response("version"), "VMOS runtime console | ARM64 | seL4/Microkit | Rust\n");
         assert_eq!(response("ping"), "pong\n");
         assert_eq!(response("echo hello"), "hello\n");
@@ -366,15 +436,25 @@ mod tests {
     }
 
     #[test]
+    fn help_advertises_ipc_benchmark_command() {
+        assert!(response("help").contains("benchmark ipc [iterations]"));
+    }
+
+    #[test]
     fn parses_ps_as_a_command() {
         assert_eq!(parse_command("ps"), Command::Ps);
+    }
+
+    #[test]
+    fn parses_benchmark_arguments_for_the_benchmark_module() {
+        assert_eq!(parse_command("benchmark ipc 42"), Command::Benchmark("ipc 42"));
     }
 
     #[test]
     fn ps_lists_every_persistent_userspace_program() {
         assert_eq!(
             response("ps"),
-            "ID  NAME          STATE\n0   monitor       running\n1   vmos_runtime  running\n"
+            "ID  NAME          STATE\n0   monitor       running\n1   vmos_runtime  running\n2   ipc_responder passive\n"
         );
     }
 
@@ -393,6 +473,22 @@ mod tests {
         let mut console = Console::new(StringOutput::default());
         console.start();
         console
+    }
+
+    fn sample_benchmark(
+        iterations: u32,
+    ) -> Result<crate::benchmark::Stats, crate::benchmark::RunError> {
+        Ok(crate::benchmark::Stats {
+            iterations,
+            min_ticks: 20,
+            average_ticks: 30,
+            max_ticks: 40,
+            counter_hz: 62_500_000,
+        })
+    }
+
+    fn mismatched_reply_benchmark(_iterations: u32) -> Result<crate::benchmark::Stats, RunError> {
+        Err(RunError::ReplyMismatch)
     }
 
     fn type_bytes(console: &mut Console<StringOutput>, bytes: &[u8]) {
@@ -528,6 +624,48 @@ mod tests {
         let mut console = started_console();
         type_bytes(&mut console, b"selftest\r");
         assert!(console.output.0.ends_with("selftest\nselftest: PASS\nsecure:\\> "));
+    }
+
+    #[test]
+    fn benchmark_command_reports_ipc_tick_statistics() {
+        let mut console = Console::with_benchmark(StringOutput::default(), sample_benchmark);
+        console.start();
+
+        type_bytes(&mut console, b"benchmark ipc 3\r");
+
+        assert!(console.output.0.ends_with(
+            "benchmark ipc 3\nbenchmark ipc: iterations=3 min_ticks=20 avg_ticks=30 max_ticks=40 counter_hz=62500000\nsecure:\\> "
+        ));
+    }
+
+    #[test]
+    fn benchmark_command_reports_usage_and_iteration_errors() {
+        let mut console = started_console();
+
+        type_bytes(&mut console, b"benchmark other\rbenchmark ipc 0\r");
+
+        assert!(console.output.0.contains("ERROR: usage: benchmark ipc [iterations]\n"));
+        assert!(console.output.0.contains("ERROR: iterations must be in range 1..=100000\n"));
+    }
+
+    #[test]
+    fn benchmark_command_reports_reply_mismatch() {
+        let mut console =
+            Console::with_benchmark(StringOutput::default(), mismatched_reply_benchmark);
+        console.start();
+
+        type_bytes(&mut console, b"benchmark ipc 1\r");
+
+        assert!(console.output.0.contains("ERROR: benchmark IPC reply mismatch\n"));
+    }
+
+    #[test]
+    fn benchmark_command_reports_an_unavailable_backend() {
+        let mut console = started_console();
+
+        type_bytes(&mut console, b"benchmark ipc 1\r");
+
+        assert!(console.output.0.contains("ERROR: IPC benchmark backend unavailable\n"));
     }
 
     #[test]

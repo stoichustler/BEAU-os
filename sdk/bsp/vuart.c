@@ -57,7 +57,7 @@
  *   TX FIFO
  *          |
  *          v
- *   console/vsh backend drains bytes
+ *   console/switch backend drains bytes
  *
  * Key rule:
  *   - frontend models own register or virtqueue semantics;

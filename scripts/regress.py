@@ -144,12 +144,12 @@ def parse_args():
         help="Trigger concurrent VM1/VM3 missed heartbeats and verify cold recovery.",
     )
     parser.add_argument(
-        "--stress-vsh-switch",
+        "--stress-switch",
         action="store_true",
         help="Run the VM console switch/Enter pressure sequence after the standard smoke checks.",
     )
     parser.add_argument(
-        "--stress-vsh-help",
+        "--stress-switch-help",
         action="store_true",
         help="Repeatedly switch VM consoles and run help in each VM shell after the standard smoke checks.",
     )
@@ -189,10 +189,10 @@ def parse_args():
         incompatible = []
         if args.wdt_restart_smoke:
             incompatible.append("--wdt-restart-smoke")
-        if args.stress_vsh_switch:
-            incompatible.append("--stress-vsh-switch")
-        if args.stress_vsh_help:
-            incompatible.append("--stress-vsh-help")
+        if args.stress_switch:
+            incompatible.append("--stress-switch")
+        if args.stress_switch_help:
+            incompatible.append("--stress-switch-help")
         if args.str_cycles > 0:
             incompatible.append("--str-cycles")
         if args.str_fault is not None:
@@ -207,10 +207,10 @@ def parse_args():
             incompatible.append("--smmu-no-s2-smoke")
         if args.wdt_restart_smoke:
             incompatible.append("--wdt-restart-smoke")
-        if args.stress_vsh_switch:
-            incompatible.append("--stress-vsh-switch")
-        if args.stress_vsh_help:
-            incompatible.append("--stress-vsh-help")
+        if args.stress_switch:
+            incompatible.append("--stress-switch")
+        if args.stress_switch_help:
+            incompatible.append("--stress-switch-help")
         if args.str_cycles > 0:
             incompatible.append("--str-cycles")
         if args.str_fault is not None:
@@ -590,7 +590,7 @@ class QemuSession:
 
 
 def vcon_enter(qemu, vmid, prompt, name, timeout=30.0):
-    qemu.send(f"vsh {vmid}" + ENTER)
+    qemu.send(f"switch {vmid}" + ENTER)
     try:
         qemu.expect(prompt, name, timeout=timeout, keepalive=ENTER)
     except Exception:
@@ -843,7 +843,7 @@ def run_smmu_passthrough_smoke(qemu):
         "owner:vm1 ipa:44",
     ])
     net_watchdog = False
-    qemu.send("vsh 1" + ENTER)
+    qemu.send("switch 1" + ENTER)
     try:
         qemu.expect(LINUX_PROMPT, "VM1 passthrough Linux shell", timeout=60.0,
                     keepalive=ENTER)
@@ -1186,7 +1186,7 @@ def expect_zephyr_dev_shell(qemu):
     if "select" not in help_text:
         raise RuntimeError("VM0 shell select command is unavailable")
 
-def run_vsh_help_stress(qemu, args):
+def run_switch_help_stress(qemu, args):
     if args.stress_help_rounds < 1:
         return
 
@@ -1201,7 +1201,7 @@ def run_vsh_help_stress(qemu, args):
     print("[pass] VM console help stress complete", flush=True)
 
 
-def run_vsh_switch_stress(qemu, args):
+def run_switch_stress(qemu, args):
     if args.stress_rounds < 1:
         return
 
@@ -1656,7 +1656,9 @@ def run_qemu(args, cmd):
                 ["checksum:invalid", "capture:corrupt"],
             )
 
-        qemu.send("vsh 0" + ENTER)
+        qemu.command("vsh 0", ["invalid command."])
+
+        qemu.send("switch 0" + ENTER)
         qemu.expect(ZEPHYR_PROMPT, "VM0 Zephyr shell", keepalive=ENTER)
         run_guest_help(qemu, 0, ZEPHYR_PROMPT, "VM0 Zephyr", 15.0)
         check_zephyr_thread_list(qemu, "VM0 Zephyr SMP runtime stats")
@@ -1664,7 +1666,7 @@ def run_qemu(args, cmd):
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM0 shell")
 
-        qemu.send("vsh 1" + ENTER)
+        qemu.send("switch 1" + ENTER)
         qemu.expect(LINUX_PROMPT, "VM1 Linux initramfs shell", timeout=60.0,
                     keepalive=ENTER)
         expect_linux_id(qemu, 1, "VM1 Linux root identity")
@@ -1673,7 +1675,7 @@ def run_qemu(args, cmd):
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM1 shell")
 
-        qemu.send("vsh 2" + ENTER)
+        qemu.send("switch 2" + ENTER)
         try:
             qemu.expect(LINUX_PROMPT, "VM2 Linux initramfs shell", timeout=60.0, keepalive=ENTER)
         except Exception:
@@ -1688,7 +1690,7 @@ def run_qemu(args, cmd):
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM2 shell")
 
-        qemu.send("vsh 3" + ENTER)
+        qemu.send("switch 3" + ENTER)
         try:
             qemu.expect(LINUX_PROMPT, "VM3 Linux initramfs shell", timeout=60.0, keepalive=ENTER)
         except Exception:
@@ -1700,10 +1702,10 @@ def run_qemu(args, cmd):
         qemu.send(CTRL_D)
         qemu.expect(PROMPT, "return from VM3 shell")
 
-        if args.stress_vsh_switch:
-            run_vsh_switch_stress(qemu, args)
-        if args.stress_vsh_help:
-            run_vsh_help_stress(qemu, args)
+        if args.stress_switch:
+            run_switch_stress(qemu, args)
+        if args.stress_switch_help:
+            run_switch_help_stress(qemu, args)
         run_str_cycles(qemu, args)
 
     finish_qemu_regression(args)
@@ -1718,10 +1720,10 @@ def main():
         if not args.no_build:
             print(render(build, args.toolchains))
         print(quote(qemu))
-        checks = "prompt, vcpus, ps, schedstat, vmstat summary, swtdbg empty, devmap, irqstat, virtiostat, HIPC routes/printk, vsh 0, Zephyr, vsh 1, Linux-1 backend/PCI, vsh 2, Linux-2 frontend, vsh 3, Linux-3 frontend"
-        if args.stress_vsh_switch:
+        checks = "prompt, vcpus, ps, schedstat, vmstat summary, swtdbg empty, devmap, irqstat, virtiostat, HIPC routes/printk, vsh rejected, switch 0, Zephyr, switch 1, Linux-1 backend/PCI, switch 2, Linux-2 frontend, switch 3, Linux-3 frontend"
+        if args.stress_switch:
             checks += ", VM console switch/Enter stress"
-        if args.stress_vsh_help:
+        if args.stress_switch_help:
             checks += f", VM console help stress x{args.stress_help_rounds}"
         if args.wdt_restart_smoke:
             checks = "concurrent VM1/VM3 watchdog timeout, cold restart, VM1 PCI/SMMU recovery, both Linux shells"

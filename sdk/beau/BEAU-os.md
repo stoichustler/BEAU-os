@@ -1692,7 +1692,7 @@ WDT recovery 与 failure 事件继续使用 `LOG_*` 保留为故障证据。
 | `ps` | scheduler thread 状态、current owner 和相邻命令间 CPU% |
 | `schedstat` | pCPU scheduler、累计调度计数、runqueue/current 与分表的 BVT/CBS/RTDS 算法统计 |
 | `irqstat` | host PIRQ 与按 VM 分区的 guest vIRQ lifecycle/latency |
-| `vsh <vmid>` | 切到客体 console，`Ctrl-D` 返回 |
+| `switch <vmid>` | 切到客体 console，`Ctrl-D` 返回 |
 | `devmap` | host Stage-1 与每 VM Stage-2 map |
 | `memstat` | 页表池和 Stage-2 ownership |
 | `walkpt <vmid> <ipa>` | 只读输出指定 IPA 的逐级 Stage-2 descriptor、映射与属性 |
@@ -1849,11 +1849,11 @@ vsock 子系统内部的 transport helpers。
 
 `sdk/ai-sched` retains emlearn and a host-side training/export flow for an
 experimental scheduler advisor. It is not part of the EL2 image. The
-BEAU shell command `schedai snapshot` emits `AI_SCHED` telemetry records;
-the VM0 advisor registers through `HC_AI_SCHED`, then uses a boot-bound
-capability for bounded snapshot and proposal requests. A proposal contains a
-variable-length `{vmid, budget_us}` entry list and is validated against the
-DTS envelope before it is recorded as observe-only.
+BEAU shell does not expose an AI scheduler data-collection command. The VM0
+advisor registers through `HC_AI_SCHED`, then uses a boot-bound capability for
+bounded snapshot and proposal requests. A proposal contains a variable-length
+`{vmid, budget_us}` entry list and is validated against the DTS envelope before
+it is recorded as observe-only.
 
 The scheduler and HVC ABI are platform-neutral. The current QEMU DTS is the
 test configuration: it permits only shared CBS pCPUs, budgets from 500 to 1500
@@ -1898,8 +1898,8 @@ python3 scripts/regress.py
 
 ```sh
 python3 scripts/regress.py --no-build
-python3 scripts/regress.py --stress-vsh-switch
-python3 scripts/regress.py --stress-vsh-help --stress-help-rounds 100
+python3 scripts/regress.py --stress-switch
+python3 scripts/regress.py --stress-switch-help --stress-help-rounds 100
 python3 scripts/regress.py --wdt-restart-smoke
 python3 scripts/regress.py --str-cycles 10 --str-vmid 3
 python3 scripts/regress.py --dry-run
@@ -1912,27 +1912,27 @@ console:\> vmstat
 console:\> schedstat
 console:\> irqstat
 console:\> virtiostat
-Z3L: console:\> vsh 1     # Linux backend
-ZR2L: console:\> vsh 1    # RT-Thread shell
+Z3L: console:\> switch 1     # Linux backend
+ZR2L: console:\> switch 1    # RT-Thread shell
 <Ctrl-D>
-console:\> vsh 2          # Z3L frontend / ZR2L Linux backend
+console:\> switch 2          # Z3L frontend / ZR2L Linux backend
 uos ~ dmesg | grep -i 'BEAU virtio-'
 <Ctrl-D>
-console:\> vsh 3          # Linux frontend
+console:\> switch 3          # Linux frontend
 uos ~ dmesg | grep -i virtio
 ```
 
 Z3L virtio-vsock 基础链路使用同一 initramfs 中的 `vsock` 工具：
 
 ```text
-console:\> vsh 1
+console:\> switch 1
 uos ~ vsock server 5000 >/tmp/vsock.log 2>&1 &
 <Ctrl-D>
-console:\> vsh 2
+console:\> switch 2
 uos ~ vsock client 3 5000 vm2
 vsock: cid=3 port=5000 echo=vm2
 <Ctrl-D>
-console:\> vsh 3
+console:\> switch 3
 uos ~ vsock client 3 5000 vm3
 vsock: cid=3 port=5000 echo=vm3
 ```
@@ -2025,8 +2025,8 @@ IRQ 是否持续推进。Linux 有 arch_timer IRQ 不代表 softirq 一定推进
 
 ```text
 virtiostat
-vsh 2 -> dmesg | grep -i 'BEAU virtio-'
-vsh 3 -> dmesg | grep -i virtio
+switch 2 -> dmesg | grep -i 'BEAU virtio-'
+switch 3 -> dmesg | grep -i virtio
 ```
 
 区分：frontend queue 未 ready、backend 未 register、heartbeat stale、pending full、

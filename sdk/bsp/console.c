@@ -51,16 +51,16 @@
  *      v
  *   per-VM ramlog
  *      |
- *      +-- bound by vsh  -> drain new output to host UART with VM prefix
+ *      +-- bound by switch -> drain new output to host UART with VM prefix
  *      +-- not selected   -> retained history remains available to ramlog
  *
  * RTOS VMs use vPL011/vUART, Linux VMs use virtio-console, and both converge
- * at ramlog before vsh prints new data to the host UART.
+ * at ramlog before switch prints new data to the host UART.
  *
  * Key rule:
  *   - only one endpoint owns host input at a time;
  *   - ramlog, rather than vcon, owns concurrent output retention and overflow;
- *   - vsh is a bounded consumer and never controls guest TX progress.
+ *   - switch is a bounded consumer and never controls guest TX progress.
  */
 struct hv_timer console_timer;
 static bool console_pm_suspended;
@@ -122,13 +122,13 @@ uint16_t console_vmid = CONFIG_CONSOLE_DEFAULT_VM;
 uint16_t console_loglevel = CONFIG_CONSOLE_LOGLEVEL_DEFAULT;
 static spinlock_t console_log_lock;
 
-/* [20260721] RAMLOG-backed vsh presentation
+/* [20260721] RAMLOG-backed switch presentation
  *
- * guest TX -> ramlog durable ring -> vsh cursor -> physical UART
+ * guest TX -> ramlog durable ring -> switch cursor -> physical UART
  *
  * Key rule:
  *   - ramlog is the only VM output store;
- *   - vsh owns only a consumer cursor and terminal presentation state;
+ *   - switch owns only a consumer cursor and terminal presentation state;
  *   - a slow UART advances only the presentation cursor and never blocks a
  *     guest TX producer.
  */
@@ -239,7 +239,7 @@ bool console_vm_tx_write(uint16_t vmid, const char *buffer, uint32_t length)
 	 * ramlog append and publish
 	 *
 	 * Key rule:
-	 *   - ramlog is the only guest TX store before vsh presentation observes it;
+	 *   - ramlog is the only guest TX store before switch presentation observes it;
 	 *   - the guest transport never waits for serial output;
 	 *   - a missing ramlog slot rejects capture instead of silently creating a
 	 *     second volatile log store.
@@ -908,7 +908,7 @@ static void console_vm_ring_write_prefixed(uint16_t vmid, struct vm_console_pres
 	size_t prefix_len;
 
 	/*
-	 * vsh is a multiplexed debug console rather than a transparent terminal.
+	 * switch is a multiplexed debug console rather than a transparent terminal.
 	 * Prefix each visible guest line so interleaved host/guest diagnostics can
 	 * still be attributed after copying logs from a single serial stream.
 	 */
@@ -921,7 +921,7 @@ static void console_vm_ring_write_prefixed(uint16_t vmid, struct vm_console_pres
 
 		/*
 		 * BusyBox ash queries terminal cursor position with ESC[6n after
-		 * prompt redraws. The BEAU vsh path is a console multiplexer, not a
+		 * prompt redraws. The BEAU switch path is a console multiplexer, not a
 		 * transparent terminal, so answer the query internally and hide it
 		 * from the host serial stream.
 		 */
@@ -1031,7 +1031,7 @@ void console_setup_timer(void)
 {
 	uint64_t period_in_cycle, fire_tsc;
 
-	/* Fixed-period bounded polling keeps vsh input/output latency predictable. */
+	/* Fixed-period bounded polling keeps switch input/output latency predictable. */
 	period_in_cycle = TICKS_PER_MS * CONSOLE_KICK_TIMER_TIMEOUT;
 	fire_tsc = cpu_ticks() + period_in_cycle;
 	initialize_timer(&console_timer,

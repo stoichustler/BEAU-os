@@ -1,7 +1,9 @@
 # AI Scheduler Training Flow
 
-The BEAU shell emits `AI_SCHED` records through `schedai snapshot`. Capture
-those records from the platform under evaluation, then create a base dataset:
+The BEAU shell does not expose an AI scheduler data-collection command.
+`collect.py` can convert previously captured `AI_SCHED` records into a base
+dataset, but acquiring new runtime telemetry requires a separately reviewed
+producer and export path:
 
 ```sh
 python3 sdk/ai-sched/collect.py --input serial.log --output snapshots.csv

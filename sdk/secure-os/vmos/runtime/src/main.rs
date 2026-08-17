@@ -5,8 +5,16 @@
 #![cfg_attr(target_arch = "aarch64", no_std)]
 
 #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+mod benchmark;
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
 mod console;
+#[cfg(any(test, target_arch = "aarch64"))]
+mod ipc_protocol;
+#[cfg(any(test, target_arch = "aarch64"))]
+mod sel4_ipc;
 
+#[cfg(target_arch = "aarch64")]
+use benchmark::{run_ipc, IpcBackend, RunError, Stats};
 #[cfg(target_arch = "aarch64")]
 use console::{Console, Output};
 #[cfg(target_arch = "aarch64")]
@@ -56,6 +64,28 @@ const SEL4_IRQ_ACK_LABEL: u64 = 31;
 struct DebugOutput;
 
 #[cfg(target_arch = "aarch64")]
+struct Sel4IpcBackend;
+
+#[cfg(target_arch = "aarch64")]
+impl IpcBackend for Sel4IpcBackend {
+    fn counter_frequency_hz(&self) -> u64 {
+        sel4_ipc::counter_frequency_hz()
+    }
+
+    fn round_trip_ticks(&mut self) -> Result<u64, RunError> {
+        sel4_ipc::benchmark_round_trip_ticks().map_err(|error| match error {
+            sel4_ipc::IpcError::InvalidChannel => RunError::Unavailable,
+            sel4_ipc::IpcError::ReplyMismatch => RunError::ReplyMismatch,
+        })
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn run_sel4_ipc_benchmark(iterations: u32) -> Result<Stats, RunError> {
+    run_ipc(&mut Sel4IpcBackend, iterations)
+}
+
+#[cfg(target_arch = "aarch64")]
 impl Output for DebugOutput {
     fn write_str(&mut self, text: &str) {
         for byte in text.bytes() {
@@ -82,7 +112,8 @@ impl ConsoleCell {
 }
 
 #[cfg(target_arch = "aarch64")]
-static CONSOLE: ConsoleCell = ConsoleCell(UnsafeCell::new(Console::new(DebugOutput)));
+static CONSOLE: ConsoleCell =
+    ConsoleCell(UnsafeCell::new(Console::with_benchmark(DebugOutput, run_sel4_ipc_benchmark)));
 
 #[cfg(target_arch = "aarch64")]
 fn pl011_read(offset: usize) -> u32 {

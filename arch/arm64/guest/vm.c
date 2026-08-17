@@ -672,7 +672,7 @@ static bool arm64_vm_uses_virtio_console(const struct acrn_vm_config *vm_config)
 	 *   Linux -> virtio-console frontend when the platform provides it
 	 *
 	 * The guest-facing frontend is strict, while both paths share the BEAU
-	 * console ring and vsh backend after bytes leave the device model.
+	 * console ring and switch backend after bytes leave the device model.
 	 */
 	return (vm_config->os_config.os_family == VM_OS_LINUX) &&
 		(vm_config->arch.guest_virtio_console_size != 0UL);

@@ -95,12 +95,21 @@ ping                 return pong for a liveness check
 echo <text>          print text
 selftest             run deterministic runtime checks
 stats                show recognized, unknown, and overflowed command counts
+benchmark ipc [N]    measure synchronous seL4 IPC round-trip latency
 ```
 
 Input is printable ASCII with CR/LF and backspace/delete editing. Lines longer
 than 127 bytes are rejected and the next prompt starts with an empty buffer.
 The console is diagnostic only: it deliberately has no reboot command or
 arbitrary-memory access.
+
+The IPC benchmark accepts 1 to 100,000 measured round trips and defaults to
+1,000. It excludes 32 warm-up calls and reports minimum, average, and maximum
+ARM generic-timer ticks together with `counter_hz`. These ticks are not CPU
+cycles; compare raw tick counts only when the counter frequency is the same.
+QEMU is suitable for functional validation, not a physical performance
+baseline. Because the benchmark calls a passive responder synchronously, a
+responder fault can block the console.
 
 Exit QEMU with `Ctrl-a x`. Use `make -f Makefile.vmos qemu-image` to package
 `build/vmos/qemu_virt_aarch64/debug/qemu/loader.img` without starting QEMU.

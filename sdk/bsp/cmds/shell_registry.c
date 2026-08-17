@@ -28,10 +28,6 @@
 	static const struct shell_completion_set _name = { \
 		.entries = _name##_entries, .count = ARRAY_SIZE(_name##_entries) }
 
-COMPLETION_SET(shell_schedai_completions,
-	SUBCMD("snapshot"),
-);
-
 #if CONFIG_ARM64_SPE
 COMPLETION_SET(shell_spestat_completions,
 	SUBCMD("start"),
@@ -123,15 +119,13 @@ struct shell_cmd shell_common_cmds[] = {
 	CMD("ps", NULL, "list scheduler threads, state, and CPU usage", shell_list_threads, NULL),
 	CMD("schedstat", NULL, "list pCPU runqueues and scheduler algorithm statistics",
 		shell_schedstat, NULL),
-	CMD("schedai", "snapshot", "emit configured AI scheduler telemetry",
-		shell_schedai, &shell_schedai_completions),
 #if CONFIG_ARM64_SPE
 	CMD("spestat", "[start|stop|reset|dump <pcpu>]",
 		"show or control EL2-owned Arm SPE capture", shell_spestat,
 		&shell_spestat_completions),
 #endif
 	CMD("irqstat", NULL, "list host IRQ counts and ARM64 guest vIRQ latency", shell_irqstat, NULL),
-	CMD("vsh", "<vm id>", "switch to the vm console. type `CTRL-D` switch to BEAU",
+	CMD("switch", "<vm id>", "switch to the vm console. type `CTRL-D` switch to BEAU",
 		shell_to_vm_console, NULL),
 	CMD("ramlog", "<vm id>", "dump retained VM boot and watchdog log", shell_ramlog, NULL),
 };

@@ -313,12 +313,14 @@ class RootEntryPointTests(unittest.TestCase):
         output = self.run_make("-n", "qemu")
         for text in (
             "vmos/runtime/src/main.rs",
+            "vmos/runtime/src/ipc_responder.rs",
             "--target aarch64-unknown-none",
             "sdk/bin/microkit",
             "qemu-system-aarch64",
             "virt,virtualization=on",
             "addr=0x70000000",
             "loader.img",
+            "ipc-benchmark-responder.elf",
         ):
             with self.subTest(text=text):
                 self.assertIn(text, output)
@@ -346,6 +348,40 @@ class RootEntryPointTests(unittest.TestCase):
         self.assertEqual(irq.attrib["irq"], "33")
         self.assertEqual(irq.attrib["id"], "0")
         self.assertEqual(irq.attrib["trigger"], "level")
+
+    def test_runtime_system_has_a_passive_same_cpu_ipc_benchmark_responder(self):
+        system = ET.parse(
+            REPOSITORY_ROOT / "vmos" / "runtime" / "runtime.system"
+        ).getroot()
+        domains = {
+            domain.attrib["name"]: domain
+            for domain in system.findall("protection_domain")
+        }
+
+        self.assertIn("vmos_runtime", domains)
+        self.assertIn("ipc_benchmark_responder", domains)
+        caller = domains["vmos_runtime"]
+        responder = domains["ipc_benchmark_responder"]
+        self.assertEqual(caller.attrib["cpu"], "0")
+        self.assertEqual(caller.attrib["priority"], "100")
+        self.assertEqual(responder.attrib["cpu"], "0")
+        self.assertEqual(responder.attrib["priority"], "101")
+        self.assertEqual(responder.attrib["passive"], "true")
+        self.assertEqual(
+            responder.find("program_image").attrib["path"],
+            "ipc-benchmark-responder.elf",
+        )
+
+        ends = system.find("channel").findall("end")
+        caller_end = next(end for end in ends if end.attrib["pd"] == "vmos_runtime")
+        responder_end = next(
+            end for end in ends if end.attrib["pd"] == "ipc_benchmark_responder"
+        )
+        self.assertEqual(caller_end.attrib["id"], "1")
+        self.assertEqual(caller_end.attrib["pp"], "true")
+        self.assertEqual(caller_end.attrib["notify"], "false")
+        self.assertEqual(responder_end.attrib["id"], "0")
+        self.assertEqual(responder_end.attrib["notify"], "false")
 
     def test_runtime_uses_volatile_pl011_interrupts(self):
         source = (

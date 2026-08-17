@@ -6,7 +6,6 @@
 
 #include <types.h>
 #include <cpu.h>
-#include <errno.h>
 #include <per_cpu.h>
 #include <schedule.h>
 #include <sprintf.h>
@@ -546,38 +545,4 @@ int32_t shell_schedstat(__unused int32_t argc, __unused char **argv)
 	shell_item_end();
 
 	return 0;
-}
-
-int32_t shell_schedai(int32_t argc, char **argv)
-{
-	uint16_t pcpu_id;
-	bool found = false;
-
-	if ((argc == 2) && (strcmp(argv[1], "snapshot") == 0)) {
-		char line[MAX_STR_SIZE];
-
-		for (pcpu_id = 0U; pcpu_id < get_pcpu_nums(); pcpu_id++) {
-			const struct sched_cpupool_config *pool = sched_get_pcpu_pool_config(pcpu_id);
-			struct sched_cbs_pcpu_stats cbs;
-			uint64_t active_mask = 0UL;
-			uint16_t vmid;
-
-			if ((pool == NULL) || !pool->ai_assist || !sched_get_cbs_pcpu_stats(pcpu_id, &cbs)) {
-				continue;
-			}
-			for (vmid = 0U; vmid < CONFIG_MAX_VM_NUM; vmid++) {
-				if ((get_vm_config(vmid)->cpu_affinity & AFFINITY_CPU(pcpu_id)) != 0UL) {
-					active_mask |= 1UL << vmid;
-				}
-			}
-			snprintf(line, sizeof(line), "AI_SCHED ticks=%lu pcpu=%hu period_us=%u admission_ppm=%lu runqueue=%u active_mask=0x%lx pool_budget_us=%u cs=%lu resched=%lu\r\n",
-				cpu_ticks(), pcpu_id, pool->period_us, cbs.admission_utilization,
-				cbs.runqueue_count, active_mask, pool->budget_us, sched_get_context_switches(pcpu_id),
-				sched_get_reschedule_requests(pcpu_id));
-			shell_puts(line);
-			found = true;
-		}
-		return found ? 0 : -ENOTSUP;
-	}
-	return -EINVAL;
 }

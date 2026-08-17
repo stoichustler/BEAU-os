@@ -139,10 +139,19 @@ ping                 return pong
 echo <text>          print text
 selftest             run deterministic checks
 stats                show command counters
+benchmark ipc [N]    measure synchronous seL4 IPC round-trip latency
 ```
 
 The console uses QEMU PL011 IRQ 33 and a fixed 128-byte buffer. Press
 `Ctrl-a x` to exit QEMU.
+
+`benchmark ipc` measures 1,000 round trips by default; `N` may be from 1 to
+100,000. It performs 32 unreported warm-up calls, then prints `min_ticks`,
+`avg_ticks`, `max_ticks`, and `counter_hz`. Ticks come from the ARM generic
+physical counter and are not CPU cycles. QEMU results validate the command and
+IPC path but are not a hardware performance baseline. The command uses a
+synchronous call to a passive Rust responder, so a responder fault can block
+the console.
 
 Build the image without starting QEMU:
 
