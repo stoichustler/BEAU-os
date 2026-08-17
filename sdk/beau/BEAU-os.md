@@ -1,9 +1,11 @@
 # BEAU OS 整体框架与源码学习指南
 
-> 文档基线：2026-08-07，BEAU OS [VERSION](../../VERSION)的两个 QEMU 4OS 开发分支：
-> `4os-zephyr+3linux` 与 `4os-zephyr+rtthread+2linux`。
+> 源码基线：当前检出的 `main`，行为基线提交 `00109a5`，BEAU OS
+> [VERSION](../../VERSION) 为 `0.1.2`。当前 `platform.dts` 对应
+> `4os-zephyr+3linux`；`4os-zephyr+rtthread+2linux` 内容作为分支对照保留，使用前
+> 必须回到对应分支重新核对 DTS、Bconfig 和命令注册表。
 >
-> 本文以 [`sdk/sdk.md`](sdk/sdk.md) 为最高约束，并以各分支的源码、
+> 本文以 [`sdk/sdk.md`](../sdk.md) 为最高约束，并以当前检出源码、
 > `platform.dts`、Kconfig、构建脚本和 QEMU 回归脚本互相校验。除明确标注为
 > “共用”的内容外，VMID、镜像、命令和设备所有者均须按当前检出的分支解释。
 
@@ -55,7 +57,90 @@ VM0 Zephyr service VM；差别是 Linux backend 的 VMID，以及由该 backend 
 
 后文的“backend VM”与“frontend VM”是角色名称，不固定为某一个 VMID；需要 VMID 的
 操作必须先查阅第 5.1 节的对照表。`platform.dts` 是最终事实源，文档不能替代其
-静态所有权策略。
+静态所有权策略。当前检出可直接验证 Z3L；ZR2L 数值用于理解另一种角色映射，不应作为
+当前镜像的运行时事实。
+
+### 1.4 按目标选择阅读路线
+
+本文不要求从第一页顺序读到最后。先选择目标，再用“图 -> 入口代码 -> 状态所有者 ->
+诊断命令”的方式建立闭环：
+
+| 读者目标 | 建议顺序 | 读完应能回答 |
+|---|---|---|
+| 第一次接触 BEAU | [整体模型](#2-五分钟建立整体模型) -> [构建](#4-仓库与构建框架) -> [启动](#6-启动主链) -> [VM 创建](#7-vm-创建装载与启动) | 固件如何进入 EL2，DTS 如何变成四个 VM |
+| 理解 CPU 虚拟化 | [vCPU](#8-vcpu上下文切换与-vm-exit) -> [调度](#10-调度模块) -> [IRQ/vtimer](#11-irqgicvgicits-与-vtimer) | 一次 `ERET` 前后保存了什么，谁决定下一个 vCPU |
+| 理解设备与隔离 | [MMIO](#12-mmio-与虚拟设备分派) -> [PCI/SMMU](#14-pcivpci直通与-smmuv3) -> [核心不变量](#3-设计约束与核心不变量) | CPU MMIO、DMA、MSI 为什么是三条独立所有权链 |
+| 做故障分析 | [Console/Trace](#18-consoleshell日志与-trace) -> [WDT](#15-watchdog-与健康监测) -> [故障手册](#22-故障定位手册) | 应先采集什么证据，如何避免用单一现象猜根因 |
+| 做安全评审 | [发布顺序](#33-发布顺序必须-fail-closed) -> [Stage-2](#92-vm-stage-2) -> [STR](#16-透明电源管理与-str) | 谁拥有状态、何时发布、失败时如何关闭或回滚 |
+
+一个完整的学习闭环如下。图中的每一层都应能落到后文的真实代码片段和诊断接口：
+
+```text
+静态策略          运行时对象            硬件/客体可见状态
+platform.dts
+     |
+     v
+parser validation -> acrn_vm/config -> Stage-2/vGIC/SMMU/virtio
+     |                    |                    |
+     |                    v                    v
+     |              scheduler thread      guest ERET / DMA / IRQ
+     |                    |                    |
+     +--------------------+--------------------+
+                          |
+                          v
+                 shell/trace/WDT evidence
+```
+
+### 1.5 图、代码与事实范围
+
+本文使用三类代码块：
+
+- `text`：解释控制流、数据流和所有权，不代表可直接编译的语法。
+- `c`/`asm`/`dts`：从当前源码截取的连续短片段；上下文和完整错误路径仍以链接文件为准。
+- `sh`：开发者命令；执行前仍要确认平台、输出目录和测试审批要求。
+
+阅读真实代码片段时，优先寻找四个位置：输入校验、锁或 owner、发布点、失败返回/回滚。
+如果图与代码发生冲突，当前检出源码和 DTS 优先，随后应修正文档。
+
+### 1.6 技术覆盖边界
+
+仓库中存在“当前产品路径、能力门控路径、移植保留路径”三层代码。学习时先确认层级，
+避免把能够编译的文件误认为当前平台会运行的功能：
+
+```text
+                         BEAU ARM64 source tree
+                                  |
+              +-------------------+-------------------+
+              |                   |                   |
+              v                   v                   v
+       current static path   capability-gated     retained/reference
+       -------------------   -----------------     ------------------
+       qemu / rk356x         SVE / MTE / PAC      ACPI / EFI
+       GICv3 / Stage-2       SPE / Perf           multiboot
+       static vFDT           Trusty QEMU POC      bzImage / ELF loader
+       raw image loader      strict PSCI STR      GICv5 experiment
+       vPL011/virtio         hardware PM/DVFS     sdk/ube
+              |                   |                   |
+              v                   v                   v
+       default DTS/Bconfig   Kconfig + CPU/HW     do not infer runtime
+       can prove behavior    capability decides   from file existence
+```
+
+状态判断顺序：
+
+```text
+source exists
+    -> Kconfig symbol enabled?
+    -> platform Bconfig selects it?
+    -> DTS supplies required policy/resources?
+    -> runtime CPU/device capability passes?
+    -> only then call it an active path
+```
+
+事实源依次是 [`arch/arm64/Kconfig`](../../arch/arm64/Kconfig)、平台 `Bconfig`、
+`platform.dts` 和运行时 capability gate。`sdk/kbe`、`sdk/kfe`、`sdk/zsh` 是客体侧
+保留副本，不属于 EL2 image；DDB 和 benchmark 是当前可选诊断能力，但其内部实现适合
+分别阅读专项源码，不作为理解 VM 隔离主线的前置条件。
 
 ## 2. 五分钟建立整体模型
 
@@ -125,6 +210,32 @@ validate + normalize
     +--> passthrough / IPC / PM policy
 ```
 
+下面是当前 QEMU VM1 policy 的连续节选。DTS 同时写出身份、RAM、vCPU 放置和客体类型，
+因此它不是“设备描述附件”，而是创建运行时对象前的授权输入：
+
+```dts
+vm@1 {
+	compatible = "beau,vm";
+	reg = <1>;
+	#address-cells = <2>;
+	#size-cells = <2>;
+	beau,name = "Linux-1";
+	load-order = "pre-std";
+	beau,static-mem = <0x0 0x60000000 0x0 0x10000000>;
+	beau,pstore = <0x0 0x6fc00000 0x0 0x00400000>;
+	direct-map;
+	cpu-affinity = <1 5>;
+	guest-flags = "static", "trusty-client";
+	beau,sve = "enabled";
+	beau,sve-vl-bits = <128>;
+};
+```
+
+源码入口：[`arch/arm64/platform/qemu/platform.dts`](../../arch/arm64/platform/qemu/platform.dts)
+与 [`sdk/bsp/arm64/platform_dts.c`](../bsp/arm64/platform_dts.c)。这里的
+`cpu-affinity = <1 5>` 按顺序定义 vCPU0/vCPU1 的 pCPU，而不是一个无序集合；parser
+校验后才同时生成 ordered array 和 bitmap，后续创建代码不再猜测 DTS 语义。
+
 配置缺失、内存重叠、CPU pool 冲突、设备所有者冲突或无效预算都会在客体运行前
 失败，而不是把错误带入运行时。
 
@@ -181,7 +292,7 @@ publish software ownership / guest visibility
 
 ### 3.5 安全导向的 C 规则
 
-[`sdk/beau/ISO26262.md`](sdk/beau/ISO26262.md) 规定：外部输入必须校验，隔离错误
+[`sdk/beau/ISO26262.md`](ISO26262.md) 规定：外部输入必须校验，隔离错误
 必须关闭访问，所有权转移必须显式，清理必须确定，硬件等待必须有界，诊断应包含
 VMID、vCPUID、StreamID、BDF、IRQ 或地址等对象身份。
 
@@ -283,10 +394,14 @@ Zephyr、RT-Thread（仅 ZR2L）、LK（rk356x）和客体 DTB 直接嵌入 BEAU
 预期第一个可见结果是：
 
 ```text
-BEAU OS (HYPERVISOR) v0.0.7 ...
+Launching BEAU HYPERVISOR v<VERSION> ...
 ...
 console:\>
 ```
+
+`<VERSION>` 由仓库根目录 [`VERSION`](../../VERSION) 生成，不应把某次发布号硬编码为
+长期预期。若 banner 已出现但没有 `console:\>`，说明 EL2 已进入 C 初始化，故障范围应
+从“固件是否进入 EL2”收窄到 pCPU、VM launch barrier 或 shell 初始化。
 
 ## 5. 当前平台拓扑
 
@@ -396,6 +511,33 @@ _start
 init_primary_pcpu()
 ```
 
+图中的前三个安全条件直接出现在
+[`arch/arm64/boot/entry.S`](../../arch/arm64/boot/entry.S)：
+
+```asm
+LABEL(_start)
+	/* DAIF masks Debug, SError, IRQ, and FIQ while EL2 state is incomplete. */
+	msr    daifset, #0xf
+
+	/* CurrentEL must report EL2; BEAU runs as a hypervisor, not as EL1 code. */
+	mrs    x2, CurrentEL
+	cmp    x2, #CURRENTEL_EL2
+	b.ne   _start_hang
+	/* SPSel=1 selects SP_EL2 as the active stack pointer at EL2. */
+	msr    spsel, #1
+	isb
+
+	/* VBAR_EL2 points all EL2 exceptions to arm64_exception_vectors. */
+	loadl  x2, arm64_exception_vectors
+	msr    vbar_el2, x2
+	isb
+```
+
+先屏蔽异步异常，是因为 BSS、per-CPU 栈、GIC 和 C handler 尚未拥有可用状态；EL 不对则
+进入 `_start_hang`，不会尝试以 EL1 继续运行。安装 `VBAR_EL2` 后仍未发布 VM，真正的
+平台策略解析和 subsystem ordering 由
+[`init_primary_pcpu()`](../../arch/arm64/init.c) 接管。
+
 `CONFIG_AARCH64_IMAGE_HEADER` 在 rk356x 默认启用，使镜像可由 U-Boot `booti`
 识别。重定位框架存在，但 `relocate()` 仍为空，默认 `CONFIG_RELOC=n`。
 
@@ -453,6 +595,60 @@ launch_vms() -> run_idle_thread()
 AP 从 `_start_secondary_psci` 进入，使用 PSCI context 中的 per-CPU stack，启用 BSP
 已创建的 EL2 Stage-1 页表，然后进入同一个 common post 路径。
 
+### 6.4 跨 pCPU 工作、softirq 与 event
+
+BEAU 使用四种不同机制传递“有工作要处理”，它们的等待语义和状态 owner 不同：
+
+```text
+producer intent
+    |
+    +--> synchronous remote callback
+    |      owner: global smp_call owner + generation + per-pCPU mailbox
+    |      transport: GIC SGI
+    |      completion: target clears mask bit; caller waits with deadline
+    |
+    +--> reschedule / vCPU request kick
+    |      owner: target per-pCPU/vCPU state bits
+    |      transport: GIC SGI
+    |      completion: no callback ACK; target observes bits at safe boundary
+    |
+    +--> deferred interrupt work
+    |      owner: target per_cpu(softirq_pending)
+    |      transport: local bit or remote bit + SGI
+    |      completion: do_softirq() drains bounded registered handlers
+    |
+    `--> scheduler event
+           owner: one sched_event + exclusive waiting_thread
+           transport: set flag + wake_thread()
+           completion: waiter consumes set flag; signal edge cannot be lost
+```
+
+同步 SMP call 的时序如下：
+
+```text
+caller pCPU       global owner/gen       target mailbox       GIC/target pCPU
+     |                     |                     |                    |
+     |- acquire(deadline)->|                     |                    |
+     |<-- owner granted ---|                     |                    |
+     |--- publish active generation + mask ----->|  global state      |
+     |                     |-- release-store func/data/generation --->|
+     |                     |                     |-- send SGI ------->|
+     |                     |                     |                    |-- acquire-load mailbox
+     |                     |                     |                    |-- callback(data)
+     |                     |<------------------------ clear mask bit -|
+     |--- wait mask==0 ----|                     |                    |
+     |-- revoke generation -> clear mailboxes -> release owner        |
+     |                     |                     |                    |
+timeout:
+     |-- active generation=0 before cleanup; late SGI cannot run stale callback
+```
+
+关键源码：[`core/notify.c`](../../core/notify.c)、
+[`arch/arm64/notify.c`](../../arch/arm64/notify.c)、
+[`core/softirq.c`](../../core/softirq.c) 和 [`core/event.c`](../../core/event.c)。
+SMP call 的 generation 是授权令牌，SGI 只是 transport；softirq bit 必须先发布再 kick。
+`sched_event` 不是 counting semaphore，只支持一个 waiter，重复 signal 会合并为 `set=true`。
+
 ## 7. VM 创建、装载与启动
 
 ### 7.1 配置生成
@@ -501,6 +697,47 @@ prepare 和启动，不同 pCPU 可并行推进；任意 VM 的失败不会阻�
 视为可重试的未就绪状态。跨 VM 服务依赖仍由既有协议处理，本路径不根据 VM ID 或镜像装载顺序
 推断依赖。
 
+`create_vm()` 中的发布点和失败路径是理解 `VM_CREATED` 的最短代码证据：
+
+```c
+spinlock_init(&vm->stg2pt_lock);
+spinlock_init(&vm->emul_mmio_lock);
+(void)memset(&vm->lifecycle, 0U, sizeof(vm->lifecycle));
+(void)vm_lifecycle_begin_locked(vm, VM_LIFECYCLE_CREATING);
+vm->nr_emul_mmio_regions = 0U;
+vm->hw.cpu_affinity = pcpu_bitmap;
+status = arch_init_vm(vm, vm_config);
+
+if (status == 0) {
+	status = create_vm_vcpus(vm, pcpu_bitmap, vm_config);
+}
+
+if (status == 0) {
+	vm_lifecycle_commit_locked(vm, VM_LIFECYCLE_CREATED, VM_CREATED);
+
+	/* Populate return VM handle */
+	*rtn_vm = vm;
+	if (is_service_vm(vm)) {
+		__atomic_store_n(&service_vm_ptr, vm, __ATOMIC_RELEASE);
+	}
+} else {
+	uint16_t i;
+	struct acrn_vcpu *vcpu = NULL;
+
+	foreach_vcpu(i, vm, vcpu) {
+		destroy_vcpu(vcpu);
+	}
+	vm->hw.created_vcpus = 0U;
+	(void)arch_deinit_vm(vm);
+	vm_lifecycle_fail_locked(vm, status);
+}
+```
+
+源码：[`core/vm.c`](../../core/vm.c)。`service_vm_ptr` 的 release store 位于
+architecture state 和全部 vCPU 创建成功之后；失败分支只销毁本次创建出的 vCPU 和 VM
+architecture state，不会发布一个半初始化 service VM。继续阅读时应追
+`arch_init_vm()` 和 `create_vm_vcpus()`，而不是从 `service_vm_ptr` 反推对象何时可用。
+
 ### 7.3 `arch_init_vm()` 的隔离顺序
 
 入口：`arch/arm64/guest/vm.c::arch_init_vm()`。
@@ -520,6 +757,31 @@ prepare 和启动，不同 pCPU 可并行推进；任意 VM 的失败不会阻�
 `VM_CREATING` 期间的 VIPC、remoteproc 等首建图尚未被任何 vCPU VTTBR 或 SMMU DMA
 domain 使用，因此仅完成页表写回；进入 `VM_CREATED` 后的每次 Stage-2 更新都必须完成
 CPU VMID TLBI 与 SMMU CMD_SYNC，失败保持 fail-closed。
+
+真实初始化代码保持了这条顺序：
+
+```c
+init_stage2_identity_map(vm);
+arm64_vgicv3_init_vm(vm, vm_config->cpu_affinity);
+if ((vm_config->arch.guest_smmu_size == 0UL) ||
+	arm_smmu_assignment_ready()) {
+	arm64_vsmmu_init_vm(vm);
+} else {
+	LOG_WRN("vSMMUv3: hide vm%u instance: physical S2 isolation unavailable",
+		vm->vm_id);
+}
+arm64_vipc_init_vm(vm);
+arm64_vrproc_init_vm(vm);
+if (arm64_vm_uses_virtio_console(vm_config)) {
+	vhost_console_init_vm(vm);
+} else {
+	arm64_vpl011_init_vm(vm);
+}
+```
+
+源码：[`arch/arm64/guest/vm.c`](../../arch/arm64/guest/vm.c)。这段代码值得按
+“translation boundary -> interrupt state -> IPC/device frontend”阅读。物理 SMMU
+assignment 未就绪时隐藏 guest synthetic SMMU，而不是向客体暴露无法兑现的隔离能力。
 
 ### 7.4 镜像装载
 
@@ -580,6 +842,74 @@ Host 根据 HVC 发起者确定 VM ID，不接受客体提供的 VM 身份。报
 guest stack 诊断只由 `crash <vmid>` 输出。每个 VM 保留最近八条可校验的
 崩溃记录：一致的 HVC 重试不消耗新槽，而新事件仅在缓存已满时淘汰最早记录。
 `crash <vmid>` 按捕获顺序显示 guest history 与已有 EL2 guest-fault 信息，`erase` 清除两者。
+
+### 7.7 vFDT 创建与客体发布
+
+当前 QEMU/rk356x 都启用 `CONFIG_STATIC_VFDT=y`。没有外部 FDT module 的静态 VM 使用
+BEAU 从 policy 创建的 vFDT；配置了 module 的 VM 直接使用经范围校验的 DTB 输入：
+
+```text
+vm_config
+    |
+    +--> fdt_mod_tag present -----------------------+
+    |                                               |
+    |                                      init_vm_boot_info()
+    |                                               |
+    `--> no external FDT                            v
+            -> core/vfdt_static.c          external DTB module
+            -> arch_init_service_vm_vfdt()          |
+               create root/chosen/cpus/PSCI         |
+               memory/GIC/ITS/vSMMU/timer           |
+               UART or virtio-console/proxy         |
+            -> apply bootargs                       |
+            -> fdt_info.src_addr/size               |
+                         +--------------------------+
+                         v
+                  rawimage_loader()
+                  - choose non-overlap FDT GPA
+                  - copy_to_gpa()
+                  - publish fdt_info.load_addr
+                         |
+                         v
+              arch_vm_prepare_bsp(): guest x1 = FDT GPA
+```
+
+`fdt_info` 在构造和 `fdt_finish()` 成功后才成为 boot input；loader 仍须验证 FDT 与
+kernel/initramfs/RAM window 不重叠。源码入口：[`core/vfdt_static.c`](../../core/vfdt_static.c)、
+[`sdk/bsp/arm64/platform.c`](../bsp/arm64/platform.c)、
+[`sdk/bsp/boot/guest/rwloader.c`](../bsp/boot/guest/rwloader.c)。
+
+### 7.8 异步 VM cold reset 时序
+
+Reset 不能在 shell thread、WDT control thread 或 guest VM-exit frame 中直接执行；目标
+VM 的 BSP pCPU idle thread 是 reset work owner：
+
+```text
+shell/guest PSCI/WDT    PM topology gate    target BSP pCPU flags     idle thread
+         |                     |                      |                   |
+         |-- begin(vmid) ----->|                      |                   |
+         |<-- granted/EBUSY ---|                      |                   |
+         |-- VM lifecycle=QUIESCING + reset_generation                    |
+         |-- [WDT owner bit] --|-- release barrier -->|                   |
+         |-- reset bitmap + NEED_RESET_VM ----------->|                   |
+         |-- reschedule SGI ------------------------->|------------------>|
+         |                     |                      |   consume flag    |
+         |                     |                      |   lock VM         |
+         |                     |                      |   verify generation
+         |                     |                      |   pause vCPUs     |
+         |                     |                      |   capture ramlog  |
+         |                     |                      |   invalidate TLB  |
+         |                     |                      |   reset devices   |
+         |                     |                      |   reload image    |
+         |                     |                      |   start BSP vCPU  |
+         |                     |<---------------------|-- end topology ---|
+         |<---- WDT completion only for WDT-owned request ----------------|
+```
+
+若 lifecycle/generation 已变化，idle consumer 返回 `-EBUSY`；TLB invalidation 或 device
+reset 失败时不启动新 BSP。WDT owner bit 先于通用 reset bitmap 发布，避免 completion
+被错误归属。源码：[`core/vm.c`](../../core/vm.c) 与
+[`arch/arm64/guest/vm.c`](../../arch/arm64/guest/vm.c)。
 
 ## 8. vCPU、上下文切换与 VM-exit
 
@@ -656,6 +986,44 @@ ERET -> guest EL1
 处理失败会暂停当前 vCPU。成功后仍会检查 host reschedule、处理 pending request、
 同步 vtimer/vGIC，并把最终被选中 vCPU 的寄存器写回 trap frame。
 
+分派表本身是一个很好的源码入口：
+
+```c
+switch (ec) {
+case ESR_EL2_EC_IABT_LOW:
+	ret = handle_instruction_abort(vcpu);
+	break;
+case ESR_EL2_EC_SERROR:
+	ret = handle_serror(vcpu);
+	break;
+case ESR_EL2_EC_DABT_LOW:
+	ret = handle_mmio_abort(vcpu);
+	break;
+case ESR_EL2_EC_HVC64:
+	ret = handle_hvc64(vcpu);
+	break;
+case ESR_EL2_EC_SMC64:
+	ret = handle_smc64(vcpu);
+	break;
+case ESR_EL2_EC_SYSREG:
+	ret = handle_sysreg(vcpu);
+	break;
+case ESR_EL2_EC_SVE:
+	ret = arm64_vm_mpu_handle_sve_trap(vcpu);
+	break;
+case ESR_EL2_EC_WFI_WFE:
+	ret = handle_wfx(vcpu);
+	break;
+default:
+	break;
+}
+```
+
+源码：[`arch/arm64/guest/vcpu_exit.c`](../../arch/arm64/guest/vcpu_exit.c)。`ESR.EC`
+只决定第一层 handler；Data Abort 还要校验 IPA、访问宽度和目标 MMIO range，HVC 还要
+经过 ABI permission table。默认分支保持失败值，随后记录 VM/vCPU/ESR/ELR/FAR/HPFAR
+并停止当前 vCPU，因此未知 exit 不会被当成成功后盲目推进 ELR。
+
 ### 8.5 物理 IRQ 退出
 
 `dispatch_vcpu_irq()` 的顺序：
@@ -674,6 +1042,40 @@ save guest regs
 
 如果当前客体已经有可见 pending vIRQ，代码会保留一个有限的返回窗口，让 Linux
 退出 WFI idle path 并打开 PSTATE.I，避免 host tick 把它反复切走而无法处理中断。
+
+### 8.6 Guest PSCI 生命周期时序
+
+Guest PSCI 由 EL2 本地虚拟化，不转发给 EL3 firmware；只有启动 host AP 或执行获准的
+whole-host reset 时才使用 [`arch/arm64/psci.c`](../../arch/arm64/psci.c) 的物理 PSCI：
+
+```text
+guest caller     VM-exit/PSCI decode      PM topology gate      target vCPU/idle
+     |                    |                       |                     |
+CPU_ON(mpidr,entry,ctx)   |                       |                     |
+     |-- HVC/SMC -------->|                       |                     |
+     |                    |-- begin(vmid) ------->|                     |
+     |                    |-- lookup vMPIDR + lock VM                   |
+     |                    |-- validate INIT/POWERED_OFF                 |
+     |                    |-- prepare ELR/x0/SPSR --------------------->|
+     |                    |-- launch_vcpu(): RUNNING + wake ----------->|
+     |                    |-- end(vmid) --------->|                     |
+     |<-- PSCI_SUCCESS / DENIED ------------------|                     |
+     |                    |                       |                     |
+CPU_SUSPEND               |                       |                     |
+     |-- reset event -> recheck authoritative pending vIRQ              |
+     |                    |-- no pending: wait_event() ---------------->|
+     |                    |<-- signal_event on IRQ ---------------------|
+     |<-- standby continues, or powerdown resumes at validated entry ---|
+     |                    |                       |                     |
+SYSTEM_RESET              |                       |                     |
+     |                    +-- service VM -> platform host reset         |
+     |                    `-- other VM -> queue deferred self-reset ----> idle
+```
+
+`SYSTEM_SUSPEND` 明确返回 `NOT_SUPPORTED`，因为 BEAU transparent STR 不是 guest PSCI
+transaction。`CPU_ON/OFF` 与 reset 先取得 PM topology gate，避免与 STR 或另一 reset
+交叉。源码入口：[`arch/arm64/guest/vcpu_exit.c`](../../arch/arm64/guest/vcpu_exit.c)
+和 [`arch/arm64/guest/vpsci.c`](../../arch/arm64/guest/vpsci.c)。
 
 ## 9. 内存管理模块
 
@@ -776,6 +1178,33 @@ CPU/DMA translation 继续运行。
 实现，新代码使用 BEAU BSD-3-Clause 许可。当前不做碎片化 4 KiB 表恢复一致后的
 自动 2 MiB 合并。
 
+CPU 和 DMA walker 的时序不能只看页表 lock。`stg2pt_lock` 保护软件 descriptor，
+update owner 串行化整个跨硬件事务：
+
+```text
+updater pCPU       VM update owner      target pCPUs        bound SMMU       page pool
+     |                    |                   |                   |               |
+     |-- acquire owner -->|                   |                   |               |
+     |-- lock stg2pt_lock                     |                   |               |
+     |-- invalidate old descriptor + cache clean                  |               |
+     |-- unlock -------------------------------                   |               |
+     |                    |-- VMID TLBI via SMP call ------------>|
+     |                    |<-- all configured pCPUs complete -----|
+     |                    |---------------- TLBI_S12_VMALL ------>|
+     |                    |---------------- CMD_SYNC ------------>|
+     |                    |<--------------- synchronized ---------|
+     |-- lock -> publish replacement/final deletion               |               |
+     |-- cache clean -> unlock                                    |               |
+     |-- repeat CPU/SMMU synchronization                          |               |
+     |-- retire table page only after final sync -------------------------------->|
+     |-- release owner -->|                   |                   |               |
+```
+
+CPU shootdown、root identity 检查或 SMMU sync 失败会进入 panic，并保留 retired page，
+不会继续运行不一致的 CPU/DMA translation。对应实现：
+[`stage2_replace_pgentry()`](../../arch/arm64/guest/vm.c)、
+`arm64_stage2_sync_translation()` 和 `arm_smmu_sync_vm_stage2()`。
+
 ### 9.3 客体 copy 边界
 
 `arch/arm64/guest/memory.c` 的 `copy_to_gpa()`/`copy_from_gpa()` 先验证整个范围，
@@ -784,6 +1213,34 @@ CPU/DMA translation 继续运行。
 - `gva2gpa()` 返回 `-ENOSYS`。
 - `copy_to_gva()`/`copy_from_gva()` 返回 `-ENOSYS`。
 - 因此 Hypercall ABI 应传 GPA，而不是任意 GVA。
+
+`copy_from_gpa()` 展示了 Hypercall 和 virtio 代码应复用的边界：
+
+```c
+int32_t copy_from_gpa(struct acrn_vm *vm, void *h_ptr, uint64_t gpa, uint32_t size)
+{
+	void *hva = NULL;
+	int32_t ret = -EFAULT;
+
+	if (size == 0U) {
+		ret = 0;
+	} else if (h_ptr == NULL) {
+		ret = -EINVAL;
+	} else if (arm64_guest_gpa_range_valid(vm, gpa, size)) {
+		hva = gpa2hva(vm, gpa);
+		if (hva != NULL) {
+			memcpy(h_ptr, hva, size);
+			ret = 0;
+		}
+	}
+
+	return ret;
+}
+```
+
+源码：[`arch/arm64/guest/memory.c`](../../arch/arm64/guest/memory.c)。校验覆盖完整
+`[gpa, gpa + size)` 范围后才转换 HVA；无效指针与越界 GPA 使用不同 errno。调用者仍须
+检查返回值，不能因为静态平台采用 1:1 RAM 就直接把 guest 参数当 host pointer。
 
 ### 9.4 EL2 Memory Tagging Extension
 
@@ -883,6 +1340,38 @@ Q/T，超过 100% 时 panic，阻止不可调度配置进入运行时。
 RTDS 使用固定周期边界。每个周期重新获得预算，未用预算不结转。预算耗尽的线程只在
 没有有预算线程时借用 slack，因此更适合周期负载，而不是 CBS 的 burst 模型。
 
+### 10.6 Quiesce、freeze 与延迟 wake
+
+Quiesce 和 freeze 都要求 vCPU 不再是 current，但用途不同：quiesce 保护 VM reset/WDT
+generation，freeze 保护 PM epoch 并保存 suspend 期间发生的 wake edge。
+
+```text
+reset/WDT owner      target scheduler       vCPU thread         wake producer
+      |                     |                    |                    |
+      |-- quiesce(gen) ---->| publish slot       |                    |
+      |                     |-- reschedule ----->| switch out         |
+      |                     |-- ack_generation=gen                    |
+      |<-- is_quiesced -----|                    |                    |
+      |   reset may proceed |                    |                    |
+      |-- release slot ---->|                    |                    |
+
+PM owner             target scheduler       vCPU thread         wake producer
+      |                     |                    |                    |
+      |-- freeze(epoch) --->| sleep + freeze_epoch                    |
+      |                     |-- reschedule ----->| switch out         |
+      |<-- blocked and not current               |                    |
+      |                     |                    |<-- wake event -----|
+      |                     | deferred_wake=true; do not enqueue      |
+      |-- thaw(epoch,wake_owned) --------------->|                    |
+      |                     | clear epoch; replay exactly one wake    |
+```
+
+`generation/epoch` 不匹配的 release/thaw 不改变状态。Scheduler lock 串行化 freeze 与
+所有 wake producer；`wake_owned` 记录 freeze 操作本身是否拿走了 runnable edge，
+`deferred_wake` 记录 gate 生效期间的新 edge。源码：
+[`core/schedule.c`](../../core/schedule.c)、[`core/vcpu.c`](../../core/vcpu.c) 和
+[`core/pm.c`](../../core/pm.c)。
+
 ## 11. IRQ、GIC、vGIC、ITS 与 vtimer
 
 ### 11.1 Host IRQ 框架
@@ -946,6 +1435,40 @@ ERET -> guest IRQ
     v
 guest EOI / maintenance -> sync active/pending state
 ```
+
+注入函数把“修改 VM 级中断状态”和“唤醒目标 vCPU”分成两个有序步骤：
+
+```c
+int32_t arm64_vgicv3_inject_irq(struct acrn_vcpu *vcpu, uint32_t virq, bool level)
+{
+	struct arm64_vgicv3 *vgic;
+	struct acrn_vcpu *target_vcpu;
+	uint64_t flags;
+	int32_t ret = -EINVAL;
+
+	if ((vcpu != NULL) && (vcpu->vm != NULL) && (virq < ARM64_VGIC_IRQ_NUM)) {
+		vgic = &vcpu->vm->arch_vm.vgic;
+		if (vgic->initialized) {
+			spinlock_irqsave_obtain(&vgic->lock, &flags);
+			target_vcpu = vgic_irq_target_vcpu(vcpu, vgic, virq);
+			ret = vgic_inject_locked(vgic, target_vcpu, virq, level);
+			spinlock_irqrestore_release(&vgic->lock, flags);
+			if (ret == 0) {
+				vcpu_make_request(target_vcpu, ARM64_VCPU_REQUEST_EVENT);
+				signal_event(&target_vcpu->events[ARM64_VCPU_EVENT_VIRTUAL_INTERRUPT]);
+			}
+		}
+	}
+
+	return ret;
+}
+```
+
+源码：[`arch/arm64/guest/vgicv3.c`](../../arch/arm64/guest/vgicv3.c)。VM 的 `vgic`
+拥有 descriptor 状态，`vgic->lock` 串行化 target selection 和 pending/level 更新；只有
+注入成功才发布 vCPU request 并唤醒线程。唤醒并不等于 IRQ 已进入 LR，后续仍要经过
+`arm64_process_vcpu_requests()` 和 flush，因此故障分析必须区分 pending、request、LR
+和 guest EOI 四个阶段。
 
 ### 11.4 虚拟定时器
 
@@ -1026,6 +1549,31 @@ RTOS UART MMIO
 guest 拥有 vring 内存，但不拥有 BEAU 的 queue shadow。设备语义只有在 descriptor
 验证后才能执行。
 
+Virtqueue 的正确性依赖 producer/consumer 顺序，而不仅是地址范围：
+
+```text
+guest driver        guest vring RAM       BEAU queue shadow             backend       vGIC
+     |                       |                       |                     |            |
+     |-- payload/descriptor->|                       |                     |            |
+     |-- avail.ring -------->|                       |                     |            |
+     |-- release avail.idx ->|                       |                     |            |
+     |-- QueueNotify ------------------------------->|                     |            |
+     |                       |<-- acquire/read ------|                     |            |
+     |                       |-- head/chain -------->| validate GPA/loop/direction      |
+     |                       |                       |-- bounded payload ->|            |
+     |                       |                       |<-- result ----------|            |
+     |                       |<-- payload/used elem--|                     |            |
+     |                       |<-- release used.idx --|                     |            |
+     |                       |                       |-- publish IRQ status ----------->|
+     |<----------------------------- virtual used-ring IRQ -----------------------------|
+```
+
+Frontend owns descriptor/avail memory；BEAU owns `last_avail_idx`、queue session 和 used
+publication。任何 descriptor/GPA/方向校验失败都不能执行 backend 语义；guest GPA 写失败
+也不能增加 used index。Reset 先换 session 并清可信 shadow，使旧通知不能完成到复用后的
+device。源码：[`sdk/bsp/virtio/virtio_mmio.c`](../bsp/virtio/virtio_mmio.c) 和
+[`sdk/bsp/vhost/vhost_console.c`](../bsp/vhost/vhost_console.c)。
+
 ### 12.4 内建 vhost-console backend
 
 **定位**：`sdk/bsp/vhost/vhost_console.c`。
@@ -1076,10 +1624,43 @@ BEAU
     -> inject virtio IRQ
 ```
 
+QueueNotify 的第一层交接代码如下；片段停在 direct backend return，完整函数随后继续处理
+VM HVC backend 尚未注册和已注册的分支：
+
+```c
+static void virtio_proxy_notify_queue(struct virtio_mmio_dev *mmio,
+	uint16_t queue_id)
+{
+	struct virtio_proxy_dev *dev =
+		(struct virtio_proxy_dev *)virtio_mmio_priv(mmio);
+	uint64_t now;
+	bool hcall_backend_expected;
+
+	if ((dev == NULL) || (queue_id >= mmio->queue_num)) {
+		return;
+	}
+	spinlock_obtain(&dev->lock);
+	now = cpu_ticks();
+	dev->notify_count++;
+	dev->last_notify_tick[queue_id] = now;
+	if ((dev->backend_ops != NULL) && (dev->backend_ops->notify_queue != NULL)) {
+		dev->notify_backend_kick_count++;
+		spinlock_release(&dev->lock);
+		dev->backend_ops->notify_queue(dev, queue_id, dev->backend_priv);
+		return;
+	}
+```
+
+源码：[`sdk/bsp/virtio/virtio_proxy.c`](../bsp/virtio/virtio_proxy.c)。MMIO common
+层拥有可信的 `queue_num`，proxy object 的锁保护 notify 统计和 backend 状态；调用
+device-specific backend 前先释放锁，避免协议处理、descriptor copy 或 IRQ 注入在
+proxy spinlock 下运行。若使用 VM HVC backend，后续分支只把已验证 descriptor chain
+预取到 bounded pending slots，协议语义仍不进入 EL2。
+
 BEAU 不解析 FUSE、block、I2C 或 Ethernet 协议。协议语义位于 Linux backend 的 KBE，
 这减少了 Hypervisor 可信计算基中的设备协议代码。
 
-更多virtio前后端驱动信息，参考[virtio.md](virtio.md).
+更多 virtio 前后端驱动信息参见 [virtio.md](virtio.md)。
 
 ### 12.6 virtio-vsock proxy
 
@@ -1129,6 +1710,38 @@ ARM64 dispatcher 自身也是权限表：
 - 带 `GUEST_FLAG_STATIC_VM` 的调用只允许静态 VM 对自身执行。
 - 未实现、权限错误或目标错误返回 `-ENOTTY`/负 errno，不借用其他 VM 所有权。
 
+权限检查位于 handler 之前，返回值写回客体 `x0`：
+
+```c
+if (HC_IDX(hcall_id) < ARRAY_SIZE(arm64_hc_dispatch_table)) {
+	const struct hcall_dispatch_entry *dispatch =
+		&arm64_hc_dispatch_table[HC_IDX(hcall_id)];
+	uint64_t guest_flags = get_vm_config(vm->vm_id)->guest_flags;
+	uint64_t permission_flags = dispatch->permission_flags;
+
+	if (dispatch->handler != NULL) {
+		if ((permission_flags == 0UL) && is_service_vm(vm)) {
+			struct acrn_vm *target_vm =
+				arm64_hcall_target_vm(vm, hcall_id, param1);
+
+			if (target_vm != NULL) {
+				get_vm_lock(target_vm);
+				ret = dispatch->handler(vcpu, target_vm, param1, param2);
+				put_vm_lock(target_vm);
+			}
+		} else if ((permission_flags != 0UL) &&
+			((guest_flags & permission_flags) != 0UL)) {
+			ret = dispatch->handler(vcpu, vm, param1, param2);
+		}
+	}
+}
+```
+
+源码：[`arch/arm64/guest/hcall.c`](../../arch/arm64/guest/hcall.c)。无 permission flag
+不是“任何 VM 可调用”，而是 service VM 管理路径；有 flag 的调用只把当前 VM 作为目标，
+避免 static VM 借参数操作其他 VM。handler 仍负责 ABI version、IOC size、GPA range 和
+operation enum 校验。
+
 ### 13.2 当前 ARM64 有效 Hypercall
 
 | 调用 | ID 低字节 | 调用者 | 用途 |
@@ -1139,6 +1752,9 @@ ARM64 dispatcher 自身也是权限表：
 | `HC_VM_WDT_KICK` | `0x64` | static VM | 提交 VM-wide 或 per-vCPU watchdog token |
 | `HC_VIRTIO_PROXY_BACKEND` | `0x65` | static VM | backend register/poll/reply/heartbeat |
 | `HC_IPC` | `0x66` | static VM | IPC query/notify/ack |
+| `HC_AI_SCHED` | `0x67` | static VM | advisor register/snapshot/observe-only proposal |
+| `HC_VM_CRASH_REPORT` | `0x68` | static VM | 提交固定布局的 guest crash report |
+| `HC_VIRTIO_VSOCK_BACKEND` | `0x69` | static VM | vsock backend register/poll/send/heartbeat |
 
 公共头 `include/public/acrn_hv_defs.h` 还定义了 VM 动态创建、ioreq、PCI、Trusty、PM
 等 ACRN ABI，但 ARM64 dispatch table 当前大多不挂接或明确返回 `-ENOTTY`。
@@ -1157,7 +1773,7 @@ VM 创建和客体首次执行。图中的 `path:function()` 是后续跟踪代�
 - Boot Loader stage 3-3 (`BL33`) Non-trusted Firmware
 
 ```text
-                                    Resident                         Noraml
+                                    Resident                         Normal
       Trusted                       Runtime                          World
       Bootstrap                     Firmware                         Bootloader
  ┌──► EL3                      ┌──► EL3                         ┌──► EL2
@@ -1338,6 +1954,24 @@ secure-world transaction 被不同 VM 交织。共享内存注册、TIPC、virti
 
 **定位**：`arch/arm64/guest/vipc.c`。
 
+```text
+platform DTS channel policy
+    -> register two endpoint VMIDs + shared GPA + optional notify vIRQ
+    -> allocate two host-owned SPSC rings
+    -> map the same pages only into endpoint Stage-2 tables
+
+guest payload: producer writes bytes -> publishes prod
+doorbell:      HC_IPC(NOTIFY) -> peer vIRQ/event
+consumer:      observes prod -> reads bytes -> publishes cons -> ACK
+```
+
+每个 channel 有两条独立方向 ring。endpoint guest 拥有 payload 的 producer/consumer
+顺序，EL2 拥有 channel registration、Stage-2 mapping、doorbell 权限和统计；`NOTIFY` 不是
+数据复制接口。非 endpoint VM 既没有 Stage-2 mapping，也无法通过 `QUERY` 得到 channel，
+因此权限失败不会退化为“仅不注入 IRQ”。继续阅读应从
+[`arm64_vipc_register_channel()`](../../arch/arm64/guest/vipc.c) 到
+`arm64_vipc_init_vm()`，再到 `arm64_vipc_hcall()`。
+
 ### 13.5 静态 remoteproc/RPMsg
 
 `arch/arm64/guest/vrproc.c` 提供与 HVC IPC 分离的静态 transport。平台 DTS 定义
@@ -1359,6 +1993,33 @@ endpoint1 -> endpoint0
 `QUERY` 返回 channel、peer、GPA、ring 数和可选 virq；`NOTIFY` 更新 doorbell 统计并
 唤醒 peer；`ACK` 记录接收进度。热路径不解析 payload，只管理共享 ring 元数据和
 通知。ABI version 为 1，ring magic 为 `0x42495043`。
+
+两种 transport 都让 payload 留在 shared memory，但控制 ABI 不同：
+
+```text
+HVC IPC endpoint A           shared SPSC RAM       EL2 vipc control             endpoint B
+       |                             |                       |                          |
+       |-- payload + release prod -->|                       |                          |
+       |-- HC_IPC(NOTIFY,channel) -------------------------->|                          |
+       |                             |                       |-- validate caller/direction
+       |                             |                       |-- optional vIRQ/event -->|
+       |                             |<-------------------- acquire prod/read ----------|
+       |<-- ACK/stat ----------------------------------------|<-- HC_IPC(ACK) ----------|
+
+OpenAMP remote VM        shared vring RAM       EL2 vrproc/MMIO                 Linux RPMsg
+       |                             |                       |                          |
+       |-- descriptors/avail ------->|                       |                          |
+       |-- doorbell MMIO(vqid) ----------------------------->|                          |
+       |                             |                       |-- validate endpoint/width/vqid
+       |                             |                       |-- configured vIRQ ------>|
+       |                             |<------------------- consume vring ---------------|
+       |<---------------- reverse doorbell/vIRQ through same policy --------------------|
+```
+
+HVC IPC 由 IOC operation 显式 `QUERY/NOTIFY/ACK`；remoteproc 使用 guest-visible
+doorbell MMIO 和标准 vring。两者都不允许 EL2 解析 payload，也不授予 non-endpoint VM
+共享页。源码：[`arch/arm64/guest/vipc.c`](../../arch/arm64/guest/vipc.c) 与
+[`arch/arm64/guest/vrproc.c`](../../arch/arm64/guest/vrproc.c)。
 
 ## 14. PCI、vPCI、直通与 SMMUv3
 
@@ -1386,6 +2047,40 @@ MSI-X 和 capability。QEMU 默认附加：
 Stage-2 device mapping 后才对客体有效；客体写入的 MSI message 被视为路由请求，
 必须重写成 host ITS/LPI message。
 
+Guest config handler 是最后的 visibility gate，而不是初始化起点：
+
+```text
+init_vpci(vm)
+    |
+    v
+create IOMMU domain from vm->root_stg2ptp
+    |
+    +--> fail: return -ENODEV; no config handler
+    |
+    v
+for each configured vdev
+    |
+    +--> PTDEV: clear physical BME / mask INTx
+    +--> validate static owner + StreamID policy
+    +--> assign StreamID to VM domain + CMD_SYNC
+    +--> init virtual config/BAR/MSI shadow
+    |
+    +--> optional isolation unavailable: hide this vdev
+    +--> mandatory failure: cleanup all VM vPCI/IOMMU resources
+    |
+    v
+verify every visible PTDEV stream is assigned to this VM
+    |
+    v
+register ECAM MMIO handler -> guest may discover vBDF/config space
+```
+
+运行期 BAR write 仍先更新 virtual shadow，再校验 aperture/size，并在 Stage-2 map 完成后
+允许 CPU MMIO；BME 不能绕过 StreamID gate。源码：
+[`sdk/bsp/vpci/vpci_core.c`](../bsp/vpci/vpci_core.c)、
+[`sdk/bsp/vpci/vpci_pt.c`](../bsp/vpci/vpci_pt.c) 和
+[`sdk/bsp/vpci/vpci_msi.c`](../bsp/vpci/vpci_msi.c)。
+
 ### 14.3 SMMUv3
 
 **定位**：
@@ -1402,6 +2097,36 @@ Stage-2 device mapping 后才对客体有效；客体写入的 MSI message 被�
 - 将 StreamID 原子地 assign/unassign 到 domain。
 - CMDQ sync、TLBI、event fault、quarantine 和 PM restore。
 
+EVTQ fault 的目标是立即关闭 hardware path，同时保留归因信息：
+
+```text
+physical device DMA fault
+    |
+    v
+SMMU writes EVTQ entry (event code, SID, IOVA)
+    |
+    v
+EL2 bounded EVTQ poll
+    - invalidate cache before reading SMMU-owned words
+    - decode SID/event/IOVA
+    - increment event/fault counters
+    |
+    v
+quarantine stream
+    - retain software owner VMID for pcistat/smmustat
+    - record last fault code and IOVA
+    - mark quarantined
+    - replace STE with ABORT
+    - CFGI_STE + CMD_SYNC
+    |
+    +--> sync success: DMA blocked, owner remains diagnosable
+    `--> sync failure: increment EVTQ error and retain containment evidence
+```
+
+一次 poll 最多消费 queue capacity 个 entry，剩余事件保留给后续 poll，避免无界 IRQ/softirq
+工作。源码：[`arm_smmu_poll_events_locked()`](../../arch/arm64/iommu/smmu.c) 和
+`arm_smmu_quarantine_stream_locked()`。
+
 赋权顺序：
 
 ```text
@@ -1415,6 +2140,34 @@ DTS owner policy
 ```
 
 撤销时先写 ABORT STE 并同步，再释放 software owner。
+
+`passthrough_assign_device()` 直接体现“先 DMA isolation，后 software owner”：
+
+```c
+ret = arm_smmu_assign_stream(vm->iommu, stream_id);
+if (ret != 0) {
+	return ret;
+}
+
+spinlock_irqsave_obtain(&bsp_pt_lock, &flags);
+dev = bsp_pt_find_device(stream_id);
+if (dev == NULL) {
+	ret = -ENODEV;
+} else {
+	dev->owner = BSP_PT_OWNER_VM;
+	dev->owner_vmid = vm->vm_id;
+}
+spinlock_irqrestore_release(&bsp_pt_lock, flags);
+
+if (ret != 0) {
+	(void)arm_smmu_unassign_stream(vm->iommu, stream_id);
+}
+```
+
+源码：[`sdk/bsp/passthrough.c`](../bsp/passthrough.c)。进入这段代码前已验证 VM、
+StreamID、静态 policy 和 writable 权限。`arm_smmu_assign_stream()` 成功意味着 STE 和
+CMDQ 同步已经完成；若第二次查表发现 device 消失，则立即 unassign，避免留下没有
+software owner 的 DMA domain。vPCI 仍要在这之后才允许配置空间/BAR 对客体可见。
 
 ### 14.4 MSI/MSI-X 直通
 
@@ -1472,6 +2225,46 @@ detect stuck
     -> VERIFYING: wait for new heartbeat
     -> success or bounded retry/failure
 ```
+
+进入恢复状态前会在同一把 WDT lock 下重新同步 expected vCPU，并重新判断 timeout：
+
+```c
+spinlock_irqsave_obtain(&vm_wdt_lock, &rflags);
+entry = &vm_wdt_entries[vm_id];
+vm_wdt_sync_expected_vcpus_locked(vm, entry, now);
+if (entry->per_vcpu_mode) {
+	(void)vm_wdt_update_stalled_vcpus_locked(entry, now);
+}
+age_ticks = vm_wdt_heartbeat_age_ticks(now, entry);
+if (!entry->restart_pending &&
+	(entry->restart_count < CONFIG_VM_WDT_RESTART_MAX) &&
+	vm_wdt_is_timeout_age(age_ticks) &&
+	(!entry->per_vcpu_mode || (entry->stalled_vcpu_mask != 0UL))) {
+	entry->restart_pending = true;
+	entry->recovery_state = VM_WDT_RECOVERY_QUIESCING;
+	entry->recovery_cause = snapshot->cause;
+	entry->recovery_start_tsc = now;
+	entry->recovery_wait_vcpus = 0UL;
+	vm_wdt_next_quiesce_generation++;
+	if (vm_wdt_next_quiesce_generation == 0UL) {
+		vm_wdt_next_quiesce_generation++;
+	}
+	entry->recovery_quiesce_generation =
+		vm_wdt_next_quiesce_generation;
+	entry->reset_ret = 0;
+	entry->recovery_event_sequence = entry->candidate_event_sequence;
+	entry->candidate_event_sequence = 0UL;
+	entry->reset_complete = false;
+	sequence = entry->recovery_event_sequence;
+	claimed = true;
+}
+spinlock_irqrestore_release(&vm_wdt_lock, rflags);
+```
+
+源码：[`core/vm_wdt.c`](../../core/vm_wdt.c)。snapshot 是诊断输入，真正能否重启仍由
+当前 entry、restart mask、次数上限、heartbeat age 和 stalled mask 共同决定。状态先发布为
+`QUIESCING`，reset 必须等待 vCPU switch-out；因此看到 `STUCK` 不等于 reset 已开始，
+`vmstat`/WDT 现场中的 recovery state 才是恢复进度事实。
 
 `CONFIG_VM_WDT_RESTART_VM_MASK` 选择允许恢复的 VM，service VM 永不自动重启；
 `CONFIG_VM_WDT_RESTART_MAX=5` 将每个 VM 实例的自动恢复限制为最多 5 次，防止无限重启。
@@ -1586,6 +2379,31 @@ resume/abort，并用 completed mask 精确回滚已完成步骤。
 Stage-2 和设备所有权只有在 vCPU 全部 switch-out 后才能保存。恢复失败时保持 I/O
 gate 和 freeze，避免把部分恢复状态暴露给客体。
 
+hook array 是 dependency order，而不是普通 callback list。正序阶段只记录成功 hook，
+反序阶段只回滚该 epoch 已完成的 bit：
+
+```c
+for (idx = 0U; idx < count; idx++) {
+	beau_pm_hook_fn callback = suspend_phase ?
+		pm_hooks[idx].suspend : pm_hooks[idx].prepare;
+
+	if (callback == NULL) {
+		continue;
+	}
+	status = callback(epoch);
+	if (status == 0) {
+		status = hv_pm_set_hook_completed(epoch, idx);
+	}
+	if (status != 0) {
+		break;
+	}
+}
+```
+
+源码：[`core/pm.c`](../../core/pm.c)。后续 `hv_pm_run_reverse()` 从 `count - 1` 向前
+遍历 `completed_hook_mask`，仅在 resume/abort callback 成功后清 bit。这样某个 hook
+prepare 失败时，不会调用尚未获得状态的 hook，也不会丢失仍需继续回滚的失败 bit。
+
 ### 16.4 Host context 与 QEMU 模式
 
 `arch/arm64/pm.c` 保存 EL2 sysreg、GIC、timer 和 secondary CPU 状态。
@@ -1608,6 +2426,35 @@ pmstat
 `pm reboot <vmid>` 把 cold restart 排队到目标 VM BSP 所在 pCPU 的 idle thread，
 然后立即把 BEAU shell prompt 还给用户。目标 pCPU 完成 vCPU pause、device reset、
 image reload 和 BSP restart；PM topology gate 在完成或失败前阻止冲突的 STR/reset。
+
+### 16.5 完整 STR transaction 时序
+
+```text
+requester       PM core/epoch           device hooks       schedulers/vCPUs      platform
+    |                   |                      |                    |                 |
+    |-- suspend(scope)->|                      |                    |                 |
+    |                   |-- allocate nonzero epoch                  |                 |
+    |                   |-- gate target I/O -->|                    |                 |
+    |                   |-- PREPARING -------->| prepare/drain      |                 |
+    |                   |<-- completed hook mask                    |                 |
+    |                   |-- FREEZING_HOST ------------------------->| freeze(epoch)   |
+    |                   |<-- all active vCPUs blocked/not current   |                 |
+    |                   |-- forward suspend -->|                    |                 |
+    |                   |-- SUSPENDED ----------------------------------------------->|
+    |                   |                      |                    |   PSCI/WFI or simulated
+    |                   |<------------------------------------------ wake source -----|
+    |                   |-- RESTORING_HOST --->| reverse resume     |                 |
+    |                   |<-- clear hook bits only after success     |                 |
+    |                   |-- thaw(epoch,wake-owned) ---------------->| replay wake     |
+    |                   |-- ungate I/O ---------------------------->|                 |
+    |<-- RUNNING -------|                      |                    |                 |
+```
+
+Prepare/suspend 失败进入 `ABORTING`，只反向回滚 `completed_hook_mask` 中的 hook；恢复无法
+证明隔离时进入 `PM_FAILED`，保留 I/O gate 和 freeze，而不是强行发布半恢复设备。
+Transaction owner 是 `beau_pm_snapshot.epoch`，scheduler 只拥有 thread gate，平台只拥有
+实际低功耗进入/唤醒。源码：[`core/pm.c`](../../core/pm.c)、
+[`sdk/bsp/pm.c`](../bsp/pm.c) 和 [`arch/arm64/pm.c`](../../arch/arm64/pm.c)。
 
 ## 17. CPU 特性、SVE 与 CPUFreq
 
@@ -1639,6 +2486,65 @@ host ID register capability
 performance policy，并选最大 P-state。QEMU 和 rk356x platform backend 目前都是
 `stub`：记录 transition，但不改真实时钟。这是策略框架，不是完成的 DVFS 驱动。
 
+### 17.3 EL2 security capability 与 vSVE context
+
+安全能力必须先在全部在线 pCPU 上收敛，再发布 host policy：
+
+```text
+BSP ID registers + PAC algorithm
+        |
+        +--> initial feature mask
+        +--> bootstrap random seed (not yet strong publication)
+        |
+AP0..N ID registers + PAC algorithm
+        |
+        v
+atomic intersection across pCPUs
+        |
+        +--> mismatch removes feature from common mask
+        |
+        v
+arm64_security_finalize()
+        |
+        +--> common RNDR -> publish strong random
+        +--> CONFIG_ARM64_PTRAUTH + PAC + strong RNG -> arm PAC policy
+        |       -> per-pCPU bootstrap key
+        |       -> per-thread key before runnable
+        |       -> scheduler loads key and authenticates saved LR
+        +--> BTI remains detected/off in current implementation
+        `--> guest ID registers mask PAC/BTI/RNDR regardless of host policy
+```
+
+任一 CPU capability/algorithm 不一致都会缩小 common mask；强 RNG 或 key generation
+失败时 PAC 保持 disabled，不用可预测 key 保护 live return path。MTE 使用独立的 MTE2
+runtime gate，不由该 PAC policy 自动开启。源码：
+[`arch/arm64/security.c`](../../arch/arm64/security.c)、
+[`arch/arm64/ptrauth.c`](../../arch/arm64/ptrauth.c) 和
+[`arch/arm64/lib/random.c`](../../arch/arm64/lib/random.c)。
+
+vSVE 在每次 vCPU switch 上重新证明 policy，避免继承前一客体的 scalable state：
+
+```text
+scheduler         vMPU policy          CPTR/ZCR registers       SVE save area
+    |                   |                       |                      |
+switch in vCPU          |                       |                      |
+    |-- feature enabled?->|                     |                      |
+    |<-- no ------------|-- CPTR_EL2.TZ=1 ---->| trap guest SVE      |
+    |<-- yes -----------|-- clear TZ ---------->|                      |
+    |                   |-- ZCR_EL2 = VM max -->|                      |
+    |                   |-- clamp ZCR_EL1 ----->|                      |
+    |                   |                       |<-- restore Z/P/FFR --|
+    |--------------------------- ERET to guest -----------------------|
+switch out              |                       |                      |
+    |                   |                       |-- save Z/P/FFR ----->|
+    |                   |-- CPTR_EL2.TZ=1 ---->| next vCPU must prove policy
+```
+
+RTOS policy-disabled VM 始终走 trap path；Linux 可见 VL 不超过 DTS 请求和 host VL。
+源码：[`arch/arm64/guest/vmpu.c`](../../arch/arm64/guest/vmpu.c)、
+[`arch/arm64/guest/vsve.c`](../../arch/arm64/guest/vsve.c) 与
+[`arch/arm64/sve.c`](../../arch/arm64/sve.c)。
+
 ## 18. Console、Shell、日志与 Trace
 
 ### 18.1 Console ownership
@@ -1650,6 +2556,34 @@ performance policy，并选最大 P-state。QEMU 和 rk356x platform backend 目
 - host 到 VM 的 RX queue。
 - backpressure、drain budget 和 prefixed output。
 - `Ctrl-D` 从 VM console 返回 BEAU shell。
+
+Console switch 是 input ownership transaction；guest TX 从不依赖当前是否被选中：
+
+```text
+user/shell          console owner       presentation/ramlog      guest vUART/backend
+    |                     |                       |                       |
+    |-- switch <vmid> --->| validate VM/vUART     |                       |
+    |                     |-- bind -------------->| cursor=ramlog.next    |
+    |                     |                       | bind_epoch++          |
+    |                     |-- unbind old owner -->|                       |
+    |                     |-- shell input off; console_vmid=VM            |
+    |                     |-- try prompt '\r' --------------------------->|
+    |                     |                       |                       |
+    |-- host bytes ------>| bounded input backlog ----------------------->|
+    |                     |                       |<-- guest TX bytes ----|
+    |                     |                       | append retained ramlog|
+    |<---------------- bounded drain for bound epoch ---------------------|
+    |                     |                       |                       |
+    |-- Ctrl-D ---------->| unbind -> bind_epoch++                        |
+    |                     | console_vmid=INVALID; shell input on          |
+    |<-- BEAU prompt -----|                       |                       |
+```
+
+`console_vmid` 拥有唯一 host input endpoint；ramlog 拥有所有 VM 的输出留存，即使 VM 未被
+选中也持续前进。`bind_epoch` 使旧 drain 不能在 rebind 后继续输出；prompt key 使用
+non-blocking write，guest FIFO 满不能卡住 `switch`。源码：
+[`sdk/bsp/cmds/shell_console.c`](../bsp/cmds/shell_console.c)、
+[`sdk/bsp/console.c`](../bsp/console.c) 和 [`sdk/bsp/vuart.c`](../bsp/vuart.c)。
 
 host shell 无输入时保持 blocked。首次输入发现延迟由 2 ms timer 周期限定；唤醒后
 最多连续处理 64 字节，再重新经过 scheduler，以限制单次 console service 时间。
@@ -1681,6 +2615,21 @@ WDT recovery 与 failure 事件继续使用 `LOG_*` 保留为故障证据。
 
 ### 18.2 命令参考
 
+命令字符串、handler 和 Tab completion 的事实源是
+[`sdk/bsp/cmds/shell_registry.c`](../bsp/cmds/shell_registry.c)，不是本表。注册关系本身
+是静态数据，例如：
+
+```c
+CMD("irqstat", NULL, "list host IRQ counts and ARM64 guest vIRQ latency", shell_irqstat, NULL),
+CMD("switch", "<vm id>", "switch to the vm console. type `CTRL-D` switch to BEAU",
+	shell_to_vm_console, NULL),
+CMD("ramlog", "<vm id>", "dump retained VM boot and watchdog log", shell_ramlog, NULL),
+```
+
+`shell.c` 只分派 registry 已发布的条目；删除 registry entry 就会让命令进入统一的
+unknown-command 路径。带 `#if` 的条目必须结合目标平台 `.config` 判断，不能只因源码中
+存在 handler 就假定镜像提供该命令。
+
 | 命令 | 用途 |
 |---|---|
 | `version` | 版本、build type、commit 状态 |
@@ -1691,12 +2640,17 @@ WDT recovery 与 failure 事件继续使用 `LOG_*` 保留为故障证据。
 | `vcpus` | 列出 vCPU、pCPU、状态和 switch 信息 |
 | `ps` | scheduler thread 状态、current owner 和相邻命令间 CPU% |
 | `schedstat` | pCPU scheduler、累计调度计数、runqueue/current 与分表的 BVT/CBS/RTDS 算法统计 |
+| `spestat <...>` | `CONFIG_ARM64_SPE=y` 时控制或输出 EL2 SPE capture |
 | `irqstat` | host PIRQ 与按 VM 分区的 guest vIRQ lifecycle/latency |
 | `switch <vmid>` | 切到客体 console，`Ctrl-D` 返回 |
+| `ramlog <vmid>` | 输出双 bank retained guest boot/WDT 日志与校验状态 |
 | `devmap` | host Stage-1 与每 VM Stage-2 map |
 | `memstat` | 页表池和 Stage-2 ownership |
 | `walkpt <vmid> <ipa>` | 只读输出指定 IPA 的逐级 Stage-2 descriptor、映射与属性 |
+| `kusg` | 输出 BEAU 静态内存占用 |
+| `gen <panic\|brk\|esr ...>` | 主动生成受控 ARM64 fault；只用于明确批准的诊断 |
 | `swtdbg <vmid>`（Z3L）/ `hwtdbg`（ZR2L） | 打印所有已保留 WDT 超时现场，读取不清除 |
+| `crash <vmid> [erase]` | 查看或清除 guest crash report history 与 guest-fault 信息 |
 | `coredump <print\|erase>` | 查看或清除最近一次 ARM64 panic/异常快照 |
 | `vmstat` | VM 配置、状态、affinity、boot、timer、WDT，以及末尾的 host/VM summary 与 findings |
 | `vmexitstat` | VM/vCPU 同步 VM-exit handler 的 EC 分类次数与 wall-time；物理 IRQ exit 不单独计入，且不含后续调度 |
@@ -1706,12 +2660,21 @@ WDT recovery 与 failure 事件继续使用 `LOG_*` 保留为故障证据。
 | `smmustat` | SMMU/ITS queue、STE、event fault |
 | `pcistat` | host/vPCI/BAR/MSI-X/StreamID ownership |
 | `cpufreq` | policy、domain、P-state 和 backend |
+| `hwc` | 读取当前 pCPU hardware cycle counter |
 | `rttest` | 每 pCPU 1000 次 EL2 timer latency test |
+| `oslat [duration-ms]` | 测量各 pCPU 的 bounded EL2 polling gap |
+| `ipilat [samples]` | 从 BSP 测量 bounded IPI latency |
+| `coremark [iterations]` | `CONFIG_COREMARK=y` 时运行异步 per-pCPU CoreMark |
+| `dhrystone [initial-runs]` | `CONFIG_DHRYSTONE=y` 时运行串行 Dhrystone |
 | `trace <...>` | start/stop/status/clear/dump per-pCPU trace |
 | `perf <...>` | 在 `CONFIG_PERF=y` 时采样并输出 EL2 Host 调用栈 |
 | `reboot` | 立即重启 host |
 | `pm reboot <vmid>` | 异步 cold restart 非 service VM |
 | `pm ...` / `pmstat` | VM STR/reboot 控制与 transaction 诊断 |
+| `pmustat <...>` | 控制并输出 EL2 core PMU 统计 |
+| `aes <enc\|dec> <text\|hex>` | 验证 ARMv8 AES 文本加解密路径 |
+| `tee <version\|dump>` | QEMU Trusty POC 的只读版本与系统信息 |
+| `ddb <passwd>` | 进入 ARM64 debugger；参数按敏感数据处理，不进入补全或普通回显 |
 
 `vmstat summary` 的 vCPU utilization 表使用相邻两次 `vmstat` 命令之间的 scheduler runtime 差值。
 列数取所有已配置 VM 中最大的 vCPU 数；某 VM 未配置的列显示 `NC`，已配置但 VM
@@ -1778,6 +2741,83 @@ Host 样本从异常入口保存的 ELR、SP 和 x29 开始，只在已登记的
 
 QEMU 只能验证控制流、SMP ring ownership 和回溯边界，不能作为真实热点或采样开销
 结论；性能分析结果需要在目标硬件上确认。
+
+### 18.5 Trace snapshot 与故障证据分层
+
+不同观测接口有不同生命周期，不能把 volatile snapshot 当成 retained evidence：
+
+```text
+runtime event/fault
+    |
+    +--> LOG_* -----------------> host dmesg ring --------> dmesg
+    |                              current host boot only
+    |
+    +--> TRACE_* ----------------> per-pCPU trace ring ----> trace dump
+    |                              explicit capture session
+    |
+    +--> host panic/trap --------> per-pCPU coredump ------> coredump print
+    |                              checksum + bounded stack
+    |
+    +--> guest crash HVC --------> per-VM history ---------> crash <vmid>
+    |                              sanitized fixed ABI
+    |
+    +--> WDT/guest SError -------> swtdbg event slots -----> swtdbg <vmid>
+    |                              durable vCPU + bounded live sample
+    |
+    `--> guest ramoops ----------> dual retained banks ----> ramlog <vmid>
+                                   descriptor + payload checksum,
+                                   survives interrupted capture/host restart
+```
+
+ARM RAS record 是 local hardware snapshot：guest SError path 读取有效 record 后把结果附加到
+guest-fault/WDT evidence；无有效 record 时不能伪造 syndrome。Coredump 只遍历已登记 stack
+范围和 EL2 text address，避免 panic path 再次访问任意地址。
+
+```text
+ARM64 exception
+    |
+    +--> guest-origin SError
+    |      -> snapshot guest ESR/ELR/FAR/HPFAR
+    |      -> read local RAS record when supported and valid
+    |      -> attach RAS + bounded guest/host stack to swtdbg evidence
+    |      -> LOG_ERR with VM/vCPU identity
+    |      -> return failure; pause affected vCPU
+    |
+    `--> host panic/synchronous fatal trap
+           -> resolve only registered host stack range
+           -> capture bounded raw stack + frame chain
+           -> checksum per-pCPU coredump slot
+           -> publish snapshot before terminal panic handling
+```
+
+Guest fault 不升级为任意 host memory walk；host coredump 也不读取 guest stack。两条路径
+共享“先验证地址范围，再发布有校验的有界证据”原则，但故障 owner 和终止范围不同。
+
+Trace stop 使用 producer drain，而不是立刻把 ring 标成可读：
+
+```text
+shell              trace control          per-pCPU producer          dump reader
+  |                      |                         |                       |
+  |-- start(mask) ------>| clear old rings         |                       |
+  |                      | publish mask/session    |                       |
+  |                      | state=CAPTURING         |                       |
+  |                      |<-- writer_active=true --| local IRQ disabled    |
+  |                      |<-- record + barrier + head/count                |
+  |                      |<-- writer_active=false--|                       |
+  |-- stop ------------->| trace_running=false + barrier                   |
+  |                      | state=DRAINING          |                       |
+  |                      |-- wait all writer_active=false                  |
+  |                      +-- success -> READY ---------------------------->|
+  |                      `-- timeout -> stay DRAINING; dump/clear denied   |
+  |-- dump --------------------------------------------------------------->|
+  |<-- immutable session records ordered oldest to newest -----------------|
+```
+
+源码：[`core/trace.c`](../../core/trace.c)、
+[`arch/arm64/coredump.c`](../../arch/arm64/coredump.c)、
+[`arch/arm64/ras.c`](../../arch/arm64/ras.c)、
+[`sdk/bsp/arm64/swtdbg.c`](../bsp/arm64/swtdbg.c) 和
+[`sdk/bsp/ramlog.c`](../bsp/ramlog.c)。
 
 ## 19. SDK 模块
 
@@ -1861,6 +2901,37 @@ microseconds, steps no larger than 100 microseconds, and a 100 millisecond
 minimum update interval. No proposal changes a reservation in this revision.
 All future apply paths must reuse the same validation before touching scheduler
 state.
+
+Advisor capability 把一个 boot-period VM owner 与后续请求绑定；它不是通用 scheduler
+控制权：
+
+```text
+VM0 advisor          HVC dispatcher        ai_sched gate/lock                    CBS/DTS policy
+     |                       |                       |                                  |
+     |-- REGISTER IOC GPA -->| static-VM permission  |                                  |
+     |                       |-- handler ----------->|   validate ABI/size/op           |
+     |                       |                       |-- claim owner/mint capability
+     |<-- capability --------|<----------------------|                                  |
+     |                       |                       |                                  |
+     |-- SNAPSHOT(cap,pcpu)->|-- handler ----------->| owner/cap check                  |
+     |                       |                       |-- read pool/stats -------------->|
+     |<-- bounded entries + active mask + envelope -------------------------------------|
+     |                       |                       |                                  |
+     |-- PROPOSE(entries) -->|-- handler ----------->| owner/cap/count                  |
+     |                       |                       |-- validate membership/envelope ->|
+     |                       |                       |-- enforce min interval           |
+     |<-- observe-only result; no CBS reservation is changed ---------------------------|
+     |                       |                       |                                  |
+VM reset/destroy             |-- ai_sched_invalidate_vm(vmid) ------------------------->|
+     |                       |                       | clear capability/timestamps      |
+```
+
+Capability 为 0、owner 不符、stale interval 或 DTS envelope 越界都会拒绝；验证成功也只记录
+observe-only 结果。BEAU shell 不提供数据采集命令。EL2 实现位于
+[`core/sched/smart.c`](../../core/sched/smart.c)，ABI 位于
+[`include/public/acrn_hv_defs.h`](../../include/public/acrn_hv_defs.h)；
+[`sdk/zsh/beau_ai_sched.c`](../zsh/beau_ai_sched.c) 是保留的 Zephyr advisor 参考实现，
+是否进入 guest image 仍须在对应 guest source tree 验证。
 
 ### 19.7 Arm SPE
 
@@ -1987,6 +3058,23 @@ VM1 的 echo server 可顺序接受两个 frontend client。`vsock cid` 绑定
 
 ## 22. 故障定位手册
 
+先确定“哪个 owner 没有推进”，再打开细节。下面的第一条命令用于缩小范围，不代表单独
+足以证明根因：
+
+| 现象 | 第一份证据 | 主要状态 owner | 下一份源码 |
+|---|---|---|---|
+| VM 未到 prompt | `vmstat`、`vcpus`、`ramlog` | VM lifecycle、boot loader、BSP vCPU | `core/vm.c`、`core/vm_load.c` |
+| vCPU 长期不运行 | `ps`、`schedstat` | per-pCPU scheduler/runqueue | `core/schedule.c`、当前 policy 文件 |
+| timer/IRQ 不推进 | `vmstat`、`irqstat` | vtimer、vGIC descriptor/LR、host IRQ | `guest/vtimer.c`、`guest/vgicv3.c` |
+| virtio 无完成 | `virtiostat`、backend `dmesg` | queue shadow、pending slot、KBE worker | `virtio_mmio.c`、`virtio_proxy.c` |
+| PCI BAR 可见但 DMA 失败 | `pcistat`、`smmustat` | vPCI BAR、StreamID domain、CMDQ | `vpci/`、`iommu.c`、`smmu.c` |
+| heartbeat timeout | `vmstat`、`swtdbg`/`hwtdbg` | WDT entry、vCPU runtime、recovery state | `core/vm_wdt.c` |
+| STR 不返回 | `pmstat`、`ps` | PM epoch、hook mask、frozen/wake mask | `core/pm.c`、`sdk/bsp/pm.c` |
+
+证据优先级建议是：保留现场/错误日志 > 单调统计差值 > 即时 snapshot > 单次终端现象。
+例如“Linux 有 timer IRQ”只能证明链路的一部分，不能证明 WDT worker 已获得 process-context
+调度。
+
 ### 22.1 客体不启动
 
 按顺序检查：
@@ -2020,6 +3108,28 @@ request/IRQ 和 vCPU wait latency；`vmstat` 查看 CNTV ctl/cval、PPI descript
 backup/poll/PPI count、EL2 mask 和 pre-ERET flush 聚合；`irqstat` 核对 host/guest
 IRQ 是否持续推进。Linux 有 arch_timer IRQ 不代表 softirq 一定推进，需要结合三类
 证据判断是 vCPU 未获调度、guest 执行卡死还是 timer delivery 停滞。
+
+#### 示例：区分调度停滞、timer 停滞和 guest 未消费 IRQ
+
+```text
+heartbeat 不再更新
+    |
+    +--> ps/schedstat: vCPU runtime 不增、wait 增长
+    |       -> scheduler/runqueue/CPU owner 方向
+    |
+    +--> vCPU runtime 增长，但 vmstat 的 deadline 已过且 source/poll 不增
+    |       -> vtimer host source/backup timer 方向
+    |
+    +--> vtimer source 增长，irqstat assert 增长，但无 delivery/EOI 推进
+    |       -> vGIC target/request/LR 或 guest PSTATE.I 方向
+    |
+    `--> delivery/EOI 持续推进，但 heartbeat thread 不运行
+            -> guest scheduler/worker/RCU starvation 方向
+```
+
+建议连续执行两次 `ps`/`schedstat` 建立差值，再用 `vmstat` 和 `irqstat` 对齐同一时间窗，
+最后读取 `swtdbg`/`hwtdbg` 的冻结现场。不要先增加 timeout：timeout 只改变何时报警，不会
+修复 runqueue、PPI、LR 或 guest worker 的所有权断点。
 
 ### 22.3 virtio-proxy 不工作
 
@@ -2079,6 +3189,10 @@ smmustat
 
 ## 24. 推荐源码学习顺序
 
+每一阶段都做三遍：第一遍只画模块和 owner，第二遍从入口追到一个成功发布点，第三遍再追
+一个失败或回滚路径。完成标准不是“看过文件”，而是能用源码位置和一份运行时证据解释
+状态变化。
+
 ### 第一阶段：跑起来并理解所有权
 
 ```text
@@ -2092,6 +3206,9 @@ scripts/regress.py
 ```
 
 目标：能说清四个 VM、两类 CPU pool、image staging 和 frontend/backend 拓扑。
+
+练习：从当前 QEMU `platform.dts` 手工写出 VM1 的 RAM、vCPU/pCPU、boot image、Trusty
+flag 和 PCI StreamID，再与 `vmstat`/`pcistat` 的字段逐项对照。
 
 ### 第二阶段：从 reset 到 guest EL1
 
@@ -2110,6 +3227,9 @@ arch/arm64/guest/entry.S
 
 目标：手工画出 `_start -> launch_vms -> ERET`。
 
+练习：任选 VM2，在图上标出 policy 何时变成 `acrn_vm_config`、`acrn_vm`、
+`acrn_vcpu`，并圈出 `VM_CREATED` 和 `VM_RUNNING` 的不同发布点。
+
 ### 第三阶段：异常、IRQ 与 timer
 
 ```text
@@ -2122,6 +3242,9 @@ arch/arm64/guest/vtimer.c
 ```
 
 目标：能从一个 guest MMIO 或 PPI27 追到最终 LR/ERET。
+
+练习：分别追一次 `DABT_LOW` 和 CNTV deadline；记录它们在何处汇合到 vCPU request、
+vGIC flush 和 `vcpu_exit_return`。
 
 ### 第四阶段：设备与 DMA
 
@@ -2140,6 +3263,9 @@ arch/arm64/guest/vsmmu.c
 
 目标：能分别解释 CPU MMIO、DMA、MSI 三条所有权链。
 
+练习：对 QEMU EDU 设备画三条平行线，证明 BAR Stage-2 可见、StreamID STE 有效和
+DeviceID/EventID 到 LPI 路由缺一不可。
+
 ### 第五阶段：实时性、健康与系统状态
 
 ```text
@@ -2156,27 +3282,33 @@ sdk/bsp/cmds/shell_pm.c
 目标：能用 `schedstat`、当前分支的 WDT 现场命令、`vmstat summary` 和 `pmstat` 给出有代码
 证据的故障判断。
 
+练习：为一次 WDT recovery 标出 detector pCPU、目标 VM BSP pCPU、状态转换、现场槽和
+VERIFYING heartbeat；再说明 system STR 为什么必须冻结 timeout 剩余时间。
+
 ## 25. 关键结构速查
 
-| 结构 | 所有者 | 含义 |
-|---|---|---|
-| `acrn_vm_config` | platform DTS parser | 静态 VM policy |
-| `arch_vm_config` | platform DTS parser | ARM64 RAM/设备/SVE policy |
-| `acrn_vm` | `core/vm.c` | VM runtime object、Stage-2、vGIC、IOMMU |
-| `acrn_vcpu` | `core/vcpu.c` + arch guest | 生命周期、thread、durable guest state |
-| `thread_object` | scheduler | 固定 pCPU 的调度实体 |
-| `sched_control` | per-CPU | 当前 policy、runqueue、current、统计 |
-| `arm64_vgicv3` | guest vGIC | VM 级中断描述符、ITS、lock |
-| `virtio_mmio_dev` | virtio common | MMIO register 和 queue shadow |
-| `virtio_proxy_dev` | proxy | frontend queue、pending、backend、统计 |
-| `iommu_domain` | SMMU/vPCI | VMID、Stage-2 root、StreamID owner |
-| `beau_pm_snapshot` | PM core | epoch、scope、phase、hook/vCPU mask、错误 |
-| `vm_wdt_entry` | WDT core | heartbeat、QUIESCING/RESETTING/VERIFYING 状态与恢复次数 |
+读结构时同时找“谁首次填充”和“谁消费”，可以避免把包含某字段的对象误认为该状态的
+最终 owner：
+
+| 结构 | 所有者 | 首次生产者 | 主要消费者 | 含义 |
+|---|---|---|---|---|
+| `acrn_vm_config` | platform DTS parser | `platform_dts.c` | `create_vm()`、boot、scheduler | 静态 VM policy |
+| `arch_vm_config` | platform DTS parser | `platform_dts.c` | `arch_init_vm()`、vFDT/device init | ARM64 RAM/设备/SVE policy |
+| `acrn_vm` | VM core | `create_vm()` | Stage-2、vGIC、IOMMU、HVC/device | VM runtime object |
+| `acrn_vcpu` | vCPU core + arch guest | `create_vcpu()` | scheduler、VM-exit、vGIC/vtimer | 生命周期、thread、durable guest state |
+| `thread_object` | scheduler | vCPU/host service init | scheduler policy/context switch | 固定 pCPU 的调度实体 |
+| `sched_control` | per-pCPU | `init_sched()` | policy、switch、`schedstat` | runqueue、current、统计 |
+| `arm64_vgicv3` | guest vGIC | `arm64_vgicv3_init_vm()` | inject、flush、EOI/maintenance | VM 级中断描述符、ITS、lock |
+| `virtio_mmio_dev` | virtio common | device init | MMIO handler、device ops | register 和可信 queue shadow |
+| `virtio_proxy_dev` | proxy | `virtio_proxy_init_vm()` | notify、backend HVC、`virtiostat` | frontend queue、pending、backend、统计 |
+| `iommu_domain` | SMMU broker | domain create | passthrough、vPCI、SMMU HW | VMID、Stage-2 root、StreamID owner |
+| `beau_pm_snapshot` | PM core | suspend/resume request | hook runner、`pmstat` | epoch、scope、phase、hook/vCPU mask、错误 |
+| `vm_wdt_entry` | WDT core | WDT init/kick | detector、recovery、`vmstat` | heartbeat、恢复状态与次数 |
 
 
 ## 26. 计划
 
-BEAU OS后续开发计划参照[porting.md](porting.md).
+BEAU OS 后续开发计划参见 [porting.md](porting.md)。
 
 
 ## 27. 总结
